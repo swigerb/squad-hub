@@ -1,0 +1,14 @@
+{
+  "name": "squad-hub",
+  "version": "0.1.0",
+  "description": "One place to see and control your Squad sessions, across every substrate.",
+  "license": "MIT",
+  "bin": { "squad-hub": "./bin/squad-hub.js" },
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test/run-tests.js",
+    "start": "node bin/squad-hub.js"
+  },
+  "engines": { "node": ">=18" },
+  "files": ["bin", "src", "README.md", "LICENSE"]
+}

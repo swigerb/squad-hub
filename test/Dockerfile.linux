@@ -1,0 +1,21 @@
+# Runs the squad-hub test suite on Linux.
+#
+# WHY THIS EXISTS. The orphan mechanisms are belt-and-braces on Windows -- libuv
+# puts children in a job object the OS tears down with the parent. On Linux
+# orphans are re-parented to init and survive indefinitely, and Linux is what
+# ACA and AKS run.
+#
+# So the platform where the guarantee is load-bearing is the one that had never
+# executed a single test. This image fixes that.
+#
+# Built with `az acr build`, which builds in Azure -- no local Docker pulls.
+FROM mcr.microsoft.com/devcontainers/javascript-node:20
+
+WORKDIR /app
+COPY package.json ./
+COPY src ./src
+COPY bin ./bin
+COPY test ./test
+
+# Prove the platform difference is real here before trusting any result.
+CMD ["sh", "-c", "node test/platform-orphan-probe.js && echo '' && node test/run-tests.js"]

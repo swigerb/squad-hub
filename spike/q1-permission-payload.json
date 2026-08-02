@@ -1,0 +1,32 @@
+{
+  "sessionId": "94d30501-3d86-4b51-a9d1-d6c812e089a2",
+  "toolCall": {
+    "toolCallId": "call_g5GpRmzIsbjMJRPN65dos68M",
+    "title": "Append marker to alpha.txt",
+    "kind": "execute",
+    "status": "pending",
+    "rawInput": {
+      "command": "echo SQUADHUBNEEDLE42 >> alpha.txt",
+      "commands": [
+        "echo SQUADHUBNEEDLE42 >> alpha.txt"
+      ]
+    }
+  },
+  "options": [
+    {
+      "optionId": "allow_once",
+      "kind": "allow_once",
+      "name": "Allow once"
+    },
+    {
+      "optionId": "allow_always",
+      "kind": "allow_always",
+      "name": "Always allow"
+    },
+    {
+      "optionId": "reject_once",
+      "kind": "reject_once",
+      "name": "Deny"
+    }
+  ]
+}

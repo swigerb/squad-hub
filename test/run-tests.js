@@ -1,0 +1,556 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Sprint 1 gate.
+ *
+ * The two criteria that decide this sprint are not "the daemon starts". They
+ * are the two ways a supervisor betrays you:
+ *
+ *   1. Kill the daemon -> the agent must NOT survive as an orphan.
+ *      An abandoned `copilot --acp` holding a repo checkout, invisible to every
+ *      surface, is worse than no daemon at all.
+ *
+ *   2. Kill the agent -> the session must be marked failed within one heartbeat.
+ *      A session list that shows "Active" for a process that died ten minutes
+ *      ago is a lie, and it is the lie people act on.
+ *
+ * Both are asserted by OS-level process liveness -- `process.kill(pid, 0)` --
+ * not by what the daemon reports about itself. A daemon that has lost track of
+ * a child will happily report a tidy shutdown.
+ *
+ * Every test runs against a private SQUAD_HUB_HOME and a fake ACP agent, so the
+ * suite never touches the developer's real daemon and never needs the network.
+ */
+
+const assert = require('assert');
+const { spawn, spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const ROOT = path.join(__dirname, '..');
+const BIN = path.join(ROOT, 'bin', 'squad-hub.js');
+const FAKE = path.join(__dirname, 'fake-agent.js');
+
+let pass = 0; let fail = 0;
+const failures = [];
+
+function check(name, fn) {
+  try { fn(); pass += 1; console.log(`  ok   ${name}`); }
+  catch (e) { fail += 1; failures.push({ name, error: e.message }); console.log(`  FAIL ${name}\n         ${e.message}`); }
+}
+async function checkAsync(name, fn) {
+  try { await fn(); pass += 1; console.log(`  ok   ${name}`); }
+  catch (e) { fail += 1; failures.push({ name, error: e.message }); console.log(`  FAIL ${name}\n         ${e.message}`); }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function alive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+async function waitFor(fn, ms = 15000, step = 100) {
+  const until = Date.now() + ms;
+  for (;;) {
+    if (await fn()) return true;
+    if (Date.now() > until) return false;
+    await sleep(step);
+  }
+}
+
+/** An isolated device: private home, private IPC endpoint, fake agent. */
+function makeEnv(extra = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-'));
+  return {
+    home,
+    env: {
+      ...process.env,
+      SQUAD_HUB_HOME: home,
+      SQUAD_HUB_AGENT: process.execPath,
+      SQUAD_HUB_AGENT_ARGS: FAKE,
+      FAKE_AGENT_MODE: 'approve-gate',
+      ...extra,
+    },
+  };
+}
+
+function cli(env, args, opts = {}) {
+  return spawnSync(process.execPath, [BIN, ...args], {
+    env, encoding: 'utf8', cwd: opts.cwd || ROOT, timeout: opts.timeout || 30000,
+  });
+}
+
+function statusJson(env) {
+  const r = cli(env, ['status', '--json']);
+  try { return JSON.parse(r.stdout); } catch { return { running: false, _raw: r.stdout, _err: r.stderr }; }
+}
+
+function daemonPid(home) {
+  try { return JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8')).pid; } catch { return null; }
+}
+
+async function startDaemon(env) {
+  const r = cli(env, ['start']);
+  const ok = await waitFor(() => !!daemonPid(env.SQUAD_HUB_HOME) && alive(daemonPid(env.SQUAD_HUB_HOME)));
+  if (!ok) throw new Error(`daemon did not start: ${r.stdout} ${r.stderr}`);
+  return daemonPid(env.SQUAD_HUB_HOME);
+}
+
+async function stopDaemon(env) {
+  cli(env, ['stop']);
+  await waitFor(() => !alive(daemonPid(env.SQUAD_HUB_HOME)), 8000);
+}
+
+/**
+ * Windows holds a lock briefly after a process exits, so a single rmSync races
+ * and leaves temp directories behind. Retry, then give up quietly -- a test
+ * suite that fails on its own cleanup teaches you nothing.
+ */
+function cleanup(home) {
+  for (let i = 0; i < 5; i += 1) {
+    try { fs.rmSync(home, { recursive: true, force: true }); return; }
+    catch { spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},150)']); }
+  }
+}
+
+// ===========================================================================
+
+async function suiteLifecycle() {
+  console.log('\n[lifecycle] daemon start / status / stop');
+  const { home, env } = makeEnv();
+  try {
+    const before = cli(env, ['status', '--json']);
+    check('status exits 3 when no daemon is running', () => {
+      assert.strictEqual(before.status, 3, `expected exit 3, got ${before.status}`);
+      assert.strictEqual(JSON.parse(before.stdout).running, false);
+    });
+
+    const pid = await startDaemon(env);
+    check('start produces a live daemon process', () => assert.ok(alive(pid), `pid ${pid} is not alive`));
+
+    const snap = statusJson(env);
+    check('status reports running with a device identity', () => {
+      assert.strictEqual(snap.running, true);
+      assert.ok(snap.device.name, 'no device name');
+      assert.strictEqual(snap.device.platform, process.platform);
+    });
+
+    check('file access is OFF by default', () => assert.strictEqual(snap.device.fileAccess, 'off'));
+
+    check('the confinement path is NEVER in the reportable view', () => {
+      assert.ok(!('filesRoot' in snap.device), 'filesRoot leaked into the device view');
+      assert.ok(!JSON.stringify(snap.device).includes(home), 'the home path leaked into the device view');
+    });
+
+    await stopDaemon(env);
+    check('stop leaves no daemon process', () => assert.ok(!alive(pid), `pid ${pid} survived stop`));
+    check('stop removes the state file', () => assert.ok(!fs.existsSync(path.join(home, 'daemon.json'))));
+  } finally { cleanup(home); }
+}
+
+async function suiteSessionRoundTrip() {
+  console.log('\n[session] start a session, approve, observe the SIDE EFFECT');
+  const { home, env } = makeEnv();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
+  try {
+    await startDaemon({ ...env });
+    cli(env, ['config', 'show']);
+    // Allow a working directory to be chosen at all.
+    cli(env, ['reset', '--allow-files-all']);
+    await waitFor(() => alive(daemonPid(home)));
+
+    const started = cli(env, ['run', 'do the thing', '--cwd', work]);
+    check('run reports a session id', () => assert.match(started.stdout, /session s\d+/, started.stdout + started.stderr));
+
+    const gotApproval = await waitFor(() => {
+      const s = statusJson(env);
+      return s.sessions && s.sessions.some((x) => x.pendingApprovals.length > 0);
+    }, 20000);
+    check('the session pauses and surfaces a pending approval', () => assert.ok(gotApproval, 'no approval appeared'));
+
+    const snap = statusJson(env);
+    const sess = snap.sessions.find((s) => s.pendingApprovals.length > 0);
+    const appr = sess && sess.pendingApprovals[0];
+
+    check('status becomes waiting_approval', () => assert.strictEqual(sess.status, 'waiting_approval'));
+
+    check('the approval carries the LITERAL command, not a summary', () => {
+      assert.ok(appr.command, 'no command on the approval');
+      assert.match(appr.command, /fake-agent-marker\.txt/, `command was: ${appr.command}`);
+    });
+
+    check('the approval carries the paths it touches', () => {
+      assert.ok(appr.paths.length > 0, 'no paths extracted');
+      assert.ok(appr.paths.some((p) => p.includes('fake-agent-marker.txt')), JSON.stringify(appr.paths));
+    });
+
+    check('the approval offers the three protocol options', () => {
+      const ids = appr.options.map((o) => o.optionId).sort();
+      assert.deepStrictEqual(ids, ['allow_always', 'allow_once', 'reject_once']);
+    });
+
+    const marker = path.join(work, 'fake-agent-marker.txt');
+    check('nothing has run yet', () => assert.ok(!fs.existsSync(marker), 'the tool ran BEFORE it was approved'));
+
+    const app = cli(env, ['approve', sess.id, appr.approvalId, 'allow_once']);
+    check('approve is accepted', () => assert.strictEqual(app.status, 0, app.stdout + app.stderr));
+
+    const ran = await waitFor(() => fs.existsSync(marker), 15000);
+    check('APPROVE ran the tool - proven by the side effect on disk', () => assert.ok(ran, 'marker never appeared'));
+
+    const done = await waitFor(() => {
+      const s = statusJson(env);
+      return s.sessions && s.sessions.some((x) => x.id === sess.id && x.status === 'done');
+    }, 15000);
+    check('the session reaches done', () => assert.ok(done, 'session never completed'));
+
+    await stopDaemon(env);
+  } finally { cleanup(home); cleanup(work); }
+}
+
+async function suiteDeny() {
+  console.log('\n[session] deny stops the tool');
+  const { home, env } = makeEnv();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
+  try {
+    await startDaemon(env);
+    cli(env, ['reset', '--allow-files-all']);
+    await waitFor(() => alive(daemonPid(home)));
+    cli(env, ['run', 'do the thing', '--cwd', work]);
+
+    await waitFor(() => statusJson(env).sessions.some((x) => x.pendingApprovals.length > 0), 20000);
+    const sess = statusJson(env).sessions.find((s) => s.pendingApprovals.length > 0);
+    const appr = sess.pendingApprovals[0];
+
+    cli(env, ['approve', sess.id, appr.approvalId, 'reject_once']);
+    await sleep(2500);
+
+    const marker = path.join(work, 'fake-agent-marker.txt');
+    check('DENY did not run the tool - proven by the absence of the side effect', () => {
+      assert.ok(!fs.existsSync(marker), `the tool RAN ANYWAY. dir: ${fs.readdirSync(work).join(',')}`);
+    });
+
+    check('the working directory is genuinely empty', () => {
+      assert.deepStrictEqual(fs.readdirSync(work), [], 'unexpected files appeared');
+    });
+
+    await stopDaemon(env);
+  } finally { cleanup(home); cleanup(work); }
+}
+
+async function suiteRejectsUnknownOption() {
+  console.log('\n[session] an option the agent never offered is refused');
+  const { home, env } = makeEnv();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
+  try {
+    await startDaemon(env);
+    cli(env, ['reset', '--allow-files-all']);
+    await waitFor(() => alive(daemonPid(home)));
+    cli(env, ['run', 'do the thing', '--cwd', work]);
+    await waitFor(() => statusJson(env).sessions.some((x) => x.pendingApprovals.length > 0), 20000);
+    const sess = statusJson(env).sessions.find((s) => s.pendingApprovals.length > 0);
+    const appr = sess.pendingApprovals[0];
+
+    const r = cli(env, ['approve', sess.id, appr.approvalId, 'allow_forever_muahaha']);
+    check('a forged option id is rejected', () => assert.notStrictEqual(r.status, 0, 'a made-up option was accepted'));
+
+    const marker = path.join(work, 'fake-agent-marker.txt');
+    check('the forged option did not run the tool', () => assert.ok(!fs.existsSync(marker)));
+
+    await stopDaemon(env);
+  } finally { cleanup(home); cleanup(work); }
+}
+
+// ---------------------------------------------------------------------------
+// CRITERION 1 -- the orphan gate.
+// ---------------------------------------------------------------------------
+async function suiteOrphanOnGracefulStop() {
+  console.log('\n[ORPHAN GATE] stopping the daemon must not orphan the agent');
+  const { home, env } = makeEnv();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
+  try {
+    await startDaemon(env);
+    cli(env, ['reset', '--allow-files-all']);
+    await waitFor(() => alive(daemonPid(home)));
+    cli(env, ['run', 'do the thing', '--cwd', work]);
+
+    await waitFor(() => statusJson(env).sessions.length > 0, 20000);
+    const agentPid = statusJson(env).sessions[0].pid;
+    check('the agent process is running', () => assert.ok(alive(agentPid), `agent pid ${agentPid} not alive`));
+
+    await stopDaemon(env);
+    const reaped = await waitFor(() => !alive(agentPid), 10000);
+    check('GRACEFUL STOP: the agent process is gone', () => {
+      assert.ok(reaped, `ORPHAN: agent pid ${agentPid} survived the daemon stopping`);
+    });
+  } finally { cleanup(home); cleanup(work); }
+}
+
+async function suiteOrphanOnHardKill() {
+  console.log('\n[ORPHAN GATE] SIGKILLing the daemon must not leave an agent running forever');
+  const { home, env } = makeEnv();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
+  try {
+    const dpid = await startDaemon(env);
+    cli(env, ['reset', '--allow-files-all']);
+    await waitFor(() => alive(daemonPid(home)));
+    const dpid2 = daemonPid(home);
+    cli(env, ['run', 'do the thing', '--cwd', work]);
+    await waitFor(() => statusJson(env).sessions.length > 0, 20000);
+    const agentPid = statusJson(env).sessions[0].pid;
+
+    // The brutal case: no chance to clean up.
+    try { process.kill(dpid2, 'SIGKILL'); } catch { /* already gone */ }
+    try { if (dpid !== dpid2) process.kill(dpid, 'SIGKILL'); } catch { /* gone */ }
+    await waitFor(() => !alive(dpid2), 6000);
+
+    check('the daemon is dead', () => assert.ok(!alive(dpid2), 'daemon survived SIGKILL'));
+    const survived = alive(agentPid);
+    check('the orphan is recorded on disk so it can be found', () => {
+      const kids = JSON.parse(fs.readFileSync(path.join(home, 'children.json'), 'utf8'));
+      assert.ok(kids.some((k) => k.pid === agentPid), `child ${agentPid} was not recorded: ${JSON.stringify(kids)}`);
+    });
+
+    // The recovery guarantee: the next daemon reaps what the last one abandoned.
+    await startDaemon(env);
+    const reaped = await waitFor(() => !alive(agentPid), 12000);
+    check('HARD KILL: the next daemon start reaps the orphan', () => {
+      assert.ok(reaped, `ORPHAN SURVIVED: agent pid ${agentPid} still running after a fresh daemon start (was alive after kill: ${survived})`);
+    });
+
+    await stopDaemon(env);
+  } finally { cleanup(home); cleanup(work); }
+}
+
+/**
+ * The orphan mechanisms, tested directly rather than through the OS.
+ *
+ * The end-to-end tests above cannot fail on Windows: libuv puts children in a
+ * job object that dies with the parent, so the agent is cleaned up whether or
+ * not our code does anything (proven in test/platform-orphan-probe.js). On
+ * Linux -- which is what ACA and AKS run -- there is no such safety net.
+ *
+ * This suite spawns DETACHED children that escape the job object, so a pass
+ * means our code did the killing.
+ */
+async function suiteOrphanMechanisms() {
+  console.log('\n[ORPHAN GATE] the mechanisms themselves, with no OS safety net');
+  runChildSuite(path.join(__dirname, 'orphan-unit.js'), 'orphan');
+}
+
+/** Runs a child test file that reports through the RESULT contract. */
+function runChildSuite(file, label) {
+  const r = spawnSync(process.execPath, [file], {
+    encoding: 'utf8', timeout: 120000, env: process.env, windowsHide: true,
+  });
+  const out = (r.stdout || '') + (r.stderr || '');
+  const results = out.split('\n').filter((l) => l.startsWith('RESULT\t')).map((l) => l.split('\t'));
+
+  if (!results.length) {
+    fail += 1;
+    const name = `${label}: the child suite produced parseable results`;
+    failures.push({ name, error: `no RESULT lines; exit=${r.status}. ${out.slice(-300)}` });
+    console.log(`  FAIL ${name}  (exit=${r.status})`);
+    return;
+  }
+  for (const [, verdict, name, why] of results) {
+    if (verdict === 'ok') { pass += 1; console.log(`  ok   ${name}`); }
+    else { fail += 1; failures.push({ name, error: why || 'failed' }); console.log(`  FAIL ${name}\n         ${why || ''}`); }
+  }
+  const anyFailed = results.some(([, v]) => v === 'fail');
+  if (r.status !== 0 && !anyFailed) {
+    fail += 1;
+    const name = `${label}: the child suite exited cleanly`;
+    failures.push({ name, error: `exit=${r.status} with no failing result` });
+    console.log(`  FAIL ${name}  (exit=${r.status})`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CRITERION 2 -- a dead agent must not read as Active.
+//
+// TWO independent mechanisms cover this, and they are NOT interchangeable:
+//
+//   a) the child's 'exit' event  -- only fires for a process the daemon parented
+//   b) the heartbeat's liveness poll -- the only thing that covers a session the
+//      daemon did not spawn (re-adoption, inheritance from a prior daemon)
+//
+// The end-to-end test below exercises (a). Mutation testing proved it does NOT
+// exercise (b): disabling the heartbeat check left the suite green, because the
+// exit event reached the session first. So (b) gets its own isolated test.
+// ---------------------------------------------------------------------------
+async function suiteDeadAgentDetected() {
+  console.log('\n[HEARTBEAT GATE] killing the agent must mark the session failed');
+  const { home, env } = makeEnv({ FAKE_AGENT_MODE: 'hang' });
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
+  try {
+    await startDaemon(env);
+    cli(env, ['reset', '--allow-files-all']);
+    await waitFor(() => alive(daemonPid(home)));
+    cli(env, ['run', 'do the thing', '--cwd', work]);
+    await waitFor(() => statusJson(env).sessions.length > 0, 20000);
+
+    const before = statusJson(env).sessions[0];
+    const agentPid = before.pid;
+    check('the session is live before the kill', () => {
+      assert.ok(['starting', 'active', 'waiting_approval'].includes(before.status), `status was ${before.status}`);
+    });
+
+    try { process.kill(agentPid, 'SIGKILL'); } catch { /* gone */ }
+    await waitFor(() => !alive(agentPid), 6000);
+
+    const flipped = await waitFor(() => {
+      const s = statusJson(env).sessions.find((x) => x.id === before.id);
+      return s && s.status === 'failed';
+    }, 25000);
+
+    check('a dead agent is reported as FAILED, not Active', () => {
+      const s = statusJson(env).sessions.find((x) => x.id === before.id);
+      assert.ok(flipped, `session still reads '${s && s.status}' after its agent was killed`);
+    });
+
+    check('the failure says why', () => {
+      const s = statusJson(env).sessions.find((x) => x.id === before.id);
+      assert.ok(s.error && s.error.length > 0, 'failed with no explanation');
+    });
+
+    await stopDaemon(env);
+  } finally { cleanup(home); cleanup(work); }
+}
+
+/**
+ * The heartbeat in isolation, for a session the daemon never spawned -- the
+ * case the end-to-end test cannot reach, because there the 'exit' event always
+ * wins the race.
+ */
+async function suiteHeartbeatIsolated() {
+  console.log('\n[HEARTBEAT GATE] the heartbeat itself, with no exit event to help it');
+  runChildSuite(path.join(__dirname, 'heartbeat-unit.js'), 'heartbeat');
+}
+
+// ---------------------------------------------------------------------------
+// File access confinement.
+// ---------------------------------------------------------------------------
+async function suiteFileAccess() {
+  console.log('\n[file access] off by default, and scoped means scoped');
+  const { home, env } = makeEnv();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sqroot-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sqout-'));
+  const inside = path.join(root, 'nested');
+  fs.mkdirSync(inside);
+  try {
+    await startDaemon(env);
+    const denied = cli(env, ['run', 'x', '--cwd', outside]);
+    check('with file access OFF, a working directory is refused', () => {
+      assert.notStrictEqual(denied.status, 0, 'a cwd was accepted while file access was off');
+      assert.match(denied.stderr + denied.stdout, /file access is off/i);
+    });
+    await stopDaemon(env);
+
+    // Scope to `root` by running reset from there.
+    cli(env, ['reset', '--allow-files'], { cwd: root });
+    await waitFor(() => alive(daemonPid(home)), 10000);
+
+    const snap = statusJson(env);
+    check('scoped access reports as scoped', () => assert.strictEqual(snap.device.fileAccess, 'scoped'));
+    check('the confinement root still never appears in the device view', () => {
+      assert.ok(!JSON.stringify(snap.device).includes(root), 'the root path leaked');
+    });
+
+    const ok = cli(env, ['run', 'x', '--cwd', inside]);
+    check('a directory inside the root is allowed', () => assert.strictEqual(ok.status, 0, ok.stdout + ok.stderr));
+
+    const esc = cli(env, ['run', 'x', '--cwd', outside]);
+    check('a directory outside the root is refused', () => {
+      assert.notStrictEqual(esc.status, 0, 'escaped the confinement root');
+      assert.match(esc.stderr + esc.stdout, /outside/i);
+    });
+
+    const traversal = cli(env, ['run', 'x', '--cwd', path.join(root, '..', path.basename(outside))]);
+    check('.. traversal out of the root is refused', () => {
+      assert.notStrictEqual(traversal.status, 0, 'traversal escaped the confinement root');
+    });
+
+    await stopDaemon(env);
+  } finally { cleanup(home); cleanup(root); cleanup(outside); }
+}
+
+async function suiteConfig() {
+  console.log('\n[config] reset returns to factory defaults');
+  const { home, env } = makeEnv();
+  try {
+    await startDaemon(env);
+    cli(env, ['track-all', 'on']);
+    await waitFor(() => alive(daemonPid(home)), 10000);
+    check('track-all on persists', () => {
+      const c = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+      assert.strictEqual(c.trackAll, true);
+    });
+
+    cli(env, ['reset']);
+    await waitFor(() => alive(daemonPid(home)), 10000);
+    check('reset clears track-all', () => {
+      const c = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+      assert.strictEqual(c.trackAll, false);
+    });
+    check('reset turns file access back OFF', () => {
+      const c = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+      assert.strictEqual(c.allowFiles, false);
+      assert.strictEqual(c.allowFilesAll, false);
+    });
+    await stopDaemon(env);
+  } finally { cleanup(home); }
+}
+
+async function suiteIsolation() {
+  console.log('\n[isolation] two homes are two devices');
+  const a = makeEnv();
+  const b = makeEnv();
+  try {
+    const pa = await startDaemon(a.env);
+    const pb = await startDaemon(b.env);
+    check('two daemons run concurrently without colliding', () => {
+      assert.notStrictEqual(pa, pb);
+      assert.ok(alive(pa) && alive(pb));
+    });
+    check('each reports only its own state', () => {
+      assert.strictEqual(statusJson(a.env).device.pid, pa);
+      assert.strictEqual(statusJson(b.env).device.pid, pb);
+    });
+    await stopDaemon(a.env);
+    check('stopping one leaves the other running', () => assert.ok(!alive(pa) && alive(pb)));
+    await stopDaemon(b.env);
+  } finally { cleanup(a.home); cleanup(b.home); }
+}
+
+// ===========================================================================
+
+(async () => {
+  console.log('squad-hub sprint 1 gate');
+  console.log('='.repeat(60));
+  const t0 = Date.now();
+
+  await suiteLifecycle();
+  await suiteSessionRoundTrip();
+  await suiteDeny();
+  await suiteRejectsUnknownOption();
+  await suiteOrphanOnGracefulStop();
+  await suiteOrphanOnHardKill();
+  await suiteOrphanMechanisms();
+  await suiteDeadAgentDetected();
+  await suiteHeartbeatIsolated();
+  await suiteFileAccess();
+  await suiteConfig();
+  await suiteIsolation();
+
+  console.log('');
+  console.log('='.repeat(60));
+  console.log(`${pass} passed, ${fail} failed  (${Math.round((Date.now() - t0) / 1000)}s)`);
+  if (fail) {
+    console.log('\nFAILURES');
+    for (const f of failures) console.log(` - ${f.name}\n   ${f.error}`);
+  }
+  process.exit(fail ? 1 : 0);
+})();

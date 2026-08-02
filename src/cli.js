@@ -1,0 +1,223 @@
+'use strict';
+/**
+ * squad-hub CLI.
+ *
+ * The command set is start / stop / status / reset / config / track-all.
+ * `reset` earns its place because "my device looks wrong" is the most common
+ * failure mode, and a factory-clean restart is a better first instruction than
+ * a debugging session.
+ */
+
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const paths = require('./paths');
+const config = require('./config');
+const client = require('./client');
+const { Daemon, alive } = require('./daemon');
+
+const out = (s = '') => process.stdout.write(s + '\n');
+const err = (s) => process.stderr.write(s + '\n');
+
+function flag(argv, name) { return argv.includes(`--${name}`); }
+function value(argv, name, dflt = null) {
+  const i = argv.indexOf(`--${name}`);
+  return i !== -1 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : dflt;
+}
+
+async function waitFor(fn, ms = 8000, step = 100) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (await fn()) return true;
+    await new Promise((r) => setTimeout(r, step));
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+
+async function cmdStart(argv) {
+  if (client.daemonAlive()) {
+    const st = client.readState();
+    out(`daemon already running (pid ${st.pid})`);
+    return 0;
+  }
+
+  const patch = {};
+  if (flag(argv, 'allow-files-all')) { patch.allowFiles = true; patch.allowFilesAll = true; patch.filesRoot = null; }
+  else if (flag(argv, 'allow-files')) { patch.allowFiles = true; patch.allowFilesAll = false; patch.filesRoot = process.cwd(); }
+  if (flag(argv, 'track-all')) patch.trackAll = true;
+  if (Object.keys(patch).length) config.update(patch);
+
+  paths.ensureHome();
+  const outFd = fs.openSync(paths.log(), 'a');
+  const child = spawn(process.execPath, [path.join(__dirname, 'daemon-main.js')], {
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    // Without this, Windows gives every detached daemon its own console window.
+    // A background service that flashes a window at the user is not background.
+    windowsHide: true,
+    env: process.env,
+  });
+  child.unref();
+
+  const up = await waitFor(async () => {
+    try { await client.call('ping', {}, { timeoutMs: 1000 }); return true; } catch { return false; }
+  });
+  if (!up) { err('daemon did not come up; see ' + paths.log()); return 1; }
+
+  const st = client.readState();
+  const cfg = config.read();
+  out(`daemon started (pid ${st.pid})`);
+  out(`  device       ${st.deviceName}`);
+  out(`  endpoint     ${st.ipc}`);
+  out(`  file access  ${config.publicView(cfg).fileAccess}${cfg.allowFiles && !cfg.allowFilesAll ? ` (root: ${cfg.filesRoot})` : ''}`);
+  return 0;
+}
+
+async function cmdStop() {
+  if (!client.daemonAlive()) { out('no daemon is running'); return 0; }
+  const st = client.readState();
+  try { await client.call('shutdown', {}, { timeoutMs: 3000 }); } catch { /* may die mid-reply */ }
+  const gone = await waitFor(async () => !alive(st.pid), 6000);
+  if (!gone) { try { process.kill(st.pid); } catch { /* gone */ } }
+  try { fs.unlinkSync(paths.state()); } catch { /* gone */ }
+  out(`daemon stopped (pid ${st.pid})`);
+  return 0;
+}
+
+async function cmdStatus(argv) {
+  if (!client.daemonAlive()) {
+    if (flag(argv, 'json')) out(JSON.stringify({ running: false }, null, 2));
+    else out('daemon: stopped');
+    return 3;
+  }
+  const snap = await client.call('status');
+  const st = client.readState();
+  if (flag(argv, 'json')) { out(JSON.stringify({ running: true, ...snap }, null, 2)); return 0; }
+
+  out(`daemon: running (pid ${st.pid}, ${snap.device.beats} heartbeats)`);
+  out(`device: ${snap.device.name}  ${snap.device.platform}  file access: ${snap.device.fileAccess}`);
+  out('');
+  if (!snap.sessions.length) { out('no sessions'); return 0; }
+  out(`${snap.sessions.length} session(s):`);
+  for (const s of snap.sessions) {
+    const badge = s.status === 'waiting_approval' ? 'ACTION NEEDED'
+      : s.status === 'active' ? 'Active'
+      : s.status.toUpperCase();
+    out(`  ${s.id}  ${badge}`);
+    out(`    ${s.activity}`);
+    out(`    ${s.cwd}  ${s.agent}  ${s.toolCallCount} tools  pid ${s.pid}`);
+    if (s.error) out(`    error: ${s.error}`);
+    for (const a of s.pendingApprovals) {
+      out(`    -> wants to run: ${a.command || a.title}`);
+      if (a.paths.length) out(`       paths: ${a.paths.join(', ')}`);
+      out(`       answer with: squad-hub approve ${s.id} ${a.approvalId} <${a.options.map((o) => o.optionId).join('|')}>`);
+    }
+  }
+  return 0;
+}
+
+async function cmdReset(argv) {
+  const opts = {
+    allowFiles: flag(argv, 'allow-files'),
+    allowFilesAll: flag(argv, 'allow-files-all'),
+    filesRoot: process.cwd(),
+  };
+  if (client.daemonAlive()) await cmdStop();
+  const cfg = config.reset(opts);
+  out('config reset to factory defaults');
+  out(`  file access  ${config.publicView(cfg).fileAccess}`);
+  return cmdStart(argv);
+}
+
+async function cmdRun(argv) {
+  const prompt = argv.filter((a) => !a.startsWith('--')).join(' ');
+  if (!prompt) { err('usage: squad-hub run "<prompt>" [--cwd <dir>]'); return 2; }
+  if (!client.daemonAlive()) { err("no daemon is running (try: squad-hub start)"); return 3; }
+  const r = await client.call('start-session', { prompt, cwd: value(argv, 'cwd') });
+  out(`session ${r.id} started (agent pid ${r.pid}) in ${r.cwd}`);
+  out('watch it with: squad-hub status');
+  return 0;
+}
+
+async function cmdApprove(argv) {
+  const [sessionId, approvalId, optionId] = argv.filter((a) => !a.startsWith('--'));
+  if (!sessionId || !approvalId || !optionId) {
+    err('usage: squad-hub approve <sessionId> <approvalId> <allow_once|allow_always|reject_once>');
+    return 2;
+  }
+  await client.call('approve', { sessionId, approvalId, optionId });
+  out(`answered ${approvalId} with ${optionId}`);
+  return 0;
+}
+
+async function cmdStopSession(argv) {
+  const [sessionId] = argv.filter((a) => !a.startsWith('--'));
+  if (!sessionId) { err('usage: squad-hub kill <sessionId>'); return 2; }
+  await client.call('stop-session', { sessionId });
+  out(`session ${sessionId} stopped`);
+  return 0;
+}
+
+async function cmdConfig(argv) {
+  const [sub, val] = argv.filter((a) => !a.startsWith('--'));
+  if (!sub || sub === 'show') { out(JSON.stringify(config.read(), null, 2)); return 0; }
+  if (sub === 'server') { config.update({ server: val }); out(`server pinned to ${val}`); return 0; }
+  if (sub === 'unset-server') { config.update({ server: null }); out('server unpinned'); return 0; }
+  if (sub === 'enable-auto-shutdown') { config.update({ autoShutdown: true }); out('auto-shutdown enabled'); return 0; }
+  if (sub === 'disable-auto-shutdown') { config.update({ autoShutdown: false }); out('auto-shutdown disabled'); return 0; }
+  if (sub === 'set-auto-shutdown-grace') { config.update({ autoShutdownGraceSeconds: Number(val) }); out(`grace = ${val}s`); return 0; }
+  err(`unknown config subcommand: ${sub}`);
+  return 2;
+}
+
+async function cmdTrackAll(argv) {
+  const [v] = argv.filter((a) => !a.startsWith('--'));
+  if (v !== 'on' && v !== 'off') { err('usage: squad-hub track-all <on|off>'); return 2; }
+  config.update({ trackAll: v === 'on' });
+  out(`track-all ${v}`);
+  if (client.daemonAlive()) { await cmdStop(); return cmdStart([]); }
+  return 0;
+}
+
+function usage() {
+  out(`squad-hub - see and control your Squad sessions
+
+  squad-hub start [--allow-files|--allow-files-all] [--track-all]
+  squad-hub stop
+  squad-hub status [--json]
+  squad-hub reset [--allow-files|--allow-files-all]
+
+  squad-hub run "<prompt>" [--cwd <dir>]
+  squad-hub approve <sessionId> <approvalId> <optionId>
+  squad-hub kill <sessionId>
+
+  squad-hub track-all <on|off>
+  squad-hub config [show|server <url>|unset-server|enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>]
+
+File access is off by default. --allow-files scopes it to the directory you run
+the command from; --allow-files-all lifts that limit. The confinement path stays
+on this device and is never sent to a hub service.`);
+}
+
+async function main(argv) {
+  const [cmd, ...rest] = argv;
+  switch (cmd) {
+    case 'start': return cmdStart(rest);
+    case 'stop': return cmdStop(rest);
+    case 'status': return cmdStatus(rest);
+    case 'reset': return cmdReset(rest);
+    case 'run': return cmdRun(rest);
+    case 'approve': return cmdApprove(rest);
+    case 'kill': return cmdStopSession(rest);
+    case 'track-all': return cmdTrackAll(rest);
+    case 'config': return cmdConfig(rest);
+    case '--version': case '-v': out(require('../package.json').version); return 0;
+    case undefined: case 'help': case '--help': case '-h': usage(); return 0;
+    default: err(`unknown command: ${cmd}`); usage(); return 2;
+  }
+}
+
+module.exports = { main, Daemon };

@@ -1,0 +1,22 @@
+[
+  {
+    "q": "Q1",
+    "answer": "the literal command IS in the payload - sprint 3 criterion is achievable as written",
+    "hasCommand": true,
+    "hasPath": true,
+    "toolCallKeys": [
+      "toolCallId",
+      "title",
+      "kind",
+      "status",
+      "rawInput"
+    ]
+  },
+  {
+    "q": "Q2",
+    "answer": "ONE process drove TWO sessions to completion in SEPARATE working directories - daemon can be a single process with a session map",
+    "sideEffectA": true,
+    "sideEffectB": true,
+    "distinctSessionIds": true
+  }
+]
