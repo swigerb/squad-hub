@@ -1,0 +1,152 @@
+'use strict';
+/**
+ * Identity for the hub service.
+ *
+ * ISOLATION IS THE ABANDON CONDITION FOR THIS SPRINT. If one user can see
+ * another user's device or session, nothing internet-reachable gets deployed.
+ * So the identity boundary is not a middleware detail -- it is the product
+ * requirement, and every route goes through one place to enforce it.
+ *
+ * Two modes:
+ *
+ *   entra  validate a Microsoft Entra ID JWT, taking the subject from the `oid`
+ *          and `tid` claims, with signatures checked against the issuing
+ *          tenant's JWKS.
+ *
+ *   dev    a local HMAC token carrying an explicit subject, for running the hub
+ *          on a laptop with no tenant. It is NOT a fallback: in entra mode a dev
+ *          token is rejected outright, because a helpful fallback is how auth
+ *          gets bypassed.
+ */
+
+const crypto = require('crypto');
+const https = require('https');
+
+const MODES = Object.freeze({ ENTRA: 'entra', DEV: 'dev' });
+
+class AuthError extends Error {
+  constructor(message, status = 401) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** A stable, opaque per-user key. Never the raw oid, so logs cannot deanonymise. */
+function subjectKey(tid, oid) {
+  return crypto.createHash('sha256').update(`${tid}|${oid}`).digest('hex').slice(0, 32);
+}
+
+function b64urlJson(s) {
+  const pad = s.length % 4 ? '='.repeat(4 - (s.length % 4)) : '';
+  return JSON.parse(Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64').toString('utf8'));
+}
+
+class Authenticator {
+  constructor(opts = {}) {
+    this.mode = opts.mode || MODES.DEV;
+    this.allowedTenants = opts.allowedTenants || [];
+    this.audience = opts.audience || null;
+    this.devSecret = opts.devSecret || null;
+    this._jwks = new Map();
+    if (this.mode === MODES.DEV && !this.devSecret) {
+      throw new Error('dev mode requires a secret; refusing to run an unauthenticated hub');
+    }
+  }
+
+  /** Mint a dev token. Only meaningful in dev mode. */
+  mintDevToken(tid, oid, name) {
+    if (this.mode !== MODES.DEV) throw new Error('dev tokens are not issuable in entra mode');
+    const body = Buffer.from(JSON.stringify({ tid, oid, name, iat: Date.now() })).toString('base64url');
+    const sig = crypto.createHmac('sha256', this.devSecret).update(body).digest('base64url');
+    return `${body}.${sig}`;
+  }
+
+  async verify(authorizationHeader) {
+    const raw = String(authorizationHeader || '');
+    const m = raw.match(/^Bearer\s+(.+)$/i);
+    if (!m) throw new AuthError('missing bearer token');
+    const token = m[1].trim();
+    return this.mode === MODES.ENTRA ? this._verifyEntra(token) : this._verifyDev(token);
+  }
+
+  _verifyDev(token) {
+    const parts = token.split('.');
+    // A JWT has three segments. Seeing one here means a real token reached a
+    // dev-mode service -- refuse rather than guess.
+    if (parts.length !== 2) throw new AuthError('malformed dev token');
+    const [body, sig] = parts;
+    const expect = crypto.createHmac('sha256', this.devSecret).update(body).digest('base64url');
+    // Length first: timingSafeEqual throws on a length mismatch.
+    if (sig.length !== expect.length
+      || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) {
+      throw new AuthError('bad dev token signature');
+    }
+    let claims;
+    try { claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); }
+    catch { throw new AuthError('unparseable dev token'); }
+    if (!claims.tid || !claims.oid) throw new AuthError('dev token is missing tid/oid');
+    return this._principal(claims);
+  }
+
+  async _verifyEntra(token) {
+    const parts = token.split('.');
+    if (parts.length !== 3) throw new AuthError('malformed JWT');
+    const header = b64urlJson(parts[0]);
+    const claims = b64urlJson(parts[1]);
+
+    if (!claims.tid || !claims.oid) throw new AuthError('token is missing tid/oid');
+    if (claims.exp && Date.now() / 1000 > claims.exp) throw new AuthError('token expired');
+    if (this.audience && claims.aud !== this.audience) throw new AuthError('wrong audience');
+
+    const key = await this._jwk(claims.tid, header.kid);
+    if (!key) throw new AuthError('no signing key for this token');
+
+    const signed = `${parts[0]}.${parts[1]}`;
+    const sig = Buffer.from(parts[2].replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+    const ok = crypto.createVerify('RSA-SHA256').update(signed).verify(
+      crypto.createPublicKey({ key, format: 'jwk' }), sig,
+    );
+    if (!ok) throw new AuthError('bad token signature');
+
+    return this._principal(claims);
+  }
+
+  _principal(claims) {
+    if (this.allowedTenants.length && !this.allowedTenants.includes(claims.tid)) {
+      throw new AuthError('tenant not allowed', 403);
+    }
+    return {
+      tid: claims.tid,
+      oid: claims.oid,
+      name: claims.name || claims.preferred_username || null,
+      key: subjectKey(claims.tid, claims.oid),
+    };
+  }
+
+  async _jwk(tid, kid) {
+    const cached = this._jwks.get(tid);
+    const fresh = cached && Date.now() - cached.at < 3600000;
+    let keys = fresh ? cached.keys : null;
+    if (!keys) {
+      keys = await fetchJwks(tid);
+      this._jwks.set(tid, { keys, at: Date.now() });
+    }
+    return keys.find((k) => k.kid === kid) || null;
+  }
+}
+
+function fetchJwks(tid) {
+  const url = `https://login.microsoftonline.com/${encodeURIComponent(tid)}/discovery/v2.0/keys`;
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(body).keys || []); }
+        catch { reject(new AuthError('could not read the tenant signing keys', 503)); }
+      });
+    }).on('error', () => reject(new AuthError('could not reach the identity provider', 503)));
+  });
+}
+
+module.exports = { Authenticator, AuthError, MODES, subjectKey };

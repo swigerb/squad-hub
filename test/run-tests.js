@@ -525,10 +525,19 @@ async function suiteIsolation() {
   } finally { cleanup(a.home); cleanup(b.home); }
 }
 
+/**
+ * Sprint 2's abandon condition: two real principals, two real daemons, one real
+ * service. If this suite ever goes red, nothing internet-reachable ships.
+ */
+async function suiteUserIsolation() {
+  console.log('\n[ISOLATION GATE] two identities must not see each other');
+  runChildSuite(path.join(__dirname, 'isolation-unit.js'), 'isolation');
+}
+
 // ===========================================================================
 
 (async () => {
-  console.log('squad-hub sprint 1 gate');
+  console.log('squad-hub test suite');
   console.log('='.repeat(60));
   const t0 = Date.now();
 
@@ -544,6 +553,7 @@ async function suiteIsolation() {
   await suiteFileAccess();
   await suiteConfig();
   await suiteIsolation();
+  await suiteUserIsolation();
 
   console.log('');
   console.log('='.repeat(60));

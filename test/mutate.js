@@ -67,6 +67,92 @@ const MUTATIONS = [
     mustFail: 'a child of a LIVE daemon is not reaped',
   },
   {
+    name: 'the store filters by user at read time instead of partitioning',
+    file: 'src/service/store.js',
+    find: `  listDevices(subject) {
+    return [...this._bucket(subject).devices.values()].map((d) => this.presenceOf(d));`,
+    replace: `  listDevices(subject) {
+    if (process.env.MUTANT) { const all = []; for (const [, b] of this._users) all.push(...b.devices.values()); return all.map((d) => this.presenceOf(d)); } // MUTATION
+    return [...this._bucket(subject).devices.values()].map((d) => this.presenceOf(d));`,
+    mustFail: 'each user sees exactly their own device',
+  },
+  {
+    name: 'sessions are returned across all users',
+    file: 'src/service/store.js',
+    find: `  listSessions(subject, filter = {}) {
+    let out = [...this._bucket(subject).sessions.values()];`,
+    replace: `  listSessions(subject, filter = {}) {
+    let out = process.env.MUTANT ? (() => { const a = []; for (const [, b] of this._users) a.push(...b.sessions.values()); return a; })() : [...this._bucket(subject).sessions.values()]; // MUTATION`,
+    mustFail: 'the raw session list carries no other user content',
+  },
+  {
+    // This mutation degrades the ERROR CODE but does not breach isolation: the
+    // command still cannot reach another user's device, because connection
+    // routing is also partitioned by subject. Defence in depth, recorded as
+    // such rather than claimed as a single check.
+    name: 'a control route trusts the device id without checking ownership',
+    file: 'src/service/hub-service.js',
+    find: `      const device = this.store.getDevice(me.key, deviceId);`,
+    replace: `      const device = process.env.MUTANT ? { presence: 'online' } : this.store.getDevice(me.key, deviceId); // MUTATION`,
+    mustFail: 'the refusal does not reveal that the device exists',
+  },
+  {
+    // The second layer. Breaking BOTH is what an actual cross-user breach
+    // requires, and this is the mutation that proves the deeper test bites.
+    name: 'command routing ignores the subject partition (breaches isolation)',
+    file: 'src/service/hub-service.js',
+    find: `    const map = this._devices.get(subject);
+    const conn = map && map.get(deviceId);`,
+    replace: `    let map = this._devices.get(subject);
+    let conn = map && map.get(deviceId);
+    if (process.env.MUTANT && !conn) { for (const [, m] of this._devices) { if (m.get(deviceId)) { conn = m.get(deviceId); break; } } } // MUTATION`,
+    mustFail: 'command routing refuses a device the subject does not own',
+  },
+  {
+    name: 'the dev token signature is not verified',
+    file: 'src/service/auth.js',
+    find: `    if (sig.length !== expect.length
+      || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) {`,
+    replace: `    if (!process.env.MUTANT && (sig.length !== expect.length
+      || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect)))) { // MUTATION`,
+    mustFail: 'a token forged with the wrong secret is rejected',
+  },
+  {
+    name: 'the websocket upgrade does not check the token',
+    file: 'src/service/hub-service.js',
+    find: `    let me;
+    try { me = await this.auth.verify(\`Bearer \${token}\`); }
+    catch {`,
+    replace: `    let me;
+    try { me = process.env.MUTANT ? { key: 'anyone', tid: 't', oid: 'o' } : await this.auth.verify(\`Bearer \${token}\`); } // MUTATION
+    catch {`,
+    mustFail: 'a device socket with no token is refused',
+  },
+  {
+    name: 'presence never decays',
+    file: 'src/service/store.js',
+    find: `    const age = Date.now() - rec.lastSeen;`,
+    replace: `    const age = process.env.MUTANT ? 0 : Date.now() - rec.lastSeen; // MUTATION`,
+    mustFail: 'presence decays to stale, then offline',
+  },
+  {
+    name: 'a device refusal is reported to the caller as success',
+    file: 'src/service/hub-service.js',
+    find: `          if (msg.ok) p.resolve(msg.result);
+          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));`,
+    replace: `          if (msg.ok || process.env.MUTANT) p.resolve(msg.result || {}); // MUTATION
+          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));`,
+    mustFail: 'a device that refuses a command surfaces the refusal, not a success',
+  },
+  {
+    name: 'an unscoped store read is quietly allowed',
+    file: 'src/service/store.js',
+    find: `    if (!subject) throw new Error('a subject is required; refusing an unscoped read');`,
+    replace: `    if (!subject && !process.env.MUTANT) throw new Error('a subject is required; refusing an unscoped read'); // MUTATION
+    if (!subject) subject = '__any__';`,
+    mustFail: 'an unscoped store read is refused outright',
+  },
+  {
     name: 'any option id is accepted, even one the agent never offered',
     file: 'src/acp-session.js',
     find: `    const known = a.options.some((o) => o.optionId === optionId);`,

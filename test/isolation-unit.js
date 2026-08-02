@@ -1,0 +1,315 @@
+'use strict';
+/**
+ * Sprint 2 gate — per-user isolation.
+ *
+ * THE ABANDON CONDITION. If one user can see or control another user's device
+ * or session, nothing internet-reachable gets deployed. Everything else in this
+ * sprint is plumbing; this is the part that decides whether it ships.
+ *
+ * The tests use TWO REAL PRINCIPALS with distinct tenant and object ids, each
+ * driving a real daemon over a real WebSocket to a real HTTP service. Not two
+ * variables in one process pretending to be users.
+ *
+ * Attacks asserted against, not just the happy path:
+ *   - reading another user's overview
+ *   - naming another user's device id directly on a control route
+ *   - forging a token
+ *   - connecting a device socket with no token at all
+ *   - tampering with a valid token's claims
+ */
+
+const assert = require('assert');
+const http = require('http');
+const crypto = require('crypto');
+
+const { HubService } = require('../src/service/hub-service');
+const { Authenticator, MODES } = require('../src/service/auth');
+const { HubLink } = require('../src/hub-link');
+
+let pass = 0; let fail = 0;
+function check(name, fn) {
+  try {
+    fn(); pass += 1;
+    console.log(`  ok   ${name}`);
+    console.log(`RESULT\tok\t${name}`);
+  } catch (e) {
+    fail += 1;
+    console.log(`  FAIL ${name}\n         ${e.message}`);
+    console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  }
+}
+async function checkAsync(name, fn) {
+  try {
+    await fn(); pass += 1;
+    console.log(`  ok   ${name}`);
+    console.log(`RESULT\tok\t${name}`);
+  } catch (e) {
+    fail += 1;
+    console.log(`  FAIL ${name}\n         ${e.message}`);
+    console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function api(port, path, token, opts = {}) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      port, path, method: opts.method || 'GET',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+    }, (res) => {
+      let b = '';
+      res.on('data', (d) => { b += d; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(b); } catch { /* not json */ }
+        resolve({ status: res.statusCode, body: json, raw: b });
+      });
+    });
+    req.on('error', (e) => resolve({ status: 0, error: e.message }));
+    if (opts.body) req.write(JSON.stringify(opts.body));
+    req.end();
+  });
+}
+
+(async () => {
+  const secret = crypto.randomBytes(16).toString('hex');
+  const auth = new Authenticator({ mode: MODES.DEV, devSecret: secret });
+  const svc = new HubService({ auth, serveWeb: false });
+  const addr = await svc.listen(0, '127.0.0.1');
+  const port = addr.port;
+  const wsUrl = `ws://127.0.0.1:${port}/ws`;
+
+  // Two genuinely different principals, in different tenants.
+  const alice = { tid: '11111111-1111-1111-1111-111111111111', oid: 'aaaaaaaa-0000-0000-0000-000000000001', name: 'Alice' };
+  const bob = { tid: '22222222-2222-2222-2222-222222222222', oid: 'bbbbbbbb-0000-0000-0000-000000000002', name: 'Bob' };
+  const aliceToken = auth.mintDevToken(alice.tid, alice.oid, alice.name);
+  const bobToken = auth.mintDevToken(bob.tid, bob.oid, bob.name);
+
+  console.log(`service on 127.0.0.1:${port}`);
+
+  // -- each identity is distinct -------------------------------------------
+  const meA = await api(port, '/api/me', aliceToken);
+  const meB = await api(port, '/api/me', bobToken);
+  check('two identities resolve to two different subjects', () => {
+    assert.strictEqual(meA.status, 200, JSON.stringify(meA));
+    assert.strictEqual(meB.status, 200, JSON.stringify(meB));
+    assert.notStrictEqual(meA.body.subject, meB.body.subject);
+  });
+
+  // -- real device connections ---------------------------------------------
+  const linkA = new HubLink({ url: wsUrl, token: aliceToken, deviceId: 'alice-laptop' });
+  const linkB = new HubLink({ url: wsUrl, token: bobToken, deviceId: 'bob-devbox' });
+  await linkA.connect();
+  await linkB.connect();
+
+  linkA.send({
+    type: 'register',
+    device: { name: 'ALICE-LAPTOP', platform: 'win32', fileAccess: 'off' },
+    sessions: [{ id: 's1', status: 'active', activity: 'Processing...', prompt: 'alice secret work', cwd: '/alice/repo', pendingApprovals: [] }],
+  });
+  linkB.send({
+    type: 'register',
+    device: { name: 'BOB-DEVBOX', platform: 'linux', fileAccess: 'off' },
+    sessions: [{ id: 's9', status: 'active', activity: 'Processing...', prompt: 'bob secret work', cwd: '/bob/repo', pendingApprovals: [] }],
+  });
+  await sleep(400);
+
+  const ovA = await api(port, '/api/overview', aliceToken);
+  const ovB = await api(port, '/api/overview', bobToken);
+
+  check('each user sees exactly their own device', () => {
+    assert.deepStrictEqual(ovA.body.devices.map((d) => d.deviceId), ['alice-laptop']);
+    assert.deepStrictEqual(ovB.body.devices.map((d) => d.deviceId), ['bob-devbox']);
+  });
+
+  check("no trace of the other user's device appears anywhere in the payload", () => {
+    assert.ok(!JSON.stringify(ovA.body).includes('bob'), 'bob leaked into alice\'s overview');
+    assert.ok(!JSON.stringify(ovB.body).includes('alice'), 'alice leaked into bob\'s overview');
+  });
+
+  check("no trace of the other user's session content appears", () => {
+    assert.ok(!JSON.stringify(ovA.body).includes('bob secret work'));
+    assert.ok(!JSON.stringify(ovB.body).includes('alice secret work'));
+  });
+
+  // The overview groups sessions under devices, so a cross-user session would
+  // be dropped by grouping even if the store leaked it. /api/sessions returns
+  // the list unmediated, which is where a leak actually shows.
+  const listA = await api(port, '/api/sessions', aliceToken);
+  const listB = await api(port, '/api/sessions', bobToken);
+  check('the raw session list is scoped to the caller', () => {
+    assert.deepStrictEqual(listA.body.sessions.map((s) => s.id), ['s1'], JSON.stringify(listA.body));
+    assert.deepStrictEqual(listB.body.sessions.map((s) => s.id), ['s9'], JSON.stringify(listB.body));
+  });
+  check('the raw session list carries no other user content', () => {
+    assert.ok(!JSON.stringify(listA.body).includes('bob secret work'), 'bob\'s prompt leaked to alice');
+    assert.ok(!JSON.stringify(listB.body).includes('alice secret work'), 'alice\'s prompt leaked to bob');
+  });
+
+  // -- naming another user's device directly --------------------------------
+  // Bob's device records anything it is asked to do, so we can assert the
+  // command never ARRIVED -- not merely that Alice got an error. A refusal that
+  // still delivered the command would be the worst of both.
+  let bobReceived = [];
+  linkB.on('command', (m) => { bobReceived.push(m); linkB.reply(m.correlationId, true, { stopped: true }); });
+
+  const cross = await api(port, '/api/devices/bob-devbox/stop', aliceToken, {
+    method: 'POST', body: { sessionId: 's9' },
+  });
+  await sleep(300);
+
+  check("naming another user's device by id is refused", () => {
+    assert.notStrictEqual(cross.status, 200, `alice reached bob's device: ${JSON.stringify(cross)}`);
+    assert.strictEqual(bobReceived.length, 0,
+      `THE COMMAND STILL ARRIVED at bob's device: ${JSON.stringify(bobReceived)}`);
+  });
+  check('the refusal does not reveal that the device exists', () => {
+    assert.strictEqual(cross.status, 404, `expected 404 (indistinguishable from absent), got ${cross.status}`);
+  });
+
+  // Prove the same route DOES work for the owner, so the 404 above is about
+  // ownership and not a broken route.
+  const own = await api(port, '/api/devices/bob-devbox/stop', bobToken, {
+    method: 'POST', body: { sessionId: 's9' },
+  });
+  await checkAsync('the same route works for the owner', async () => {
+    assert.strictEqual(own.status, 200, `the owner was refused too: ${JSON.stringify(own)}`);
+    assert.strictEqual(bobReceived.length, 1, 'the owner\'s command did not arrive');
+  });
+
+  // -- token attacks --------------------------------------------------------
+  const noToken = await api(port, '/api/overview', null);
+  check('no token is rejected', () => assert.strictEqual(noToken.status, 401));
+
+  const garbage = await api(port, '/api/overview', 'not-a-token');
+  check('a garbage token is rejected', () => assert.strictEqual(garbage.status, 401));
+
+  const forged = (() => {
+    const body = Buffer.from(JSON.stringify({ tid: bob.tid, oid: bob.oid })).toString('base64url');
+    const badSig = crypto.createHmac('sha256', 'the-wrong-secret').update(body).digest('base64url');
+    return `${body}.${badSig}`;
+  })();
+  const forgedRes = await api(port, '/api/overview', forged);
+  check("a token forged with the wrong secret is rejected", () => {
+    assert.strictEqual(forgedRes.status, 401, `a forged token was ACCEPTED: ${JSON.stringify(forgedRes)}`);
+  });
+
+  const tampered = (() => {
+    const [body, sig] = aliceToken.split('.');
+    const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    claims.oid = bob.oid; // keep alice's signature, claim to be bob
+    const newBody = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    return `${newBody}.${sig}`;
+  })();
+  const tamperedRes = await api(port, '/api/overview', tampered);
+  check("swapping the subject while keeping a valid signature is rejected", () => {
+    assert.strictEqual(tamperedRes.status, 401, `tampered claims were ACCEPTED: ${JSON.stringify(tamperedRes)}`);
+  });
+
+  // -- websocket without a token -------------------------------------------
+  await checkAsync('a device socket with no token is refused', async () => {
+    const bad = new HubLink({ url: wsUrl, token: '', deviceId: 'intruder' });
+    let refused = false;
+    try { await bad.connect(); } catch { refused = true; }
+    bad.stop();
+    assert.ok(refused, 'an unauthenticated device socket was accepted');
+  });
+
+  await checkAsync('a device socket with a forged token is refused', async () => {
+    const bad = new HubLink({ url: wsUrl, token: forged, deviceId: 'intruder2' });
+    let refused = false;
+    try { await bad.connect(); } catch { refused = true; }
+    bad.stop();
+    assert.ok(refused, 'a forged device socket was accepted');
+  });
+
+  // The intruder must not have landed in anyone's store.
+  const ovA2 = await api(port, '/api/overview', aliceToken);
+  const ovB2 = await api(port, '/api/overview', bobToken);
+  check('a refused device appears in nobody\'s device list', () => {
+    const all = JSON.stringify(ovA2.body) + JSON.stringify(ovB2.body);
+    assert.ok(!all.includes('intruder'), 'a refused device was registered anyway');
+  });
+
+  // -- presence -------------------------------------------------------------
+  check('a device that has just heartbeated is online', () => {
+    assert.strictEqual(ovA2.body.devices[0].presence, 'online');
+  });
+
+  await checkAsync('presence decays to stale, then offline', async () => {
+    const { Store } = require('../src/service/store');
+    const s = new Store({ staleAfterMs: 120, offlineAfterMs: 260 });
+    s.registerDevice('u1', { deviceId: 'd', name: 'D', platform: 'linux' });
+    assert.strictEqual(s.listDevices('u1')[0].presence, 'online');
+    await sleep(170);
+    assert.strictEqual(s.listDevices('u1')[0].presence, 'stale', 'never became stale');
+    await sleep(170);
+    assert.strictEqual(s.listDevices('u1')[0].presence, 'offline', 'never became offline');
+    s.heartbeat('u1', 'd');
+    assert.strictEqual(s.listDevices('u1')[0].presence, 'online', 'a heartbeat did not restore presence');
+  });
+
+  check('an unscoped store read is refused outright', () => {
+    const { Store } = require('../src/service/store');
+    const s = new Store();
+    assert.throws(() => s.listDevices(undefined), /subject is required/);
+    assert.throws(() => s.listSessions(null), /subject is required/);
+  });
+
+  // -- control round trip ---------------------------------------------------
+  await checkAsync('a command reaches the owning device and its reply returns', async () => {
+    linkA.removeAllListeners('command');
+    let got = null;
+    linkA.on('command', (m) => { got = m; linkA.reply(m.correlationId, true, { answered: true, echo: m.optionId }); });
+    const r = await api(port, '/api/devices/alice-laptop/approve', aliceToken, {
+      method: 'POST', body: { sessionId: 's1', approvalId: 'a1', optionId: 'allow_once' },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r));
+    assert.ok(got, 'the device never received the command');
+    assert.strictEqual(got.op, 'approve');
+    assert.strictEqual(r.body.echo, 'allow_once');
+  });
+
+  await checkAsync('a device that refuses a command surfaces the refusal, not a success', async () => {
+    linkA.removeAllListeners('command');
+    linkA.on('command', (m) => linkA.reply(m.correlationId, false, 'no such pending approval'));
+    const r = await api(port, '/api/devices/alice-laptop/approve', aliceToken, {
+      method: 'POST', body: { sessionId: 's1', approvalId: 'nope', optionId: 'allow_once' },
+    });
+    assert.notStrictEqual(r.status, 200, 'a refusal was reported as success');
+    assert.match(JSON.stringify(r.body), /no such pending approval/);
+  });
+
+  // -- the second layer, tested directly ------------------------------------
+  // The ownership check above stops a cross-user request before routing is
+  // reached, which means routing's own partitioning is never exercised by an
+  // API call. Test it directly, so both layers are proven rather than one
+  // hiding the other.
+  await checkAsync('command routing refuses a device the subject does not own', async () => {
+    let reached = false;
+    try {
+      await svc.command(meA.body.subject, 'bob-devbox', 'stop', { sessionId: 's9' }, 2000);
+      reached = true;
+    } catch (e) {
+      assert.match(e.message, /not connected/i, `unexpected failure: ${e.message}`);
+    }
+    assert.ok(!reached, "routing delivered alice's command to bob's device");
+  });
+
+  await checkAsync('command routing still works within the same subject', async () => {
+    linkB.removeAllListeners('command');
+    linkB.on('command', (m) => linkB.reply(m.correlationId, true, { ok: true }));
+    const r = await svc.command(meB.body.subject, 'bob-devbox', 'stop', { sessionId: 's9' }, 5000);
+    assert.deepStrictEqual(r, { ok: true });
+  });
+
+  linkA.stop(); linkB.stop();
+  await svc.close();
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();
