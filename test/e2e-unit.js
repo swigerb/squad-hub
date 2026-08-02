@@ -189,6 +189,13 @@ function api(port, p, token, opts = {}) {
     assert.ok((approval.paths || []).some((p) => p.includes('fake-agent-marker.txt')),
       JSON.stringify(approval.paths));
   });
+
+  // Found by looking at the rendered UI: the session title had the --cwd value
+  // glued onto the prompt, because the argument filter kept flag VALUES.
+  check('the prompt does not absorb flag values', () => {
+    assert.strictEqual(waiting.prompt, 'do the thing',
+      `the prompt picked up an adjacent flag value: ${JSON.stringify(waiting.prompt)}`);
+  });
   check('the approval offers the protocol options', () => {
     assert.deepStrictEqual(approval.options.map((o) => o.optionId).sort(),
       ['allow_always', 'allow_once', 'reject_once']);
@@ -297,6 +304,16 @@ function api(port, p, token, opts = {}) {
       const r = await api(port, f, null);
       assert.strictEqual(r.status, 200, `${f} did not load (${r.status})`);
     }
+  });
+
+  // Found by rendering the page: `.scrim { display: flex }` outranks the UA
+  // stylesheet's `[hidden] { display: none }`, so every modal appeared at once,
+  // stacked, on first load. A stylesheet cannot be caught by an API test, so
+  // this asserts the rule exists.
+  await checkAsync('hidden modals are actually hidden', async () => {
+    const css = (await api(port, '/app.css', null)).raw;
+    assert.match(css, /\.scrim\[hidden\]\s*\{\s*display:\s*none/,
+      'no rule re-hides a .scrim marked [hidden]; display:flex would override it');
   });
   await checkAsync('static serving cannot escape the web root', async () => {
     // Several encodings, because `new URL()` collapses a literal `..` before

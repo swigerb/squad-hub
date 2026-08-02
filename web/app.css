@@ -172,6 +172,9 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50;
   backdrop-filter: blur(2px);
 }
+/* `display: flex` above outranks the UA stylesheet's `[hidden] { display: none }`,
+   so without this every modal renders at once, stacked. */
+.scrim[hidden] { display: none; }
 .modal {
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
   padding: 20px; width: 100%; max-width: 520px; max-height: 88vh; overflow: auto;

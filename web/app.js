@@ -195,7 +195,7 @@ function showApproval(device, session, approval) {
 
   $('apActions').onclick = async (ev) => {
     const btn = ev.target.closest('[data-answer]');
-    if (!btn) return;
+    if (!btn || btn.disabled) return;
     for (const b of $('apActions').querySelectorAll('button')) b.disabled = true;
     try {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/approve`, {
@@ -208,7 +208,16 @@ function showApproval(device, session, approval) {
       for (const b of $('apActions').querySelectorAll('button')) b.disabled = false;
     }
   };
+
+  // Answering one approval can immediately reveal the next, in the same place
+  // on screen. Without a moment's delay a stray second click lands on the new
+  // dialog and approves a command nobody has read. Observed happening during
+  // manual testing, so the buttons stay inert briefly on each new card.
+  for (const b of $('apActions').querySelectorAll('button')) b.disabled = true;
   $('approvalScrim').hidden = false;
+  setTimeout(() => {
+    for (const b of $('apActions').querySelectorAll('button')) b.disabled = false;
+  }, 350);
 }
 
 // ---------------------------------------------------------------------------

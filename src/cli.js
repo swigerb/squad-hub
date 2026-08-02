@@ -38,6 +38,27 @@ async function waitFor(fn, ms = 8000, step = 100) {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Positional arguments only: drop flags AND the value that follows a flag.
+ *
+ * The naive "anything not starting with --" filter swept up flag values, so
+ * `run "do the thing" --cwd /tmp/x` produced the prompt "do the thing /tmp/x".
+ * Visible in the session list as a title with a path glued onto it.
+ */
+function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth']) {
+  const out = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const name = a.slice(2);
+      if (flagsWithValues.includes(name) && argv[i + 1] && !argv[i + 1].startsWith('--')) i += 1;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 async function cmdStart(argv) {
   if (client.daemonAlive()) {
     const st = client.readState();
@@ -147,7 +168,7 @@ async function cmdReset(argv) {
 }
 
 async function cmdRun(argv) {
-  const prompt = argv.filter((a) => !a.startsWith('--')).join(' ');
+  const prompt = positionals(argv).join(' ');
   if (!prompt) { err('usage: squad-hub run "<prompt>" [--cwd <dir>]'); return 2; }
   if (!client.daemonAlive()) { err("no daemon is running (try: squad-hub start)"); return 3; }
   const r = await client.call('start-session', { prompt, cwd: value(argv, 'cwd') });
@@ -157,7 +178,7 @@ async function cmdRun(argv) {
 }
 
 async function cmdApprove(argv) {
-  const [sessionId, approvalId, optionId] = argv.filter((a) => !a.startsWith('--'));
+  const [sessionId, approvalId, optionId] = positionals(argv);
   if (!sessionId || !approvalId || !optionId) {
     err('usage: squad-hub approve <sessionId> <approvalId> <allow_once|allow_always|reject_once>');
     return 2;
@@ -168,7 +189,7 @@ async function cmdApprove(argv) {
 }
 
 async function cmdStopSession(argv) {
-  const [sessionId] = argv.filter((a) => !a.startsWith('--'));
+  const [sessionId] = positionals(argv);
   if (!sessionId) { err('usage: squad-hub kill <sessionId>'); return 2; }
   await client.call('stop-session', { sessionId });
   out(`session ${sessionId} stopped`);
@@ -223,7 +244,7 @@ async function cmdServe(argv) {
 }
 
 async function cmdConfig(argv) {
-  const [sub, val] = argv.filter((a) => !a.startsWith('--'));
+  const [sub, val] = positionals(argv);
   if (!sub || sub === 'show') { out(JSON.stringify(config.read(), null, 2)); return 0; }
   if (sub === 'server') { config.update({ server: val }); out(`server pinned to ${val}`); return 0; }
   if (sub === 'unset-server') { config.update({ server: null }); out('server unpinned'); return 0; }
@@ -235,7 +256,7 @@ async function cmdConfig(argv) {
 }
 
 async function cmdTrackAll(argv) {
-  const [v] = argv.filter((a) => !a.startsWith('--'));
+  const [v] = positionals(argv);
   if (v !== 'on' && v !== 'off') { err('usage: squad-hub track-all <on|off>'); return 2; }
   config.update({ trackAll: v === 'on' });
   out(`track-all ${v}`);
