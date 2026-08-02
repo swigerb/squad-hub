@@ -145,10 +145,21 @@ class HubService {
 
   _static(url, send) {
     let rel = url.pathname === '/' ? '/index.html' : url.pathname;
+    // Decode before resolving, so a file with a space or an encoded character
+    // serves correctly. That decoding is also what makes the containment check
+    // below load-bearing: without it, `%2e%2e` never becomes `..` and the guard
+    // is unreachable dead code.
+    try { rel = decodeURIComponent(rel); } catch { return send(400, { error: 'bad path' }); }
     rel = path.normalize(rel).replace(/^([/\\])+/, '');
     const file = path.join(WEB_ROOT, rel);
-    if (!file.startsWith(WEB_ROOT)) return send(403, { error: 'nope' });
-    fs.readFile(file, (err, buf) => {
+    // Defence in depth. `new URL()` has already collapsed any `..`, so this is
+    // currently unreachable -- verified for /../ , /%2e%2e/ , /a/../../ and
+    // /..%2f , all of which resolve inside web/. It stays because it becomes
+    // load-bearing the moment this handler stops going through URL parsing.
+    if (!file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) {
+      return send(403, { error: 'nope' });
+    }
+    return fs.readFile(file, (err, buf) => {
       if (err) return send(404, { error: 'not found' });
       return send(200, buf, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
     });

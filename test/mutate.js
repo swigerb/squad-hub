@@ -153,6 +153,90 @@ const MUTATIONS = [
     mustFail: 'an unscoped store read is refused outright',
   },
   {
+    name: 'the hub forwards an approval without the command it will run',
+    file: 'src/service/hub-service.js',
+    find: `      case 'session':
+        this.store.upsertSession(me.key, deviceId, msg.session);
+        break;`,
+    replace: `      case 'session':
+        this.store.upsertSession(me.key, deviceId, msg.session);
+        break;
+      case '__mutant_never__':
+        break;`,
+    mustFail: null, // structural no-op; kept out of the count
+    skip: true,
+  },
+  {
+    name: 'the daemon never forwards session state to the hub',
+    file: 'src/daemon.js',
+    find: `    const push = () => {
+      if (!this.link || !this.link.connected) return;`,
+    replace: `    const push = () => {
+      if (process.env.MUTANT) return; // MUTATION
+      if (!this.link || !this.link.connected) return;`,
+    mustFail: 'a pause reaches the hub promptly, not on the next heartbeat',
+  },
+  {
+    name: 'a remote approve is acknowledged but never answered',
+    file: 'src/daemon.js',
+    find: `        case 'approve':
+          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId });
+          break;`,
+    replace: `        case 'approve':
+          if (process.env.MUTANT) { result = { answered: true }; break; } // MUTATION
+          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId });
+          break;`,
+    mustFail: 'REMOTE APPROVAL RAN THE TOOL - proven by the file on disk',
+  },
+  {
+    name: 'a remote deny is treated as an allow',
+    file: 'src/acp-session.js',
+    find: `    this._respond(a.rpcId, { outcome: { outcome: 'selected', optionId } });`,
+    replace: `    this._respond(a.rpcId, { outcome: { outcome: 'selected', optionId: process.env.MUTANT ? 'allow_once' : optionId } }); // MUTATION`,
+    mustFail: 'REMOTE DENY STOPPED THE TOOL - proven by the absence of the file',
+  },
+  {
+    name: 'a remote stop reports success without stopping the agent',
+    file: 'src/daemon.js',
+    find: `        case 'stop':
+          result = await this.handle({ op: 'stop-session', sessionId: m.sessionId });
+          break;`,
+    replace: `        case 'stop':
+          if (process.env.MUTANT) { result = { stopped: true }; break; } // MUTATION
+          result = await this.handle({ op: 'stop-session', sessionId: m.sessionId });
+          break;`,
+    mustFail: 'a session can be stopped remotely, and its agent dies',
+  },
+  {
+    name: 'static serving allows path traversal out of web/',
+    file: 'src/service/hub-service.js',
+    find: `    if (!file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) {
+      return send(403, { error: 'nope' });
+    }`,
+    replace: `    if (!process.env.MUTANT && !file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) { // MUTATION
+      return send(403, { error: 'nope' });
+    }`,
+    mustFail: 'static serving cannot escape the web root',
+    // ESCAPES BY DESIGN, and recorded rather than hidden. `new URL()` collapses
+    // `..` at parse time -- including a percent-encoded `%2e%2e` -- so the
+    // resolved path is already inside web/ before the check runs. Verified for
+    // /../ , /%2e%2e/ , /a/../../ and /..%2f : every one resolves to web/.
+    //
+    // The containment check is therefore unreachable defence in depth, in the
+    // same way the daemon's explicit kill is on Windows. It stays, because it
+    // becomes load-bearing the moment this handler stops going through URL
+    // parsing. Skipped so it does not sit in the report as an untested
+    // mechanism, which would be the wrong lesson.
+    skip: true,
+  },
+  {
+    name: 'the daemon reports a hub connection it does not have',
+    file: 'src/daemon.js',
+    find: `          connected: !!(this.link && this.link.connected),`,
+    replace: `          connected: process.env.MUTANT ? false : !!(this.link && this.link.connected), // MUTATION`,
+    mustFail: 'the daemon starts and reports a hub connection',
+  },
+  {
     name: 'any option id is accepted, even one the agent never offered',
     file: 'src/acp-session.js',
     find: `    const known = a.options.some((o) => o.optionId === optionId);`,
@@ -231,6 +315,7 @@ function failedTestNames(out) {
   const escaped = [];
 
   for (const m of MUTATIONS) {
+    if (m.skip) continue;
     const file = path.join(ROOT, m.file);
     const original = fs.readFileSync(file, 'utf8');
     const normalised = nl(original);
@@ -266,7 +351,8 @@ function failedTestNames(out) {
   }
 
   console.log('\n' + '='.repeat(60));
-  console.log(`${caught}/${MUTATIONS.length} mutations caught`);
+  const applied = MUTATIONS.filter((m) => !m.skip).length;
+  console.log(`${caught}/${applied} mutations caught`);
 
   const real = escaped.filter((e) => e.why === 'suite stayed green' || e.why.startsWith('anchor'));
   if (real.length) {

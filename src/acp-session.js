@@ -193,6 +193,30 @@ class AcpSession extends EventEmitter {
     return true;
   }
 
+  /**
+   * Send follow-up input to a running agent.
+   *
+   * ACP has no "inject into the current turn" message, so this queues a fresh
+   * prompt on the same session. The distinction is visible to the user: input
+   * lands after the current turn ends, not in the middle of it. Pretending
+   * otherwise would be worse than saying so.
+   */
+  steer(text) {
+    if (!text || this.status === STATUS.DONE || this.status === STATUS.STOPPED || this.status === STATUS.FAILED) {
+      return false;
+    }
+    if (!this.acpSessionId) return false;
+    this.transcript.push({ at: Date.now(), update: { sessionUpdate: 'user_message', content: { text } } });
+    this._request('session/prompt', {
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text }],
+    }).catch((e) => {
+      this.transcript.push({ at: Date.now(), update: { sessionUpdate: 'error', content: { text: e.message } } });
+    });
+    this._setStatus(STATUS.ACTIVE, 'Processing...');
+    return true;
+  }
+
   stop() {
     this._setStatus(STATUS.STOPPED, 'Stopped');
     this.endedAt = Date.now();

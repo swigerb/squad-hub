@@ -534,6 +534,16 @@ async function suiteUserIsolation() {
   runChildSuite(path.join(__dirname, 'isolation-unit.js'), 'isolation');
 }
 
+/**
+ * Sprints 3 and 4: the product claim, end to end. An agent pauses on a device,
+ * the pause reaches the hub, a remote surface answers it, and the agent
+ * actually proceeds -- or actually does not.
+ */
+async function suiteEndToEnd() {
+  console.log('\n[END TO END] hub -> daemon -> agent, and back');
+  runChildSuite(path.join(__dirname, 'e2e-unit.js'), 'e2e');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -554,6 +564,7 @@ async function suiteUserIsolation() {
   await suiteConfig();
   await suiteIsolation();
   await suiteUserIsolation();
+  await suiteEndToEnd();
 
   console.log('');
   console.log('='.repeat(60));

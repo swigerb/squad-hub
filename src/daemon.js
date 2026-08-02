@@ -107,13 +107,8 @@ class Daemon extends EventEmitter {
       this.server.listen(endpoint, res);
     });
 
-    fs.writeFileSync(paths.state(), JSON.stringify({
-      pid: process.pid,
-      ipc: endpoint,
-      startedAt: this.startedAt,
-      deviceName: this.deviceName,
-      version: require('../package.json').version,
-    }, null, 2));
+    this._endpoint = endpoint;
+    this._writeState();
 
     this._timer = setInterval(() => this.beat(), this.heartbeatMs);
     if (this._timer.unref) this._timer.unref();
@@ -125,6 +120,33 @@ class Daemon extends EventEmitter {
 
     this.log(`daemon listening on ${endpoint} pid=${process.pid} device=${this.deviceName}`);
     return endpoint;
+  }
+
+  /**
+   * Publish daemon state to disk.
+   *
+   * The CLI reads this file rather than polling over IPC. That is not a
+   * micro-optimisation: polling `hub-status` every 100ms starved the daemon's
+   * own outbound connection, turning a 114ms connect into 6 seconds -- so the
+   * check reported "not connected" about a connection its own impatience had
+   * delayed. An observer that changes what it observes is worse than no
+   * observer.
+   */
+  _writeState() {
+    try {
+      fs.writeFileSync(paths.state(), JSON.stringify({
+        pid: process.pid,
+        ipc: this._endpoint,
+        startedAt: this.startedAt,
+        deviceName: this.deviceName,
+        version: require('../package.json').version,
+        hub: {
+          configured: !!(this.link && this.link.url),
+          connected: !!(this.link && this.link.connected),
+          url: this.link ? this.link.url : null,
+        },
+      }, null, 2));
+    } catch { /* best effort */ }
   }
 
   /**
@@ -242,6 +264,77 @@ class Daemon extends EventEmitter {
     };
   }
 
+  /**
+   * Attach this device to a hub service. Outbound only: the daemon dials out,
+   * so nothing has to be opened on a laptop or dev box.
+   */
+  attachHub({ url, token, deviceId }) {
+    const { HubLink } = require('./hub-link');
+    this.link = new HubLink({ url, token, deviceId, heartbeatMs: this.heartbeatMs });
+
+    this.link.on('connected', () => {
+      this.log('connected to hub');
+      this._writeState();
+      const snap = this.snapshot();
+      this.link.send({
+        type: 'register',
+        device: { ...snap.device, version: require('../package.json').version },
+        sessions: snap.sessions,
+      });
+    });
+    this.link.on('disconnected', () => { this.log('hub connection lost; retrying'); this._writeState(); });
+    this.link.on('command', (m) => this._hubCommand(m));
+
+    this.link.startHeartbeat(() => {
+      const snap = this.snapshot();
+      return { device: snap.device, sessions: snap.sessions };
+    });
+
+    // Push state changes immediately, rather than making a human wait for the
+    // next heartbeat to learn an agent is blocked on them.
+    const push = () => {
+      if (!this.link || !this.link.connected) return;
+      const snap = this.snapshot();
+      this.link.send({ type: 'sessions', sessions: snap.sessions });
+    };
+    this.on('session-status', push);
+    this.on('approval', push);
+
+    return this.link.connect();
+  }
+
+  async _hubCommand(m) {
+    try {
+      let result;
+      switch (m.op) {
+        case 'spawn': {
+          const s = this.startSession({ prompt: m.prompt, cwd: m.cwd });
+          result = { id: s.id, pid: s.pid, cwd: s.cwd };
+          break;
+        }
+        case 'approve':
+          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId });
+          break;
+        case 'stop':
+          result = await this.handle({ op: 'stop-session', sessionId: m.sessionId });
+          break;
+        case 'transcript':
+          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit });
+          break;
+        case 'steer':
+          result = await this.handle({ op: 'steer', sessionId: m.sessionId, text: m.text });
+          break;
+        default:
+          throw new Error(`unknown command: ${m.op}`);
+      }
+      this.link.reply(m.correlationId, true, result);
+      const snap = this.snapshot();
+      this.link.send({ type: 'sessions', sessions: snap.sessions });
+    } catch (e) {
+      this.link.reply(m.correlationId, false, e.message);
+    }
+  }
+
   // -- IPC ------------------------------------------------------------------
 
   _onConnection(sock) {
@@ -267,6 +360,12 @@ class Daemon extends EventEmitter {
     switch (req.op) {
       case 'ping':
         return { pong: true, pid: process.pid, beats: this.beats };
+      case 'hub-status':
+        return {
+          configured: !!(this.link && this.link.url),
+          connected: !!(this.link && this.link.connected),
+          url: this.link ? this.link.url : null,
+        };
       case 'status':
         return this.snapshot();
       case 'beat':
@@ -293,6 +392,13 @@ class Daemon extends EventEmitter {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
         return { transcript: s.transcript.slice(-(req.limit || 100)) };
+      }
+      case 'steer': {
+        const s = this.sessions.get(req.sessionId);
+        if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
+        const ok = s.steer(req.text);
+        if (!ok) throw Object.assign(new Error('this session is not accepting input'), { code: 'NOT_STEERABLE' });
+        return { sent: true };
       }
       case 'shutdown':
         setTimeout(() => this.shutdown(0), 20);

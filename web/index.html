@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Squad Hub</title>
+<link rel="manifest" href="/app.webmanifest">
+<meta name="theme-color" content="#0b0d12">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="icon-btn" id="menuBtn" aria-label="Menu">☰</button>
+  <div class="brand"><span class="mark" aria-hidden="true"></span> Squad Hub</div>
+  <div class="spacer"></div>
+  <button class="icon-btn bell" id="bellBtn" aria-label="Notifications">
+    🔔<span class="badge" id="bellCount" hidden>0</span>
+  </button>
+  <div class="who" id="who">—</div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <div>
+      <h1>All sessions</h1>
+      <p class="sub">Monitor and manage your local and cloud sessions</p>
+    </div>
+    <button class="primary" id="newBtn">+ New</button>
+  </div>
+
+  <div class="filterbar">
+    <input id="q" type="search" placeholder="Filter by keyword" aria-label="Filter by keyword">
+    <select id="statusFilter" aria-label="Status">
+      <option value="">All statuses</option>
+      <option value="waiting_approval">Action needed</option>
+      <option value="active">Active</option>
+      <option value="done">Done</option>
+      <option value="failed">Failed</option>
+      <option value="stopped">Stopped</option>
+    </select>
+    <select id="deviceFilter" aria-label="Device"><option value="">All devices</option></select>
+  </div>
+
+  <div class="layout">
+    <section class="sessions">
+      <div class="listhead">
+        <span id="sessionCount">0 sessions</span>
+        <span class="conn" id="conn" data-state="connecting">connecting</span>
+      </div>
+      <div id="groups"></div>
+      <div class="empty" id="empty" hidden>
+        <h3>No sessions yet</h3>
+        <p>Start one on a device with <code>squad-hub run "..."</code>, or use <b>+ New</b> to launch one remotely.</p>
+      </div>
+    </section>
+
+    <aside class="devices">
+      <div class="listhead">
+        <span>Connected devices <b id="deviceCount">0</b></span>
+      </div>
+      <div id="deviceList"></div>
+    </aside>
+  </div>
+</main>
+
+<!-- Approval -->
+<div class="scrim" id="approvalScrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="apTitle">
+    <h2 id="apTitle">Permission needed</h2>
+    <p class="modal-sub" id="apWhere"></p>
+    <p class="modal-desc" id="apDesc"></p>
+    <div class="cmdblock">
+      <div class="cmdlabel">Wants to run</div>
+      <pre id="apCommand"></pre>
+    </div>
+    <div id="apPathsWrap" hidden>
+      <div class="cmdlabel">Paths it touches</div>
+      <div class="paths" id="apPaths"></div>
+    </div>
+    <div class="modal-actions" id="apActions"></div>
+    <button class="link" id="apCancel">Not now</button>
+  </div>
+</div>
+
+<!-- New session -->
+<div class="scrim" id="newScrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="nsTitle">
+    <h2 id="nsTitle">New session</h2>
+    <label class="field">
+      <span>Device</span>
+      <select id="nsDevice"></select>
+    </label>
+    <label class="field" id="nsCwdField">
+      <span>Working directory</span>
+      <input id="nsCwd" placeholder="the daemon's default">
+      <small id="nsCwdHint"></small>
+    </label>
+    <label class="field">
+      <span>Prompt</span>
+      <textarea id="nsPrompt" rows="4" placeholder="What should the agent do?"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button class="ghost" id="nsCancel">Cancel</button>
+      <button class="primary" id="nsStart">Start</button>
+    </div>
+    <p class="err" id="nsErr" hidden></p>
+  </div>
+</div>
+
+<!-- Session detail -->
+<div class="scrim" id="detailScrim" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true">
+    <div class="detail-head">
+      <div>
+        <h2 id="dtTitle">Session</h2>
+        <p class="modal-sub" id="dtMeta"></p>
+      </div>
+      <div class="detail-actions">
+        <button class="ghost danger" id="dtStop">Stop</button>
+        <button class="ghost" id="dtClose">Close</button>
+      </div>
+    </div>
+    <div class="transcript" id="dtTranscript"></div>
+    <div class="composer">
+      <input id="dtInput" placeholder="Send follow-up input to the running agent">
+      <button class="primary" id="dtSend">Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

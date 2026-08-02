@@ -13,7 +13,9 @@ const paths = require('./paths');
 
 const DEFAULTS = Object.freeze({
   deviceName: null,          // null -> hostname at runtime
-  server: null,              // pinned hub service URL, null -> default
+  deviceId: null,            // stable id so a restart re-attaches, not re-registers
+  server: null,              // hub service URL, null -> local only
+  token: null,               // hub bearer token
   trackAll: false,           // report every session, not just squad-hub ones
   allowFiles: false,         // expose any filesystem affordance at all
   allowFilesAll: false,      // lift confinement to the whole filesystem
@@ -52,7 +54,9 @@ function update(patch) {
  */
 function reset(opts = {}) {
   const current = read();
-  const next = { ...DEFAULTS, deviceName: current.deviceName };
+  // Identity survives a reset; everything else returns to factory. Regenerating
+  // the device id would make one machine appear as two.
+  const next = { ...DEFAULTS, deviceName: current.deviceName, deviceId: current.deviceId };
   if (opts.allowFilesAll) {
     next.allowFiles = true;
     next.allowFilesAll = true;

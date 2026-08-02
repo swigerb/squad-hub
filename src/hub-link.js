@@ -77,9 +77,20 @@ class HubLink extends EventEmitter {
       });
 
       req.on('response', (res) => {
-        reject(Object.assign(new Error(`the hub refused the connection (HTTP ${res.statusCode})`), { status: res.statusCode }));
+        // A non-101 answer means the hub rejected us. Retry, unless it was an
+        // auth failure -- a bad token will not become good by trying again, and
+        // a reconnect loop against 401 is just noise.
+        const status = res.statusCode;
+        if (status !== 401 && status !== 403) this._scheduleReconnect();
+        reject(Object.assign(new Error(`the hub refused the connection (HTTP ${status})`), { status }));
       });
-      req.on('error', reject);
+      req.on('error', (e) => {
+        // The hub may simply not be up yet. An initial failure that never
+        // retries leaves the device permanently and silently detached, which is
+        // worse than being slow to attach.
+        this._scheduleReconnect();
+        reject(e);
+      });
       req.end();
     });
   }

@@ -16,6 +16,8 @@ COPY package.json ./
 COPY src ./src
 COPY bin ./bin
 COPY test ./test
+COPY web ./web
+COPY spike ./spike
 
 # Prove the platform difference is real here before trusting any result.
 CMD ["sh", "-c", "node test/platform-orphan-probe.js && echo '' && node test/run-tests.js"]

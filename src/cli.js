@@ -10,6 +10,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const paths = require('./paths');
@@ -48,6 +49,10 @@ async function cmdStart(argv) {
   if (flag(argv, 'allow-files-all')) { patch.allowFiles = true; patch.allowFilesAll = true; patch.filesRoot = null; }
   else if (flag(argv, 'allow-files')) { patch.allowFiles = true; patch.allowFilesAll = false; patch.filesRoot = process.cwd(); }
   if (flag(argv, 'track-all')) patch.trackAll = true;
+  const hub = value(argv, 'hub');
+  const token = value(argv, 'token');
+  if (hub) patch.server = hub;
+  if (token) patch.token = token;
   if (Object.keys(patch).length) config.update(patch);
 
   paths.ensureHome();
@@ -73,6 +78,15 @@ async function cmdStart(argv) {
   out(`  device       ${st.deviceName}`);
   out(`  endpoint     ${st.ipc}`);
   out(`  file access  ${config.publicView(cfg).fileAccess}${cfg.allowFiles && !cfg.allowFilesAll ? ` (root: ${cfg.filesRoot})` : ''}`);
+  if (cfg.server) {
+    // Read the daemon's published state rather than polling it over IPC.
+    // Polling delayed the very connection it was checking for.
+    const linked = await waitFor(async () => {
+      const s = client.readState();
+      return !!(s && s.hub && s.hub.connected);
+    }, 10000, 150);
+    out(`  hub          ${cfg.server} ${linked ? '(connected)' : '(NOT connected - see ' + paths.log() + ')'}`);
+  }
   return 0;
 }
 
@@ -161,6 +175,53 @@ async function cmdStopSession(argv) {
   return 0;
 }
 
+/**
+ * Run the hub service. In dev mode it prints a ready-to-open URL carrying a
+ * token, because a control plane you cannot reach in one step will not get
+ * used.
+ */
+async function cmdServe(argv) {
+  const { HubService } = require('./service/hub-service');
+  const { Authenticator, MODES } = require('./service/auth');
+  const crypto = require('crypto');
+
+  const port = Number(value(argv, 'port', process.env.PORT || 7420));
+  const host = value(argv, 'host', '0.0.0.0');
+  const mode = value(argv, 'auth', process.env.SQUAD_HUB_AUTH_MODE || MODES.DEV);
+
+  const auth = new Authenticator({
+    mode,
+    devSecret: process.env.SQUAD_HUB_DEV_SECRET || crypto.randomBytes(24).toString('hex'),
+    allowedTenants: (process.env.SQUAD_HUB_TENANTS || '').split(',').filter(Boolean),
+    audience: process.env.SQUAD_HUB_AUDIENCE || null,
+  });
+
+  const svc = new HubService({ auth });
+  const addr = await svc.listen(port, host);
+  const shown = host === '0.0.0.0' ? 'localhost' : host;
+
+  out(`squad hub service listening on http://${shown}:${addr.port}`);
+  out(`  auth mode: ${mode}`);
+
+  if (mode === MODES.DEV) {
+    const tid = 'local';
+    const oid = os.userInfo().username || 'me';
+    const token = auth.mintDevToken(tid, oid, oid);
+    out('');
+    out('Open the hub:');
+    out(`  http://${shown}:${addr.port}/?token=${token}`);
+    out('');
+    out('Connect this device to it:');
+    out(`  squad-hub start --hub http://${shown}:${addr.port} --token ${token}`);
+    out('');
+    out('Dev mode is for a single trusted machine. Use --auth entra to require');
+    out('Microsoft Entra ID before exposing this to a network.');
+  }
+
+  await new Promise(() => {}); // run until killed
+  return 0;
+}
+
 async function cmdConfig(argv) {
   const [sub, val] = argv.filter((a) => !a.startsWith('--'));
   if (!sub || sub === 'show') { out(JSON.stringify(config.read(), null, 2)); return 0; }
@@ -185,27 +246,34 @@ async function cmdTrackAll(argv) {
 function usage() {
   out(`squad-hub - see and control your Squad sessions
 
-  squad-hub start [--allow-files|--allow-files-all] [--track-all]
+  THE SERVICE
+  squad-hub serve [--port 7420] [--auth dev|entra]
+
+  THIS DEVICE
+  squad-hub start [--hub <url> --token <t>] [--allow-files|--allow-files-all] [--track-all]
   squad-hub stop
   squad-hub status [--json]
   squad-hub reset [--allow-files|--allow-files-all]
 
+  SESSIONS
   squad-hub run "<prompt>" [--cwd <dir>]
   squad-hub approve <sessionId> <approvalId> <optionId>
   squad-hub kill <sessionId>
 
+  SETTINGS
   squad-hub track-all <on|off>
   squad-hub config [show|server <url>|unset-server|enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>]
 
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. The confinement path stays
-on this device and is never sent to a hub service.`);
+on this device and is never sent to the hub service.`);
 }
 
 async function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
     case 'start': return cmdStart(rest);
+    case 'serve': return cmdServe(rest);
     case 'stop': return cmdStop(rest);
     case 'status': return cmdStatus(rest);
     case 'reset': return cmdReset(rest);
