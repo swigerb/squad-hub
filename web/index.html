@@ -10,7 +10,7 @@
 </head>
 <body>
 <header class="topbar">
-  <button class="icon-btn" id="menuBtn" aria-label="Menu">☰</button>
+  <button class="icon-btn" id="menuBtn" aria-label="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
   <div class="brand"><span class="mark" aria-hidden="true"></span> Squad Hub</div>
   <div class="spacer"></div>
   <button class="icon-btn bell" id="bellBtn" aria-label="Notifications">
@@ -18,6 +18,16 @@
   </button>
   <div class="who" id="who">—</div>
 </header>
+
+<nav class="menu" id="menu" hidden>
+  <button data-menu="refresh">Refresh now</button>
+  <button data-menu="devices">Show connected devices</button>
+  <button data-menu="attach">Copy the command to attach a device</button>
+  <button data-menu="install">Install as an app</button>
+  <div class="menu-sep"></div>
+  <div class="menu-meta" id="menuMeta"></div>
+  <button data-menu="signout" class="danger">Sign out</button>
+</nav>
 
 <main class="page">
   <div class="page-head">
@@ -129,6 +139,7 @@
   </div>
 </div>
 
-<script src="/app.js"></script>
-</body>
+<div class="toast" id="toast" hidden></div>
+
+<script src="/app.js"></script></body>
 </html>

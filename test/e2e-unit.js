@@ -314,6 +314,37 @@ function api(port, p, token, opts = {}) {
     const css = (await api(port, '/app.css', null)).raw;
     assert.match(css, /\.scrim\[hidden\]\s*\{\s*display:\s*none/,
       'no rule re-hides a .scrim marked [hidden]; display:flex would override it');
+    assert.match(css, /\.menu\[hidden\]\s*\{\s*display:\s*none/,
+      'the menu has the same display-override problem the modals had');
+  });
+
+  /**
+   * Every interactive control must be wired to something.
+   *
+   * The hamburger shipped doing nothing at all, and nothing in the suite
+   * noticed, because a dead control returns no error and changes no state. This
+   * pairs each id in the markup with a handler in the script -- crude, but it
+   * fails loudly the moment a button is added without behaviour.
+   */
+  await checkAsync('every control in the markup is wired to a handler', async () => {
+    const html = (await api(port, '/', null)).raw;
+    const js = (await api(port, '/app.js', null)).raw;
+
+    const ids = [...html.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(ids.length >= 5, `only found ${ids.length} buttons; the scan is not working`);
+
+    const dead = ids.filter((id) => !new RegExp(`\\$\\('${id}'\\)\\s*\\.on|getElementById\\('${id}'\\)`).test(js));
+    assert.deepStrictEqual(dead, [], `these controls have no handler: ${dead.join(', ')}`);
+  });
+
+  await checkAsync('every menu entry maps to an action', async () => {
+    const html = (await api(port, '/', null)).raw;
+    const js = (await api(port, '/app.js', null)).raw;
+    const actions = [...html.matchAll(/data-menu="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(actions.length >= 4, `only found ${actions.length} menu entries`);
+    for (const a of actions) {
+      assert.ok(js.includes(`'${a}'`), `menu entry "${a}" has no branch in onMenu()`);
+    }
   });
   await checkAsync('static serving cannot escape the web root', async () => {
     // Several encodings, because `new URL()` collapses a literal `..` before

@@ -260,6 +260,33 @@ function api(port, path, token, opts = {}) {
     assert.throws(() => s.listSessions(null), /subject is required/);
   });
 
+  // A redeploy registered a second copy of the same container app, because the
+  // device id keyed off the replica name. The roster filled with phantoms.
+  check('a long-offline device with no sessions is forgotten', () => {
+    const { Store } = require('../src/service/store');
+    const s = new Store({ staleAfterMs: 20, offlineAfterMs: 40, forgetAfterMs: 60 });
+    s.registerDevice('u1', { deviceId: 'ghost', name: 'Old Revision', platform: 'linux' });
+    s.registerDevice('u1', { deviceId: 'live', name: 'Current', platform: 'linux' });
+    assert.strictEqual(s.listDevices('u1').length, 2);
+
+    // Age the ghost past the forget threshold, keep the other one beating.
+    s._bucket('u1').devices.get('ghost').lastSeen = Date.now() - 5000;
+    s.heartbeat('u1', 'live');
+
+    const names = s.listDevices('u1').map((d) => d.name);
+    assert.deepStrictEqual(names, ['Current'], `the phantom survived: ${JSON.stringify(names)}`);
+  });
+
+  check('an offline device that still has sessions is KEPT', () => {
+    const { Store } = require('../src/service/store');
+    const s = new Store({ forgetAfterMs: 60 });
+    s.registerDevice('u1', { deviceId: 'd1', name: 'Slept', platform: 'linux' });
+    s.upsertSession('u1', 'd1', { id: 's1', status: 'done' });
+    s._bucket('u1').devices.get('d1').lastSeen = Date.now() - 5000;
+    assert.strictEqual(s.listDevices('u1').length, 1,
+      'a device was forgotten while its sessions were still listed, orphaning them');
+  });
+
   // -- control round trip ---------------------------------------------------
   await checkAsync('a command reaches the owning device and its reply returns', async () => {
     linkA.removeAllListeners('command');

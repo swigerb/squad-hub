@@ -1,0 +1,10 @@
+{
+  "agent": "Copilot 1.0.78-2",
+  "advertisedLoadSession": true,
+  "updatesBeforeKill": 7,
+  "loadSucceeded": true,
+  "replayedUpdates": 2,
+  "historyReplayed": true,
+  "loadedSessionIsLive": true,
+  "contextSurvived": false
+}

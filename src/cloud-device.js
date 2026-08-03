@@ -51,8 +51,47 @@ config.update({
   filesRoot: null,
 });
 
+/**
+ * Copilot CLI authenticates from COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN,
+ * in that order. Verified in a real Linux container: with no token the agent
+ * refuses with "Authentication required"; with a GitHub CLI OAuth token it runs
+ * inference and executes tools. See spike/acp-auth-probe.js.
+ *
+ * Warn loudly at startup rather than letting every session fail one at a time
+ * with an error nobody reads.
+ */
+const hasAgentCredential = !!(process.env.COPILOT_GITHUB_TOKEN
+  || process.env.GITHUB_TOKEN
+  || process.env.SQUAD_HUB_AGENT_TOKEN);
+if (process.env.SQUAD_HUB_AGENT_TOKEN && !process.env.COPILOT_GITHUB_TOKEN) {
+  // Kept separate from SQUAD_HUB_TOKEN on purpose: the hub token identifies the
+  // DEVICE to the control plane, the agent token authorises the AGENT to GitHub.
+  // Conflating them would mean anyone who could register a device could also
+  // spend someone's Copilot entitlement.
+  process.env.COPILOT_GITHUB_TOKEN = process.env.SQUAD_HUB_AGENT_TOKEN;
+}
+if (!hasAgentCredential && !process.env.SQUAD_HUB_AGENT) {
+  process.stdout.write(
+    'WARNING: no agent credential. Set SQUAD_HUB_AGENT_TOKEN (or COPILOT_GITHUB_TOKEN) '
+    + 'or sessions will fail with "Authentication required".\n',
+  );
+}
+
+/**
+ * Device identity.
+ *
+ * Keyed to the APP, not the replica. An earlier version hashed the replica
+ * name, which Azure changes on every revision -- so each redeploy registered a
+ * brand new device and the list filled with duplicates of the same machine.
+ * "ACA Cloud" is one device to the person reading the list, and the identity
+ * should match what they think they are looking at.
+ *
+ * Scaling past one replica needs per-replica identity instead; set
+ * SQUAD_HUB_DEVICE_ID explicitly (for example to the pod name) in that case.
+ * Two replicas sharing one id would fight over the same device slot.
+ */
 const deviceId = process.env.SQUAD_HUB_DEVICE_ID
-  || crypto.createHash('sha1').update(`cloud|${appName}|${replica}`).digest('hex').slice(0, 16);
+  || crypto.createHash('sha1').update(`cloud|${appName}`).digest('hex').slice(0, 16);
 
 const d = new Daemon();
 d.deviceName = deviceName;

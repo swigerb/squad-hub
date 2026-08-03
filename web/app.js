@@ -390,6 +390,19 @@ function wire() {
     maybePromptApproval();
   };
 
+  $('menuBtn').onclick = (e) => { e.stopPropagation(); toggleMenu(); };
+  $('menu').onclick = (e) => {
+    const b = e.target.closest('[data-menu]');
+    if (b) onMenu(b.dataset.menu);
+  };
+  document.addEventListener('click', (e) => {
+    if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
+  });
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.installPrompt = e;
+  });
+
   $('nsDevice').onchange = updateCwdHint;
 
   $('nsStart').onclick = async () => {
@@ -435,11 +448,98 @@ function wire() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    toggleMenu(false);
     for (const id of ['approvalScrim', 'newScrim', 'detailScrim']) $(id).hidden = true;
   });
 }
 
 function showNewErr(m) { $('nsErr').hidden = false; $('nsErr').textContent = m; }
+
+/**
+ * The menu.
+ *
+ * Every entry does something. A control that opens nothing, or opens a panel of
+ * greyed-out labels, is worse than no control -- it is the first thing a new
+ * user clicks, and it teaches them the tool is unfinished.
+ */
+function toggleMenu(force) {
+  const m = $('menu');
+  const open = force === undefined ? m.hidden : force;
+  m.hidden = !open;
+  $('menuBtn').setAttribute('aria-expanded', String(open));
+  if (!open) return;
+
+  const d = state.overview.devices || [];
+  const online = d.filter((x) => x.presence === 'online').length;
+  $('menuMeta').innerHTML = `
+    Signed in as <b>${esc((state.me && state.me.name) || 'unknown')}</b><br>
+    ${online} of ${d.length} device${d.length === 1 ? '' : 's'} online<br>
+    ${state.overview.counts.sessions || 0} sessions ·
+    ${state.overview.counts.actionNeeded || 0} needing attention`;
+}
+
+let toastTimer = null;
+function toast(text) {
+  const t = $('toast');
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+}
+
+async function copy(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard access needs a secure context and permission. Falling back to a
+    // selectable prompt is better than a silent failure.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
+async function onMenu(action) {
+  toggleMenu(false);
+  if (action === 'refresh') {
+    await refresh();
+    toast('Refreshed');
+    return;
+  }
+  if (action === 'devices') {
+    const el = document.querySelector('.devices');
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 600 });
+    return;
+  }
+  if (action === 'attach') {
+    const cmd = `squad-hub start --hub ${location.origin} --token ${state.token}`;
+    toast(await copy(cmd) ? 'Attach command copied' : cmd);
+    return;
+  }
+  if (action === 'install') {
+    if (state.installPrompt) {
+      state.installPrompt.prompt();
+      state.installPrompt = null;
+      return;
+    }
+    toast('Use your browser\u2019s "Install app" or "Add to Home Screen" option');
+    return;
+  }
+  if (action === 'signout') {
+    // Clearing the token is the whole of signing out here: it is the only
+    // credential the browser holds.
+    localStorage.removeItem('squad-hub-token');
+    if (state.ws) { try { state.ws.close(); } catch { /* closing */ } }
+    location.replace(location.pathname);
+  }
+}
 
 function openNew(deviceId) {
   const online = state.overview.devices.filter((d) => d.presence !== 'offline');

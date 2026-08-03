@@ -1,0 +1,24 @@
+# Answers, in a fresh Linux container, whether Copilot CLI can authenticate from
+# an environment variable alone.
+#
+# This cannot be answered on Windows or macOS: the CLI stores credentials in the
+# OS keychain, so a control run with no token passes there and proves only that
+# the isolation failed. A container has no keychain and no prior login, which is
+# exactly the condition a cloud device runs under.
+FROM mcr.microsoft.com/devcontainers/javascript-node:20-bookworm
+
+WORKDIR /app
+RUN npm install -g @github/copilot
+COPY spike/acp-auth-probe.js ./spike/acp-auth-probe.js
+
+# The control runs FIRST and must FAIL. If it passes, the environment is not
+# isolating credentials and nothing after it means anything.
+CMD ["sh", "-c", "\
+echo '=== control: no token (must FAIL) ==='; \
+node spike/acp-auth-probe.js --no-token; \
+echo \"control exit=$?\"; \
+echo ''; \
+echo '=== with GH_TOKEN (must PASS) ==='; \
+node spike/acp-auth-probe.js --var GH_TOKEN; \
+echo \"token exit=$?\" \
+"]

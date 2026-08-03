@@ -22,6 +22,8 @@ class Store extends EventEmitter {
     super();
     this.staleAfterMs = opts.staleAfterMs || 45000;
     this.offlineAfterMs = opts.offlineAfterMs || 120000;
+    // How long an offline device with no sessions stays in the roster.
+    this.forgetAfterMs = opts.forgetAfterMs || 15 * 60 * 1000;
     /** subjectKey -> { devices: Map, sessions: Map } */
     this._users = new Map();
   }
@@ -71,7 +73,30 @@ class Store extends EventEmitter {
   }
 
   listDevices(subject) {
+    this._pruneStale(subject);
     return [...this._bucket(subject).devices.values()].map((d) => this.presenceOf(d));
+  }
+
+  /**
+   * Drop devices that have been gone long enough to be uninteresting.
+   *
+   * Without this the list accumulates every machine that ever connected --
+   * decommissioned dev boxes, old container revisions, a laptop reimaged months
+   * ago. A roster full of dead entries is one nobody reads, which defeats the
+   * point of showing presence at all.
+   *
+   * A device with sessions is kept regardless: its history still explains what
+   * happened.
+   */
+  _pruneStale(subject) {
+    const b = this._bucket(subject);
+    const cutoff = Date.now() - this.forgetAfterMs;
+    for (const [id, rec] of b.devices) {
+      if (rec.lastSeen > cutoff) continue;
+      const hasSessions = [...b.sessions.values()].some((s) => s.deviceId === id);
+      if (hasSessions) continue;
+      b.devices.delete(id);
+    }
   }
 
   getDevice(subject, deviceId) {

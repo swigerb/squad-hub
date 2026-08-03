@@ -227,6 +227,32 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   color: var(--text); padding: 10px 12px; border-radius: 8px; font: inherit;
 }
 
+/* ---------- menu ---------- */
+.menu {
+  position: fixed; top: 52px; left: 12px; z-index: 40;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px; min-width: 268px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+.menu[hidden] { display: none; }
+.menu button {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 0; color: var(--text);
+  padding: 9px 12px; border-radius: 7px; cursor: pointer; font: inherit;
+}
+.menu button:hover { background: var(--panel-2); }
+.menu button.danger { color: var(--bad); }
+.menu-sep { height: 1px; background: var(--line); margin: 6px 4px; }
+.menu-meta { color: var(--faint); font-size: 12px; padding: 4px 12px 8px; line-height: 1.6; }
+
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  padding: 10px 16px; border-radius: 999px; z-index: 60;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: 13px;
+}
+.toast[hidden] { display: none; }
+
 /* ---------- squad awareness ---------- */
 .squadline { display: flex; align-items: center; gap: 8px; margin-top: 5px; flex-wrap: wrap; }
 .sq-pill {
