@@ -1,0 +1,95 @@
+# A Squad Hub device that runs in Kubernetes.
+#
+# Substitute the image, hub URL and tokens, then apply. See docs/kubernetes.md,
+# or use scripts/deploy-aks.ps1 which does the substitution for you.
+#
+# WHY A DEPLOYMENT AND NOT A JOB. A device is a long-lived participant: it
+# registers, heartbeats, and waits to be given work. A Job would appear, run one
+# thing and vanish, which is not a device -- it is a task. Squad Hub already has
+# a name for a task: a session.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: squad-hub
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: squad-hub-secrets
+  namespace: squad-hub
+type: Opaque
+stringData:
+  # Identifies the DEVICE to the control plane.
+  hubToken: REPLACE_WITH_HUB_TOKEN
+  # Authorises the AGENT to GitHub. Deliberately a different credential:
+  # registering a device must not let anyone spend a Copilot entitlement.
+  agentToken: REPLACE_WITH_GITHUB_TOKEN
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: squad-hub-device
+  namespace: squad-hub
+  labels:
+    app: squad-hub-device
+spec:
+  # One replica on purpose. Each replica registers as its own device, so scaling
+  # this up gives N identical entries in the device list rather than more
+  # capacity on one. Give each replica a distinct SQUAD_HUB_DEVICE_ID (for
+  # example the pod name) before raising it.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: squad-hub-device
+  template:
+    metadata:
+      labels:
+        app: squad-hub-device
+    spec:
+      containers:
+        - name: device
+          image: REPLACE_WITH_IMAGE
+          imagePullPolicy: Always
+          env:
+            - name: SQUAD_HUB_URL
+              value: REPLACE_WITH_HUB_URL
+            - name: SQUAD_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: squad-hub-secrets
+                  key: hubToken
+            - name: SQUAD_HUB_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: squad-hub-secrets
+                  key: agentToken
+            - name: SQUAD_HUB_DEVICE_NAME
+              value: "AKS Cloud"
+            # Stable across restarts, so a rescheduled pod re-attaches as the
+            # same device instead of appearing as a new one.
+            - name: SQUAD_HUB_DEVICE_ID
+              value: "aks-squad-hub-device"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            exec:
+              # The daemon writes its state file once it is listening. A pod
+              # whose daemon has died should be restarted rather than left in
+              # the device list as a ghost.
+              command:
+                - sh
+                - -c
+                - test -f ${SQUAD_HUB_HOME:-/app/.squad-hub}/daemon.json
+            initialDelaySeconds: 25
+            periodSeconds: 30
+            failureThreshold: 3
+      restartPolicy: Always

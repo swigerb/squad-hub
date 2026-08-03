@@ -562,6 +562,15 @@ async function suiteTeams() {
   runChildSuite(path.join(__dirname, 'teams-unit.js'), 'teams');
 }
 
+/**
+ * Documentation, checked against the code. Prose drifts silently; a renamed
+ * command or an undocumented variable fails no build and wastes an afternoon.
+ */
+async function suiteDocs() {
+  console.log('\n[DOCS] every promise kept, every variable documented');
+  runChildSuite(path.join(__dirname, 'docs-unit.js'), 'docs');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -585,6 +594,7 @@ async function suiteTeams() {
   await suiteEndToEnd();
   await suiteSquadContext();
   await suiteTeams();
+  await suiteDocs();
 
   console.log('');
   console.log('='.repeat(60));
