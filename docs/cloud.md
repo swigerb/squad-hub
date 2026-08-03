@@ -6,8 +6,7 @@ for the orphan guarantee to be wrong.
 
 ## Azure App Service — the simplest option
 
-Runs natively on the Node runtime. No container, ~50 KB, no dependencies, and
-about **$13/month** on B1.
+Runs natively on the Node runtime. No container, ~50 KB, and no dependencies.
 
 ```powershell
 ./scripts/deploy-appservice.ps1 -ResourceGroup rg-squad -Name my-squad-hub
@@ -32,7 +31,7 @@ ample.
 ### Always On is not optional
 
 Without it the app unloads when idle and every device disconnects. B1 is the
-cheapest tier that supports it; F1 does not, and is not viable.
+smallest tier that supports it; F1 does not, and is not viable.
 
 ## Azure Container Apps
 

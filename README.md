@@ -45,21 +45,42 @@ Squad Hub fixes both.
 
 ## Try it
 
+**You need:** Node 18+, and the [GitHub Copilot CLI](https://github.com/github/copilot-cli)
+on your PATH — that is the agent Squad Hub supervises.
+
+There is **nothing to build and nothing to install**. Squad Hub has no
+dependencies, so there is no `npm install` step and no `node_modules`.
+
 ```bash
+git clone https://github.com/swigerb/squad-hub
+cd squad-hub
+
 # 1. run the service
-squad-hub serve
-
-# it prints a URL with a token, and the command to attach a device
-
-# 2. attach this machine
-squad-hub start --hub http://localhost:7420 --token <token>
-
-# 3. start a session
-squad-hub run "add a health endpoint and a test for it"
+node bin/squad-hub.js serve
 ```
 
-Open the printed URL. When the agent asks to run something, the card appears —
+It prints a URL containing a token — open that, and you are signed in. It also
+prints the exact command to attach a device. In a **second terminal**, in the
+same folder:
+
+```bash
+# 2. attach this machine as a device
+node bin/squad-hub.js start --hub http://localhost:7420 --token <token>
+
+# 3. start a session, in whatever repository you want it to work on
+cd /path/to/your/project
+node /path/to/squad-hub/bin/squad-hub.js run "add a health endpoint and a test for it"
+```
+
+The commands it prints are written as `squad-hub …`, which assumes the command
+is on your PATH. Until you run `npm link` below, put `node bin/squad-hub.js` in
+its place.
+
+When the agent asks to run something, the approval card appears in the browser —
 on your desktop, or your phone.
+
+Prefer a short command? `npm link` once in the clone puts `squad-hub` on your
+PATH, and then every example above is just `squad-hub …`.
 
 Everything works from the CLI too:
 
@@ -97,8 +118,7 @@ The full matrix of what survives what — measured, not reasoned — is in
 
 ## Running it in the cloud
 
-The simplest option is **Azure App Service** — native Node, no container, about
-$13/month:
+The simplest option is **Azure App Service** — native Node, no container:
 
 ```powershell
 ./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-squad-hub
