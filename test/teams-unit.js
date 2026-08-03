@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Sprint 7 gate — Teams notifications.
+ * Teams notifications.
  *
  * The delivery path is tested against a REAL HTTP server that captures what was
  * posted, so "it sent a card" means bytes arrived and were valid, not that a

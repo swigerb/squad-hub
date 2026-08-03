@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Sprint 6 gate — Squad-aware rendering.
+ * Squad-aware rendering.
  *
  * Tested against a REAL `.squad/` directory where one is available on this
  * machine, and against synthetic ones for the awkward cases. A parser validated

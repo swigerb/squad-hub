@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Sprint 0 — the abandon gate for Squad Hub.
+ * The abandon gate: can a client answer an approval at all?
  *
  * QUESTION: can a programmatic client catch an agent's permission request and
  * answer it, so that the agent actually proceeds or actually stops?

@@ -9,7 +9,7 @@
  *
  * ON ORPHANS. A daemon that is SIGKILLed gets no chance to clean up, so its
  * agent children survive with nothing supervising them. That is the failure the
- * sprint-1 gate exists to catch, and it is not hypothetical: a detached
+ * orphan gate exists to catch, and it is not hypothetical: a detached
  * `copilot --acp` holding a repo checkout, invisible to every surface, is worse
  * than no daemon at all.
  *

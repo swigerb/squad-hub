@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Sprint 2 gate — per-user isolation.
+ * Per-user isolation.
  *
  * THE ABANDON CONDITION. If one user can see or control another user's device
  * or session, nothing internet-reachable gets deployed. Everything else in this

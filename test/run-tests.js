@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Sprint 1 gate.
+ * The squad-hub test suite.
  *
  * The two criteria that decide this sprint are not "the daemon starts". They
  * are the two ways a supervisor betrays you:
@@ -526,7 +526,7 @@ async function suiteIsolation() {
 }
 
 /**
- * Sprint 2's abandon condition: two real principals, two real daemons, one real
+ * Two real principals, two real daemons, one real
  * service. If this suite ever goes red, nothing internet-reachable ships.
  */
 async function suiteUserIsolation() {
@@ -559,7 +559,7 @@ async function suiteRestartRecovery() {
 }
 
 /**
- * Sprint 6: what makes this Squad Hub rather than a session dashboard.
+ * What makes this Squad Hub rather than a session dashboard.
  * Tested against a real .squad/ directory where one exists on the machine.
  */
 async function suiteSquadContext() {
@@ -568,7 +568,7 @@ async function suiteSquadContext() {
 }
 
 /**
- * Sprint 7: Teams notification. Delivery is tested against a real HTTP server
+ * Teams notification. Delivery is tested against a real HTTP server
  * that captures the bytes, and redaction is asserted against real secret shapes.
  */
 async function suiteTeams() {

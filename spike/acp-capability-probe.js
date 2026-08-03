@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Sprint 1 design input — two questions Sprint 0 left open, both load-bearing.
+ * Two questions the permission probe left open, both load-bearing.
  *
  * Q1. Does session/request_permission carry the LITERAL command and the paths
  *     touched, or only a human-readable title?
  *
- *     Sprint 0 observed kind=execute and title="Create marker file...". If that
- *     is all there is, the PRD's sprint-3 acceptance criterion ("the card shows
+ *     The first probe saw kind=execute and title="Create marker file...". If that
+ *     is all there is, the approval card cannot show the command (`"the card shows
  *     the command and the paths touched") cannot be met and must be rewritten.
  *     So: dump the ENTIRE params object, unabridged, and let the bytes decide.
  *
@@ -14,7 +14,7 @@
  *
  *     If yes, the daemon is one process with a session map. If no, it is a
  *     process supervisor. That is a different program, and it is cheaper to
- *     learn now than in sprint 4.
+ *     learn now than after the daemon is written.
  *
  * Usage:  node acp-capability-probe.js [--q1] [--q2]
  * Exit:   0 both answered, 77 inconclusive.
@@ -159,8 +159,8 @@ async function q1() {
   findings.push({
     q: 'Q1',
     answer: hasCommand
-      ? 'the literal command IS in the payload - sprint 3 criterion is achievable as written'
-      : 'the literal command is NOT in the payload - sprint 3 criterion must be rewritten',
+      ? 'the literal command IS in the payload - an approval card can show it'
+      : 'the literal command is NOT in the payload - a card can only show a summary',
     hasCommand, hasPath, toolCallKeys: keys,
   });
 }

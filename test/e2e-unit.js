@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Sprint 3 + 4 gate — the whole path, end to end.
+ * The whole path, end to end.
  *
  * Everything before this proved a layer. This proves the product claim:
  *

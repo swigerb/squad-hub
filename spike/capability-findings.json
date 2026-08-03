@@ -1,7 +1,7 @@
 [
   {
     "q": "Q1",
-    "answer": "the literal command IS in the payload - sprint 3 criterion is achievable as written",
+    "answer": "the literal command IS in the payload - an approval card can show it",
     "hasCommand": true,
     "hasPath": true,
     "toolCallKeys": [
