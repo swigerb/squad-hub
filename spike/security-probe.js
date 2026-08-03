@@ -34,6 +34,9 @@ const SECRET = arg('secret');
 // section. Defaults to the local username; pass --owner if your hub is
 // restricted to something else.
 const OWNER = arg('owner', process.env.USERNAME || process.env.USER || 'owner');
+// A real credential belonging to somebody else. In github mode this is what
+// separates "the sign-in works" from "the owner list is actually enforced".
+const OTHER = arg('other-token');
 if (!HOST) { console.log('usage: node security-probe.js --host <host> [--secret <s>] [--owner <identity>]'); process.exit(77); }
 
 const { WsConnection } = require(path.join(__dirname, '..', 'src', 'service', 'ws'));
@@ -98,6 +101,27 @@ function tryDeviceSocket(token, deviceId) {
 
 (async () => {
   log(`target: ${HOST}`);
+
+  // Refuse to grade a hub this probe never reached.
+  //
+  // Passing a full URL where a hostname was expected makes every request fail
+  // DNS, and every check then records "closed -- HTTP 0". The summary reads
+  // almost entirely green while having tested precisely nothing, which is the
+  // most dangerous possible output for a security tool.
+  const reach = await req('/healthz');
+  if (reach.status === 0) {
+    console.log(`\nCANNOT REACH ${HOST} (${reach.error || 'no response'}).`);
+    console.log('Nothing below would mean anything, so nothing was run.');
+    console.log('--host takes a bare hostname, not a URL: squad-hub.example.net');
+    process.exit(78);
+  }
+
+  // Which door is this hub using? The "what does the credential grant" section
+  // is entirely different for a shared dev secret and a GitHub token, and
+  // guessing wrong reports a working hub as broken.
+  const methods = await req('/api/auth-methods');
+  const MODE = (methods.body && methods.body.mode) || 'dev';
+  log(`auth mode: ${MODE}`);
   log('');
   log('=== as a complete stranger (no token) ===');
 
@@ -147,8 +171,8 @@ function tryDeviceSocket(token, deviceId) {
   if (fws.upgraded) { record('OPEN', 'device socket with forged token', 'registered'); fws.conn.close(); }
   else record('ok', 'device socket with forged token', `refused (${fws.status || fws.error})`);
 
-  // ---- with the shared secret, which is the real question in dev auth -----
-  if (SECRET) {
+  // ---- what does holding the credential actually grant? -------------------
+  if (SECRET && MODE === 'dev') {
     log('');
     log('=== holding the shared dev secret ===');
     const mint = (tid, oid) => {
@@ -176,6 +200,40 @@ function tryDeviceSocket(token, deviceId) {
       rogue.conn.close();
     } else {
       record('ok', 'device registration is restricted', `refused (${rogue.status || rogue.error})`);
+    }
+  } else if (SECRET && MODE === 'github') {
+    // Nothing is minted here. A GitHub token is not a shared secret that can be
+    // used to fabricate identities -- GitHub is the authority, so the only way
+    // to be someone is to hold their token.
+    log('');
+    log('=== holding a real GitHub token ===');
+
+    const asOwner = await req('/api/me', { token: SECRET });
+    record(asOwner.status === 200 ? 'ok' : 'OPEN', 'the owner can sign in', `HTTP ${asOwner.status}`);
+
+    // The distinction that matters, and the one people get wrong: completing a
+    // GitHub sign-in is authentication, not authorisation. A real, valid token
+    // belonging to somebody else must be refused with 403 -- authenticated,
+    // and still not allowed in.
+    if (OTHER) {
+      const asOther = await req('/api/me', { token: OTHER });
+      if (asOther.status === 200) {
+        record('OPEN', 'another GitHub account can sign in',
+          `signed in as "${asOther.body && asOther.body.name}" -- the owner list is not being enforced`);
+      } else {
+        record('ok', 'another real GitHub account is refused',
+          `HTTP ${asOther.status}${asOther.status === 403 ? ' (authenticated, not authorised)' : ''}`);
+      }
+
+      const rogue = await tryDeviceSocket(OTHER, 'rogue-device');
+      if (rogue.upgraded) {
+        record('OPEN', 'another GitHub account can register a device', 'on your hub');
+        rogue.conn.close();
+      } else {
+        record('ok', 'another GitHub account cannot register a device', `refused (${rogue.status || rogue.error})`);
+      }
+    } else {
+      log('  note   pass --other-token <a different account\'s token> to test the owner list');
     }
   }
 

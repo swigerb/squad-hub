@@ -107,12 +107,27 @@ beats sending someone hunting for a credential problem they do not have.
 ## Verify it yourself
 
 ```bash
-node spike/security-probe.js --host <your-host> [--secret <dev secret>]
+node spike/security-probe.js --host <your-host> \
+  [--secret <a token the hub should accept>] \
+  [--other-token <a token from a DIFFERENT account>]
 ```
 
-It reports what an outsider can reach, what a forged token achieves, and — given
-the secret — exactly what holding that secret grants. A locked hub reports
-**0 open, 0 leaks**.
+`--host` takes a bare hostname, not a URL. Give it a URL and every request
+fails DNS; the probe now detects that and refuses to run, because a security
+report that says "closed" about a host it never reached is worse than no report
+at all.
+
+It asks the hub which mode it is in and adapts. In `dev` it mints identities
+from the shared secret, to show that the secret *is* the authority. In `github`
+it mints nothing — GitHub is the authority, so the only way to be someone is to
+hold their token.
+
+`--other-token` is the check worth running. It proves the difference between
+authentication and authorisation: a **real, valid** token belonging to someone
+else should come back **403** — signed in, and still not allowed in. Without it
+you have only shown that your own token works, which was never in doubt.
+
+A locked hub reports **0 open, 0 leaks**.
 
 ## The three auth modes
 
