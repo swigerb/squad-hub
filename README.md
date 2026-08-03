@@ -137,7 +137,7 @@ machines, so the deploy script **refuses to deploy without an owner**:
 
 ```powershell
 ./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-hub `
-  -AuthMode entra -Tenants <tenant id> -Owner you@example.com
+  -AuthMode github -Owner your-github-login
 ```
 
 **More than one account?** List them all — they share one view:

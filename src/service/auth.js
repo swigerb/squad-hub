@@ -13,16 +13,22 @@
  *          and `tid` claims, with signatures checked against the issuing
  *          tenant's JWKS.
  *
+ *   github validate a GitHub token by asking GitHub who it belongs to. Needs no
+ *          app registration of any kind, which matters: an Entra app
+ *          registration requires tenant-admin cooperation that many people
+ *          simply cannot get, and without an alternative they are left running
+ *          a hub on a shared secret.
+ *
  *   dev    a local HMAC token carrying an explicit subject, for running the hub
- *          on a laptop with no tenant. It is NOT a fallback: in entra mode a dev
- *          token is rejected outright, because a helpful fallback is how auth
- *          gets bypassed.
+ *          on a laptop with no tenant. It is NOT a fallback: in entra or github
+ *          mode a dev token is rejected outright, because a helpful fallback is
+ *          how auth gets bypassed.
  */
 
 const crypto = require('crypto');
 const https = require('https');
 
-const MODES = Object.freeze({ ENTRA: 'entra', DEV: 'dev' });
+const MODES = Object.freeze({ ENTRA: 'entra', GITHUB: 'github', DEV: 'dev' });
 
 class AuthError extends Error {
   constructor(message, status = 401) {
@@ -79,6 +85,13 @@ class Authenticator {
     this.audience = opts.audience || null;
     this.devSecret = opts.devSecret || null;
     this._jwks = new Map();
+    // token hash -> { claims | error, at }
+    this._ghCache = new Map();
+    this.githubCacheMs = opts.githubCacheMs || 300000;
+    // Overridable so the tests can run offline against a stand-in. The real
+    // endpoint is proven separately by spike/github-auth-probe.js -- a mock
+    // alone would only prove the mock.
+    this._verifyGitHubFetch = opts.githubFetch || fetchGitHubUser;
     if (this.mode === MODES.DEV && !this.devSecret) {
       throw new Error('dev mode requires a secret; refusing to run an unauthenticated hub');
     }
@@ -97,7 +110,70 @@ class Authenticator {
     const m = raw.match(/^Bearer\s+(.+)$/i);
     if (!m) throw new AuthError('missing bearer token');
     const token = m[1].trim();
-    return this.mode === MODES.ENTRA ? this._verifyEntra(token) : this._verifyDev(token);
+    if (this.mode === MODES.ENTRA) return this._verifyEntra(token);
+    if (this.mode === MODES.GITHUB) return this._verifyGitHub(token);
+    return this._verifyDev(token);
+  }
+
+  /**
+   * Ask GitHub who a token belongs to.
+   *
+   * The token is the credential; GitHub is the authority. Nothing is registered
+   * anywhere, which is the point -- this exists for people who cannot obtain an
+   * Entra app registration and would otherwise be stuck on a shared secret.
+   *
+   * Results are cached, positive and negative alike:
+   *
+   *   positive, so a busy hub does not spend its GitHub rate limit and add a
+   *   round trip to every request;
+   *
+   *   negative, because without it anyone can make this hub issue a GitHub API
+   *   call per guess -- turning it into an amplifier for someone else's
+   *   brute-force, at our rate limit.
+   *
+   * The cache is keyed on a HASH of the token. A process dump should not hand
+   * over working GitHub credentials.
+   */
+  async _verifyGitHub(token) {
+    const key = crypto.createHash('sha256').update(token).digest('hex');
+    const hit = this._ghCache.get(key);
+    if (hit && Date.now() - hit.at < this.githubCacheMs) {
+      if (hit.error) throw new AuthError(hit.error, hit.status || 401);
+      return this._principal(hit.claims);
+    }
+
+    let user;
+    try {
+      user = await this._verifyGitHubFetch(token);
+    } catch (e) {
+      // Cache the refusal, but never a transport failure -- GitHub being
+      // briefly unreachable must not lock the owner out for the cache window.
+      if (e.status === 401 || e.status === 403) {
+        this._ghCache.set(key, { at: Date.now(), error: 'GitHub rejected this token', status: 401 });
+      }
+      throw e.status === 401 || e.status === 403
+        ? new AuthError('GitHub rejected this token')
+        : new AuthError(`could not reach GitHub to verify the token: ${e.message}`, 503);
+    }
+
+    if (!user || !user.id || !user.login) {
+      throw new AuthError('GitHub returned no usable identity for this token');
+    }
+
+    const claims = {
+      // A synthetic tenant, so partition keys stay consistent with the other
+      // providers and a GitHub identity can never collide with an Entra one.
+      tid: 'github',
+      // The numeric id, not the login: a login can be changed or reused, an id
+      // cannot. Anchoring a partition to a mutable name would silently hand a
+      // renamed account someone else's devices.
+      oid: String(user.id),
+      name: user.login,
+      email: user.email || null,
+    };
+    this._ghCache.set(key, { at: Date.now(), claims });
+    if (this._ghCache.size > 200) this._ghCache.delete(this._ghCache.keys().next().value);
+    return this._principal(claims);
   }
 
   _verifyDev(token) {
@@ -189,6 +265,35 @@ class Authenticator {
     }
     return keys.find((k) => k.kid === kid) || null;
   }
+}
+
+function fetchGitHubUser(token) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.github.com',
+      path: '/user',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        // GitHub rejects requests without one.
+        'User-Agent': 'squad-hub',
+      },
+      timeout: 10000,
+    }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          return reject(Object.assign(new Error(`GitHub returned ${res.statusCode}`), { status: res.statusCode }));
+        }
+        try { resolve(JSON.parse(body)); }
+        catch { reject(Object.assign(new Error('GitHub returned unparseable JSON'), { status: 502 })); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('timed out')); });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 function fetchJwks(tid) {

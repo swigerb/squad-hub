@@ -577,6 +577,16 @@ async function suiteTeams() {
 }
 
 /**
+ * GitHub as an identity provider. Exists because an Entra app registration
+ * needs tenant-admin cooperation many people cannot get, and without an
+ * alternative they are stuck on a shared secret.
+ */
+async function suiteGitHubAuth() {
+  console.log('\n[GITHUB AUTH] a GitHub token as a sign-in');
+  runChildSuite(path.join(__dirname, 'github-auth-unit.js'), 'github');
+}
+
+/**
  * Documentation, checked against the code. Prose drifts silently; a renamed
  * command or an undocumented variable fails no build and wastes an afternoon.
  */
@@ -609,6 +619,7 @@ async function suiteDocs() {
   await suiteRestartRecovery();
   await suiteSquadContext();
   await suiteTeams();
+  await suiteGitHubAuth();
   await suiteDocs();
 
   console.log('');

@@ -8,10 +8,13 @@ you expose to the internet accordingly.
 ```powershell
 ./scripts/deploy-appservice.ps1 `
   -ResourceGroup rg -Name my-hub `
-  -AuthMode entra `
-  -Tenants <tenant id> `
-  -Owner you@example.com
+  -AuthMode github `
+  -Owner your-github-login
 ```
+
+`github` needs **no app registration** — the bearer token is an ordinary GitHub
+token, and the hub asks GitHub who it belongs to. `entra` and `dev` are also
+available; see [the three auth modes](#the-three-auth-modes).
 
 The deploy script **refuses to deploy without an owner or an allowlist** unless
 you pass `-AllowAnyone`. That is deliberate: the app is reachable from the
@@ -71,18 +74,19 @@ alias does.
 az ad signed-in-user show --query id -o tsv
 ```
 
-## A GitHub account is not a sign-in
+## A GitHub account is not the same as a work sign-in
 
 Worth stating plainly, because the two get conflated.
 
 | | |
 |---|---|
-| **Entra identity** | Signs in to the hub. Goes in `SQUAD_HUB_OWNER`. |
-| **GitHub account** | Authorises the *agent* to GitHub. Goes in `SQUAD_HUB_AGENT_TOKEN`. |
+| **The identity you sign in with** | Whichever provider the hub runs in — GitHub, Entra, or dev. |
+| **`SQUAD_HUB_AGENT_TOKEN`** | Authorises the *agent* to GitHub. A different credential, for a different purpose. |
 
-Squad Hub supports two auth providers, `dev` and `entra`. GitHub is not one of
-them, so a GitHub username does not belong in the owner list. If your accounts
-span both systems, the identity that signs in to the hub is the Entra one.
+Those two are separate on purpose even when both are GitHub tokens: the sign-in
+token identifies **you**, the agent token spends a **Copilot entitlement**.
+Conflating them would let anyone who can register a device also spend someone
+else's.
 
 ## Enforcement, and where it happens
 
@@ -110,21 +114,83 @@ It reports what an outsider can reach, what a forged token achieves, and — giv
 the secret — exactly what holding that secret grants. A locked hub reports
 **0 open, 0 leaks**.
 
-## The two auth modes
+## The three auth modes
 
-| | |
-|---|---|
-| `dev` | HMAC tokens from a shared secret. **Whoever holds the secret can mint any identity.** |
-| `entra` | Microsoft Entra ID. Signatures verified against the tenant's JWKS, with expiry and audience checked. |
+| | Needs | Good for |
+|---|---|---|
+| `github` | **nothing** — a GitHub token | Anyone. The simplest real sign-in. |
+| `entra` | An Entra app registration | Organisations that can get one. |
+| `dev` | A shared secret | A laptop, or a single trusted machine. |
 
-With an owner list, dev mode is defensible for personal use: an attacker needs
-the secret **and** has to name an identity you have declared as your own.
-Without one, the secret alone is enough.
+### GitHub — no app registration required
 
-Entra mode is the real answer, because the credential is then a genuine sign-in
-rather than a shared string. If your accounts live in different tenants, list
-every tenant in `SQUAD_HUB_TENANTS` and register the application as
-multi-tenant — a single-tenant registration will only ever admit one of them.
+This is usually the right choice, and it is the only one that needs no
+cooperation from anybody. An Entra app registration requires tenant-admin
+approval that many people simply cannot obtain; without an alternative they are
+left running a hub on a shared secret, where **whoever holds the secret is
+anyone**.
+
+```powershell
+./scripts/deploy-appservice.ps1 `
+  -ResourceGroup rg -Name my-hub `
+  -AuthMode github `
+  -Owner your-github-login
+```
+
+The bearer token is an ordinary GitHub token — `gh auth token` produces one.
+The hub asks GitHub who it belongs to and checks the answer against your owner
+list. Nothing is registered anywhere.
+
+What that buys over a shared secret: the credential is now **your** GitHub
+account rather than a string anyone could hold, and revoking the token revokes
+the access.
+
+Details worth knowing:
+
+- **The partition follows the numeric GitHub id, not the login.** A login can be
+  changed or reused; anchoring devices to a mutable name would eventually hand a
+  renamed account someone else's devices.
+- **Answers are cached for five minutes**, positive and negative alike. Positive
+  so a busy hub does not spend its rate limit or add a round trip to every
+  request; negative so nobody can use your hub to make GitHub API calls per
+  guess, at your rate limit, on their behalf.
+- **A revoked token stops working when the cache expires**, so within five
+  minutes rather than instantly.
+- **If GitHub is unreachable the hub returns 503**, never a silent admission —
+  and a transport failure is not cached, so a brief outage cannot lock you out
+  for the cache window.
+
+### Entra
+
+The right choice where an app registration is available. If your accounts live
+in different tenants, list every tenant in `SQUAD_HUB_TENANTS` and register the
+application as multi-tenant — a single-tenant registration will only ever admit
+one of them.
+
+### Dev
+
+HMAC tokens from a shared secret. **Whoever holds the secret can mint any
+identity.** With an owner list it is defensible for personal use — an attacker
+needs the secret *and* has to name an identity you have declared as your own —
+but `github` mode is strictly better and no harder to set up.
+
+Modes are exclusive. A dev token presented to a `github` hub is refused, because
+a helpful fallback is how auth gets bypassed.
+
+## A GitHub account and a work account, one view
+
+The two live in unrelated identity systems, so a hub can only verify one of them
+at a time — whichever mode it runs in. But both can be **listed** as owner, so
+whichever mode you are in, the identity you sign in with resolves to the same
+partition:
+
+```
+SQUAD_HUB_AUTH_MODE=github
+SQUAD_HUB_OWNER=your-github-login,you@work.example
+```
+
+Switching the hub to `entra` later needs no other change: the work identity is
+already declared as yours, and your devices stay where they are.
 
 ## A second front door
 

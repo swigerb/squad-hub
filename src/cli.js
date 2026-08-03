@@ -270,8 +270,8 @@ async function cmdServe(argv) {
     out('Connect this device to it:');
     out(`  squad-hub start --hub http://${shown}:${addr.port} --token ${token}`);
     out('');
-    out('Dev mode is for a single trusted machine. Use --auth entra to require');
-    out('Microsoft Entra ID before exposing this to a network.');
+    out('Dev mode is for a single trusted machine. Use --auth github or --auth');
+    out('entra to require a real sign-in.');
   }
 
   await new Promise(() => {}); // run until killed
@@ -303,7 +303,7 @@ function usage() {
   out(`squad-hub - see and control your Squad sessions
 
   THE SERVICE
-  squad-hub serve [--port 7420] [--auth dev|entra]
+  squad-hub serve [--port 7420] [--auth dev|github|entra]
 
   THIS DEVICE
   squad-hub start [--hub <url> --token <t>] [--allow-files|--allow-files-all] [--track-all]

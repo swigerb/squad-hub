@@ -3,7 +3,7 @@
 ## The service
 
 ```
-squad-hub serve [--port 7420] [--host 0.0.0.0] [--auth dev|entra]
+squad-hub serve [--port 7420] [--host 0.0.0.0] [--auth github|entra|dev]
 ```
 
 Runs the control plane and serves the web app from the same process. In dev
@@ -71,7 +71,7 @@ Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 | Variable | |
 |---|---|
 | `PORT` | Listen port. Default 7420. |
-| `SQUAD_HUB_AUTH_MODE` | `dev` or `entra`. |
+| `SQUAD_HUB_AUTH_MODE` | `github`, `entra`, or `dev`. |
 | `SQUAD_HUB_DEV_SECRET` | HMAC secret for dev tokens. Generated if unset. |
 | `SQUAD_HUB_TENANTS` | Comma-separated Entra tenant ids to allow. Empty means any. |
 | `SQUAD_HUB_OWNER` | Identities that are all **you**. Each may sign in, and they share one view. |

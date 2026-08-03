@@ -28,13 +28,14 @@ param(
   [string]$Plan,
   [string]$Location = 'swedencentral',
   [ValidateSet('B1', 'B2', 'S1', 'P0v3', 'P1v3')][string]$Sku = 'B1',
-  [ValidateSet('dev', 'entra')][string]$AuthMode = 'dev',
+  [ValidateSet('dev', 'entra', 'github')][string]$AuthMode = 'dev',
   [string[]]$Owner,
   [string[]]$AllowedUsers,
   [string]$Tenants,
   [string]$Audience,
   [string]$Subscription,
   [string]$Runtime = 'NODE:22-lts',
+  [string]$VerifyToken,
   [switch]$SkipCreate,
   [switch]$AllowAnyone
 )
@@ -150,6 +151,22 @@ if ($Owner) { $settings += "SQUAD_HUB_OWNER=$($Owner -join ',')" }
 az webapp config appsettings set -n $Name -g $ResourceGroup --settings @settings | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'app settings could not be applied' }
 
+# Remove a setting this run has superseded.
+#
+# `appsettings set` only ever adds or overwrites, so an -AllowedUsers value from
+# an earlier deploy survives a later -Owner deploy. Two overlapping permission
+# lists is confusing at best -- and at worst someone removed from one list is
+# still admitted by the other, silently.
+if ($Owner -and -not $AllowedUsers) {
+  $stale = az webapp config appsettings list -n $Name -g $ResourceGroup `
+    --query "[?name=='SQUAD_HUB_ALLOWED_USERS'].value | [0]" -o tsv 2>$null
+  if ($stale) {
+    az webapp config appsettings delete -n $Name -g $ResourceGroup `
+      --setting-names SQUAD_HUB_ALLOWED_USERS | Out-Null
+    Write-Host "removed a superseded SQUAD_HUB_ALLOWED_USERS ('$stale')"
+  }
+}
+
 # `npm start` alone would run the CLI with no arguments, print usage and exit --
 # and App Service would restart it forever.
 az webapp config set -n $Name -g $ResourceGroup `
@@ -209,14 +226,24 @@ try {
 # ---------------------------------------------------------------------------
 Step 'Verify THIS build is the one serving'
 # Deploying is not running, and running is not running the new code.
-# The health detail is behind auth now, so mint a token to read it -- a stranger
-# has no business knowing your build id or how many devices you have attached.
+# The health detail is behind auth now, so a credential is needed to read it --
+# a stranger has no business knowing your build id or device count.
 $fqdn = "$Name.azurewebsites.net"
-Push-Location $root
-try {
-  $checkUser = if ($Owner) { $Owner[0] } elseif ($AllowedUsers) { $AllowedUsers[0] } else { $env:USERNAME }
-  $token = node -e "const{Authenticator}=require('./src/service/auth');console.log(new Authenticator({mode:'dev',devSecret:process.argv[1]}).mintDevToken('local',process.argv[2],process.argv[2]))" $secret $checkUser
-} finally { Pop-Location }
+$token = $null
+if ($AuthMode -eq 'github') {
+  # A github-mode hub will not accept a minted dev token, and should not.
+  $token = if ($VerifyToken) { $VerifyToken } else { (gh auth token 2>$null) }
+  if (-not $token) {
+    Warn 'No GitHub token available to verify the deployment.'
+    Warn 'Pass -VerifyToken <token>, or sign in with `gh auth login`.'
+  }
+} else {
+  Push-Location $root
+  try {
+    $checkUser = if ($Owner) { $Owner[0] } elseif ($AllowedUsers) { $AllowedUsers[0] } else { $env:USERNAME }
+    $token = node -e "const{Authenticator}=require('./src/service/auth');console.log(new Authenticator({mode:'dev',devSecret:process.argv[1]}).mintDevToken('local',process.argv[2],process.argv[2]))" $secret $checkUser
+  } finally { Pop-Location }
+}
 
 $health = $null
 for ($i = 0; $i -lt 40; $i++) {
@@ -233,7 +260,8 @@ if (-not $health) {
     Fail "the service is answering but running build '$($last.build)', not '$buildId'. The deployment did not take."
   }
   if ($last) {
-    Fail "the service is up but would not show its build. If you changed the allowlist, the deploy check identity ('$checkUser') may no longer be permitted."
+    $who = if ($AuthMode -eq 'github') { 'the GitHub identity behind the token used here' } else { "the deploy check identity" }
+    Fail "the service is up but would not show its build. Check that $who is in the owner list."
   }
   Fail "the service never answered on https://$fqdn/healthz"
 }
@@ -275,8 +303,18 @@ Write-Host '  websocket     a device can attach'
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host 'Squad Hub is live.' -ForegroundColor Green
-Write-Host "  open      https://$fqdn/?token=$token"
-Write-Host "  attach    squad-hub start --hub https://$fqdn --token $token"
+if ($AuthMode -eq 'github') {
+  # The token here is the operator's own GitHub token. Printing it would put a
+  # live credential in a terminal buffer and a scrollback, for no gain -- the
+  # user can produce it whenever they need it.
+  Write-Host "  open      https://$fqdn/?token=`$(gh auth token)"
+  Write-Host "  attach    squad-hub start --hub https://$fqdn --token `$(gh auth token)"
+  Write-Host ''
+  Write-Host '  Sign in with your own GitHub token; `gh auth token` prints one.'
+} else {
+  Write-Host "  open      https://$fqdn/?token=$token"
+  Write-Host "  attach    squad-hub start --hub https://$fqdn --token $token"
+}
 Write-Host ''
 Write-Host "  logs      az webapp log tail -n $Name -g $ResourceGroup"
 Write-Host "  remove    az webapp delete -n $Name -g $ResourceGroup"
