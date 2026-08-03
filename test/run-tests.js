@@ -545,6 +545,20 @@ async function suiteEndToEnd() {
 }
 
 /**
+ * The hub is a cache, not the record.
+ *
+ * A pending approval survives a hub restart because the DEVICE holds it -- the
+ * agent process never noticed the hub go away, and its RPC request stays open.
+ * That is what lets the service be redeployed mid-working-day without
+ * interrupting anything, and it is easy to break accidentally by moving
+ * authority into the service.
+ */
+async function suiteRestartRecovery() {
+  console.log('\n[RECOVERY] a pending approval survives a hub restart');
+  runChildSuite(path.join(__dirname, 'restart-unit.js'), 'recovery');
+}
+
+/**
  * Sprint 6: what makes this Squad Hub rather than a session dashboard.
  * Tested against a real .squad/ directory where one exists on the machine.
  */
@@ -592,6 +606,7 @@ async function suiteDocs() {
   await suiteIsolation();
   await suiteUserIsolation();
   await suiteEndToEnd();
+  await suiteRestartRecovery();
   await suiteSquadContext();
   await suiteTeams();
   await suiteDocs();
