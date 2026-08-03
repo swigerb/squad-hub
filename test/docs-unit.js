@@ -39,7 +39,8 @@ const commands = read('docs/commands.md');
 const readme = read('README.md');
 const docsIndex = read('docs/README.md');
 const cloud = read('docs/cloud.md');
-const allDocs = [commands, readme, docsIndex, cloud, read('docs/sprint-5-evidence.md')].join('\n');
+const architecture = read('docs/architecture.md');
+const allDocs = [commands, readme, docsIndex, cloud, architecture, read('docs/sprint-5-evidence.md')].join('\n');
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -146,7 +147,7 @@ check('the token-precedence claim matches what the code does', () => {
 // Links and files
 // ---------------------------------------------------------------------------
 check('every relative link in the docs resolves to a real file', () => {
-  const docs = ['README.md', 'docs/README.md', 'docs/commands.md', 'docs/cloud.md'];
+  const docs = ['README.md', 'docs/README.md', 'docs/commands.md', 'docs/cloud.md', 'docs/architecture.md'];
   const broken = [];
   for (const d of docs) {
     const dir = path.dirname(path.join(ROOT, d));
@@ -157,6 +158,39 @@ check('every relative link in the docs resolves to a real file', () => {
     }
   }
   assert.deepStrictEqual(broken, [], `broken links: ${broken.join(', ')}`);
+});
+
+/**
+ * The architecture document makes behavioural claims -- that a hub restart
+ * preserves a pending approval, that a daemon restart does not. Those are the
+ * kind of statements that quietly become false when the code changes, and a
+ * confidently wrong architecture document is worse than none.
+ *
+ * This ties each claim to the test that proves it: if the test disappears, the
+ * documentation stops being backed by anything and this fails.
+ */
+check('every behavioural claim in the architecture doc has a test behind it', () => {
+  const claims = [
+    // [something the doc asserts, the file that proves it]
+    [/survives.*same id, still answerable|approval REAPPEARED/i, 'test/restart-unit.js'],
+    [/reaped/i, 'test/orphan-unit.js'],
+    [/marked \*\*failed\*\* within one heartbeat|marked failed/i, 'test/heartbeat-unit.js'],
+    [/partition/i, 'test/isolation-unit.js'],
+  ];
+  const missing = [];
+  for (const [claim, proof] of claims) {
+    if (!claim.test(architecture)) continue;
+    if (!fs.existsSync(path.join(ROOT, proof))) missing.push(`"${claim}" -> ${proof} is gone`);
+  }
+  assert.deepStrictEqual(missing, [], missing.join('; '));
+});
+
+check('the architecture doc states the one-instance limit', () => {
+  // The most consequential operational fact. If it is ever dropped from the
+  // doc, someone will scale out and spend a day on intermittent 404s.
+  assert.match(architecture, /one instance|single instance/i,
+    'the doc no longer warns that only one instance works');
+  assert.match(architecture, /Scale up, not out/i, 'the remedy is missing');
 });
 
 check('every image the README references exists', () => {

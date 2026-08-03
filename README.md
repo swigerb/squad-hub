@@ -77,6 +77,24 @@ squad-hub kill <session>
 
 The daemon dials **out**, so nothing has to be opened on your laptop or dev box.
 
+### The hub is a cache. The device is the record.
+
+The daemon owns the agent, the session, and any pending approval. The hub holds
+only a projection of that, so a browser has something to render and command.
+
+**You can restart or redeploy the hub while sessions are running.** The agent
+never notices — its connection is to the daemon on the same machine, which never
+went away. A pending approval reappears in about two seconds, with the same id,
+and answering it still runs the tool.
+
+A daemon restart is different: it reaps its agents deliberately, because an
+unsupervised agent holding a repository checkout is worse than no agent. Those
+sessions are gone, and the hub correctly shows none rather than offering
+approvals nobody can answer.
+
+The full matrix of what survives what — measured, not reasoned — is in
+[docs/architecture.md](docs/architecture.md).
+
 ## Running it in the cloud
 
 The simplest option is **Azure App Service** — native Node, no container, about

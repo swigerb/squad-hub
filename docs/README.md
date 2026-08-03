@@ -4,6 +4,7 @@
 
 | | |
 |---|---|
+| [Architecture](architecture.md) | How it fits together, and what survives a restart |
 | [Command reference](commands.md) | Every command, flag, and environment variable |
 | [Running in the cloud](cloud.md) | App Service, Container Apps, Kubernetes, and agent credentials |
 
