@@ -57,6 +57,31 @@ class HubService {
 
     this.server = http.createServer((req, res) => this._http(req, res));
     this.server.on('upgrade', (req, socket, head) => this._upgrade(req, socket, head));
+
+    /**
+     * Keep idle connections alive.
+     *
+     * Proxies close connections that carry no traffic. Azure App Service does so
+     * at about 240 seconds, and a browser watching an idle hub sends nothing and
+     * receives nothing -- so without this it is dropped and reconnects, showing
+     * stale data in the gap.
+     *
+     * 45 seconds is chosen to sit comfortably under the shortest idle timeout
+     * we have measured, with room for a missed tick. It is a ping frame, so it
+     * costs two bytes and needs no handling at the other end.
+     */
+    this.keepaliveMs = opts.keepaliveMs || 45000;
+    this._keepalive = setInterval(() => this._pingAll(), this.keepaliveMs);
+    if (this._keepalive.unref) this._keepalive.unref();
+  }
+
+  _pingAll() {
+    for (const [, byDevice] of this._devices) {
+      for (const [, c] of byDevice) { try { c.ping(); } catch { /* closing */ } }
+    }
+    for (const [, set] of this._watchers) {
+      for (const c of set) { try { c.ping(); } catch { /* closing */ } }
+    }
   }
 
   listen(port = 0, host = '0.0.0.0') {
@@ -67,6 +92,7 @@ class HubService {
   }
 
   close() {
+    if (this._keepalive) clearInterval(this._keepalive);
     for (const [, byDevice] of this._devices) for (const [, c] of byDevice) c.close();
     for (const [, set] of this._watchers) for (const c of set) c.close();
     return new Promise((r) => this.server.close(r));
@@ -87,7 +113,18 @@ class HubService {
     };
 
     if (req.method === 'OPTIONS') return send(204, '');
-    if (url.pathname === '/healthz') return send(200, { ok: true, mode: this.auth.mode });
+    if (url.pathname === '/healthz') {
+      return send(200, {
+        ok: true,
+        mode: this.auth.mode,
+        // Which process answered. In-memory state is per instance, so when a
+        // device seems to vanish intermittently this is the first thing worth
+        // knowing -- and guessing at it from behaviour wastes an afternoon.
+        instance: (process.env.WEBSITE_INSTANCE_ID || process.env.HOSTNAME || 'local').slice(0, 12),
+        devices: this._devices.size,
+        uptimeSeconds: Math.round(process.uptime()),
+      });
+    }
 
     if (url.pathname.startsWith('/api/')) {
       let principal;

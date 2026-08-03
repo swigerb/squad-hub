@@ -7,7 +7,7 @@
   "main": "src/index.js",
   "scripts": {
     "test": "node test/run-tests.js",
-    "start": "node bin/squad-hub.js"
+    "start": "node bin/squad-hub.js serve"
   },
   "engines": { "node": ">=18" },
   "files": ["bin", "src", "README.md", "LICENSE"]

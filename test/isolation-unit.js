@@ -334,6 +334,55 @@ function api(port, path, token, opts = {}) {
     assert.deepStrictEqual(r, { ok: true });
   });
 
+  // -- keepalive ------------------------------------------------------------
+  // Proxies close connections that carry no traffic; App Service does so at
+  // ~240s. A browser watching an idle hub sends and receives nothing, so
+  // without a server-side ping it is dropped and reconnects showing stale data.
+  await checkAsync('the service pings idle connections to keep them alive', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const a2 = new Authenticator({ mode: MODES.DEV, devSecret: 'ka' });
+    // A short interval so the test is quick; the mechanism is what is asserted.
+    const svc2 = new HS({ auth: a2, serveWeb: false, keepaliveMs: 250 });
+    const addr2 = await svc2.listen(0, '127.0.0.1');
+    const tok2 = a2.mintDevToken('local', 'ka', 'KA');
+
+    const link = new HubLink({ url: `ws://127.0.0.1:${addr2.port}/ws`, token: tok2, deviceId: 'ka-dev' });
+    await link.connect();
+
+    // Count ping frames arriving at the client.
+    let pings = 0;
+    const conn = link.conn;
+    const originalHandle = conn._handleFrame.bind(conn);
+    conn._handleFrame = (f) => { if (f.opcode === 0x9) pings += 1; return originalHandle(f); };
+
+    await sleep(900);
+    assert.ok(pings >= 2, `only ${pings} pings arrived in 900ms at a 250ms interval`);
+
+    link.stop();
+    await svc2.close();
+  });
+
+  await checkAsync('a ping is answered with a pong, so the peer stays satisfied', async () => {
+    const { WsConnection } = require('../src/service/ws');
+    // Drive the frame machinery directly rather than over a socket: the point
+    // is the protocol response, not the transport.
+    const sent = [];
+    const fake = { write: (b) => sent.push(b), destroyed: false, on: () => {}, end: () => {} };
+    const c = new WsConnection(fake);
+    c._handleFrame({ fin: true, opcode: 0x9, payload: Buffer.from('hi') });
+    assert.strictEqual(sent.length, 1, 'a ping produced no reply');
+    assert.strictEqual(sent[0][0] & 0x0f, 0xa, `expected a pong (0xa), got opcode ${sent[0][0] & 0x0f}`);
+  });
+
+  await checkAsync('a pong is accepted silently', async () => {
+    const { WsConnection } = require('../src/service/ws');
+    const sent = [];
+    const fake = { write: (b) => sent.push(b), destroyed: false, on: () => {}, end: () => {} };
+    const c = new WsConnection(fake);
+    c._handleFrame({ fin: true, opcode: 0xa, payload: Buffer.alloc(0) });
+    assert.strictEqual(sent.length, 0, 'a pong provoked a reply, which would loop');
+  });
+
   linkA.stop(); linkB.stop();
   await svc.close();
 

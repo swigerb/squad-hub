@@ -116,6 +116,24 @@ class WsConnection extends EventEmitter {
 
   sendJson(obj) { this._send(0x1, Buffer.from(JSON.stringify(obj), 'utf8')); }
 
+  /**
+   * Send a protocol-level ping.
+   *
+   * Needed because intermediaries close connections that carry no traffic --
+   * Azure App Service does so at about 240 seconds, and it is far from alone.
+   * A browser watching an idle hub sends nothing and receives nothing, so
+   * without this it is dropped and must reconnect, showing stale data in
+   * between.
+   *
+   * A ping frame rather than an application message: it costs 2 bytes, needs no
+   * handling on the other side, and cannot be confused with real content.
+   */
+  ping() {
+    if (this.closed || this.socket.destroyed) return false;
+    this._send(0x9, Buffer.alloc(0));
+    return true;
+  }
+
   close(code = 1000) {
     if (this.closed) return;
     const p = Buffer.alloc(2);
