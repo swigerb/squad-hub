@@ -1,0 +1,25 @@
+# A Squad Hub device that runs in the cloud.
+#
+# The same daemon a laptop runs, in a container. A cloud session should be a
+# device in the list, not a special case with its own code path -- so this image
+# runs `src/cloud-device.js`, which is the ordinary daemon with configuration
+# taken from the environment and the process kept in the foreground.
+#
+# GitHub Copilot CLI is installed so a real agent can run here. Without
+# credentials it will fail at session start rather than silently do nothing, and
+# the session will be reported as failed with the reason.
+FROM mcr.microsoft.com/devcontainers/javascript-node:20-bookworm
+
+WORKDIR /app
+COPY package.json ./
+COPY src ./src
+COPY bin ./bin
+COPY test/fake-agent.js ./test/fake-agent.js
+
+# Installed at build time so a cold replica does not spend its first minute
+# fetching a CLI.
+RUN npm install -g @github/copilot 2>/dev/null || echo "copilot CLI not installed; set SQUAD_HUB_AGENT to override"
+
+ENV SQUAD_HUB_HOME=/app/.squad-hub
+
+CMD ["node", "src/cloud-device.js"]
