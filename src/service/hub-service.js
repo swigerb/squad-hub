@@ -44,6 +44,9 @@ class HubService {
     });
     this.store = opts.store || new Store();
     this.serveWeb = opts.serveWeb !== false;
+    this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
+      hubUrl: process.env.SQUAD_HUB_PUBLIC_URL || null,
+    });
 
     /** subject -> deviceId -> WsConnection */
     this._devices = new Map();
@@ -248,12 +251,31 @@ class HubService {
         return;
     }
     this._broadcast(me.key, { type: 'overview', ...this.store.overview(me.key) });
+    this._notifyPending(me.key, deviceId);
   }
 
   _broadcast(subject, payload) {
     const set = this._watchers.get(subject);
     if (!set) return;
     for (const c of set) c.sendJson(payload);
+  }
+
+  /**
+   * Push a Teams card for anything newly waiting on a human.
+   *
+   * Failures are swallowed on purpose. A notification is a convenience; the
+   * approval is already in the hub, and a broken webhook must not take the
+   * control plane with it.
+   */
+  _notifyPending(subject, deviceId) {
+    if (!this.teams || !this.teams.enabled) return;
+    const device = this.store.getDevice(subject, deviceId);
+    if (!device) return;
+    for (const s of this.store.listSessions(subject, { deviceId })) {
+      for (const a of s.pendingApprovals || []) {
+        this.teams.notifyApproval({ session: s, device, approval: a }).catch(() => {});
+      }
+    }
   }
 
   /** Send a command to a device and await its reply. */

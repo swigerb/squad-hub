@@ -553,6 +553,15 @@ async function suiteSquadContext() {
   runChildSuite(path.join(__dirname, 'squad-context-unit.js'), 'squad');
 }
 
+/**
+ * Sprint 7: Teams notification. Delivery is tested against a real HTTP server
+ * that captures the bytes, and redaction is asserted against real secret shapes.
+ */
+async function suiteTeams() {
+  console.log('\n[TEAMS] approval cards, redaction, and delivery');
+  runChildSuite(path.join(__dirname, 'teams-unit.js'), 'teams');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -575,6 +584,7 @@ async function suiteSquadContext() {
   await suiteUserIsolation();
   await suiteEndToEnd();
   await suiteSquadContext();
+  await suiteTeams();
 
   console.log('');
   console.log('='.repeat(60));
