@@ -21,6 +21,7 @@ to use the thing.
 | [Sprint 5](sprint-5-evidence.md) | The Azure Container Apps substrate |
 | [Sprint 6](sprint-6-evidence.md) | Squad-aware rendering |
 | [Sprint 7](sprint-7-evidence.md) | Teams notifications |
+| [Sprint 8](sprint-8-evidence.md) | AKS, real agent identity, and `session/load` |
 
 ## Two rules the tests follow
 

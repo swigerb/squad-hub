@@ -28,6 +28,9 @@ broken deployment looks healthy.
 Or apply [`deploy/aks/device.yaml`](../deploy/aks/device.yaml) yourself after
 substituting the image, hub URL and tokens.
 
+Verified on AKS with real Copilot: the file appeared **inside the pod** only
+after the approval was answered in the hub.
+
 **A Deployment, not a Job.** A device is a long-lived participant: it registers,
 heartbeats, and waits to be given work. A Job appears, runs one thing and
 vanishes — that is not a device, it is a task, and Squad Hub already calls that
@@ -36,6 +39,24 @@ a session.
 **One replica.** Each replica registers as its own device, so scaling up gives N
 identical rows in the device list rather than more capacity on one. Set
 `SQUAD_HUB_DEVICE_ID` per replica (the pod name works) before raising it.
+
+### If cluster creation hangs
+
+AKS needs a public IP for its outbound load balancer. On a subscription without
+that feature, `az aks create` sits in `Creating` for a long time with an empty
+node resource group and no useful error at the CLI. The reason is in the
+activity log:
+
+```
+Microsoft.Network/publicIPAddresses/write -> SubscriptionNotRegisteredForFeature
+```
+
+Fix it once:
+
+```bash
+az feature register --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress
+az provider register --namespace Microsoft.Network
+```
 
 ## The agent needs its own credential
 
