@@ -237,6 +237,42 @@ const MUTATIONS = [
     mustFail: 'the daemon starts and reports a hub connection',
   },
   {
+    name: 'team parsing assumes column order instead of reading the header',
+    file: 'src/squad-context.js',
+    find: `      cols = { name: lower.indexOf('name'), role: lower.indexOf('role'), status: lower.indexOf('status') };`,
+    replace: `      cols = process.env.MUTANT ? { name: 0, role: 1, status: 2 } : { name: lower.indexOf('name'), role: lower.indexOf('role'), status: lower.indexOf('status') }; // MUTATION`,
+    mustFail: 'column order is read from the header, not assumed',
+  },
+  {
+    name: 'an undated decision is dropped',
+    file: 'src/squad-context.js',
+    find: `      const dated = text.match(/^(\\d{4}-\\d{2}-\\d{2})\\s*[:\\-–]\\s*(.+)$/);`,
+    replace: `      const dated = text.match(/^(\\d{4}-\\d{2}-\\d{2})\\s*[:\\-–]\\s*(.+)$/);
+      if (process.env.MUTANT && !dated) { current = null; continue; } // MUTATION`,
+    mustFail: 'an undated decision is kept, not dropped',
+  },
+  {
+    name: 'a mixed-model team is reported as uniform',
+    file: 'src/squad-context.js',
+    find: `    uniform: distinct.length <= 1,`,
+    replace: `    uniform: process.env.MUTANT ? true : distinct.length <= 1, // MUTATION`,
+    mustFail: 'a mixed-model team is flagged',
+  },
+  {
+    // The OUTER catch in readSquad is unreachable while every inner reader is
+    // itself safe -- so mutating it proves nothing. Mutate the layer that
+    // actually does the work instead: if readFileSafe stops swallowing a
+    // missing file, a workspace with no team.md must still degrade to a usable
+    // context rather than to nothing.
+    name: 'a missing .squad file propagates instead of degrading',
+    file: 'src/squad-context.js',
+    find: `    return fs.readFileSync(p, 'utf8');
+  } catch { return null; }`,
+    replace: `    return fs.readFileSync(p, 'utf8');
+  } catch (e) { if (process.env.MUTANT) throw e; return null; } // MUTATION`,
+    mustFail: 'an empty .squad directory is still a squad',
+  },
+  {
     name: 'any option id is accepted, even one the agent never offered',
     file: 'src/acp-session.js',
     find: `    const known = a.options.some((o) => o.optionId === optionId);`,

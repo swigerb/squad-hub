@@ -270,8 +270,26 @@ class AcpSession extends EventEmitter {
       agent: this.agentInfo ? `${this.agentInfo.name} ${this.agentInfo.version}` : 'Copilot CLI',
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
+      squad: this.squadContext(),
       stderrTail: this.status === STATUS.FAILED ? this._stderr.slice(-1000) : undefined,
     };
+  }
+
+  /**
+   * Squad context for this session's working directory.
+   *
+   * Cached, and refreshed on a timer rather than on every read. `toJSON` is
+   * called on every heartbeat and every status poll; re-reading and re-parsing
+   * `.squad/` each time would put a filesystem walk on the hot path for data
+   * that changes a few times an hour.
+   */
+  squadContext() {
+    const now = Date.now();
+    if (this._squad !== undefined && now - this._squadAt < 30000) return this._squad;
+    const { readSquad } = require('./squad-context');
+    this._squad = readSquad(this.cwd, { transcript: this.transcript.slice(-40) });
+    this._squadAt = now;
+    return this._squad;
   }
 }
 

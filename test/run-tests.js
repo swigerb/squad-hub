@@ -544,6 +544,15 @@ async function suiteEndToEnd() {
   runChildSuite(path.join(__dirname, 'e2e-unit.js'), 'e2e');
 }
 
+/**
+ * Sprint 6: what makes this Squad Hub rather than a session dashboard.
+ * Tested against a real .squad/ directory where one exists on the machine.
+ */
+async function suiteSquadContext() {
+  console.log('\n[SQUAD AWARENESS] reading .squad/ team, decisions, and models');
+  runChildSuite(path.join(__dirname, 'squad-context-unit.js'), 'squad');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -565,6 +574,7 @@ async function suiteEndToEnd() {
   await suiteIsolation();
   await suiteUserIsolation();
   await suiteEndToEnd();
+  await suiteSquadContext();
 
   console.log('');
   console.log('='.repeat(60));

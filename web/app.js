@@ -86,13 +86,27 @@ function statusBadge(s) {
 function sessionRow(s, deviceName) {
   const pending = (s.pendingApprovals || []).length > 0;
   const title = (s.prompt || s.id).slice(0, 70);
+  const sq = s.squad;
   const meta = [
     deviceName,
-    s.cwd,
+    sq ? sq.project : s.cwd,
     s.agent || 'Copilot CLI',
     s.startedAt ? ago(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
   ].filter(Boolean).join(' &middot; ');
+
+  // A Squad session is a team working under a charter, not a lone agent. The
+  // badge says which, because "6 members, engineer active" is the difference
+  // between a session list and a Squad session list.
+  const squadBits = sq ? `
+      <div class="squadline">
+        <span class="sq-pill" title="Squad workspace">squad</span>
+        ${sq.activeMember ? `<span class="sq-role">${esc(sq.activeMember.name)}</span>` : ''}
+        <span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members</span>
+        ${sq.decisionCount ? `<span class="sq-dim">${sq.decisionCount} decisions</span>` : ''}
+        ${sq.models && !sq.models.uniform ? '<span class="sq-warn" title="Members are not all on the same model">mixed models</span>' : ''}
+      </div>` : '';
+
   return `
     <div class="row ${pending ? 'attention' : ''}" data-session="${esc(s.key)}">
       <div class="row-main">
@@ -101,6 +115,7 @@ function sessionRow(s, deviceName) {
           <span class="activity">${esc(s.activity || '')}</span>
         </div>
         <div class="row-meta">${meta}</div>
+        ${squadBits}
       </div>
       ${statusBadge(s)}
     </div>`;
@@ -236,6 +251,7 @@ async function openDetail(key) {
   state.currentSession = found;
   $('dtTitle').textContent = (found.session.prompt || found.session.id).slice(0, 80);
   $('dtMeta').textContent = `${found.device.name} · ${found.session.cwd || ''} · ${found.session.status}`;
+  renderSquadPanel(found.session.squad);
   $('dtTranscript').innerHTML = '<div class="t-entry t-kind">loading…</div>';
   $('detailScrim').hidden = false;
   try {
@@ -246,6 +262,45 @@ async function openDetail(key) {
   } catch (e) {
     $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
   }
+}
+
+/**
+ * The Squad panel: team, models, and recent decisions beside the transcript.
+ *
+ * Decisions are the artifact people actually go looking for after the fact --
+ * "why did it do that" is answered in decisions.md, not in a tool log.
+ */
+function renderSquadPanel(sq) {
+  const el = $('dtSquad');
+  if (!sq) { el.hidden = true; return; }
+  el.hidden = false;
+
+  const models = sq.models || {};
+  const modelLine = models.uniform
+    ? `all on <b>${esc(models.distinctModels[0] || models.defaultModel || 'default')}</b>`
+    : `<span class="sq-warn">mixed: ${esc((models.distinctModels || []).join(', '))}</span>`;
+
+  el.innerHTML = `
+    <div class="sq-head">
+      <b>${esc(sq.project)}</b>
+      <span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members · ${modelLine}</span>
+    </div>
+    <div class="sq-members">
+      ${sq.members.map((m) => `
+        <span class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}">
+          ${esc(m.name)}${m.role && m.role !== m.name ? `<i>${esc(m.role)}</i>` : ''}
+        </span>`).join('')}
+    </div>
+    ${sq.decisions.length ? `
+      <div class="sq-sub">Recent decisions (${sq.decisionCount})</div>
+      <ol class="sq-decisions">
+        ${sq.decisions.slice(0, 5).map((d) => `
+          <li class="${d.superseded ? 'old' : ''}">
+            ${d.date ? `<span class="sq-date">${esc(d.date)}</span>` : ''}
+            <span class="sq-title">${esc(d.title)}</span>
+            ${d.summary ? `<div class="sq-why">${esc(d.summary.slice(0, 180))}${d.summary.length > 180 ? '…' : ''}</div>` : ''}
+          </li>`).join('')}
+      </ol>` : '<div class="sq-sub">No decisions recorded yet</div>'}`;
 }
 
 function renderTranscript(entries) {
