@@ -207,7 +207,15 @@ Step 'Health check and monitoring'
 # answering, instead of leaving a dead process in rotation. /healthz is
 # deliberately public and returns only {"ok":true} to an anonymous caller, so
 # the platform can probe it without a credential.
-az webapp config set -n $Name -g $ResourceGroup --health-check-path '/healthz' | Out-Null
+#
+# Two traps here, both of which report success:
+#   `--health-check-path` does not exist on this CLI and errors out.
+#   `--generic-configurations healthCheckPath=/healthz` -- the documented
+#   key=value form -- exits 0 and changes nothing at all. Only the JSON form
+#   works, which is why this reads the value back below rather than trusting
+#   the exit code.
+az webapp config set -n $Name -g $ResourceGroup `
+  --generic-configurations '{\"healthCheckPath\": \"/healthz\"}' -o none
 if ($LASTEXITCODE -ne 0) { Fail 'the health check path could not be set' }
 
 # Application Insights. Created if absent, then wired by connection string.
