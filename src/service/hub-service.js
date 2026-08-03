@@ -21,6 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { Authenticator, AuthError, MODES } = require('./auth');
+const { GitHubOAuth } = require('./github-oauth');
 const { Store, PRESENCE } = require('./store');
 const ws = require('./ws');
 
@@ -31,6 +32,10 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
 };
 
@@ -65,6 +70,7 @@ class HubService {
     });
     this.store = opts.store || new Store();
     this.serveWeb = opts.serveWeb !== false;
+    this.oauth = opts.oauth || new GitHubOAuth();
     this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
       hubUrl: process.env.SQUAD_HUB_PUBLIC_URL || null,
     });
@@ -134,6 +140,53 @@ class HubService {
     };
 
     if (req.method === 'OPTIONS') return send(204, '');
+
+    // -- sign-in -------------------------------------------------------------
+    if (url.pathname === '/auth/github/login') {
+      if (!this.oauth.enabled) {
+        return send(404, { error: 'GitHub sign-in is not configured on this hub' });
+      }
+      const { url: authUrl } = this.oauth.authorizeUrl(req);
+      res.writeHead(302, { Location: authUrl, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+
+    if (url.pathname === '/auth/github/callback') {
+      if (!this.oauth.enabled) return send(404, { error: 'GitHub sign-in is not configured' });
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      if (!code) return this._signinError(send, 'GitHub did not return a code.');
+      if (!this.oauth.checkState(state)) {
+        // Login CSRF, or simply a stale tab. Both deserve a restart rather than
+        // a silent sign-in as whoever crafted the link.
+        return this._signinError(send, 'That sign-in link has expired or did not come from here. Please try again.');
+      }
+      let token;
+      try { token = await this.oauth.exchange(code, req); }
+      catch (e) { return this._signinError(send, `GitHub refused the sign-in: ${e.message}`); }
+
+      // Check the identity BEFORE handing the browser a session. Letting
+      // someone in and then failing every API call is a worse experience than
+      // saying plainly that they are not permitted.
+      try { await this.auth.verify(`Bearer ${token}`); }
+      catch (e) {
+        return this._signinError(send, e.status === 403
+          ? 'That GitHub account is not permitted to use this hub.'
+          : `Could not verify the account: ${e.message}`);
+      }
+      return this._signinComplete(send, token);
+    }
+
+    if (url.pathname === '/api/auth-methods') {
+      // The sign-in page asks what this hub actually supports, rather than
+      // offering a button that leads nowhere.
+      return send(200, {
+        mode: this.auth.mode,
+        githubOAuth: this.oauth.enabled,
+        acceptsToken: true,
+      });
+    }
+
     if (url.pathname === '/healthz') {
       const instances = instanceCount();
       const detail = {
@@ -237,6 +290,35 @@ class HubService {
     return send(404, { error: 'not found' });
   }
 
+  /**
+   * Hand the browser its token WITHOUT putting it in a URL.
+   *
+   * A redirect to `/?token=...` would write a live credential into browser
+   * history, the Referer header, and every proxy log in between. This returns a
+   * page that passes it to the app in script and then replaces itself.
+   */
+  _signinComplete(send, token) {
+    const safe = JSON.stringify(token);
+    return send(200, `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Signing in…</title><link rel="stylesheet" href="/app.css"></head>
+<body><div class="empty"><h3>Signing you in…</h3></div>
+<script>
+  try { localStorage.setItem('squad-hub-token', ${safe}); } catch (e) {}
+  location.replace('/');
+</script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
+  }
+
+  _signinError(send, message) {
+    return send(403, `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Sign-in failed</title><link rel="stylesheet" href="/app.css"></head>
+<body><div class="empty">
+  <img src="/logo.jpg" alt="Squad Hub" width="140" style="border-radius:12px;margin-bottom:20px">
+  <h3>Sign-in failed</h3>
+  <p>${escapeHtml(message)}</p>
+  <p><a href="/">Back to the hub</a></p>
+</div></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
+  }
+
   _static(url, send) {
     let rel = url.pathname === '/' ? '/index.html' : url.pathname;
     // Decode before resolving, so a file with a space or an encoded character
@@ -254,13 +336,26 @@ class HubService {
       return send(403, { error: 'nope' });
     }
     return fs.readFile(file, (err, buf) => {
-      if (err) return send(404, { error: 'not found' });
+      if (err) return this._notFound(send, url);
       return send(200, buf, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
     });
   }
 
-  // -- WebSocket ------------------------------------------------------------
+  /**
+   * A 404 that suits whoever asked.
+   *
+   * A person who mistyped a URL wants a page; a script wants JSON it can parse.
+   * Returning HTML to a fetch() breaks the caller's error handling, and
+   * returning `{"error":"not found"}` to a browser looks like the site is
+   * broken rather than the address being wrong.
+   */
+  _notFound(send, url) {
+    const wantsHtml = !String(url.pathname).startsWith('/api/');
+    if (!wantsHtml) return send(404, { error: 'not found' });
+    return send(404, notFoundPage(), { 'Content-Type': 'text/html; charset=utf-8' });
+  }
 
+  // -- WebSocket ------------------------------------------------------------
   async _upgrade(req, socket, head) {
     const url = new URL(req.url, 'http://localhost');
     const token = url.searchParams.get('access_token');
@@ -388,8 +483,66 @@ class HubService {
   }
 }
 
-function readJson(req) {
-  return new Promise((resolve, reject) => {
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/**
+ * The page a person gets when they mistype a URL.
+ *
+ * Self-contained rather than a file on disk: a 404 handler that can itself 404
+ * is a special kind of unhelpful, and this one has to work even if the web
+ * assets are missing or the deployment is half-finished. The only external
+ * reference is the logo, and the layout survives it not loading.
+ */
+function notFoundPage() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 — Not Found | Squad Hub</title>
+<style>
+  :root { --bg:#0b0d12; --text:#e6e9f2; --dim:#98a0b5; --faint:#6a7288;
+          --line:#232838; --panel:#12151d; --accent:#4c8dff; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+         font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
+  .wrap { max-width:520px; }
+  img { width:180px; border-radius:16px; margin-bottom:28px;
+        box-shadow:0 12px 40px rgba(0,0,0,.5); }
+  h1 { font-size:72px; margin:0; letter-spacing:-2px; line-height:1; }
+  h2 { font-size:22px; margin:10px 0 0; font-weight:600; color:var(--text); }
+  p  { color:var(--dim); margin:14px 0 0; }
+  .actions { margin-top:28px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  a.btn { text-decoration:none; padding:10px 20px; border-radius:8px; font-weight:600; font-size:14px; }
+  a.primary { background:var(--accent); color:#fff; }
+  a.primary:hover { filter:brightness(1.1); }
+  a.ghost { border:1px solid var(--line); color:var(--text); background:var(--panel); }
+  a.ghost:hover { background:#171b25; }
+  code { font-family:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+         background:var(--panel); border:1px solid var(--line);
+         padding:2px 6px; border-radius:4px; font-size:13px; color:var(--dim); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <img src="/logo.jpg" alt="Squad Hub">
+    <h1>404</h1>
+    <h2>No such session.</h2>
+    <p>That page was never spawned — or it finished and got reaped. 🤖</p>
+    <div class="actions">
+      <a class="btn primary" href="/">Back to the hub</a>
+      <a class="btn ghost" href="https://github.com/swigerb/squad-hub">Documentation</a>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+function readJson(req) {  return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (d) => {
       body += d;

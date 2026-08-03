@@ -83,12 +83,27 @@ function envVarsIn(files) {
   return [...out];
 }
 
-const srcFiles = [
-  'src/cli.js', 'src/config.js', 'src/daemon.js', 'src/acp-session.js',
-  'src/paths.js', 'src/cloud-device.js', 'src/hub-link.js',
-  'src/service/hub-service.js', 'src/service/auth.js', 'src/notify/teams.js',
-];
+// Walk src/ rather than listing files. A hardcoded list silently stops
+// covering the codebase the moment someone adds a file, which is precisely
+// when the guard is most needed.
+function allSourceFiles(dir = 'src', acc = []) {
+  for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${e.name}`;
+    if (e.isDirectory()) allSourceFiles(rel, acc);
+    else if (e.name.endsWith('.js')) acc.push(rel);
+  }
+  return acc;
+}
+const srcFiles = allSourceFiles();
 const usedVars = envVarsIn(srcFiles);
+
+check('the source scan actually covers the source tree', () => {
+  // The failure this catches is a scan that finds nothing and reports green.
+  assert.ok(srcFiles.length >= 10, `only ${srcFiles.length} source files found`);
+  for (const f of ['src/cli.js', 'src/service/hub-service.js', 'src/service/auth.js']) {
+    assert.ok(srcFiles.includes(f), `${f} is missing from the scan`);
+  }
+});
 
 check('a plausible number of environment variables were found', () => {
   assert.ok(usedVars.length >= 8, `only found ${usedVars.length}; the scan is broken`);

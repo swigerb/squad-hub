@@ -160,6 +160,43 @@ Details worth knowing:
   and a transport failure is not cached, so a brief outage cannot lock you out
   for the cache window.
 
+#### Signing in from a browser
+
+A token works, but pasting one is a poor way to open a web page. Set up an OAuth
+App and the sign-in page grows a **Sign in with GitHub** button. This still needs
+no administrator: OAuth Apps are created from your own account settings.
+
+1. Go to **Settings → Developer settings → OAuth Apps → New OAuth App**.
+2. Set the **Authorization callback URL** to `https://<your-host>/auth/github/callback`.
+   It must match exactly, path included; GitHub rejects anything else.
+3. Generate a client secret.
+4. Pass both to the deploy script:
+
+```powershell
+./scripts/deploy-appservice.ps1 `
+  -ResourceGroup rg -Name my-hub `
+  -AuthMode github -Owner your-github-login `
+  -GitHubClientId  $env:GH_CLIENT_ID `
+  -GitHubClientSecret $env:GH_CLIENT_SECRET
+```
+
+The button appears only when both are set. With neither, the sign-in page still
+accepts a pasted token, so the hub is never bricked by a half-finished setup.
+
+What the flow does and does not do:
+
+- **No scopes are requested.** The hub only needs to know who you are, and
+  `GET /user` answers that for a scopeless token. So authorising the app grants
+  it no access to any repository — public or private.
+- **The token GitHub returns is held by your browser**, not by the server. The
+  hub stores no per-user tokens, so there is no store to breach.
+- **Authorising the app is not authorisation to use the hub.** Anyone with a
+  GitHub account can complete the OAuth flow; the owner and allowlist checks then
+  run exactly as they do for a pasted token. A stranger who signs in gets a
+  refusal, not a session.
+- **The `state` parameter is signed and expires after ten minutes**, which is
+  what stops someone walking you through a sign-in they started.
+
 ### Entra
 
 The right choice where an app registration is available. If your accounts live

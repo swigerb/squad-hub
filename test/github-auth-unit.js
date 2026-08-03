@@ -244,6 +244,82 @@ function withFakeGitHub(auth, port) {
     assert.strictEqual(p.name, 'owner-login', 'a brief outage locked the owner out');
   });
 
+  // ---- the browser sign-in flow -------------------------------------------
+  // A token works for a CLI. A browser needs a button, and the button is worth
+  // nothing if the flow it starts can be forged or replayed.
+  const { GitHubOAuth } = require('../src/service/github-oauth');
+  const REQ = { headers: { host: 'hub.example', 'x-forwarded-proto': 'https' } };
+
+  check('a half-configured OAuth App leaves the hub usable, not broken', () => {
+    // Setting only the id is an easy mistake. It must not produce a button that
+    // sends people to a GitHub error page.
+    assert.strictEqual(new GitHubOAuth({}).enabled, false);
+    assert.strictEqual(new GitHubOAuth({ clientId: 'a' }).enabled, false);
+    assert.strictEqual(new GitHubOAuth({ clientSecret: 'b' }).enabled, false);
+    assert.strictEqual(new GitHubOAuth({ clientId: 'a', clientSecret: 'b' }).enabled, true);
+  });
+
+  const oa = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+
+  check('the authorize URL asks for no scopes at all', () => {
+    // Identity is all the hub needs. Requesting repo scope would mean a hub
+    // breach exposed the user's source, for no functional gain.
+    const u = new URL(oa.authorizeUrl(REQ).url);
+    assert.strictEqual(u.origin + u.pathname, 'https://github.com/login/oauth/authorize');
+    assert.strictEqual(u.searchParams.get('scope'), '', 'the flow requests access it does not need');
+    assert.strictEqual(u.searchParams.get('client_id'), 'cid');
+    assert.ok(u.searchParams.get('state'), 'no state means login CSRF is unguarded');
+  });
+
+  check('the callback URL follows the proxy, not the socket', () => {
+    // App Service terminates TLS, so the request arrives as http. Deriving the
+    // redirect from the socket would build an http:// callback that GitHub
+    // rejects for not matching the registered one.
+    assert.strictEqual(oa.redirectUri(REQ), 'https://hub.example/auth/github/callback');
+    const cfg = new GitHubOAuth({ clientId: 'c', clientSecret: 's', publicUrl: 'https://fixed.example/' });
+    assert.strictEqual(cfg.redirectUri(REQ), 'https://fixed.example/auth/github/callback',
+      'a trailing slash in the configured URL produced a double slash');
+  });
+
+  check('state that this hub issued is accepted', () => {
+    assert.strictEqual(oa.checkState(oa.makeState()), true);
+  });
+
+  check('state that this hub did not issue is refused', () => {
+    // The whole point: a state minted anywhere else must not pass.
+    const other = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    assert.strictEqual(oa.checkState(other.makeState()), false,
+      'any hub could start a sign-in this hub would complete');
+    assert.strictEqual(oa.checkState('a.b.c'), false);
+    assert.strictEqual(oa.checkState(''), false);
+    assert.strictEqual(oa.checkState(null), false);
+    assert.strictEqual(oa.checkState(undefined), false);
+  });
+
+  check('a tampered state is refused rather than throwing', () => {
+    // timingSafeEqual throws on a length mismatch, which would surface as a 500
+    // and, worse, as an unhandled rejection.
+    const s = oa.makeState();
+    const parts = s.split('.');
+    assert.strictEqual(oa.checkState(`${parts[0]}.${parts[1]}.short`), false);
+    assert.strictEqual(oa.checkState(`${parts[0]}.${parts[1]}.${'x'.repeat(24)}`), false);
+    assert.strictEqual(oa.checkState(`tampered.${parts[1]}.${parts[2]}`), false);
+  });
+
+  check('a captured state cannot be replayed a day later', () => {
+    const s = oa.makeState();
+    assert.strictEqual(oa.checkState(s, 600000), true);
+    assert.strictEqual(oa.checkState(s, -1), false, 'state never expires');
+  });
+
+  check('a restart invalidates in-flight sign-ins rather than trusting them', () => {
+    // The signing key is per-process on purpose: it means no long-lived secret
+    // has to be stored anywhere for this.
+    const s = oa.makeState();
+    const restarted = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    assert.strictEqual(restarted.checkState(s), false);
+  });
+
   server.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

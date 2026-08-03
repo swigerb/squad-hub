@@ -36,6 +36,8 @@ param(
   [string]$Subscription,
   [string]$Runtime = 'NODE:22-lts',
   [string]$VerifyToken,
+  [string]$GitHubClientId,
+  [string]$GitHubClientSecret,
   [switch]$SkipCreate,
   [switch]$AllowAnyone
 )
@@ -148,8 +150,31 @@ if ($Tenants) { $settings += "SQUAD_HUB_TENANTS=$Tenants" }
 if ($Audience) { $settings += "SQUAD_HUB_AUDIENCE=$Audience" }
 if ($AllowedUsers) { $settings += "SQUAD_HUB_ALLOWED_USERS=$($AllowedUsers -join ',')" }
 if ($Owner) { $settings += "SQUAD_HUB_OWNER=$($Owner -join ',')" }
+
+# GitHub OAuth App, for the browser "Sign in with GitHub" button.
+#
+# Refuse a half-configured pair rather than deploying it. With only one of the
+# two the hub disables the button silently, and the operator is left staring at
+# a sign-in page wondering which of the two settings did not take.
+if ($GitHubClientId -xor $GitHubClientSecret) {
+  Fail 'Set both -GitHubClientId and -GitHubClientSecret, or neither. One alone does nothing.'
+}
+if ($GitHubClientId -and $GitHubClientSecret -and $AuthMode -ne 'github') {
+  Fail "OAuth sign-in was configured but -AuthMode is '$AuthMode'. The button would send people through GitHub and then be refused at the door."
+}
 az webapp config appsettings set -n $Name -g $ResourceGroup --settings @settings | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'app settings could not be applied' }
+
+# The OAuth pair is set separately so the secret never appears in the same array
+# as everything else that gets echoed for diagnostics.
+if ($GitHubClientId -and $GitHubClientSecret) {
+  az webapp config appsettings set -n $Name -g $ResourceGroup --settings `
+    "SQUAD_HUB_GITHUB_CLIENT_ID=$GitHubClientId" `
+    "SQUAD_HUB_GITHUB_CLIENT_SECRET=$GitHubClientSecret" | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail 'the GitHub OAuth settings could not be applied' }
+  $idHint = $GitHubClientId.Substring(0, [Math]::Min(6, $GitHubClientId.Length))
+  Write-Host "  github oauth  configured (client id $idHint...)"
+}
 
 # Remove a setting this run has superseded.
 #
@@ -177,20 +202,52 @@ if ($LASTEXITCODE -ne 0) { Fail 'site configuration could not be applied' }
 az appservice plan update -n $Plan -g $ResourceGroup --number-of-workers 1 | Out-Null
 
 # ---------------------------------------------------------------------------
-Step 'Verify the configuration TOOK EFFECT'
+Step 'Health check and monitoring'
+# A health check path lets App Service replace an instance that has stopped
+# answering, instead of leaving a dead process in rotation. /healthz is
+# deliberately public and returns only {"ok":true} to an anonymous caller, so
+# the platform can probe it without a credential.
+az webapp config set -n $Name -g $ResourceGroup --health-check-path '/healthz' | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'the health check path could not be set' }
+
+# Application Insights. Created if absent, then wired by connection string.
+# Without it a failure in production is invisible: the logs are ephemeral and
+# nothing records that a request 500'd at 3am.
+$aiName = "appi-$Name"
+$aiConn = az monitor app-insights component show --app $aiName -g $ResourceGroup `
+  --query connectionString -o tsv 2>$null
+if (-not $aiConn) {
+  Write-Host "creating Application Insights '$aiName'"
+  $aiConn = az monitor app-insights component create --app $aiName -g $ResourceGroup `
+    --location $Location --application-type web --kind web `
+    --query connectionString -o tsv 2>$null
+}
+if ($aiConn) {
+  az webapp config appsettings set -n $Name -g $ResourceGroup --settings `
+    "APPLICATIONINSIGHTS_CONNECTION_STRING=$aiConn" `
+    'ApplicationInsightsAgent_EXTENSION_VERSION=~3' `
+    'XDT_MicrosoftApplicationInsights_NodeJS=1' | Out-Null
+  Write-Host '  app insights  connected'
+} else {
+  # Not fatal. A hub without telemetry still works; a deploy that refuses to
+  # finish because a monitoring resource could not be created does not.
+  Warn '  app insights  could not be created (continuing without it)'
+}
 # Read it back. A setting you asked for is not a setting that applied.
 $cfg = az webapp config show -n $Name -g $ResourceGroup `
-  --query "{ws:webSocketsEnabled, ao:alwaysOn, cmd:appCommandLine}" -o json | ConvertFrom-Json
+  --query "{ws:webSocketsEnabled, ao:alwaysOn, cmd:appCommandLine, hc:healthCheckPath}" -o json | ConvertFrom-Json
 $workers = az appservice plan show -n $Plan -g $ResourceGroup --query 'sku.capacity' -o tsv
 
 Write-Host "  web sockets   $($cfg.ws)"
 Write-Host "  always on     $($cfg.ao)"
+Write-Host "  health check  $($cfg.hc)"
 Write-Host "  startup       $($cfg.cmd)"
 Write-Host "  workers       $workers"
 
 if (-not $cfg.ws) { Fail 'WebSockets are off. No device could ever attach to this hub.' }
 if (-not $cfg.ao) { Fail 'Always On is off. The app will unload when idle and every device will drop.' }
 if (-not $cfg.cmd) { Fail 'No startup command. The default would print usage and exit, restarting forever.' }
+if ($cfg.hc -ne '/healthz') { Fail "The health check path is '$($cfg.hc)', not '/healthz'. A dead instance would stay in rotation." }
 if ([int]$workers -ne 1) {
   Fail @"
 The plan has $workers workers. Squad Hub keeps state in memory, so with more than

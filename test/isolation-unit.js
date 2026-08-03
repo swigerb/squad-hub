@@ -66,7 +66,7 @@ function api(port, path, token, opts = {}) {
       res.on('end', () => {
         let json = null;
         try { json = JSON.parse(b); } catch { /* not json */ }
-        resolve({ status: res.statusCode, body: json, raw: b });
+        resolve({ status: res.statusCode, body: json, raw: b, headers: res.headers });
       });
     });
     req.on('error', (e) => resolve({ status: 0, error: e.message }));
@@ -586,6 +586,55 @@ function api(port, path, token, opts = {}) {
     assert.notStrictEqual(me.key, them.key, 'a colleague was folded into the owner partition');
     assert.strictEqual(me.isOwner, true);
     assert.strictEqual(them.isOwner, false);
+  });
+
+  // -- the pages a person actually lands on ---------------------------------
+  // These need a web-serving hub; the isolation service above deliberately has
+  // static serving off.
+  await checkAsync('the pages a person lands on', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const aw = new Authenticator({ mode: MODES.DEV, devSecret: 'web' });
+    const sw = new HS({ auth: aw, serveWeb: true });
+    const adw = await sw.listen(0, '127.0.0.1');
+    const p = adw.port;
+    try {
+      const miss = await api(p, '/no-such-page', null);
+      assert.strictEqual(miss.status, 404);
+      assert.match(miss.headers['content-type'] || '', /text\/html/,
+        'a person who mistyped a URL got JSON, which reads as a broken site');
+      assert.match(miss.raw, /404/);
+      assert.match(miss.raw, /Squad Hub/);
+      assert.match(miss.raw, /logo\.jpg/, 'the 404 page does not show the logo');
+      assert.match(miss.raw, /Back to the hub/);
+
+      // A script wants something it can parse. HTML here breaks the caller's
+      // error handling for no benefit. (Authenticated, because the API surface
+      // deliberately refuses anonymous callers before it routes at all.)
+      const tokw = aw.mintDevToken('t1', 'u1', 'someone');
+      const apiMiss = await api(p, '/api/nothing-here', tokw);
+      assert.strictEqual(apiMiss.status, 404);
+      assert.match(apiMiss.headers['content-type'] || '', /application\/json/);
+
+      // An anonymous caller must not be able to enumerate which API routes
+      // exist by reading 404 vs 401.
+      const apiAnon = await api(p, '/api/nothing-here', null);
+      assert.strictEqual(apiAnon.status, 401,
+        'an unauthenticated caller can probe for valid API routes');
+
+      // Both the 404 page and the sign-in page reference it.
+      const logo = await api(p, '/logo.jpg', null);
+      assert.strictEqual(logo.status, 200, 'the logo 404s, so both pages render broken');
+      assert.match(logo.headers['content-type'] || '', /image\/jpeg/,
+        'served as a generic byte stream, which browsers may download rather than draw');
+
+      const methods = await api(p, '/api/auth-methods', null);
+      assert.strictEqual(methods.status, 200, 'the sign-in page cannot ask what to offer');
+      assert.ok('githubOAuth' in methods.body, 'no way to know whether to show a button');
+
+      // Rather than a 500, or a redirect to a broken GitHub URL.
+      const login = await api(p, '/auth/github/login', null);
+      assert.strictEqual(login.status, 404);
+    } finally { await sw.close(); }
   });
 
   linkA.stop(); linkB.stop();
