@@ -526,6 +526,68 @@ function api(port, path, token, opts = {}) {
     } finally { await s12.close(); }
   });
 
+  // -- one person, several accounts -----------------------------------------
+  // Partitioning is keyed on tenant + object id, so a single human with a work
+  // account and a personal one gets two partitions: two hubs sharing a URL,
+  // where devices registered by one identity are invisible to the other.
+  await checkAsync('WITHOUT owner aliasing, two accounts of one person are two partitions', async () => {
+    const a13 = new Authenticator({ mode: MODES.DEV, devSecret: 'own', allowedUsers: ['work@a.com', 'personal@b.com'] });
+    const p1 = await a13.verify(`Bearer ${a13.mintDevToken('tenant-a', 'oid-1', 'work@a.com')}`);
+    const p2 = await a13.verify(`Bearer ${a13.mintDevToken('tenant-b', 'oid-2', 'personal@b.com')}`);
+    assert.notStrictEqual(p1.key, p2.key,
+      'this test no longer demonstrates the problem it exists to describe');
+  });
+
+  await checkAsync('WITH owner aliasing, both accounts share one partition', async () => {
+    const a14 = new Authenticator({ mode: MODES.DEV, devSecret: 'own', owner: ['work@a.com', 'personal@b.com'] });
+    const p1 = await a14.verify(`Bearer ${a14.mintDevToken('tenant-a', 'oid-1', 'work@a.com')}`);
+    const p2 = await a14.verify(`Bearer ${a14.mintDevToken('tenant-b', 'oid-2', 'personal@b.com')}`);
+    assert.strictEqual(p1.key, p2.key,
+      'the two accounts still see different devices, which is the whole point');
+    assert.ok(p1.isOwner && p2.isOwner);
+  });
+
+  await checkAsync('the owner partition survives adding a third identity', async () => {
+    // Keyed on a constant, not on any one alias -- otherwise adding an account
+    // later would orphan every device already registered.
+    const two = new Authenticator({ mode: MODES.DEV, devSecret: 'own', owner: ['a@x.com', 'b@y.com'] });
+    const three = new Authenticator({ mode: MODES.DEV, devSecret: 'own', owner: ['a@x.com', 'b@y.com', 'c@z.com'] });
+    const before = await two.verify(`Bearer ${two.mintDevToken('t', 'o', 'a@x.com')}`);
+    const after = await three.verify(`Bearer ${three.mintDevToken('t', 'o', 'a@x.com')}`);
+    assert.strictEqual(before.key, after.key, 'adding an alias moved the partition and orphaned the devices');
+  });
+
+  await checkAsync('reordering the owner list does not move the partition', async () => {
+    const one = new Authenticator({ mode: MODES.DEV, devSecret: 'own', owner: ['a@x.com', 'b@y.com'] });
+    const other = new Authenticator({ mode: MODES.DEV, devSecret: 'own', owner: ['b@y.com', 'a@x.com'] });
+    const k1 = (await one.verify(`Bearer ${one.mintDevToken('t', 'o', 'a@x.com')}`)).key;
+    const k2 = (await other.verify(`Bearer ${other.mintDevToken('t', 'o', 'b@y.com')}`)).key;
+    assert.strictEqual(k1, k2);
+  });
+
+  await checkAsync('someone not listed as owner is still refused', async () => {
+    const a15 = new Authenticator({ mode: MODES.DEV, devSecret: 'own', owner: ['work@a.com'] });
+    let err = null;
+    try { await a15.verify(`Bearer ${a15.mintDevToken('t', 'oid-9', 'stranger@c.com')}`); }
+    catch (e) { err = e; }
+    assert.ok(err, 'a stranger was admitted');
+    assert.strictEqual(err.status, 403);
+  });
+
+  await checkAsync('an owner and a separate allowed user do NOT share a partition', async () => {
+    // A colleague on the allowlist is a different person and must keep their
+    // own devices. Aliasing applies only to the owner's own identities.
+    const a16 = new Authenticator({
+      mode: MODES.DEV, devSecret: 'own',
+      owner: ['me@a.com'], allowedUsers: ['colleague@a.com'],
+    });
+    const me = await a16.verify(`Bearer ${a16.mintDevToken('t', 'oid-1', 'me@a.com')}`);
+    const them = await a16.verify(`Bearer ${a16.mintDevToken('t', 'oid-2', 'colleague@a.com')}`);
+    assert.notStrictEqual(me.key, them.key, 'a colleague was folded into the owner partition');
+    assert.strictEqual(me.isOwner, true);
+    assert.strictEqual(them.isOwner, false);
+  });
+
   linkA.stop(); linkB.stop();
   await svc.close();
 

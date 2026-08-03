@@ -133,16 +133,26 @@ See [docs/cloud.md](docs/cloud.md).
 ## Security
 
 **Lock it to yourself.** A hub can start sessions and approve commands on your
-machines, so the deploy script **refuses to deploy without an allowlist**:
+machines, so the deploy script **refuses to deploy without an owner**:
 
 ```powershell
 ./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-hub `
-  -AuthMode entra -Tenants <tenant id> -AllowedUsers you@example.com
+  -AuthMode entra -Tenants <tenant id> -Owner you@example.com
 ```
 
+**More than one account?** List them all — they share one view:
+
+```powershell
+-Owner you@work.example,you@personal.example
+```
+
+Partitioning is keyed on tenant + object id, so two accounts of the same person
+would otherwise be two separate hubs sharing a URL. `-Owner` says *these are all
+me*. Use `-AllowedUsers` for other people, who each keep their own devices.
+
 A tenant filter is not an owner filter — every user in that tenant would
-otherwise be permitted. `-AllowedUsers` is the one that means *you*, and it is
-enforced on the device WebSocket as well as the API.
+otherwise be permitted. The check is enforced on the device WebSocket as well as
+the API, since registering a device is what an intruder would actually want.
 
 **File access is off by default.** No folder picker, no directory browsing,
 until you opt in:

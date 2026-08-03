@@ -61,6 +61,21 @@ class Authenticator {
     this.allowedUsers = (opts.allowedUsers || [])
       .map((u) => String(u).trim().toLowerCase())
       .filter(Boolean);
+    /**
+     * Identities that are all the SAME person.
+     *
+     * Partitioning is keyed on tenant + object id, so one human with accounts
+     * in two tenants gets two partitions -- two separate hubs sharing a URL,
+     * where devices registered by one identity are invisible to the other.
+     * That is correct for two colleagues and wrong for one person with a work
+     * account and a personal one.
+     *
+     * Listing identities here says "these are all me": each may sign in, and
+     * they share a single partition.
+     */
+    this.owner = (opts.owner || [])
+      .map((u) => String(u).trim().toLowerCase())
+      .filter(Boolean);
     this.audience = opts.audience || null;
     this.devSecret = opts.devSecret || null;
     this._jwks = new Map();
@@ -133,25 +148,34 @@ class Authenticator {
     }
 
     const name = claims.name || claims.preferred_username || claims.upn || claims.email || null;
-    if (this.allowedUsers.length) {
-      // Any of the identifiers a person would recognise. Checked case-
-      // insensitively, because a UPN typed by hand will not match the casing
-      // Entra returns.
-      const candidates = [claims.oid, claims.sub, name, claims.preferred_username, claims.upn, claims.email]
-        .filter(Boolean).map((c) => String(c).toLowerCase());
-      if (!candidates.some((c) => this.allowedUsers.includes(c))) {
-        // 403, not 401: the credential was valid, the person is not permitted.
-        // Saying so plainly beats an authentication error that sends someone
-        // hunting for a token problem they do not have.
-        throw new AuthError('this account is not permitted to use this hub', 403);
-      }
+    // Any of the identifiers a person would recognise. Checked case-
+    // insensitively, because a UPN typed by hand will not match the casing
+    // Entra returns.
+    const candidates = [claims.oid, claims.sub, name, claims.preferred_username, claims.upn, claims.email]
+      .filter(Boolean).map((c) => String(c).toLowerCase());
+
+    const isOwner = this.owner.length > 0 && candidates.some((c) => this.owner.includes(c));
+
+    const permitted = this.allowedUsers.length || this.owner.length
+      ? isOwner || candidates.some((c) => this.allowedUsers.includes(c))
+      : true;
+    if (!permitted) {
+      // 403, not 401: the credential was valid, the person is not permitted.
+      // Saying so plainly beats an authentication error that sends someone
+      // hunting for a token problem they do not have.
+      throw new AuthError('this account is not permitted to use this hub', 403);
     }
 
     return {
       tid: claims.tid,
       oid: claims.oid,
       name,
-      key: subjectKey(claims.tid, claims.oid),
+      isOwner,
+      // An owner's identities share one partition, so signing in with either
+      // account shows the same devices. Keyed on a constant rather than on any
+      // one of them, so adding or reordering an alias later does not orphan
+      // devices already registered.
+      key: isOwner ? subjectKey('owner', 'squad-hub') : subjectKey(claims.tid, claims.oid),
     };
   }
 

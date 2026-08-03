@@ -215,6 +215,7 @@ async function cmdServe(argv) {
     devSecret: process.env.SQUAD_HUB_DEV_SECRET || crypto.randomBytes(24).toString('hex'),
     allowedTenants: (process.env.SQUAD_HUB_TENANTS || '').split(',').filter(Boolean),
     allowedUsers: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
+    owner: (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean),
     audience: process.env.SQUAD_HUB_AUDIENCE || null,
   });
 
@@ -224,14 +225,16 @@ async function cmdServe(argv) {
 
   out(`squad hub service listening on http://${shown}:${addr.port}`);
   out(`  auth mode: ${mode}`);
-  out(`  allowed:   ${auth.allowedUsers.length ? auth.allowedUsers.join(', ') : 'ANYONE who authenticates'}`);
+  const permittedList = [...auth.owner, ...auth.allowedUsers];
+  out(`  allowed:   ${permittedList.length ? permittedList.join(', ') : 'ANYONE who authenticates'}`);
+  if (auth.owner.length > 1) out(`  owner:     ${auth.owner.length} identities share one view`);
 
   // The combination that matters: reachable from a network, and no restriction
   // on who may use it. On a laptop bound to localhost this is fine; on a public
   // hostname it means the credential is the only thing between a stranger and
   // your devices.
   const publiclyBound = host === '0.0.0.0' || host === '::';
-  if (publiclyBound && !auth.allowedUsers.length) {
+  if (publiclyBound && !auth.allowedUsers.length && !auth.owner.length) {
     err('');
     err('*** WARNING: this hub accepts ANY identity that authenticates. ***');
     if (mode === MODES.DEV) {
@@ -240,7 +243,7 @@ async function cmdServe(argv) {
     } else {
       err('In entra auth that means any user in an allowed tenant can register a device.');
     }
-    err('Set SQUAD_HUB_ALLOWED_USERS to your own object id, UPN or email.');
+    err('Set SQUAD_HUB_OWNER to your own identities (object id, UPN or email).');
     err('');
   }
 

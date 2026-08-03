@@ -29,6 +29,7 @@ param(
   [string]$Location = 'swedencentral',
   [ValidateSet('B1', 'B2', 'S1', 'P0v3', 'P1v3')][string]$Sku = 'B1',
   [ValidateSet('dev', 'entra')][string]$AuthMode = 'dev',
+  [string[]]$Owner,
   [string[]]$AllowedUsers,
   [string]$Tenants,
   [string]$Audience,
@@ -77,10 +78,10 @@ if ($AuthMode -eq 'dev') {
 # invent. Refusing is better than warning: this is reachable from the internet
 # the moment it deploys, and a warning scrolls past.
 $existingAllow = az webapp config appsettings list -n $Name -g $ResourceGroup `
-  --query "[?name=='SQUAD_HUB_ALLOWED_USERS'].value | [0]" -o tsv 2>$null
-if (-not $AllowedUsers -and -not $existingAllow -and -not $AllowAnyone) {
+  --query "[?name=='SQUAD_HUB_ALLOWED_USERS' || name=='SQUAD_HUB_OWNER'].value | [0]" -o tsv 2>$null
+if (-not $Owner -and -not $AllowedUsers -and -not $existingAllow -and -not $AllowAnyone) {
   Fail @"
-No -AllowedUsers, and none already configured.
+No -Owner, no -AllowedUsers, and none already configured.
 
 This hub will be reachable at https://$Name.azurewebsites.net, and without an
 allowlist it accepts ANY identity that authenticates. In dev auth that means
@@ -88,10 +89,11 @@ anyone holding the shared secret can register a device on your hub under any
 name they choose.
 
 Pass your own identity, for example:
-  -AllowedUsers you@example.com
-  -AllowedUsers <your Entra object id>
+  -Owner you@example.com
+  -Owner you@work.example,you@personal.example   # several accounts, one view
 
-Use -AllowAnyone only if you genuinely intend a shared hub.
+Use -AllowedUsers for other people, who each get their own separate view.
+Use -AllowAnyone only if you genuinely intend a hub open to all comers.
 "@
 }
 
@@ -144,6 +146,7 @@ $settings = @("SQUAD_HUB_AUTH_MODE=$AuthMode", "SQUAD_HUB_DEV_SECRET=$secret",
 if ($Tenants) { $settings += "SQUAD_HUB_TENANTS=$Tenants" }
 if ($Audience) { $settings += "SQUAD_HUB_AUDIENCE=$Audience" }
 if ($AllowedUsers) { $settings += "SQUAD_HUB_ALLOWED_USERS=$($AllowedUsers -join ',')" }
+if ($Owner) { $settings += "SQUAD_HUB_OWNER=$($Owner -join ',')" }
 az webapp config appsettings set -n $Name -g $ResourceGroup --settings @settings | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'app settings could not be applied' }
 
@@ -211,7 +214,7 @@ Step 'Verify THIS build is the one serving'
 $fqdn = "$Name.azurewebsites.net"
 Push-Location $root
 try {
-  $checkUser = if ($AllowedUsers) { $AllowedUsers[0] } else { $env:USERNAME }
+  $checkUser = if ($Owner) { $Owner[0] } elseif ($AllowedUsers) { $AllowedUsers[0] } else { $env:USERNAME }
   $token = node -e "const{Authenticator}=require('./src/service/auth');console.log(new Authenticator({mode:'dev',devSecret:process.argv[1]}).mintDevToken('local',process.argv[2],process.argv[2]))" $secret $checkUser
 } finally { Pop-Location }
 

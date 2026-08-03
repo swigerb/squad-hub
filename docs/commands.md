@@ -74,6 +74,8 @@ Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 | `SQUAD_HUB_AUTH_MODE` | `dev` or `entra`. |
 | `SQUAD_HUB_DEV_SECRET` | HMAC secret for dev tokens. Generated if unset. |
 | `SQUAD_HUB_TENANTS` | Comma-separated Entra tenant ids to allow. Empty means any. |
+| `SQUAD_HUB_OWNER` | Identities that are all **you**. Each may sign in, and they share one view. |
+| `SQUAD_HUB_ALLOWED_USERS` | Other people who may sign in. Each gets their **own** separate view. |
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
 | `SQUAD_HUB_TEAMS_WEBHOOK` | Teams incoming webhook. Notifications are off without it. |

@@ -60,6 +60,7 @@ class HubService {
       devSecret: process.env.SQUAD_HUB_DEV_SECRET || crypto.randomBytes(16).toString('hex'),
       allowedTenants: (process.env.SQUAD_HUB_TENANTS || '').split(',').filter(Boolean),
       allowedUsers: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
+      owner: (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean),
       audience: process.env.SQUAD_HUB_AUDIENCE || null,
     });
     this.store = opts.store || new Store();

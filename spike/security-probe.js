@@ -30,7 +30,11 @@ const arg = (n, d = null) => {
 
 const HOST = arg('host');
 const SECRET = arg('secret');
-if (!HOST) { console.log('usage: node security-probe.js --host <host> [--secret <s>]'); process.exit(77); }
+// An identity the hub should accept, for the "what does the secret grant"
+// section. Defaults to the local username; pass --owner if your hub is
+// restricted to something else.
+const OWNER = arg('owner', process.env.USERNAME || process.env.USER || 'owner');
+if (!HOST) { console.log('usage: node security-probe.js --host <host> [--secret <s>] [--owner <identity>]'); process.exit(77); }
 
 const { WsConnection } = require(path.join(__dirname, '..', 'src', 'service', 'ws'));
 
@@ -153,8 +157,8 @@ function tryDeviceSocket(token, deviceId) {
       return `${body}.${sig}`;
     };
 
-    const asOwner = await req('/api/me', { token: mint('local', 'brswig') });
-    record(asOwner.status === 200 ? 'ok' : 'OPEN', 'the owner can sign in', `HTTP ${asOwner.status}`);
+    const asOwner = await req('/api/me', { token: mint('local', OWNER) });
+    record(asOwner.status === 200 ? 'ok' : 'OPEN', 'a permitted identity can sign in', `HTTP ${asOwner.status}`);
 
     // The point: in dev auth the secret IS the authority. Anyone holding it can
     // claim to be anyone -- including a subject that has never existed.

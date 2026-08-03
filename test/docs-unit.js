@@ -205,14 +205,12 @@ check('the architecture doc states the one-instance limit', () => {
  *
  * A personal hub's hostname is not a secret in the cryptographic sense, but it
  * is an invitation: it names a live endpoint that can start sessions on
- * someone's machines. It has no business in documentation that teaches people
- * to run their own.
+ * someone's machines. Account names are the same kind of thing -- they tell an
+ * attacker exactly which identity to target.
  *
- * The pattern is GENERIC on purpose. An earlier version named the specific
+ * The patterns are GENERIC on purpose. An earlier version named the specific
  * hostname it was guarding against -- which put that hostname into the
- * repository, in the very file whose job was to keep it out. This flags any
- * concrete Azure endpoint that is not an obvious placeholder, so it protects
- * whoever forks this as well.
+ * repository, in the very file whose job was to keep it out.
  */
 check('no private deployment hostnames appear anywhere in the repo', () => {
   const endpoint = /\b([a-z0-9][a-z0-9-]{2,})\.(?:azurewebsites\.net|azurecontainerapps\.io)\b/gi;
@@ -242,6 +240,52 @@ check('no private deployment hostnames appear anywhere in the repo', () => {
     }
   }
   assert.deepStrictEqual(hits, [], `a private deployment leaked into the repo:\n  ${hits.join('\n  ')}`);
+});
+
+check('no real email addresses appear anywhere in the repo', () => {
+  // Documentation should teach with placeholders. A real address names a
+  // person to target, and is trivially committed by pasting a working command.
+  const email = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi;
+  /**
+   * Domains that exist to be examples, plus the noreply address git trailers
+   * use and the throwaway domains in test fixtures.
+   *
+   * Compared by EQUALITY, not by suffix. A suffix match treated
+   * "somecompany.com" as safe because it ends with "y.com" -- so the guard
+   * passed on exactly the kind of address it exists to catch.
+   */
+  const safeDomains = new Set([
+    'example.com', 'example.org', 'example.net', 'example',
+    'contoso.com', 'fabrikam.com', 'users.noreply.github.com',
+    'work.example', 'personal.example',
+    'a.com', 'b.com', 'c.com', 'x.com', 'y.com', 'z.com',
+  ]);
+
+  const files = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === '.git' || e.name === 'node_modules' || e.name === 'images') continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(md|js|ps1|ya?ml|json)$/.test(e.name)) files.push(p);
+    }
+  };
+  walk(ROOT);
+
+  const hits = [];
+  for (const f of files) {
+    // Strip URLs first. A credential in a URL -- https://user:token@host --
+    // looks exactly like an email address to a regex, and the redaction tests
+    // deliberately contain them. Flagging those would train people to ignore
+    // this check, which is how a real leak gets waved through.
+    const body = fs.readFileSync(f, 'utf8').replace(/\bhttps?:\/\/\S+/gi, '');
+    for (const m of body.matchAll(email)) {
+      const domain = m[0].split('@')[1].toLowerCase();
+      if (safeDomains.has(domain)) continue;
+      hits.push(`${path.relative(ROOT, f)}: ${m[0]}`);
+    }
+  }
+  assert.deepStrictEqual(hits, [], `a real address leaked into the repo:\n  ${hits.join('\n  ')}`);
 });
 
 check('the docs do not carry sprint-by-sprint history', () => {
