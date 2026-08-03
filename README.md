@@ -1,8 +1,15 @@
-# Squad Hub
+<p align="center">
+  <img src="docs/images/squad-hub-logo.jpg" alt="Squad Hub" width="380">
+</p>
 
-One place to see and control your [Squad](https://github.com/bradygaster/squad)
-sessions — on your laptop, a dev box, an Azure Container App, or a Kubernetes
-pod.
+<h1 align="center">Squad Hub</h1>
+
+<p align="center">
+  One place to see and control your <a href="https://github.com/bradygaster/squad">Squad</a> sessions —
+  on your laptop, a dev box, an Azure Container App, or a Kubernetes pod.
+</p>
+
+---
 
 ## The problem
 
@@ -16,6 +23,10 @@ the moment you step away from a keyboard:
 
 Squad Hub fixes both.
 
+<p align="center">
+  <img src="docs/images/all-sessions.jpg" alt="Every session across every device, in one live list" width="900">
+</p>
+
 ## What it does
 
 | | |
@@ -25,7 +36,12 @@ Squad Hub fixes both.
 | **Answer approvals remotely** | The card shows the literal command and the paths it touches |
 | **Start a session anywhere** | Pick a device, write a prompt |
 | **Steer and stop** | Send follow-up input, or cut a run short |
+| **Squad-aware** | Reads `.squad/` for team, decisions, and model policy |
 | **On your phone** | Installable as a PWA |
+
+<p align="center">
+  <img src="docs/images/new-session.jpg" alt="Starting a session on a remote device" width="420">
+</p>
 
 ## Try it
 
@@ -55,27 +71,30 @@ squad-hub kill <session>
 
 ## How it works
 
-```
-┌──────────────────────────────────────────────┐
-│ Your device (laptop, dev box, ACA, AKS)      │
-│   copilot --acp   <- one process per session │
-│        │ Agent Client Protocol               │
-│   squad-hub daemon                           │
-│     - session registry, heartbeat            │
-│     - reaps orphaned agents                  │
-└───────────────────┬──────────────────────────┘
-                    │ outbound WebSocket only
-                    ▼
-┌──────────────────────────────────────────────┐
-│ squad-hub service                            │
-│   devices, sessions, presence, approvals     │
-│   state partitioned per user                 │
-└───────────────────┬──────────────────────────┘
-                    ▼
-        web app  ·  PWA  ·  (Teams next)
-```
+<p align="center">
+  <img src="docs/images/how-it-works.jpg" alt="Architecture: device daemon, hub service, and control surfaces" width="900">
+</p>
 
 The daemon dials **out**, so nothing has to be opened on your laptop or dev box.
+
+## Running it in the cloud
+
+```powershell
+./scripts/deploy-aca.ps1 -ResourceGroup rg -Environment cae -Registry acr -WithCloudDevice
+```
+
+A cloud device runs the **same daemon** as a laptop and appears in the same
+list. Give it a GitHub token and it runs a real agent:
+
+```
+SQUAD_HUB_URL          the hub service
+SQUAD_HUB_TOKEN        identifies the DEVICE to the hub
+SQUAD_HUB_AGENT_TOKEN  authorises the AGENT to GitHub
+```
+
+Those last two are deliberately separate. The hub token says which device this
+is; the agent token spends a Copilot entitlement. Conflating them would let
+anyone who can register a device also spend someone else's.
 
 ## Security
 
@@ -118,16 +137,11 @@ denied command would report the denial just as convincingly.
 
 **A test that cannot fail is decoration.** `test/mutate.js` disables each
 load-bearing mechanism in turn and requires the test that claims to cover it to
-fail *by name*. It has already found several mechanisms with no real coverage —
+fail *by name*. It has found several mechanisms with no real coverage —
 including the entire orphan gate, which passed on Windows only because the OS
 was cleaning up for us.
 
-Evidence, including what is still unverified, is in [`docs/`](docs/).
-
-## Status
-
-Working today: the daemon, the service, presence, remote approvals, spawn,
-steer, stop, and the web app. Teams and the ACA substrate are next.
+Evidence per sprint, including what each did *not* prove, is in [`docs/`](docs/).
 
 ## How it is built
 
