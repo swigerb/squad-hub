@@ -12,12 +12,17 @@ daemon on the same machine.
 The **hub service** holds only a projection of that, in memory, so a browser has
 something to render and something to command.
 
-```
-device                          hub                         you
-------                          ---                         ---
-copilot --acp   <-- ACP -->   daemon  -- WebSocket -->   service  -- HTTP -->  browser
-   the agent                the record                   a cache             a view
-```
+<p align="center">
+  <img src="images/device-flow.jpg" alt="Device flow: the agent and daemon on the device, the service as a cache, and the browser as a view" width="900">
+</p>
+
+Three roles, and the distinction between them is the whole design:
+
+| | | |
+|---|---|---|
+| `squad-hub daemon` | **the record** | on the device, alongside the agent |
+| `squad-hub service` | **a cache** | in the cloud, per-user, in memory |
+| browser · PWA · Teams | **a view** | HTTPS to command, WebSocket to watch |
 
 ### What follows from it
 
@@ -153,6 +158,17 @@ Copilot entitlement.
 Proxies close connections that carry no traffic. Azure App Service does so at
 about 240 seconds, and it is far from alone.
 
-Devices heartbeat every 15 s and are fine. A **browser** watching an idle hub
-sends nothing and receives nothing, so the service pings every 45 s. Two bytes,
-and browsers answer automatically.
+Two WebSockets are at risk, and they fail differently:
+
+- **The device's outbound socket** carries a heartbeat every 15 s, so it was
+  never in danger.
+- **The browser's watcher socket** only *receives*. On an idle hub it sends
+  nothing and receives nothing, so it was dropped at 240 s and reconnected —
+  showing stale data in the gap.
+
+The service therefore pings every 45 seconds. Two bytes, and browsers answer
+automatically.
+
+This is the reason the browser's connection is worth naming separately in the
+diagram above: commands travel over HTTPS and would be fine either way, but live
+updates depend on a socket that nothing else was keeping open.

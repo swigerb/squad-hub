@@ -57,10 +57,16 @@ check('every implemented command is documented', () => {
 });
 
 check('every command the docs promise actually exists', () => {
-  const promised = [...allDocs.matchAll(/squad-hub ([a-z][a-z-]+)/g)]
-    .map((m) => m[1])
-    .filter((c) => !['start', 'stop'].includes(c) || true);
-  const invented = [...new Set(promised)].filter((c) => !implemented.includes(c));
+  // `squad-hub daemon` and `squad-hub service` are the two COMPONENTS, named
+  // after the binary on purpose. They read like commands and are not, and
+  // `squad-hub service` is one letter from the real `squad-hub serve` -- so
+  // they are excluded explicitly rather than by a cleverer regex that would
+  // quietly stop catching genuinely invented commands.
+  const componentNames = ['daemon', 'service'];
+  const promised = [...allDocs.matchAll(/squad-hub ([a-z][a-z-]+)/g)].map((m) => m[1]);
+  const invented = [...new Set(promised)]
+    .filter((c) => !componentNames.includes(c))
+    .filter((c) => !implemented.includes(c));
   assert.deepStrictEqual(invented, [],
     `the docs promise commands that do not exist: ${invented.join(', ')}`);
 });
@@ -199,6 +205,50 @@ check('every image the README references exists', () => {
     if (!fs.existsSync(path.join(ROOT, m[1]))) missing.push(m[1]);
   }
   assert.deepStrictEqual(missing, [], `missing images: ${missing.join(', ')}`);
+});
+
+check('every image the architecture doc references exists', () => {
+  const missing = [];
+  for (const m of architecture.matchAll(/src="([^"]+)"/g)) {
+    if (!fs.existsSync(path.resolve(path.join(ROOT, 'docs'), m[1]))) missing.push(m[1]);
+  }
+  assert.deepStrictEqual(missing, [], `missing images: ${missing.join(', ')}`);
+});
+
+/**
+ * The device-flow diagram makes protocol claims that a reader cannot check.
+ *
+ * It has already been wrong once: it showed the daemon inside the HUB box,
+ * which inverted the record/cache distinction the page exists to explain. And
+ * it labelled the browser link "HTTP only" -- faithfully copying an error in
+ * the ASCII it replaced -- when the browser also holds a WebSocket.
+ *
+ * An image cannot be linted, so this pins the claims to the code that has to
+ * remain true for the picture to stay honest. If any of these disappear, the
+ * diagram is lying and somebody should redraw it.
+ */
+check('the device-flow diagram still matches the code it depicts', () => {
+  const facts = [
+    ['the browser opens a WebSocket, so "WebSocket updates" is right',
+      'web/app.js', /new WebSocket\(/],
+    ['the browser also uses HTTP, so "HTTPS commands" is right',
+      'web/app.js', /await fetch\(/],
+    ['the daemon runs on the DEVICE, not in the hub',
+      'src/cli.js', /daemon-main\.js/],
+    ['the daemon dials OUT, so "outbound WebSocket only" is right',
+      'src/hub-link.js', /Outbound-only by design/],
+    ['one agent process per session',
+      'src/daemon.js', /new AcpSession\(/],
+    ['the daemon reaps orphaned agents',
+      'src/daemon.js', /reapOrphans\(\)\s*\{/],
+    ['service state is partitioned per user',
+      'src/service/store.js', /_bucket\(subject\)\s*\{/],
+  ];
+  const broken = [];
+  for (const [claim, file, pattern] of facts) {
+    if (!pattern.test(read(file))) broken.push(`${claim} -- no longer true in ${file}`);
+  }
+  assert.deepStrictEqual(broken, [], broken.join('; '));
 });
 
 check('every script the docs tell you to run exists', () => {
