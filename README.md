@@ -79,12 +79,26 @@ The daemon dials **out**, so nothing has to be opened on your laptop or dev box.
 
 ## Running it in the cloud
 
+The simplest option is **Azure App Service** — native Node, no container, about
+$13/month:
+
 ```powershell
-./scripts/deploy-aca.ps1 -ResourceGroup rg -Environment cae -Registry acr -WithCloudDevice
+./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-squad-hub
 ```
 
-A cloud device runs the **same daemon** as a laptop and appears in the same
-list. Give it a GitHub token and it runs a real agent:
+The script refuses to deploy a configuration that cannot carry a device, and
+verifies the build it pushed is the one serving.
+
+Container Apps and Kubernetes are also supported, and can additionally run a
+**cloud device** — a daemon in the cloud that appears in the device list beside
+your laptop:
+
+```powershell
+./scripts/deploy-aca.ps1 -ResourceGroup rg -Environment cae -Registry acr -WithCloudDevice
+./scripts/deploy-aks.ps1 -ResourceGroup rg -Cluster aks -Registry acr -HubUrl https://... -HubToken ... -AgentToken ...
+```
+
+Give a cloud device a GitHub token and it runs a real agent:
 
 ```
 SQUAD_HUB_URL          the hub service
@@ -95,6 +109,8 @@ SQUAD_HUB_AGENT_TOKEN  authorises the AGENT to GitHub
 Those last two are deliberately separate. The hub token says which device this
 is; the agent token spends a Copilot entitlement. Conflating them would let
 anyone who can register a device also spend someone else's.
+
+See [docs/cloud.md](docs/cloud.md).
 
 ## Security
 

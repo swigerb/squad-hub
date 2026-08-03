@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | [Command reference](commands.md) | Every command, flag, and environment variable |
-| [Running in the cloud](cloud.md) | Container Apps, Kubernetes, and agent credentials |
+| [Running in the cloud](cloud.md) | App Service, Container Apps, Kubernetes, and agent credentials |
 
 ## Evidence
 
@@ -22,6 +22,7 @@ to use the thing.
 | [Sprint 6](sprint-6-evidence.md) | Squad-aware rendering |
 | [Sprint 7](sprint-7-evidence.md) | Teams notifications |
 | [Sprint 8](sprint-8-evidence.md) | AKS, real agent identity, and `session/load` |
+| [App Service](app-service-evidence.md) | The production path, and its one real limitation |
 
 ## Two rules the tests follow
 

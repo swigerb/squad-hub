@@ -4,6 +4,36 @@ A cloud device runs the **same daemon** as a laptop and appears in the same
 device list. There is no separate cloud code path — that would be a second place
 for the orphan guarantee to be wrong.
 
+## Azure App Service — the simplest option
+
+Runs natively on the Node runtime. No container, ~50 KB, no dependencies, and
+about **$13/month** on B1.
+
+```powershell
+./scripts/deploy-appservice.ps1 -ResourceGroup rg-squad -Name my-squad-hub
+```
+
+The script reads its settings back from Azure and **refuses to deploy** a
+configuration that cannot carry a device: WebSockets off, Always On off, no
+startup command, or more than one worker. It then waits for the build it just
+pushed to be the one serving, because Kudu reports 502 while the site restarts
+even when the code landed.
+
+### One instance only
+
+State is held in memory. At two instances a device attaches to one of them and
+the others report zero devices — roughly half of all requests fail,
+intermittently. `/healthz` reports the instance count, the startup log shouts,
+and the UI shows a banner.
+
+**Scale up (a bigger SKU), not out.** For one person's devices, one instance is
+ample.
+
+### Always On is not optional
+
+Without it the app unloads when idle and every device disconnects. B1 is the
+cheapest tier that supports it; F1 does not, and is not viable.
+
 ## Azure Container Apps
 
 ```powershell
