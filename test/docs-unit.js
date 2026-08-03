@@ -40,7 +40,8 @@ const readme = read('README.md');
 const docsIndex = read('docs/README.md');
 const cloud = read('docs/cloud.md');
 const architecture = read('docs/architecture.md');
-const allDocs = [commands, readme, docsIndex, cloud, architecture, read('docs/sprint-5-evidence.md')].join('\n');
+const security = read('docs/security.md');
+const allDocs = [commands, readme, docsIndex, cloud, architecture, security].join('\n');
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -153,7 +154,7 @@ check('the token-precedence claim matches what the code does', () => {
 // Links and files
 // ---------------------------------------------------------------------------
 check('every relative link in the docs resolves to a real file', () => {
-  const docs = ['README.md', 'docs/README.md', 'docs/commands.md', 'docs/cloud.md', 'docs/architecture.md'];
+  const docs = ['README.md', 'docs/README.md', 'docs/commands.md', 'docs/cloud.md', 'docs/architecture.md', 'docs/security.md'];
   const broken = [];
   for (const d of docs) {
     const dir = path.dirname(path.join(ROOT, d));
@@ -197,6 +198,58 @@ check('the architecture doc states the one-instance limit', () => {
   assert.match(architecture, /one instance|single instance/i,
     'the doc no longer warns that only one instance works');
   assert.match(architecture, /Scale up, not out/i, 'the remedy is missing');
+});
+
+/**
+ * No private deployment details in a public repository.
+ *
+ * A personal hub's hostname is not a secret in the cryptographic sense, but it
+ * is an invitation: it names a live endpoint that can start sessions on
+ * someone's machines. It has no business in documentation that teaches people
+ * to run their own.
+ *
+ * The pattern is GENERIC on purpose. An earlier version named the specific
+ * hostname it was guarding against -- which put that hostname into the
+ * repository, in the very file whose job was to keep it out. This flags any
+ * concrete Azure endpoint that is not an obvious placeholder, so it protects
+ * whoever forks this as well.
+ */
+check('no private deployment hostnames appear anywhere in the repo', () => {
+  const endpoint = /\b([a-z0-9][a-z0-9-]{2,})\.(?:azurewebsites\.net|azurecontainerapps\.io)\b/gi;
+  // Names a reader would recognise as "put your own here".
+  const placeholder = /^(my-?hub|my-?squad-?hub|your-?hub|example|app|name|squad-?hub|contoso|fabrikam)$/i;
+
+  const files = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === '.git' || e.name === 'node_modules' || e.name === 'images') continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(md|js|ps1|ya?ml|json)$/.test(e.name)) files.push(p);
+    }
+  };
+  walk(ROOT);
+
+  const hits = [];
+  for (const f of files) {
+    const body = fs.readFileSync(f, 'utf8');
+    for (const m of body.matchAll(endpoint)) {
+      // Azure Container Apps names carry a generated suffix; take the first
+      // label, which is the app name a person chose.
+      const label = m[1].split('.')[0];
+      if (placeholder.test(label)) continue;
+      hits.push(`${path.relative(ROOT, f)}: ${m[0]}`);
+    }
+  }
+  assert.deepStrictEqual(hits, [], `a private deployment leaked into the repo:\n  ${hits.join('\n  ')}`);
+});
+
+check('the docs do not carry sprint-by-sprint history', () => {
+  // Reference documentation, not a changelog. Someone arriving to USE this
+  // should not have to read how it was built.
+  const stale = fs.readdirSync(path.join(ROOT, 'docs'))
+    .filter((f) => /sprint|evidence/i.test(f));
+  assert.deepStrictEqual(stale, [], `churn documentation is back: ${stale.join(', ')}`);
 });
 
 check('every image the README references exists', () => {

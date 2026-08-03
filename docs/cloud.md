@@ -128,3 +128,6 @@ the roster. A list full of dead entries is one nobody reads.
 Deploy with `-AuthMode entra` to require Microsoft Entra ID. Dev mode issues
 bearer tokens from a shared secret — anyone holding a token is you — and it says
 so at startup rather than pretending to be more.
+
+
+

@@ -132,6 +132,18 @@ See [docs/cloud.md](docs/cloud.md).
 
 ## Security
 
+**Lock it to yourself.** A hub can start sessions and approve commands on your
+machines, so the deploy script **refuses to deploy without an allowlist**:
+
+```powershell
+./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-hub `
+  -AuthMode entra -Tenants <tenant id> -AllowedUsers you@example.com
+```
+
+A tenant filter is not an owner filter — every user in that tenant would
+otherwise be permitted. `-AllowedUsers` is the one that means *you*, and it is
+enforced on the device WebSocket as well as the API.
+
 **File access is off by default.** No folder picker, no directory browsing,
 until you opt in:
 
@@ -147,8 +159,8 @@ the service is told only whether file access is on and whether it is scoped.
 lookup reaches into one subject's partition, so there is no code path that
 returns another user's data and then remembers to remove it.
 
-Run with `--auth entra` to require Microsoft Entra ID. Dev mode is for a single
-trusted machine and will not pretend otherwise.
+See [docs/security.md](docs/security.md), and check your own deployment with
+`node spike/security-probe.js --host <your-host>`.
 
 ## A constraint worth knowing up front
 
@@ -171,11 +183,9 @@ denied command would report the denial just as convincingly.
 
 **A test that cannot fail is decoration.** `test/mutate.js` disables each
 load-bearing mechanism in turn and requires the test that claims to cover it to
-fail *by name*. It has found several mechanisms with no real coverage —
-including the entire orphan gate, which passed on Windows only because the OS
-was cleaning up for us.
+fail *by name*. A mutation nothing catches is a mechanism nothing tests.
 
-Evidence per sprint, including what each did *not* prove, is in [`docs/`](docs/).
+More in [`docs/`](docs/).
 
 ## How it is built
 

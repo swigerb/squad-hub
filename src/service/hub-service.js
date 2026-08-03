@@ -59,6 +59,7 @@ class HubService {
       mode: process.env.SQUAD_HUB_AUTH_MODE || MODES.DEV,
       devSecret: process.env.SQUAD_HUB_DEV_SECRET || crypto.randomBytes(16).toString('hex'),
       allowedTenants: (process.env.SQUAD_HUB_TENANTS || '').split(',').filter(Boolean),
+      allowedUsers: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
       audience: process.env.SQUAD_HUB_AUDIENCE || null,
     });
     this.store = opts.store || new Store();
@@ -134,9 +135,7 @@ class HubService {
     if (req.method === 'OPTIONS') return send(204, '');
     if (url.pathname === '/healthz') {
       const instances = instanceCount();
-      return send(200, {
-        ok: true,
-        mode: this.auth.mode,
+      const detail = {
         // Which process answered. In-memory state is per instance, so when a
         // device seems to vanish intermittently this is the first thing worth
         // knowing -- and guessing at it from behaviour wastes an afternoon.
@@ -156,7 +155,15 @@ class HubService {
         // indistinguishable from the truth without this.
         build: process.env.SQUAD_HUB_BUILD || 'unknown',
         version: require('../../package.json').version,
-      });
+      };
+
+      // A liveness probe needs "is it up". A stranger does not need the device
+      // count -- which says whether you are working right now -- nor the
+      // version, which says which published bugs to try. The detail is behind
+      // the same token as everything else.
+      let authed = false;
+      try { await this.auth.verify(req.headers.authorization); authed = true; } catch { authed = false; }
+      return send(200, authed ? { ok: true, mode: this.auth.mode, ...detail } : { ok: true });
     }
 
     if (url.pathname.startsWith('/api/')) {

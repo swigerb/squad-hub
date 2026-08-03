@@ -214,6 +214,7 @@ async function cmdServe(argv) {
     mode,
     devSecret: process.env.SQUAD_HUB_DEV_SECRET || crypto.randomBytes(24).toString('hex'),
     allowedTenants: (process.env.SQUAD_HUB_TENANTS || '').split(',').filter(Boolean),
+    allowedUsers: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
     audience: process.env.SQUAD_HUB_AUDIENCE || null,
   });
 
@@ -223,6 +224,25 @@ async function cmdServe(argv) {
 
   out(`squad hub service listening on http://${shown}:${addr.port}`);
   out(`  auth mode: ${mode}`);
+  out(`  allowed:   ${auth.allowedUsers.length ? auth.allowedUsers.join(', ') : 'ANYONE who authenticates'}`);
+
+  // The combination that matters: reachable from a network, and no restriction
+  // on who may use it. On a laptop bound to localhost this is fine; on a public
+  // hostname it means the credential is the only thing between a stranger and
+  // your devices.
+  const publiclyBound = host === '0.0.0.0' || host === '::';
+  if (publiclyBound && !auth.allowedUsers.length) {
+    err('');
+    err('*** WARNING: this hub accepts ANY identity that authenticates. ***');
+    if (mode === MODES.DEV) {
+      err('In dev auth that means anyone holding the shared secret can register');
+      err('a device on your hub, under any name they choose.');
+    } else {
+      err('In entra auth that means any user in an allowed tenant can register a device.');
+    }
+    err('Set SQUAD_HUB_ALLOWED_USERS to your own object id, UPN or email.');
+    err('');
+  }
 
   // Loudly, at startup, because the symptom (devices appearing and vanishing)
   // looks nothing like the cause.

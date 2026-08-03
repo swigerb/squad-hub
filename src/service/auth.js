@@ -45,6 +45,22 @@ class Authenticator {
   constructor(opts = {}) {
     this.mode = opts.mode || MODES.DEV;
     this.allowedTenants = opts.allowedTenants || [];
+    /**
+     * Who is allowed to use this hub at all.
+     *
+     * A tenant filter is not an owner filter: in Entra mode every user in an
+     * allowed tenant would otherwise be able to register a device, and in dev
+     * mode anyone holding the shared secret can mint any identity they like.
+     * Measured, not assumed -- spike/security-probe.js signs in as
+     * "somebody-else" in tenant "any-tenant" without this.
+     *
+     * Entries may be an Entra object id, a UPN, or an email. Empty means
+     * anyone who authenticates, which is the right default for a laptop and
+     * the wrong one for anything reachable from the internet.
+     */
+    this.allowedUsers = (opts.allowedUsers || [])
+      .map((u) => String(u).trim().toLowerCase())
+      .filter(Boolean);
     this.audience = opts.audience || null;
     this.devSecret = opts.devSecret || null;
     this._jwks = new Map();
@@ -115,10 +131,26 @@ class Authenticator {
     if (this.allowedTenants.length && !this.allowedTenants.includes(claims.tid)) {
       throw new AuthError('tenant not allowed', 403);
     }
+
+    const name = claims.name || claims.preferred_username || claims.upn || claims.email || null;
+    if (this.allowedUsers.length) {
+      // Any of the identifiers a person would recognise. Checked case-
+      // insensitively, because a UPN typed by hand will not match the casing
+      // Entra returns.
+      const candidates = [claims.oid, claims.sub, name, claims.preferred_username, claims.upn, claims.email]
+        .filter(Boolean).map((c) => String(c).toLowerCase());
+      if (!candidates.some((c) => this.allowedUsers.includes(c))) {
+        // 403, not 401: the credential was valid, the person is not permitted.
+        // Saying so plainly beats an authentication error that sends someone
+        // hunting for a token problem they do not have.
+        throw new AuthError('this account is not permitted to use this hub', 403);
+      }
+    }
+
     return {
       tid: claims.tid,
       oid: claims.oid,
-      name: claims.name || claims.preferred_username || null,
+      name,
       key: subjectKey(claims.tid, claims.oid),
     };
   }

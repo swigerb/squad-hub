@@ -29,11 +29,13 @@ param(
   [string]$Location = 'swedencentral',
   [ValidateSet('B1', 'B2', 'S1', 'P0v3', 'P1v3')][string]$Sku = 'B1',
   [ValidateSet('dev', 'entra')][string]$AuthMode = 'dev',
+  [string[]]$AllowedUsers,
   [string]$Tenants,
   [string]$Audience,
   [string]$Subscription,
   [string]$Runtime = 'NODE:22-lts',
-  [switch]$SkipCreate
+  [switch]$SkipCreate,
+  [switch]$AllowAnyone
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +70,29 @@ if ($AuthMode -eq 'dev') {
   Warn ''
   Warn 'WARNING: dev auth issues bearer tokens from a shared secret.'
   Warn 'Anyone holding a token is you. Use -AuthMode entra for anything shared.'
+}
+
+# A hub on a public hostname with no allowlist accepts any identity that
+# authenticates -- in dev auth, anyone holding the secret, under any name they
+# invent. Refusing is better than warning: this is reachable from the internet
+# the moment it deploys, and a warning scrolls past.
+$existingAllow = az webapp config appsettings list -n $Name -g $ResourceGroup `
+  --query "[?name=='SQUAD_HUB_ALLOWED_USERS'].value | [0]" -o tsv 2>$null
+if (-not $AllowedUsers -and -not $existingAllow -and -not $AllowAnyone) {
+  Fail @"
+No -AllowedUsers, and none already configured.
+
+This hub will be reachable at https://$Name.azurewebsites.net, and without an
+allowlist it accepts ANY identity that authenticates. In dev auth that means
+anyone holding the shared secret can register a device on your hub under any
+name they choose.
+
+Pass your own identity, for example:
+  -AllowedUsers you@example.com
+  -AllowedUsers <your Entra object id>
+
+Use -AllowAnyone only if you genuinely intend a shared hub.
+"@
 }
 
 # ---------------------------------------------------------------------------
@@ -118,6 +143,7 @@ $settings = @("SQUAD_HUB_AUTH_MODE=$AuthMode", "SQUAD_HUB_DEV_SECRET=$secret",
   'SCM_DO_BUILD_DURING_DEPLOYMENT=false')
 if ($Tenants) { $settings += "SQUAD_HUB_TENANTS=$Tenants" }
 if ($Audience) { $settings += "SQUAD_HUB_AUDIENCE=$Audience" }
+if ($AllowedUsers) { $settings += "SQUAD_HUB_ALLOWED_USERS=$($AllowedUsers -join ',')" }
 az webapp config appsettings set -n $Name -g $ResourceGroup --settings @settings | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'app settings could not be applied' }
 
@@ -180,19 +206,31 @@ try {
 # ---------------------------------------------------------------------------
 Step 'Verify THIS build is the one serving'
 # Deploying is not running, and running is not running the new code.
+# The health detail is behind auth now, so mint a token to read it -- a stranger
+# has no business knowing your build id or how many devices you have attached.
 $fqdn = "$Name.azurewebsites.net"
+Push-Location $root
+try {
+  $checkUser = if ($AllowedUsers) { $AllowedUsers[0] } else { $env:USERNAME }
+  $token = node -e "const{Authenticator}=require('./src/service/auth');console.log(new Authenticator({mode:'dev',devSecret:process.argv[1]}).mintDevToken('local',process.argv[2],process.argv[2]))" $secret $checkUser
+} finally { Pop-Location }
+
 $health = $null
 for ($i = 0; $i -lt 40; $i++) {
   try {
-    $h = Invoke-RestMethod -Uri "https://$fqdn/healthz" -TimeoutSec 15 -ErrorAction Stop
+    $h = Invoke-RestMethod -Uri "https://$fqdn/healthz" -TimeoutSec 15 `
+      -Headers @{ Authorization = "Bearer $token" } -ErrorAction Stop
     if ($h.ok -and $h.build -eq $buildId) { $health = $h; break }
   } catch { }
   Start-Sleep -Seconds 6
 }
 if (-not $health) {
-  $last = try { Invoke-RestMethod -Uri "https://$fqdn/healthz" -TimeoutSec 15 } catch { $null }
-  if ($last) {
+  $last = try { Invoke-RestMethod -Uri "https://$fqdn/healthz" -TimeoutSec 15 -Headers @{ Authorization = "Bearer $token" } } catch { $null }
+  if ($last -and $last.build) {
     Fail "the service is answering but running build '$($last.build)', not '$buildId'. The deployment did not take."
+  }
+  if ($last) {
+    Fail "the service is up but would not show its build. If you changed the allowlist, the deploy check identity ('$checkUser') may no longer be permitted."
   }
   Fail "the service never answered on https://$fqdn/healthz"
 }
@@ -200,11 +238,19 @@ Write-Host "  healthz       ok"
 Write-Host "  build         $($health.build) (this deployment)"
 Write-Host "  instance      $($health.instance)"
 
+# What a stranger sees. Asserted rather than assumed, because this endpoint has
+# to stay public for a liveness probe and it would be easy to widen by accident.
+$anon = Invoke-RestMethod -Uri "https://$fqdn/healthz" -TimeoutSec 15
+$anonFields = ($anon | Get-Member -MemberType NoteProperty).Name
+if ($anonFields | Where-Object { $_ -in @('devices', 'build', 'version', 'instance') }) {
+  Fail "anonymous /healthz is volunteering: $($anonFields -join ', ')"
+}
+Write-Host "  anonymous     sees only: $($anonFields -join ', ')"
+
 # And prove a WebSocket really upgrades, which is the whole product.
 Step 'Verify a device can actually attach'
 Push-Location $root
 try {
-  $token = node -e "const{Authenticator}=require('./src/service/auth');console.log(new Authenticator({mode:'dev',devSecret:process.argv[1]}).mintDevToken('local',process.argv[2],process.argv[2]))" $secret $env:USERNAME
   $ok = node -e @"
 const https=require('https'),crypto=require('crypto');
 const {WsConnection}=require('./src/service/ws');

@@ -395,7 +395,8 @@ function api(port, path, token, opts = {}) {
     const ad3 = await s3.listen(0, '127.0.0.1');
     const t3 = a3.mintDevToken('local', 'one', 'One');
     try {
-      const h = await api(ad3.port, '/healthz', null);
+      // Authenticated: the health detail is no longer volunteered to strangers.
+      const h = await api(ad3.port, '/healthz', t3);
       assert.strictEqual(h.body.scaleOutWarning, null, `warned at one instance: ${h.body.scaleOutWarning}`);
       const me = await api(ad3.port, '/api/me', t3);
       assert.strictEqual(me.body.warning, null, 'the UI would show a false alarm');
@@ -413,7 +414,7 @@ function api(port, path, token, opts = {}) {
     const ad4 = await s4.listen(0, '127.0.0.1');
     const t4 = a4.mintDevToken('local', 'many', 'Many');
     try {
-      const h = await api(ad4.port, '/healthz', null);
+      const h = await api(ad4.port, '/healthz', t4);
       assert.strictEqual(h.body.instances, 3);
       assert.ok(h.body.scaleOutWarning, 'healthz did not warn at three instances');
       assert.match(h.body.scaleOutWarning, /3 instances/);
@@ -437,11 +438,92 @@ function api(port, path, token, opts = {}) {
     delete process.env.WEBSITE_INSTANCE_COUNT;
     const s5 = new HS({ auth: a5, serveWeb: false });
     const ad5 = await s5.listen(0, '127.0.0.1');
+    const t5 = a5.mintDevToken('local', 'unk', 'Unk');
     try {
-      const h = await api(ad5.port, '/healthz', null);
+      const h = await api(ad5.port, '/healthz', t5);
       assert.strictEqual(h.body.instances, null);
       assert.strictEqual(h.body.scaleOutWarning, null);
     } finally { await s5.close(); }
+  });
+
+  // -- who is allowed to use this hub at all --------------------------------
+  // A tenant filter is not an owner filter. Without this, anyone holding the
+  // dev secret can mint any identity, and any user in an allowed Entra tenant
+  // can register a device. Measured against a live deployment before it existed.
+  await checkAsync('with an allowlist, a permitted user is admitted', async () => {
+    const a6 = new Authenticator({ mode: MODES.DEV, devSecret: 'al', allowedUsers: ['owner@example.com'] });
+    const p = await a6.verify(`Bearer ${a6.mintDevToken('t', 'oid-1', 'owner@example.com')}`);
+    assert.strictEqual(p.name, 'owner@example.com');
+  });
+
+  await checkAsync('an allowlist admits by object id as well as by name', async () => {
+    const a7 = new Authenticator({ mode: MODES.DEV, devSecret: 'al', allowedUsers: ['oid-1'] });
+    const p = await a7.verify(`Bearer ${a7.mintDevToken('t', 'oid-1', 'Someone')}`);
+    assert.strictEqual(p.oid, 'oid-1');
+  });
+
+  await checkAsync('matching is case-insensitive, because a UPN typed by hand will not match', async () => {
+    const a8 = new Authenticator({ mode: MODES.DEV, devSecret: 'al', allowedUsers: ['Owner@Example.COM'] });
+    const p = await a8.verify(`Bearer ${a8.mintDevToken('t', 'oid-1', 'owner@example.com')}`);
+    assert.ok(p);
+  });
+
+  await checkAsync('an identity NOT on the allowlist is refused, with a valid signature', async () => {
+    const a9 = new Authenticator({ mode: MODES.DEV, devSecret: 'al', allowedUsers: ['owner@example.com'] });
+    // The token is perfectly signed. The person is simply not permitted -- which
+    // is the whole point, and the case a signature check alone cannot cover.
+    let err = null;
+    try { await a9.verify(`Bearer ${a9.mintDevToken('t', 'oid-2', 'stranger@example.com')}`); }
+    catch (e) { err = e; }
+    assert.ok(err, 'a stranger with a validly signed token was admitted');
+    assert.strictEqual(err.status, 403, `expected 403 (valid credential, not permitted), got ${err.status}`);
+  });
+
+  await checkAsync('an empty allowlist admits anyone, which is the documented default', async () => {
+    const a10 = new Authenticator({ mode: MODES.DEV, devSecret: 'al' });
+    const p = await a10.verify(`Bearer ${a10.mintDevToken('any', 'anyone', 'Anyone')}`);
+    assert.ok(p, 'the default should not lock a laptop out of its own hub');
+  });
+
+  await checkAsync('the allowlist is enforced on the DEVICE SOCKET, not only on the API', async () => {
+    // The socket is the route that actually matters: registering a device is
+    // what an intruder would want, and it authenticates through a query string
+    // rather than a header. Testing only the REST path would miss it entirely.
+    const { HubService: HS } = require('../src/service/hub-service');
+    const a11 = new Authenticator({ mode: MODES.DEV, devSecret: 'sock', allowedUsers: ['owner@example.com'] });
+    const s11 = new HS({ auth: a11, serveWeb: false });
+    const ad11 = await s11.listen(0, '127.0.0.1');
+    try {
+      const strangerToken = a11.mintDevToken('t', 'oid-9', 'stranger@example.com');
+      const bad = new HubLink({ url: `ws://127.0.0.1:${ad11.port}/ws`, token: strangerToken, deviceId: 'rogue' });
+      let refused = false;
+      try { await bad.connect(); } catch { refused = true; }
+      bad.stop();
+      assert.ok(refused, 'a non-allowlisted identity registered a device');
+    } finally { await s11.close(); }
+  });
+
+  // -- what a stranger can read without any credential ----------------------
+  await checkAsync('anonymous /healthz says only that the service is up', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const a12 = new Authenticator({ mode: MODES.DEV, devSecret: 'hz' });
+    const s12 = new HS({ auth: a12, serveWeb: false });
+    const ad12 = await s12.listen(0, '127.0.0.1');
+    try {
+      const anon = await api(ad12.port, '/healthz', null);
+      assert.strictEqual(anon.status, 200, 'a liveness probe must still work without a token');
+      assert.deepStrictEqual(Object.keys(anon.body), ['ok'],
+        `anonymous healthz volunteered: ${Object.keys(anon.body).join(', ')}`);
+      // Each of these tells a stranger something: whether you are working right
+      // now, and which published bugs to try.
+      for (const leak of ['devices', 'version', 'build', 'instance']) {
+        assert.ok(!(leak in anon.body), `"${leak}" is exposed anonymously`);
+      }
+
+      const authed = await api(ad12.port, '/healthz', a12.mintDevToken('t', 'o', 'O'));
+      assert.ok('devices' in authed.body, 'an authenticated caller lost the detail it needs');
+      assert.ok('build' in authed.body, 'the deploy check needs the build id');
+    } finally { await s12.close(); }
   });
 
   linkA.stop(); linkB.stop();
