@@ -12,11 +12,16 @@
  * testing -- and that is a finding, not a pass.
  *
  * Exit 0 only if every mutation is caught by the test that claims to cover it.
+ *
+ * Usage: node test/mutate.js [--only <substring of a mutation name>]
  */
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+
+const onlyIdx = process.argv.indexOf('--only');
+const ONLY = onlyIdx !== -1 ? process.argv[onlyIdx + 1] : null;
 
 const ROOT = path.join(__dirname, '..');
 const TESTS = path.join(__dirname, 'run-tests.js');
@@ -70,8 +75,10 @@ const MUTATIONS = [
     name: 'the store filters by user at read time instead of partitioning',
     file: 'src/service/store.js',
     find: `  listDevices(subject) {
+    this._pruneStale(subject);
     return [...this._bucket(subject).devices.values()].map((d) => this.presenceOf(d));`,
     replace: `  listDevices(subject) {
+    this._pruneStale(subject);
     if (process.env.MUTANT) { const all = []; for (const [, b] of this._users) all.push(...b.devices.values()); return all.map((d) => this.presenceOf(d)); } // MUTATION
     return [...this._bucket(subject).devices.values()].map((d) => this.presenceOf(d));`,
     mustFail: 'each user sees exactly their own device',
@@ -378,8 +385,37 @@ function failedTestNames(out) {
   let caught = 0;
   const escaped = [];
 
+  // A filter that matches nothing must not report a clean sweep. This is the
+  // same failure the probe had: do nothing, exit 0, look green.
+  if (ONLY && !MUTATIONS.some((m) => !m.skip && m.name.includes(ONLY))) {
+    console.log(`\nNo mutation name contains "${ONLY}", so nothing ran.`);
+    console.log('Available:');
+    for (const m of MUTATIONS.filter((x) => !x.skip)) console.log(`  - ${m.name}`);
+    process.exit(2);
+  }
+
+  // A mutation that outlives this process is a live edit to real source code,
+  // sitting in the working tree waiting to be committed by the next `git add
+  // -A`. The `finally` below handles a normal failure; it does nothing at all
+  // if the run is killed, which is exactly when a long mutation sweep tends to
+  // end. So track the in-flight edit and undo it on the way out, however we go.
+  let inFlight = null;
+  const undo = () => {
+    if (!inFlight) return;
+    try { fs.writeFileSync(inFlight.file, inFlight.original); } catch { /* best effort */ }
+    inFlight = null;
+  };
+  process.on('exit', undo);
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+    process.on(sig, () => { undo(); process.exit(130); });
+  }
+  process.on('uncaughtException', (e) => { undo(); console.error(e); process.exit(1); });
+
   for (const m of MUTATIONS) {
     if (m.skip) continue;
+    // Re-verifying one repaired mutation should not cost a full sweep; without
+    // this, a stale anchor tends to stay stale.
+    if (ONLY && !m.name.includes(ONLY)) continue;
     const file = path.join(ROOT, m.file);
     const original = fs.readFileSync(file, 'utf8');
     const normalised = nl(original);
@@ -388,6 +424,7 @@ function failedTestNames(out) {
       escaped.push({ ...m, why: 'anchor not found; the mutation never ran' });
       continue;
     }
+    inFlight = { file, original };
     fs.writeFileSync(file, normalised.replace(m.find, m.replace));
 
     try {
@@ -411,12 +448,13 @@ function failedTestNames(out) {
       }
     } finally {
       fs.writeFileSync(file, original);
+      inFlight = null;
     }
   }
 
   console.log('\n' + '='.repeat(60));
-  const applied = MUTATIONS.filter((m) => !m.skip).length;
-  console.log(`${caught}/${applied} mutations caught`);
+  const applied = MUTATIONS.filter((m) => !m.skip && (!ONLY || m.name.includes(ONLY))).length;
+  console.log(`${caught}/${applied} mutations caught${ONLY ? `  (filtered by --only "${ONLY}")` : ''}`);
 
   const real = escaped.filter((e) => e.why === 'suite stayed green' || e.why.startsWith('anchor'));
   if (real.length) {

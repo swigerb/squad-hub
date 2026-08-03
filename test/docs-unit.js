@@ -97,6 +97,21 @@ function allSourceFiles(dir = 'src', acc = []) {
 const srcFiles = allSourceFiles();
 const usedVars = envVarsIn(srcFiles);
 
+check('no mutation testing artefacts are left in the source tree', () => {
+  // test/mutate.js edits real source files in place. If a sweep is interrupted,
+  // the edit survives -- and because each one is guarded by `process.env.MUTANT`
+  // it is inert, so nothing else notices and the next `git add -A` commits it.
+  // That has happened.
+  //
+  // Skipped while mutate.js is running, since a mutation being present is the
+  // entire point then; otherwise every mutant would be "caught" by this check
+  // alone and the sweep would prove nothing.
+  if (process.env.MUTANT) return;
+  const dirty = srcFiles.filter((f) => read(f).includes('MUTATION'));
+  assert.deepStrictEqual(dirty, [],
+    `live mutation testing edits are still in: ${dirty.join(', ')} -- run git checkout on them`);
+});
+
 check('the source scan actually covers the source tree', () => {
   // The failure this catches is a scan that finds nothing and reports green.
   assert.ok(srcFiles.length >= 10, `only ${srcFiles.length} source files found`);
