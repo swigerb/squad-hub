@@ -198,6 +198,43 @@ no administrator: OAuth Apps are created from your own account settings.
 The button appears only when both are set. With neither, the sign-in page still
 accepts a pasted token, so the hub is never bricked by a half-finished setup.
 
+##### One OAuth App is one hub address
+
+An OAuth App has exactly **one** callback URL field. There is no way to add a
+second, so an App is bound to the single address it was registered against.
+
+This matters here more than it would elsewhere, because Squad Hub is meant to
+run in several places at once — a laptop, a dev box, Container Apps, AKS, App
+Service. **Each address that people sign in to needs its own OAuth App.** They
+are free and take a minute; the alternative is repointing one App's callback
+and breaking sign-in everywhere else.
+
+A practical arrangement is one App per address you actually browse to:
+
+| Where | Callback URL |
+|---|---|
+| Your machine | `http://localhost:7420/auth/github/callback` |
+| A hosted hub | `https://<that host>/auth/github/callback` |
+
+The client id and secret differ per App, so each deployment gets its own pair.
+Nothing is shared between them, and revoking one does not touch the others.
+
+##### If sign-in fails with a redirect URI mismatch
+
+The redirect the hub sends to GitHub comes from **`SQUAD_HUB_PUBLIC_URL`** when
+it is set, and only falls back to the host the request arrived on when it is
+not. The deploy script sets it for you.
+
+So a mismatch almost always means one of:
+
+- The App was registered against a different address than the one you are
+  browsing.
+- The hub is reached through a custom domain while `SQUAD_HUB_PUBLIC_URL` still
+  names the platform-assigned hostname. Register the callback for whichever
+  address `SQUAD_HUB_PUBLIC_URL` names, since that is what GitHub will be sent.
+- The path is wrong. It is `/auth/github/callback`, and a trailing slash counts
+  as different.
+
 What the flow does and does not do:
 
 - **No scopes are requested.** The hub only needs to know who you are, and
