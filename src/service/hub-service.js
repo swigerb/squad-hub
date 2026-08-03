@@ -34,6 +34,25 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
 };
 
+/**
+ * Am I one of several instances?
+ *
+ * This matters because state is in memory. A device attaches to ONE instance;
+ * every other instance has never heard of it and answers "no devices". Roughly
+ * half of all requests then 404, intermittently, with nothing in any log to say
+ * why -- measured live, see docs/plans/app-service.md.
+ *
+ * Azure App Service exposes the count; Container Apps and Kubernetes do not, so
+ * an unknown count is treated as "probably fine" rather than raising a warning
+ * nobody can act on. A false alarm on every ACA deployment would train people to
+ * ignore the real one.
+ */
+function instanceCount() {
+  const raw = process.env.WEBSITE_INSTANCE_COUNT || process.env.SQUAD_HUB_INSTANCE_COUNT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class HubService {
   constructor(opts = {}) {
     this.auth = opts.auth || new Authenticator({
@@ -114,6 +133,7 @@ class HubService {
 
     if (req.method === 'OPTIONS') return send(204, '');
     if (url.pathname === '/healthz') {
+      const instances = instanceCount();
       return send(200, {
         ok: true,
         mode: this.auth.mode,
@@ -121,8 +141,21 @@ class HubService {
         // device seems to vanish intermittently this is the first thing worth
         // knowing -- and guessing at it from behaviour wastes an afternoon.
         instance: (process.env.WEBSITE_INSTANCE_ID || process.env.HOSTNAME || 'local').slice(0, 12),
+        instances,
+        // Named rather than implied, so it appears in the UI and in any log
+        // scrape without the reader having to know the rule.
+        scaleOutWarning: instances && instances > 1
+          ? `This hub is running on ${instances} instances. State is held in memory, `
+            + 'so a device attached to one instance is invisible to the others and '
+            + 'commands will fail intermittently. Scale to a single instance.'
+          : null,
         devices: this._devices.size,
         uptimeSeconds: Math.round(process.uptime()),
+        // Which build is actually serving. A deploy tool that reports failure
+        // while the code lands -- or success while it does not -- is
+        // indistinguishable from the truth without this.
+        build: process.env.SQUAD_HUB_BUILD || 'unknown',
+        version: require('../../package.json').version,
       });
     }
 
@@ -142,7 +175,20 @@ class HubService {
     const p = url.pathname;
 
     if (p === '/api/me' && req.method === 'GET') {
-      return send(200, { name: me.name, tenantId: me.tid, subject: me.key });
+      const instances = instanceCount();
+      return send(200, {
+        name: me.name,
+        tenantId: me.tid,
+        subject: me.key,
+        // The UI shows this as a banner. A user whose devices keep vanishing
+        // deserves to be told why on the screen where they notice it, not in a
+        // log they will never read.
+        warning: instances && instances > 1
+          ? `This hub is running on ${instances} instances and holds state in memory. `
+            + 'Devices will appear and disappear, and commands will fail intermittently. '
+            + 'Scale the App Service plan to a single instance.'
+          : null,
+      });
     }
 
     if (p === '/api/overview' && req.method === 'GET') {

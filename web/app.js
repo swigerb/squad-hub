@@ -391,7 +391,7 @@ function wire() {
   };
 
   $('menuBtn').onclick = (e) => { e.stopPropagation(); toggleMenu(); };
-  $('menu').onclick = (e) => {
+  $('bannerClose').onclick = () => { $('banner').hidden = true; };  $('menu').onclick = (e) => {
     const b = e.target.closest('[data-menu]');
     if (b) onMenu(b.dataset.menu);
   };
@@ -454,6 +454,14 @@ function wire() {
 }
 
 function showNewErr(m) { $('nsErr').hidden = false; $('nsErr').textContent = m; }
+
+/** A persistent warning the user cannot miss and can dismiss once read. */
+function showBanner(text) {
+  const el = $('banner');
+  if (!el) return;
+  $('bannerText').textContent = text;
+  el.hidden = false;
+}
 
 /**
  * The menu.
@@ -579,6 +587,9 @@ function updateCwdHint() {
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';
+    // A hub split across instances loses devices intermittently. Say so where
+    // the user will notice it, not only in a log.
+    if (state.me.warning) showBanner(state.me.warning);
   } catch (e) {
     document.body.innerHTML = `<div class="empty"><h3>Could not sign in</h3><p>${esc(e.message)}</p></div>`;
     return;

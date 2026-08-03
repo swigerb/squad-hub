@@ -383,6 +383,67 @@ function api(port, path, token, opts = {}) {
     assert.strictEqual(sent.length, 0, 'a pong provoked a reply, which would loop');
   });
 
+  // -- scale-out guard ------------------------------------------------------
+  // The failure this warns about is silent: at two instances the device list is
+  // simply wrong about half the time, with nothing anywhere saying why.
+  await checkAsync('a single instance produces NO warning', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const a3 = new Authenticator({ mode: MODES.DEV, devSecret: 's1' });
+    const saved = process.env.SQUAD_HUB_INSTANCE_COUNT;
+    delete process.env.SQUAD_HUB_INSTANCE_COUNT;
+    const s3 = new HS({ auth: a3, serveWeb: false });
+    const ad3 = await s3.listen(0, '127.0.0.1');
+    const t3 = a3.mintDevToken('local', 'one', 'One');
+    try {
+      const h = await api(ad3.port, '/healthz', null);
+      assert.strictEqual(h.body.scaleOutWarning, null, `warned at one instance: ${h.body.scaleOutWarning}`);
+      const me = await api(ad3.port, '/api/me', t3);
+      assert.strictEqual(me.body.warning, null, 'the UI would show a false alarm');
+    } finally {
+      if (saved !== undefined) process.env.SQUAD_HUB_INSTANCE_COUNT = saved;
+      await s3.close();
+    }
+  });
+
+  await checkAsync('several instances DO produce a warning', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const a4 = new Authenticator({ mode: MODES.DEV, devSecret: 's2' });
+    process.env.SQUAD_HUB_INSTANCE_COUNT = '3';
+    const s4 = new HS({ auth: a4, serveWeb: false });
+    const ad4 = await s4.listen(0, '127.0.0.1');
+    const t4 = a4.mintDevToken('local', 'many', 'Many');
+    try {
+      const h = await api(ad4.port, '/healthz', null);
+      assert.strictEqual(h.body.instances, 3);
+      assert.ok(h.body.scaleOutWarning, 'healthz did not warn at three instances');
+      assert.match(h.body.scaleOutWarning, /3 instances/);
+
+      const me = await api(ad4.port, '/api/me', t4);
+      assert.ok(me.body.warning, 'the UI would show nothing');
+      // The warning must say what to DO, not merely that something is wrong.
+      assert.match(me.body.warning, /single instance/i, 'the warning offers no remedy');
+    } finally {
+      delete process.env.SQUAD_HUB_INSTANCE_COUNT;
+      await s4.close();
+    }
+  });
+
+  await checkAsync('an unknown instance count does not raise a false alarm', async () => {
+    // ACA and Kubernetes do not expose a count. Warning there would be noise on
+    // every deployment, and noise is how a real warning gets ignored.
+    const { HubService: HS } = require('../src/service/hub-service');
+    const a5 = new Authenticator({ mode: MODES.DEV, devSecret: 's3' });
+    delete process.env.SQUAD_HUB_INSTANCE_COUNT;
+    delete process.env.WEBSITE_INSTANCE_COUNT;
+    const s5 = new HS({ auth: a5, serveWeb: false });
+    const ad5 = await s5.listen(0, '127.0.0.1');
+    try {
+      const h = await api(ad5.port, '/healthz', null);
+      assert.strictEqual(h.body.instances, null);
+      assert.strictEqual(h.body.scaleOutWarning, null);
+    } finally { await s5.close(); }
+  });
+
   linkA.stop(); linkB.stop();
   await svc.close();
 

@@ -77,6 +77,13 @@ Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
 | `SQUAD_HUB_TEAMS_WEBHOOK` | Teams incoming webhook. Notifications are off without it. |
+| `SQUAD_HUB_BUILD` | Build marker reported by `/healthz`. Set by the deploy script so it can prove the code it pushed is the code now serving. |
+| `SQUAD_HUB_INSTANCE_COUNT` | Overrides the detected instance count. Azure App Service sets `WEBSITE_INSTANCE_COUNT` itself; this is for platforms that do not. |
+
+**More than one instance will not work.** State is held in memory, so a device
+attaches to one instance and the others report zero devices — roughly half of
+all requests fail. `/healthz` reports `instances` and a `scaleOutWarning`, and
+the UI shows a banner. Scale up, not out.
 
 ### A device
 

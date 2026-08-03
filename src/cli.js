@@ -224,6 +224,18 @@ async function cmdServe(argv) {
   out(`squad hub service listening on http://${shown}:${addr.port}`);
   out(`  auth mode: ${mode}`);
 
+  // Loudly, at startup, because the symptom (devices appearing and vanishing)
+  // looks nothing like the cause.
+  const instances = Number(process.env.WEBSITE_INSTANCE_COUNT || process.env.SQUAD_HUB_INSTANCE_COUNT);
+  if (Number.isFinite(instances) && instances > 1) {
+    err('');
+    err('*** WARNING: this hub is running on ' + instances + ' instances. ***');
+    err('State is held in memory, so a device attaches to ONE instance and the');
+    err('others report zero devices. Roughly half of all requests will fail.');
+    err('Scale to a single instance, or scale up rather than out.');
+    err('');
+  }
+
   if (mode === MODES.DEV) {
     const tid = 'local';
     const oid = os.userInfo().username || 'me';

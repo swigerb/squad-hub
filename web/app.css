@@ -227,6 +227,20 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   color: var(--text); padding: 10px 12px; border-radius: 8px; font: inherit;
 }
 
+/* ---------- warning banner ---------- */
+.banner {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--warn-bg); border: 1px solid #4a3d12; border-left: 3px solid var(--warn);
+  border-radius: 8px; padding: 11px 14px; margin-bottom: 18px; color: #f0e2b8;
+}
+.banner[hidden] { display: none; }
+.banner-icon { color: var(--warn); font-size: 15px; flex: none; }
+.banner-close {
+  margin-left: auto; background: transparent; border: 0; color: var(--dim);
+  cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 6px; flex: none;
+}
+.banner-close:hover { background: rgba(255,255,255,.06); color: var(--text); }
+
 /* ---------- menu ---------- */
 .menu {
   position: fixed; top: 52px; left: 12px; z-index: 40;
