@@ -147,12 +147,17 @@ platform's timeout while doing nothing.
 
 The exit code carries the outcome, so the platform's own status means
 something: **0** when the session completed, **1** when it failed or was cut
-short, **64** when there was no prompt to run, **77** when the hub refused the
-device.
+short, **64** when there was no prompt to run, **75** when it needed an
+approval nobody could give, **77** when the hub refused the device.
 
 **The hub is an observer, never a dependency.** If it cannot be reached the
 session still runs — it simply says that nobody will be able to approve a tool
 call, because an approval gate with no approver is a hang.
+
+And if such a gate is actually reached with no hub connected, the job **stops
+rather than waiting out its ceiling**: there is definitively no approver, so
+billing for hours would achieve nothing. Either make the hub reachable, or
+dispatch that run unattended.
 
 Copilot CLI itself reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` in
 that order. `SQUAD_HUB_AGENT_TOKEN` is copied into the first of those.

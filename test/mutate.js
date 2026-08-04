@@ -487,6 +487,13 @@ const MUTATIONS = [
     replace: `    if (TERMINAL.has(rec.status) && (process.env.MUTANT || !rec.endedAt)) rec.endedAt = Date.now(); // MUTATION`,
     mustFail: 'a reconnecting device cannot keep a finished session alive forever',
   },
+  {
+    name: 'a job waits forever for an approval nobody can give',
+    file: 'src/cloud-device.js',
+    find: `      if (last && last.status === 'waiting_approval' && (!d.link || !d.link.connected)) {`,
+    replace: `      if (!process.env.MUTANT && last && last.status === 'waiting_approval' && (!d.link || !d.link.connected)) { // MUTATION`,
+    mustFail: 'a session waiting for an approval nobody can give does NOT hang',
+  },
 ];
 
 /**

@@ -54,7 +54,8 @@ SQUAD_HUB_CWD      where to run it
 ```
 
 It runs one session and exits, with a code the platform can read: **0** done,
-**1** failed, **64** no prompt, **77** the hub refused the device.
+**1** failed, **64** no prompt, **75** an approval nobody could give, **77** the
+hub refused the device.
 
 ## Credentials
 
@@ -102,8 +103,13 @@ unattended behaviour they have today.
 **The hub is unreachable.** The session still runs. The hub is an observer,
 never a dependency — a design where a monitoring outage becomes a work outage
 is worse than no monitoring. The job says plainly that nobody will be able to
-approve a tool call, because a gate with no approver is a hang. So a run that
-*needs* approval should be dispatched as unattended when no hub is reachable.
+approve a tool call, because a gate with no approver is a hang.
+
+**A gate is reached with nobody to answer it.** The job stops, rather than
+waiting out its ceiling. Found on a live deployment: a revoked token meant no
+hub, the agent asked permission, and the session would have sat there for three
+hours billing to achieve nothing. So a run that *needs* approval should be
+dispatched as unattended when no hub is reachable.
 
 **The job would outlive its session.** It will not. Measured before one-shot
 mode existed: a daemon container ran 180 seconds past its session finishing and

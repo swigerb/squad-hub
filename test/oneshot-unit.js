@@ -169,6 +169,28 @@ function runOneShot(env, budgetMs = 45000) {
     assert.strictEqual(r.code, 77, `expected the refusal exit code, got ${r.code}`);
   });
 
+  await check('a session waiting for an approval nobody can give does NOT hang', async () => {
+    // Found live: with no hub attached, a gated session sat at
+    // waiting_approval and would have billed until the ceiling -- three hours
+    // to achieve nothing. There is no approver, and an approval gate with no
+    // approver is a hang, so it stops and says which of the two things to fix.
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-gated-'));
+    const r = await runOneShot({
+      ...base,
+      SQUAD_HUB_URL: 'http://127.0.0.1:1',
+      SQUAD_HUB_PROMPT: 'this will ask permission',
+      SQUAD_HUB_CWD: work,
+      SQUAD_HUB_ATTACH_GRACE_MS: '1000',
+      FAKE_AGENT_MODE: 'approve-gate',
+      FAKE_AGENT_MARKER: 'marker.txt',
+    }, 30000);
+    assert.strictEqual(r.exited, true, `it hung waiting for an approval nobody could give (${r.ms} ms)`);
+    assert.strictEqual(r.code, 75, `expected the no-approver exit code, got ${r.code}`);
+    assert.match(r.out, /nobody can answer/i, 'it did not explain why it stopped');
+    assert.strictEqual(fs.existsSync(path.join(work, 'marker.txt')), false,
+      'the tool ran without anyone approving it');
+  });
+
   await check('normal mode still stays running', async () => {
     // The regression this risks: turning every long-lived cloud device into
     // something that exits after one session.

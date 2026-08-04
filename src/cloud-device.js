@@ -180,6 +180,26 @@ d.deviceName = deviceName;
       const st = await d.handle({ op: 'status' });
       last = (st.sessions || []).find((s) => s.id === started.id);
       if (last && ['done', 'failed', 'stopped'].includes(last.status)) break;
+
+      /**
+       * Waiting for an approval that nobody can give.
+       *
+       * With no hub attached there is no approver, and an approval gate with no
+       * approver is a hang -- the session would sit here until the ceiling,
+       * billing for hours to achieve nothing. Stop instead, and say which of
+       * the two things to fix: reach the hub, or dispatch the run unattended.
+       *
+       * Only when the hub is genuinely absent. If it is merely reconnecting,
+       * waiting is right: the approver may be about to arrive.
+       */
+      if (last && last.status === 'waiting_approval' && (!d.link || !d.link.connected)) {
+        process.stderr.write('\nthe session is waiting for approval and no hub is connected,\n');
+        process.stderr.write('so nobody can answer it. Stopping rather than billing until the timeout.\n');
+        process.stderr.write('Either make the hub reachable, or dispatch this run unattended.\n');
+        try { await d.handle({ op: 'stop-session', sessionId: started.id }); } catch { /* going anyway */ }
+        try { if (d.link && d.link.stop) d.link.stop(); } catch { /* going anyway */ }
+        d.shutdown(75);
+      }
       await new Promise((r) => setTimeout(r, 1000));
     }
 
