@@ -333,6 +333,39 @@ confirming that a device exists is itself a disclosure.
 Conflating them would let anyone who can register a device also spend someone
 else's Copilot entitlement.
 
+### Use a least-privilege credential for the device token
+
+The two variables are separate. The **identity behind them** is not, unless you
+make it so — and today `gh auth token` hands out a credential carrying `repo`,
+`workflow` and `delete_repo`. The hub needs none of that. It calls `GET /user`
+and reads your login and numeric id, nothing else.
+
+So give the device a credential that can do nothing else. A **fine-grained
+personal access token with no permissions at all** is enough:
+
+1. **Settings → Developer settings → Personal access tokens → Fine-grained**.
+2. Repository access: **Public repositories** (read-only, and unavoidable).
+3. Add **no** account permissions and **no** repository permissions.
+
+Measured against this hub with exactly such a token:
+
+| | |
+|---|---|
+| `GET /user` on GitHub | **200**, correct login and id, no scopes |
+| Signing in to the hub | **200** |
+| Creating an issue, creating a repository | **403** |
+| Private repositories visible | **0** |
+| Partition compared with a full-scope token | **identical** |
+
+That last row is the operational point: the partition follows your numeric
+GitHub id, not the credential, so **swapping an existing device to a
+least-privilege token does not orphan its devices**.
+
+What this does not fix: a device credential is still a *user* credential to the
+hub, so it can also call the API. Until device-scoped tokens exist, treat a
+device token as something that can drive your devices, and keep it out of places
+you would not put a shell.
+
 ## File access
 
 Off by default. No folder picker, no directory browsing, until a device opts in:
@@ -345,6 +378,55 @@ squad-hub start --allow-files-all   # the whole filesystem
 The confinement root is enforced **by the daemon** and never leaves the device.
 The heartbeat reports only whether file access is on and whether it is scoped —
 not the path.
+
+## Where the hub keeps state, and what it will not keep
+
+The hub holds devices, sessions and pending approvals **in memory only**. That
+is deliberate: prompts, session titles and the literal shell commands on
+approval cards never reach a disk the hub controls, so there is no store of them
+to leak, back up, or subpoena.
+
+Where something genuinely must survive a restart, it goes under
+`SQUAD_HUB_HOME`:
+
+| Platform | Location | Survives a restart? |
+|---|---|---|
+| Laptop or dev box | `~/.squad-hub` | Yes |
+| Azure App Service | `/home/data/squad-hub` | **Yes — measured** |
+| Container Apps, AKS, plain container | container filesystem | **No, unless you mount a volume** |
+
+### Honest limits, measured rather than assumed
+
+**App Service `/home` is an Azure Files (CIFS) mount, and it does not enforce
+file permissions.** Every file reports mode `777`, files are owned by `nobody`,
+and `chmod` **succeeds while changing nothing**. Verified on a live deployment.
+
+The consequence is a rule, not a caveat: **nothing secret may be written to
+`/home`.** Signing secrets and tokens stay in app settings, where the platform
+protects them. Anything the hub does persist has to be safe to read.
+
+**A container without a volume forgets.** ACA and AKS have no `/home` equivalent
+by default, so persisted state resets on restart. Mount a volume, or accept that
+it does not survive.
+
+**This is single-instance.** State is per-process, so a second instance has its
+own copy and the two diverge. `/healthz` reports the instance count and refuses
+to pretend otherwise, and the deploy script refuses to scale out.
+
+### Anything security-critical fails closed
+
+If a persisted security decision cannot be read — file missing content, wrong
+shape, unreadable — the hub **refuses the credential** rather than allowing it.
+
+A store that fails *open* is worse than having none at all: you would believe a
+revoked credential was dead while it was still live and working. The rule is
+one line of policy, in one place, and it is tested by deliberately corrupting
+the store and asserting the refusal:
+
+```bash
+node spike/revocation-store-probe.js
+```
+
 
 
 
