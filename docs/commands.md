@@ -130,6 +130,30 @@ the UI shows a banner. Scale up, not out.
 is; the agent token spends a Copilot entitlement. Conflating them would let
 anyone who can register a device also spend someone else's.
 
+### A one-shot device
+
+For a container that already knows what to run — a Container Apps job
+execution, for instance — and should leave when it is done. A long-lived
+replica should outlive any session; a job that never returns bills until the
+platform's timeout while doing nothing.
+
+| Variable | |
+|---|---|
+| `SQUAD_HUB_ONESHOT` | Run one session, then exit. |
+| `SQUAD_HUB_PROMPT` | What to run. Required in one-shot mode. |
+| `SQUAD_HUB_CWD` | Working directory for the session. |
+| `SQUAD_HUB_ATTACH_GRACE_MS` | How long to wait for the hub before starting anyway. Default 5000. |
+| `SQUAD_HUB_MAX_SESSION_MS` | Ceiling on one session, so a wedged agent cannot hold the job open. Default 3 hours. |
+
+The exit code carries the outcome, so the platform's own status means
+something: **0** when the session completed, **1** when it failed or was cut
+short, **64** when there was no prompt to run, **77** when the hub refused the
+device.
+
+**The hub is an observer, never a dependency.** If it cannot be reached the
+session still runs — it simply says that nobody will be able to approve a tool
+call, because an approval gate with no approver is a hang.
+
 Copilot CLI itself reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` in
 that order. `SQUAD_HUB_AGENT_TOKEN` is copied into the first of those.
 

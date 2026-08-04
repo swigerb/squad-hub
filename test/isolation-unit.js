@@ -24,6 +24,7 @@ const crypto = require('crypto');
 
 const { HubService } = require('../src/service/hub-service');
 const { Authenticator, MODES } = require('../src/service/auth');
+const { Store } = require('../src/service/store');
 const { HubLink } = require('../src/hub-link');
 
 let pass = 0; let fail = 0;
@@ -648,7 +649,64 @@ function api(port, path, token, opts = {}) {
     } finally { await sw.close(); }
   });
 
+  // -- ephemeral device retention -------------------------------------------
+  // Every Container Apps job execution registers its own device, runs one
+  // session and ends. Before retention existed that grew without bound:
+  // measured at 1000 executions holding 1000 devices and 1000 sessions, still
+  // listed after thirty simulated days.
+  check('a long-finished cloud job stops pinning its device', () => {
+    const s = new Store({ forgetAfterMs: 60000, keepFinishedMs: 3600000 });
+    s.registerDevice('u', { deviceId: 'job-1', name: 'job', platform: 'linux' });
+    s.upsertSession('u', 'job-1', { id: 'x', title: 'done thing', status: 'done' });
+    s._bucket('u').devices.get('job-1').lastSeen = Date.now() - 86400000;
+    s._bucket('u').sessions.get('job-1:x').endedAt = Date.now() - 86400000;
+    assert.strictEqual(s.listDevices('u').length, 0, 'finished jobs accumulate forever');
+  });
+
+  check('a RUNNING session is never aged out', () => {
+    // The regression retention risks: reaping live work because its device
+    // looks old.
+    const s = new Store({ forgetAfterMs: 1, keepFinishedMs: 1 });
+    s.registerDevice('u', { deviceId: 'slow', name: 'slow', platform: 'linux' });
+    s.upsertSession('u', 'slow', { id: 'live', title: 'running', status: 'active' });
+    s._bucket('u').devices.get('slow').lastSeen = Date.now() - 86400000;
+    assert.strictEqual(s.listDevices('u').length, 1, 'a device with live work was reaped');
+
+    // And again with a stale finish time still attached -- a session that
+    // finished, then resumed, or a record written by an older build. Status is
+    // the authority on whether work is live; a leftover timestamp must not be
+    // able to reap a running session out from under someone.
+    const rec = s._bucket('u').sessions.get('slow:live');
+    rec.endedAt = Date.now() - 86400000;
+    assert.strictEqual(s.listDevices('u').length, 1,
+      'a stale finish time reaped a session that is still running');
+  });
+
+  check('a recently finished session is still there to read', () => {
+    const s = new Store({ forgetAfterMs: 1, keepFinishedMs: 3600000 });
+    s.registerDevice('u', { deviceId: 'job-2', name: 'job', platform: 'linux' });
+    s.upsertSession('u', 'job-2', { id: 'y', title: 'just finished', status: 'done' });
+    s._bucket('u').devices.get('job-2').lastSeen = Date.now() - 86400000;
+    assert.strictEqual(s.listDevices('u').length, 1, 'this morning s run was erased before anyone read it');
+  });
+
   linkA.stop(); linkB.stop();
+
+  check('a reconnecting device cannot keep a finished session alive forever', () => {
+    // A device republishes its whole session list on every reconnect. If
+    // retention keyed on updatedAt, that would refresh the clock each time and
+    // nothing would ever age out.
+    const s = new Store({ forgetAfterMs: 60000, keepFinishedMs: 3600000 });
+    s.registerDevice('u', { deviceId: 'job-3', name: 'job', platform: 'linux' });
+    s.upsertSession('u', 'job-3', { id: 'z', title: 'old', status: 'done' });
+    const rec = s._bucket('u').sessions.get('job-3:z');
+    rec.endedAt = Date.now() - 86400000;
+    // Republish, exactly as a reconnect would.
+    s.upsertSession('u', 'job-3', { id: 'z', title: 'old', status: 'done' });
+    assert.strictEqual(s._bucket('u').sessions.get('job-3:z').endedAt, rec.endedAt,
+      'republishing moved the finish time, so nothing would ever be aged out');
+  });
+
   await svc.close();
 
   console.log(`\n${pass} passed, ${fail} failed`);

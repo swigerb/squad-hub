@@ -39,11 +39,14 @@ function freshStore() {
 function addFinishedJobDevice(store, i, ageMs) {
   const id = `aca-exec-${i}`;
   store.registerDevice(SUB, { deviceId: id, name: `ACA job ${i}`, platform: 'linux' });
-  store.upsertSession(SUB, id, {
-    sessionId: `s-${i}`, title: `job ${i}`, status: 'completed', updatedAt: Date.now() - ageMs,
-  });
+  store.upsertSession(SUB, id, { id: `s-${i}`, title: `job ${i}`, status: 'done' });
+  // Age both the device and the session's recorded finish time. endedAt is
+  // stamped by the store, so it has to be moved here rather than passed in --
+  // which is the point: a device cannot age its own sessions out.
   const rec = store._bucket(SUB).devices.get(id);
-  rec.lastSeen = Date.now() - ageMs;      // long gone
+  rec.lastSeen = Date.now() - ageMs;
+  const s = store._bucket(SUB).sessions.get(`${id}:s-${i}`);
+  s.endedAt = Date.now() - ageMs;
   return id;
 }
 
@@ -51,33 +54,50 @@ console.log('ephemeral device flood probe');
 console.log('='.repeat(60));
 console.log(`simulating ${N} finished ACA job devices\n`);
 
-check('a flood of finished job devices is NOT reaped today', () => {
-  // Establishes the current behaviour. If this ever starts failing, retention
-  // changed and this probe should be revisited rather than deleted.
+check('a flood of long-finished job devices IS reaped', () => {
+  // This measured the opposite before retention existed: 200 devices still
+  // listed after thirty simulated days, and 1000 jobs holding 1000 devices and
+  // 1000 sessions in memory.
   const store = freshStore();
-  for (let i = 0; i < N; i += 1) addFinishedJobDevice(store, i, 30 * 86400000); // 30 days old
-  const listed = store.listDevices(SUB);   // triggers _pruneStale
-  assert.strictEqual(listed.length, N,
-    `expected all ${N} to survive (sessions pin them), saw ${listed.length}`);
-  console.log(`       ${listed.length} devices still listed after 30 simulated days`);
+  for (let i = 0; i < N; i += 1) addFinishedJobDevice(store, i, 30 * 86400000);
+  const listed = store.listDevices(SUB);
+  console.log(`       ${listed.length} of ${N} still listed after 30 simulated days`);
+  assert.strictEqual(listed.length, 0, `${listed.length} job devices survived`);
 });
 
-check('the laptop is buried by them', () => {
+check('a job that finished RECENTLY is still there to read', () => {
+  // Retention must not erase this morning's run before anyone looks at it.
+  const store = freshStore();
+  addFinishedJobDevice(store, 1, 60000);
+  assert.strictEqual(store.listDevices(SUB).length, 1, 'a run from a minute ago was already gone');
+});
+
+check('the laptop is not buried by them', () => {
   const store = freshStore();
   store.registerDevice(SUB, { deviceId: 'laptop', name: 'BS-LAPTOP', platform: 'win32' });
   for (let i = 0; i < N; i += 1) addFinishedJobDevice(store, i, 30 * 86400000);
   const listed = store.listDevices(SUB);
-  const idx = listed.findIndex((d) => d.deviceId === 'laptop');
-  console.log(`       the laptop is item ${idx + 1} of ${listed.length}`);
-  assert.ok(listed.length > 50, 'not enough devices to demonstrate the problem');
+  console.log(`       roster is now ${listed.length} device(s)`);
+  assert.strictEqual(listed.length, 1);
+  assert.strictEqual(listed[0].deviceId, 'laptop');
+});
+
+check('a RUNNING session is never aged out', () => {
+  // The regression this risks: reaping live work because its device looks old.
+  const store = freshStore();
+  store.registerDevice(SUB, { deviceId: 'slow-job', name: 'long job', platform: 'linux' });
+  store.upsertSession(SUB, 'slow-job', { id: 'live', title: 'still going', status: 'active' });
+  store._bucket(SUB).devices.get('slow-job').lastSeen = Date.now() - 30 * 86400000;
+  const listed = store.listDevices(SUB);
+  assert.strictEqual(listed.length, 1, 'a device with a running session was reaped');
 });
 
 check('presence is still computed correctly at scale', () => {
-  // The flood must not make ONLINE devices look wrong -- that would be a
-  // correctness bug on top of a usability one.
   const store = freshStore();
   store.registerDevice(SUB, { deviceId: 'laptop', name: 'BS-LAPTOP', platform: 'win32' });
-  for (let i = 0; i < N; i += 1) addFinishedJobDevice(store, i, 30 * 86400000);
+  // Five minutes: past the 2-minute offline threshold, well inside the
+  // 15-minute forget window, so these are kept AND reported offline.
+  for (let i = 0; i < N; i += 1) addFinishedJobDevice(store, i, 5 * 60000);
   const listed = store.listDevices(SUB);
   const laptop = listed.find((d) => d.deviceId === 'laptop');
   assert.strictEqual(laptop.presence, 'online', 'a live laptop was misreported');
@@ -86,38 +106,31 @@ check('presence is still computed correctly at scale', () => {
 });
 
 check('a job device with NO session is reaped normally', () => {
-  // Confirms the existing rule is exactly "sessions pin a device", so any fix
-  // has to address session retention, not device retention.
   const store = freshStore();
   store.registerDevice(SUB, { deviceId: 'aca-nosession', name: 'ACA job x', platform: 'linux' });
   store._bucket(SUB).devices.get('aca-nosession').lastSeen = Date.now() - 30 * 86400000;
-  const listed = store.listDevices(SUB);
-  assert.strictEqual(listed.find((d) => d.deviceId === 'aca-nosession'), undefined,
-    'a device with no sessions was kept, so the cause is not sessions');
+  assert.strictEqual(store.listDevices(SUB).length, 0);
 });
 
 check('a laptop that is merely OFFLINE for a while is still kept', () => {
-  // The regression any retention change risks: reaping a real machine that was
-  // switched off over a weekend.
+  // A real machine switched off over a long weekend must not vanish.
   const store = freshStore();
   store.registerDevice(SUB, { deviceId: 'laptop', name: 'BS-LAPTOP', platform: 'win32' });
-  store.upsertSession(SUB, 'laptop', {
-    sessionId: 'work-1', title: 'real work', status: 'completed', updatedAt: Date.now(),
-  });
-  store._bucket(SUB).devices.get('laptop').lastSeen = Date.now() - 3 * 86400000; // 3 days
-  const listed = store.listDevices(SUB);
-  assert.ok(listed.find((d) => d.deviceId === 'laptop'), 'the laptop was reaped after a long weekend');
+  store.upsertSession(SUB, 'laptop', { id: 'work-1', title: 'real work', status: 'done' });
+  store._bucket(SUB).devices.get('laptop').lastSeen = Date.now() - 3 * 86400000;
+  assert.ok(store.listDevices(SUB).find((d) => d.deviceId === 'laptop'),
+    'the laptop was reaped after a long weekend');
 });
 
-check('memory grows linearly and is not trivially bounded', () => {
+check('memory does not grow without bound', () => {
   const store = freshStore();
   for (let i = 0; i < 1000; i += 1) addFinishedJobDevice(store, i, 30 * 86400000);
+  store.listDevices(SUB);   // triggers the prune
   const b = store._bucket(SUB);
-  console.log(`       1000 jobs -> ${b.devices.size} devices, ${b.sessions.size} sessions in memory`);
-  assert.strictEqual(b.devices.size, 1000);
-  assert.strictEqual(b.sessions.size, 1000);
+  console.log(`       after 1000 finished jobs: ${b.devices.size} devices, ${b.sessions.size} sessions held`);
+  assert.strictEqual(b.devices.size, 0);
+  assert.strictEqual(b.sessions.size, 0);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
-console.log('\nNote: these assertions describe TODAY. They are a measurement, not a target.');
 process.exit(fail ? 1 : 0);

@@ -148,6 +148,18 @@ Those last two are deliberately separate. The hub token says which device this
 is; the agent token spends a Copilot entitlement. Conflating them would let
 anyone who can register a device also spend someone else's.
 
+A container that already knows what to run — a Container Apps job execution —
+can run one session and exit, so it does not bill for a process doing nothing:
+
+```
+SQUAD_HUB_ONESHOT=1
+SQUAD_HUB_PROMPT="add a health endpoint and a test for it"
+```
+
+That is how Squad Hub supervises [Squad on ACA](docs/aca.md) runs, which lets a
+tool call inside a cloud job be approved from your phone — something an
+unattended job cannot do.
+
 See [docs/cloud.md](docs/cloud.md).
 
 ## Security

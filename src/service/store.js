@@ -17,6 +17,14 @@ const { EventEmitter } = require('events');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 
+/**
+ * Statuses a session never comes back from.
+ *
+ * Anything else -- starting, active, waiting_approval -- is live work and must
+ * never be aged out from under someone.
+ */
+const TERMINAL = new Set(['done', 'failed', 'stopped']);
+
 class Store extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -24,6 +32,20 @@ class Store extends EventEmitter {
     this.offlineAfterMs = opts.offlineAfterMs || 120000;
     // How long an offline device with no sessions stays in the roster.
     this.forgetAfterMs = opts.forgetAfterMs || 15 * 60 * 1000;
+    /**
+     * How long a FINISHED session is kept.
+     *
+     * Sessions used to pin their device forever, deliberately, so history
+     * survived. That is right for a laptop and ruinous for cloud jobs: every
+     * Container Apps execution registers its own device, runs one session and
+     * ends, so the roster and the memory grew without bound. Measured before
+     * this existed -- 1000 job executions held 1000 devices and 1000 sessions,
+     * still listed after thirty simulated days.
+     *
+     * A day is long enough to read this morning's run over coffee and short
+     * enough that a week of jobs does not bury the machine you actually use.
+     */
+    this.keepFinishedMs = opts.keepFinishedMs || 24 * 3600 * 1000;
     /** subjectKey -> { devices: Map, sessions: Map } */
     this._users = new Map();
   }
@@ -86,11 +108,27 @@ class Store extends EventEmitter {
    * point of showing presence at all.
    *
    * A device with sessions is kept regardless: its history still explains what
-   * happened.
+   * happened. That is why FINISHED sessions are aged out first -- otherwise a
+   * single completed job pins its device forever, and a week of cloud jobs
+   * buries the machine you actually use.
+   *
+   * A device that is still ONLINE is never dropped, whatever its age, and
+   * neither is one with a session still running.
    */
   _pruneStale(subject) {
     const b = this._bucket(subject);
-    const cutoff = Date.now() - this.forgetAfterMs;
+    const now = Date.now();
+    const cutoff = now - this.forgetAfterMs;
+    const finishedCutoff = now - this.keepFinishedMs;
+
+    // Age out finished sessions first, so the device check below sees the truth
+    // rather than a session nobody will read again.
+    for (const [key, s] of b.sessions) {
+      if (!TERMINAL.has(s.status)) continue;
+      const at = s.endedAt || 0;
+      if (at && at <= finishedCutoff) b.sessions.delete(key);
+    }
+
     for (const [id, rec] of b.devices) {
       if (rec.lastSeen > cutoff) continue;
       const hasSessions = [...b.sessions.values()].some((s) => s.deviceId === id);
@@ -126,6 +164,16 @@ class Store extends EventEmitter {
       updatedAt: Date.now(),
       firstSeen: existing.firstSeen || Date.now(),
     };
+    /**
+     * When this session FINISHED, stamped once.
+     *
+     * Retention cannot use updatedAt: a device re-publishes its whole session
+     * list on every reconnect, which refreshes updatedAt and would keep a
+     * long-finished session alive forever. endedAt is set the first time a
+     * terminal status is seen and never moves again.
+     */
+    if (TERMINAL.has(rec.status) && !rec.endedAt) rec.endedAt = Date.now();
+    if (!TERMINAL.has(rec.status)) rec.endedAt = null;
     b.sessions.set(key, rec);
     this.emit('session', { subject, session: rec });
     return rec;

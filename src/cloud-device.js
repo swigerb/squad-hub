@@ -26,6 +26,22 @@ const config = require('./config');
 const HUB = process.env.SQUAD_HUB_URL;
 const TOKEN = process.env.SQUAD_HUB_TOKEN;
 
+/**
+ * One-shot mode, for a job execution rather than a long-lived replica.
+ *
+ * A container that already has its prompt should run it and leave. Anything
+ * else bills for a process doing nothing.
+ */
+const ONESHOT = /^(1|true|yes|on)$/i.test(process.env.SQUAD_HUB_ONESHOT || '');
+const PROMPT = process.env.SQUAD_HUB_PROMPT || null;
+const CWD = process.env.SQUAD_HUB_CWD || null;
+// How long to wait for the hub before starting anyway. The hub is an observer,
+// never a dependency, so this is a courtesy to the approver -- not a gate.
+const ATTACH_GRACE_MS = Number(process.env.SQUAD_HUB_ATTACH_GRACE_MS || 5000);
+// A ceiling, so a wedged agent cannot hold the job open indefinitely. The
+// platform has its own timeout; this one exits with a status that explains why.
+const MAX_SESSION_MS = Number(process.env.SQUAD_HUB_MAX_SESSION_MS || 3 * 3600 * 1000);
+
 if (!HUB || !TOKEN) {
   process.stderr.write('SQUAD_HUB_URL and SQUAD_HUB_TOKEN are required for a cloud device\n');
   process.exit(64);
@@ -120,6 +136,62 @@ d.deviceName = deviceName;
     process.stderr.write('This is a policy refusal, not an outage; retrying would not help.\n');
     process.exit(77);
   });
+
+  /**
+   * ONE-SHOT MODE: run one session, then leave.
+   *
+   * A long-lived replica should outlive any session, which is why this process
+   * normally stays in the foreground. An Azure Container Apps job execution is
+   * the opposite: it already HAS its prompt, and a process that never returns
+   * bills until the job timeout while doing nothing. Measured -- a daemon
+   * container ran 180s past completion before it was killed.
+   *
+   * The exit code carries the outcome so the platform's own status means
+   * something: 0 for a completed session, 1 for a failed one.
+   */
+  if (ONESHOT) {
+    if (!PROMPT) {
+      process.stderr.write('SQUAD_HUB_ONESHOT needs SQUAD_HUB_PROMPT: there is nothing to run\n');
+      process.exit(64);
+    }
+
+    // Give the hub a moment to be there. The session runs either way -- the hub
+    // is an observer, never a dependency -- but attaching first means a human
+    // can actually answer the approvals this session may raise.
+    if (!d.link || !d.link.connected) {
+      await new Promise((r) => setTimeout(r, ATTACH_GRACE_MS));
+    }
+    if (!d.link || !d.link.connected) {
+      process.stdout.write('no hub connection; running anyway (nobody can approve tool calls)\n');
+    }
+
+    let started;
+    try {
+      started = await d.handle({ op: 'start-session', prompt: PROMPT, cwd: CWD || process.cwd() });
+    } catch (e) {
+      process.stderr.write(`could not start the session: ${e.message}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`session ${started.id} started\n`);
+
+    const deadline = Date.now() + MAX_SESSION_MS;
+    let last = null;
+    while (Date.now() < deadline) {
+      const st = await d.handle({ op: 'status' });
+      last = (st.sessions || []).find((s) => s.id === started.id);
+      if (last && ['done', 'failed', 'stopped'].includes(last.status)) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    const status = last ? last.status : 'vanished';
+    process.stdout.write(`session ${started.id} ${status}\n`);
+
+    // Close everything explicitly. The daemon holds a listening server and its
+    // hub socket open, and Node will not exit while they live -- which is
+    // exactly how a finished job ends up billing to its timeout.
+    try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
+    d.shutdown(status === 'done' ? 0 : 1);
+  }
 
   // Keep the process in the foreground for the orchestrator.
   setInterval(() => {}, 60000);

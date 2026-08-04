@@ -443,6 +443,50 @@ const MUTATIONS = [
     if (!rec) return false;`,
     mustFail: 'one person cannot revoke another person s token',
   },
+  {
+    name: 'a one-shot job never exits',
+    file: 'src/cloud-device.js',
+    find: `    d.shutdown(status === 'done' ? 0 : 1);`,
+    replace: `    if (process.env.MUTANT) { setInterval(() => {}, 60000); return; } // MUTATION
+    d.shutdown(status === 'done' ? 0 : 1);`,
+    mustFail: 'a one-shot run ENDS instead of billing to the job timeout',
+  },
+  {
+    name: 'a one-shot job gives up when the hub is unreachable',
+    file: 'src/cloud-device.js',
+    find: `    if (!d.link || !d.link.connected) {
+      process.stdout.write('no hub connection; running anyway (nobody can approve tool calls)\\n');
+    }`,
+    replace: `    if (!d.link || !d.link.connected) {
+      if (process.env.MUTANT) { process.stderr.write('no hub\\n'); process.exit(1); } // MUTATION
+      process.stdout.write('no hub connection; running anyway (nobody can approve tool calls)\\n');
+    }`,
+    mustFail: 'WITH NO HUB it still runs the work and still exits',
+  },
+  {
+    name: 'finished cloud sessions are never aged out',
+    file: 'src/service/store.js',
+    find: `      const at = s.endedAt || 0;
+      if (at && at <= finishedCutoff) b.sessions.delete(key);`,
+    replace: `      const at = s.endedAt || 0;
+      if (process.env.MUTANT) continue; // MUTATION
+      if (at && at <= finishedCutoff) b.sessions.delete(key);`,
+    mustFail: 'a long-finished cloud job stops pinning its device',
+  },
+  {
+    name: 'retention also reaps RUNNING sessions',
+    file: 'src/service/store.js',
+    find: `      if (!TERMINAL.has(s.status)) continue;`,
+    replace: `      if (!process.env.MUTANT && !TERMINAL.has(s.status)) continue; // MUTATION`,
+    mustFail: 'a RUNNING session is never aged out',
+  },
+  {
+    name: 'the finish time moves every time a device reconnects',
+    file: 'src/service/store.js',
+    find: `    if (TERMINAL.has(rec.status) && !rec.endedAt) rec.endedAt = Date.now();`,
+    replace: `    if (TERMINAL.has(rec.status) && (process.env.MUTANT || !rec.endedAt)) rec.endedAt = Date.now(); // MUTATION`,
+    mustFail: 'a reconnecting device cannot keep a finished session alive forever',
+  },
 ];
 
 /**
