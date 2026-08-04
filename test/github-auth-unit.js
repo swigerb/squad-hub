@@ -84,9 +84,16 @@ function withFakeGitHub(auth, port) {
 
 (async () => {
   const users = {
-    'tok-owner': { id: 111, login: 'owner-login', email: 'owner@example.com' },
+    'tok-owner': {
+      id: 111, login: 'owner-login', email: 'owner@example.com',
+      avatar_url: 'https://avatars.githubusercontent.com/u/111?v=4',
+    },
     'tok-other': { id: 222, login: 'someone-else', email: null },
     'tok-renamed': { id: 111, login: 'owner-renamed', email: null },
+    'tok-bad-avatar': {
+      id: 333, login: 'bad-avatar', email: null,
+      avatar_url: 'https://attacker.example/avatar.png',
+    },
   };
   const { server, calls } = fakeGitHub(users);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -104,6 +111,16 @@ function withFakeGitHub(auth, port) {
     assert.strictEqual(p.name, 'owner-login');
     assert.strictEqual(p.oid, '111');
     assert.strictEqual(p.tid, 'github');
+    assert.strictEqual(p.avatar, 'https://avatars.githubusercontent.com/u/111?v=4');
+  });
+
+  await checkAsync('only a GitHub-hosted avatar is kept', async () => {
+    // /api/me is consumed by the browser as an image URL. Do not turn an
+    // identity response into a general-purpose third-party request primitive.
+    const a = make();
+    const p = await a.verify('Bearer tok-bad-avatar');
+    assert.strictEqual(p.avatar, null,
+      'an arbitrary avatar host was handed to the browser');
   });
 
   await checkAsync('an invalid token is refused', async () => {

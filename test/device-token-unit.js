@@ -421,6 +421,31 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  await checkAsync('a transient Windows file lock is retried without losing atomicity', async () => {
+    // Defender/indexing can briefly lock the destination and make rename
+    // return EPERM. This happened in the full suite. The store must retry the
+    // atomic rename, never delete the old file first.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'revlock-'));
+    const realRename = fs.renameSync;
+    let calls = 0;
+    fs.renameSync = (...args) => {
+      calls += 1;
+      if (calls < 3) throw Object.assign(new Error('simulated Windows lock'), { code: 'EPERM' });
+      return realRename(...args);
+    };
+    try {
+      const s = new DeviceTokenStore({ dir });
+      s.record('k', { jti: 'locked', expiresAt: Date.now() + 3600000 });
+      assert.strictEqual(calls, 3, `expected two retries, got ${calls} rename attempt(s)`);
+      const after = new DeviceTokenStore({ dir });
+      assert.strictEqual(after.list('k')[0].jti, 'locked',
+        'the write reported success but did not survive a reload');
+    } finally {
+      fs.renameSync = realRename;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await checkAsync('AN UNREADABLE STORE REFUSES EVERY DEVICE TOKEN', async () => {
     // Fail closed. A store that fails OPEN is worse than none at all.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'revbroken-'));

@@ -300,6 +300,27 @@ check('no private deployment hostnames appear anywhere in the repo', () => {
   assert.deepStrictEqual(hits, [], `a private deployment leaked into the repo:\n  ${hits.join('\n  ')}`);
 });
 
+check('no GitHub PAT-shaped literal appears anywhere in the repo', () => {
+  /**
+   * Synthetic token fixtures are still indistinguishable from leaked
+   * credentials to DLP scanners. One such fixture caused OneDrive to block
+   * github-auth-probe.js for everyone except its owner.
+   *
+   * Assemble synthetic markers at runtime instead. The redaction tests stay
+   * equally strong while the source file no longer looks compromised.
+   */
+  const pat = /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})\b/g;
+  const hits = [];
+  for (const f of repoFiles()) {
+    const body = fs.readFileSync(f, 'utf8');
+    for (const m of body.matchAll(pat)) {
+      hits.push(`${path.relative(ROOT, f)}: ${m[0].slice(0, 8)}...`);
+    }
+  }
+  assert.deepStrictEqual(hits, [],
+    `a tracked file looks like it contains a GitHub PAT:\n  ${hits.join('\n  ')}`);
+});
+
 check('no real email addresses appear anywhere in the repo', () => {
   // Documentation should teach with placeholders. A real address names a
   // person to target, and is trivially committed by pasting a working command.

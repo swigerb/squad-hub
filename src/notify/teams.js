@@ -37,7 +37,7 @@ const { URL } = require('url');
  * the branch inverted. The result appended "[redacted]" to a secret it had left
  * completely intact:
  *
- *     token ghp_abcdefghij0123456789ABCDEFGHIJ[redacted]
+ *     token <github token>[redacted]
  *
  * A redactor that looks like it worked is worse than none, because nobody
  * checks it twice.

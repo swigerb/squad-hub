@@ -36,6 +36,7 @@ Squad Hub fixes both.
 | **Answer approvals remotely** | The card shows the literal command and the paths it touches |
 | **Start a session anywhere** | Pick a device, write a prompt |
 | **Steer and stop** | Send follow-up input, or cut a run short |
+| **Device tokens** | Give a server a credential that can be a device and nothing else |
 | **Squad-aware** | Reads `.squad/` for team, decisions, and model policy |
 | **On your phone** | Installable as a PWA |
 
@@ -186,6 +187,16 @@ A tenant filter is not an owner filter — every user in that tenant would
 otherwise be permitted. The check is enforced on the device WebSocket as well as
 the API, since registering a device is what an intruder would actually want.
 
+**Give a server a device token, not your own credential.** A device token can be
+a device and nothing else: it cannot read the API, start work on your other
+devices, or watch your sessions. It expires, it can be revoked, and it can be
+restricted to device ids with a given prefix — so a token for cloud jobs cannot
+claim to be your laptop.
+
+```bash
+squad-hub device-token --hub <url> --token <yours> --label "build server" --ttl-hours 24
+```
+
 **File access is off by default.** No folder picker, no directory browsing,
 until you opt in:
 
@@ -232,12 +243,14 @@ More in [`docs/`](docs/).
 ## How it is built
 
 Built on public specifications: the
-[Agent Client Protocol](https://agentclientprotocol.com), GitHub Copilot CLI's
-published flags, and Azure Web PubSub. Every protocol behaviour it depends on is
-proven by a probe in [`spike/`](spike/), with the captured wire payloads
-committed alongside.
+[Agent Client Protocol](https://agentclientprotocol.com) and GitHub Copilot
+CLI's published flags. Every protocol behaviour it depends on is proven by a
+script in [`spike/`](spike/), with the captured wire payloads committed
+alongside.
 
-No dependencies, and no build step for the web app.
+**No dependencies.** Every `require` is a Node builtin — the WebSocket
+implementation included. There is no `npm install`, no `node_modules`, and no
+build step for the web app.
 
 ## License
 

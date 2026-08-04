@@ -27,6 +27,34 @@ const path = require('path');
 const FILE = 'device-tokens.json';
 const SHAPE = 1;
 
+/**
+ * Rename atomically, tolerating the transient file locks Windows creates.
+ *
+ * Defender and the indexer can briefly open the destination between our write
+ * and rename. Windows reports that as EPERM; the exact same operation succeeds
+ * milliseconds later. This happened in the full suite against a real temp
+ * directory.
+ *
+ * Do NOT delete the destination first. That would make the update non-atomic:
+ * a crash in between would leave no valid revocation store at all. Retrying
+ * preserves the old good file until the new one replaces it.
+ */
+function atomicRename(from, to) {
+  const retryable = new Set(['EPERM', 'EBUSY', 'EACCES']);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      if (!retryable.has(e.code) || attempt >= 7) throw e;
+      // Synchronous by design: _save() is synchronous, and returning before
+      // the rename would let the caller report a revocation that is not stored.
+      const waitMs = Math.min(10 * (2 ** attempt), 160);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+  }
+}
+
 class DeviceTokenStore {
   /**
    * @param {object}  opts
@@ -99,7 +127,7 @@ class DeviceTokenStore {
     // the previous good file rather than a half-written one.
     const tmp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, body, { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+    atomicRename(tmp, this.file);
   }
 
   _bucket(key) {

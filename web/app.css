@@ -77,8 +77,10 @@ body {
 .avatar {
   width: 26px; height: 26px; border-radius: 999px;
   background: linear-gradient(135deg, var(--accent), #a05cff);
+  background-size: cover; background-position: center;
   color: #fff; font-weight: 700; font-size: 12px;
   display: inline-flex; align-items: center; justify-content: center;
+  overflow: hidden; flex: 0 0 auto;
 }
 .caret { font-size: 10px; opacity: .7; }
 
@@ -135,6 +137,17 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .conn { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
 .conn[data-state="live"] { color: var(--ok); border-color: #1d4636; }
 .conn[data-state="connecting"] { color: var(--warn); border-color: #3a3212; }
+
+/* Feedback for a manual refresh, next to the data it refreshed. */
+.updated { color: var(--dim); font-size: 12px; margin-left: auto; margin-right: 8px; }
+.updated[hidden] { display: none; }
+.updated.flash { animation: updatedflash 900ms ease-out; }
+@keyframes updatedflash {
+  0%   { color: var(--ok); }
+  100% { color: var(--dim); }
+}
+.conn[data-state="retrying"] { color: var(--warn); border-color: #3a3212; }
+.conn[data-state="offline"] { color: var(--bad); border-color: #47262b; }
 .conn[data-state="down"] { color: var(--bad); border-color: #47262b; }
 
 /* ---------- device groups ---------- */

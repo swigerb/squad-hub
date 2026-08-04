@@ -54,6 +54,7 @@ silently using somewhere else.
 | Command | |
 |---|---|
 | `squad-hub track-all <on\|off>` | Report every session, or only Squad Hub ones. |
+| `squad-hub --version` | Print the version. |
 | `squad-hub config show` | Print the current configuration. |
 | `squad-hub config server <url>` | Pin a hub service URL. |
 | `squad-hub config unset-server` | Clear it. |

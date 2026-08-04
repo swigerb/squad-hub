@@ -74,19 +74,20 @@ alias does.
 az ad signed-in-user show --query id -o tsv
 ```
 
-## A GitHub account is not the same as a work sign-in
+## The credentials, and what each is for
 
-Worth stating plainly, because the two get conflated.
+Three, and they stay separate. Conflating any two is how a credential ends up
+able to do more than its job.
 
-| | |
-|---|---|
-| **The identity you sign in with** | Whichever provider the hub runs in — GitHub, Entra, or dev. |
-| **`SQUAD_HUB_AGENT_TOKEN`** | Authorises the *agent* to GitHub. A different credential, for a different purpose. |
+| | What it is | Where it lives |
+|---|---|---|
+| **Your sign-in** | Proves who *you* are. Whichever provider the hub runs in — GitHub, Entra, or dev. | Your browser, or `--token` on the CLI |
+| **A device token** | Lets a machine **be a device** and nothing else. Cannot read the API or drive your other devices. | On the device: `SQUAD_HUB_TOKEN` |
+| **An agent token** | Authorises the *agent* to GitHub and spends a **Copilot entitlement**. | On the device: `SQUAD_HUB_AGENT_TOKEN` |
 
-Those two are separate on purpose even when both are GitHub tokens: the sign-in
-token identifies **you**, the agent token spends a **Copilot entitlement**.
-Conflating them would let anyone who can register a device also spend someone
-else's.
+The last two are separate even when both are GitHub tokens: one says which
+device this is, the other spends quota. Conflating them would let anyone who can
+register a device also spend someone else's entitlement.
 
 ## Enforcement, and where it happens
 
@@ -266,7 +267,7 @@ but `github` mode is strictly better and no harder to set up.
 Modes are exclusive. A dev token presented to a `github` hub is refused, because
 a helpful fallback is how auth gets bypassed.
 
-## A GitHub account and a work account, one view
+## Signing in with either of your accounts
 
 The two live in unrelated identity systems, so a hub can only verify one of them
 at a time — whichever mode it runs in. But both can be **listed** as owner, so
@@ -330,8 +331,8 @@ confirming that a device exists is itself a disclosure.
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub |
 
-Conflating them would let anyone who can register a device also spend someone
-else's Copilot entitlement.
+See [the credentials](#the-credentials-and-what-each-is-for) for how these
+relate to your own sign-in.
 
 ## Device tokens
 
@@ -412,10 +413,8 @@ mint another if it is lost.
 The account menu (top right) has **Connect a device…**. It mints a device token
 and shows the exact command to run, once.
 
-An earlier build copied a command containing **your own sign-in credential**,
-which meant following the built-in instructions produced the insecure setup: a
-credential on a server that could also read your hub and start work on every
-other device. The button now mints a device token instead.
+Use this rather than sharing your own sign-in credential. A device token can be
+a device and nothing else, so it is safe on a server or in a container.
 
 ### Revoking one
 
@@ -527,7 +526,7 @@ The confinement root is enforced **by the daemon** and never leaves the device.
 The heartbeat reports only whether file access is on and whether it is scoped —
 not the path.
 
-## Where the hub keeps state, and what it will not keep
+## Where state is kept
 
 The hub holds devices, sessions and pending approvals **in memory only**. That
 is deliberate: prompts, session titles and the literal shell commands on
@@ -543,7 +542,7 @@ Where something genuinely must survive a restart, it goes under
 | Azure App Service | `/home/data/squad-hub` | **Yes — measured** |
 | Container Apps, AKS, plain container | container filesystem | **No, unless you mount a volume** |
 
-### Honest limits, measured rather than assumed
+### Limits
 
 **App Service `/home` is an Azure Files (CIFS) mount, and it does not enforce
 file permissions.** Every file reports mode `777`, files are owned by `nobody`,

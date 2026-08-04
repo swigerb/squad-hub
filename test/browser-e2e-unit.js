@@ -219,7 +219,138 @@ async function until(fn, what, budgetMs = 15000) {
     });
 
     // ---- signing out ------------------------------------------------------
+    // ---- the account menu -------------------------------------------------
+    await check('a manual refresh gives visible feedback where the data is', async () => {
+      // It used to show only a toast at the bottom of the page. Someone
+      // clicking a menu at the top right saw nothing and reasonably concluded
+      // the button did nothing.
+      await page.click('#menuBtn');
+      await page.click('[data-menu="refresh"]');
+      // Wait for the FINAL text, not merely for the element to appear -- it
+      // becomes visible at "refreshing…", which is the intermediate state.
+      await page.waitForFunction(
+        () => /updated \d{2}:\d{2}:\d{2}/.test(document.getElementById('updated').textContent),
+        null, { timeout: 15000 },
+      );
+      const txt = await page.textContent('#updated');
+      assert.match(txt, /updated \d{2}:\d{2}:\d{2}/,
+        `no timestamp appeared next to the data: "${txt}"`);
+    });
+
+    await check('the connection state backs off instead of strobing', async () => {
+      // A fixed two-second retry made the indicator flash connecting/down for
+      // as long as the hub was away, which reads as a broken app rather than an
+      // absent server -- and hammered the server as it tried to restart.
+      //
+      // Run the real code against a disposable second hub and then kill it.
+      // Recalculating the delay formula in a test would only prove that two
+      // copies of the same arithmetic agree.
+      const auth2 = new Authenticator({
+        mode: MODES.DEV, devSecret: 'flap-test', deviceSecret: 'flap-device',
+      });
+      const svc2 = new HubService({
+        auth: auth2, serveWeb: true, persistDeviceTokens: false,
+      });
+      const addr2 = await svc2.listen(0, '127.0.0.1');
+      const origin2 = `http://127.0.0.1:${addr2.port}`;
+      const token2 = auth2.mintDevToken('t2', 'u2', 'flap test');
+      const page2 = await browser.newPage();
+      try {
+        // Count actual socket construction attempts without replacing their
+        // behaviour.
+        await page2.addInitScript(() => {
+          const NativeWebSocket = window.WebSocket;
+          window.__wsAttempts = 0;
+          window.WebSocket = class CountedWebSocket extends NativeWebSocket {
+            constructor(...args) {
+              window.__wsAttempts += 1;
+              super(...args);
+            }
+          };
+        });
+        await page2.goto(`${origin2}/?token=${token2}`);
+        await page2.waitForFunction(
+          () => document.getElementById('conn').dataset.state === 'live',
+          null, { timeout: 10000 },
+        );
+        await svc2.close();
+
+        // Exponential retries occur at roughly 1, 2, 4 and 8 seconds. A fixed
+        // two-second loop would attempt around ten times in this window and
+        // flash on every one.
+        await page2.waitForTimeout(18000);
+        const got = await page2.evaluate(() => ({
+          attempts: window.__wsAttempts,
+          state: document.getElementById('conn').dataset.state,
+          label: document.getElementById('conn').textContent,
+        }));
+        assert.ok(got.attempts <= 6,
+          `the page opened ${got.attempts} sockets in 18s; it is still hammering the hub`);
+        assert.strictEqual(got.state, 'offline',
+          `expected a stable offline state, saw ${got.state} (${got.label})`);
+        assert.strictEqual(got.label, 'hub unreachable');
+      } finally {
+        await page2.close();
+        try { await svc2.close(); } catch { /* already stopped */ }
+      }
+    });
+
+    await check('the account menu shows an avatar, or an initial', async () => {
+      // Three paths, and the third is the one that matters: a broken avatar
+      // must leave the initial in place rather than a broken-image icon.
+      //
+      // Fulfil the valid image locally. Depending on GitHub's CDN would make a
+      // product test fail when the network is slow, which says nothing about
+      // the product. The URL is still GitHub-shaped; only its bytes are local.
+      await page.route('https://avatars.githubusercontent.com/u/1630580?*', (route) => route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+          + 'AAAADUlEQVR42mNk+M/wHwAF/gL+3fI6WQAAAABJRU5ErkJggg==',
+          'base64',
+        ),
+      }));
+      const cases = [
+        { name: 'swigerb', avatar: 'https://avatars.githubusercontent.com/u/1630580?v=4', expectImage: true },
+        { name: 'brswig', avatar: null, expectImage: false, expectText: 'B' },
+        { name: 'zoe', avatar: 'https://avatars.githubusercontent.com/u/definitely-not-real.png', expectImage: false, expectText: 'Z' },
+      ];
+      for (const c of cases) {
+        await page.unroute('**/api/me').catch(() => {});
+        await page.route('**/api/me', (route) => route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ name: c.name, tenantId: 't', subject: 's', avatar: c.avatar, warning: null }),
+        }));
+        await page.goto(origin);
+        await page.waitForSelector('#avatar', { timeout: 10000 });
+        if (c.expectImage) {
+          await page.waitForFunction(
+            () => document.getElementById('avatar').style.backgroundImage.includes('avatars.githubusercontent.com'),
+            null, { timeout: 10000 },
+          );
+        } else {
+          await page.waitForTimeout(1500);
+        }
+        const got = await page.evaluate(() => {
+          const el = document.getElementById('avatar');
+          return { text: el.textContent, bg: el.style.backgroundImage };
+        });
+        if (c.expectImage) {
+          assert.ok(got.bg.includes('avatars.githubusercontent.com'), `no avatar image for ${c.name}: ${JSON.stringify(got)}`);
+        } else {
+          assert.strictEqual(got.bg, '', `an image was set for ${c.name} when it should not be`);
+          assert.strictEqual(got.text, c.expectText, `expected the initial ${c.expectText}, got "${got.text}"`);
+        }
+      }
+      await page.unroute('**/api/me').catch(() => {});
+      await page.unroute('https://avatars.githubusercontent.com/u/1630580?*').catch(() => {});
+    });
+
     await check('signing out returns to a usable sign-in page', async () => {
+      await page.goto(origin);
+      await page.waitForSelector('#menuBtn', { timeout: 10000 });
       await page.click('#menuBtn');
       await page.click('[data-menu="signout"]');
       await page.waitForSelector('.signin', { timeout: 10000 });

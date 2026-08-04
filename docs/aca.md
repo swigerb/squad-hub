@@ -102,34 +102,30 @@ unattended behaviour they have today.
 
 **The hub is unreachable.** The session still runs. The hub is an observer,
 never a dependency — a design where a monitoring outage becomes a work outage
-is worse than no monitoring. The job says plainly that nobody will be able to
-approve a tool call, because a gate with no approver is a hang.
+is worse than no monitoring. The job warns that nobody will be able to approve a
+tool call.
 
-**A gate is reached with nobody to answer it.** The job stops, rather than
-waiting out its ceiling. Found on a live deployment: a revoked token meant no
-hub, the agent asked permission, and the session would have sat there for three
-hours billing to achieve nothing. So a run that *needs* approval should be
-dispatched as unattended when no hub is reachable.
+**A tool call needs approval and no hub is attached.** The job stops with exit
+**75** rather than waiting out its ceiling. There is definitively no approver,
+so waiting would bill for hours and achieve nothing. Dispatch runs that need
+approval as unattended when no hub is reachable.
 
-**The job would outlive its session.** It will not. Measured before one-shot
-mode existed: a daemon container ran 180 seconds past its session finishing and
-was still going when it was killed. It now exits within seconds.
+**The job outliving its session.** It does not. One-shot mode closes the daemon
+and exits within seconds of the session ending.
 
-**The device token is refused.** The daemon prints the reason and exits 77
+**The device token is refused.** The daemon prints the reason and exits **77**
 rather than reconnecting. Retrying a policy refusal never succeeds, and a
 container sitting in that loop looks healthy while doing nothing.
 
-**Hundreds of executions fill the device list.** They do not. A finished
-session stops pinning its device after a day, and the device is then forgotten.
-Before retention existed, 1000 executions held 1000 devices and 1000 sessions
-in memory and were still listed after thirty simulated days.
+**Hundreds of executions filling the device list.** They do not. A finished
+session stops pinning its device after a day, and the device is then forgotten,
+so a week of jobs cannot bury the machines you use.
 
-## What is not built yet
+## Scope
 
-Honest about the boundary: the pieces above exist and are tested in this
-repository. Wiring them into squad-on-aca's `entrypoint.sh` — starting the
-daemon and running the agent under it instead of `copilot -p` — is a change to
-**that** repository and is not done.
+The pieces above are implemented and tested here. Wiring them into
+squad-on-aca's `entrypoint.sh` — starting the daemon and running the agent under
+it instead of `copilot -p` — is a change to **that** repository.
 
-The contract runs one way: **squad-hub owns the device protocol and documents
-it here; squad-on-aca depends on it.** Never the reverse.
+The contract runs one way: **Squad Hub owns the device protocol and documents it
+here; squad-on-aca depends on it.** Never the reverse.

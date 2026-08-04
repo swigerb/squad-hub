@@ -121,8 +121,9 @@ check('a card without a hub URL offers no broken link', () => {
 // ---------------------------------------------------------------------------
 // Redaction -- the assertion that matters most
 // ---------------------------------------------------------------------------
+const FAKE_GITHUB_TOKEN = ['gh', 'p_', 'abcdefghij0123456789ABCDEFGHIJ'].join('');
 const secrets = [
-  ['a GitHub token', 'curl -H "Authorization: token ghp_abcdefghij0123456789ABCDEFGHIJ" https://api.github.com', 'ghp_abcdefghij0123456789ABCDEFGHIJ'],
+  ['a GitHub token', `curl -H "Authorization: token ${FAKE_GITHUB_TOKEN}" https://api.github.com`, FAKE_GITHUB_TOKEN],
   ['an OpenAI-style key', 'export KEY=sk-abcdefghij0123456789ABCDEFGHIJKL', 'sk-abcdefghij0123456789ABCDEFGHIJKL'],
   ['a JWT', 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U', 'dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'],
   ['an inline password', 'psql --password=hunter2supersecret', 'hunter2supersecret'],
@@ -141,10 +142,10 @@ check('redaction survives the whole card path, not just the helper', () => {
   const c = approvalCard({
     session,
     device,
-    approval: { ...approval, command: 'git push https://x:ghp_abcdefghij0123456789ABCDEFGHIJ@github.com/o/r' },
+    approval: { ...approval, command: `git push https://${FAKE_GITHUB_TOKEN}@github.com/o/r` },
     hubUrl: 'https://hub.example.com',
   });
-  assert.ok(!JSON.stringify(c).includes('ghp_abcdefghij0123456789ABCDEFGHIJ'),
+  assert.ok(!JSON.stringify(c).includes(FAKE_GITHUB_TOKEN),
     'a token reached the card');
 });
 

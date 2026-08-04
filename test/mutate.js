@@ -494,6 +494,34 @@ const MUTATIONS = [
     replace: `      if (!process.env.MUTANT && last && last.status === 'waiting_approval' && (!d.link || !d.link.connected)) { // MUTATION`,
     mustFail: 'a session waiting for an approval nobody can give does NOT hang',
   },
+  {
+    name: 'the GitHub avatar is discarded',
+    file: 'src/service/auth.js',
+    find: `      avatar: claims.avatar || null,`,
+    replace: `      avatar: process.env.MUTANT ? null : (claims.avatar || null), // MUTATION`,
+    mustFail: 'a valid GitHub token resolves to that GitHub identity',
+  },
+  {
+    name: 'the browser reconnects every two seconds forever',
+    file: 'web/app.js',
+    find: `    const wait = Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000);`,
+    replace: `    const wait = process.env.MUTANT ? 2000 : Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000); // MUTATION`,
+    mustFail: 'the connection state backs off instead of strobing',
+  },
+  {
+    name: 'Refresh now gives no visible timestamp',
+    file: 'web/app.js',
+    find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
+    replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
+    mustFail: 'a manual refresh gives visible feedback where the data is',
+  },
+  {
+    name: 'a transient Windows file lock is not retried',
+    file: 'src/service/device-token-store.js',
+    find: `      if (!retryable.has(e.code) || attempt >= 7) throw e;`,
+    replace: `      if (process.env.MUTANT || !retryable.has(e.code) || attempt >= 7) throw e; // MUTATION`,
+    mustFail: 'a transient Windows file lock is retried without losing atomicity',
+  },
 ];
 
 /**

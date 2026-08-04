@@ -254,6 +254,17 @@ class Authenticator {
       oid: String(user.id),
       name: user.login,
       email: user.email || null,
+      /**
+       * The user's own avatar, shown to the user themselves.
+       *
+       * Kept only when GitHub serves it, so a value can never be forged into
+       * the claims by a token that did not come from GitHub. Other providers
+       * have no equivalent and the UI falls back to an initial, which is why
+       * this is optional rather than required.
+       */
+      avatar: typeof user.avatar_url === 'string' && /^https:\/\/[a-z0-9.-]*githubusercontent\.com\//i.test(user.avatar_url)
+        ? user.avatar_url
+        : null,
     };
     this._ghCache.set(key, { at: Date.now(), claims });
     if (this._ghCache.size > 200) this._ghCache.delete(this._ghCache.keys().next().value);
@@ -334,6 +345,7 @@ class Authenticator {
       tid: claims.tid,
       oid: claims.oid,
       name,
+      avatar: claims.avatar || null,
       isOwner,
       // An owner's identities share one partition, so signing in with either
       // account shows the same devices. Keyed on a constant rather than on any

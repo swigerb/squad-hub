@@ -340,16 +340,69 @@ function renderTranscript(entries) {
 // ---------------------------------------------------------------------------
 // Live connection
 // ---------------------------------------------------------------------------
+/**
+ * Keep the live view connected.
+ *
+ * Three things this has to get right, all of them learned the hard way:
+ *
+ *   BACK OFF. A fixed retry made the indicator flash connecting/down every two
+ *   seconds for as long as the hub was away, which reads as a broken app rather
+ *   than an absent server -- and hammers the server as it is trying to restart.
+ *
+ *   DO NOT RETRY A REFUSAL. If the credential is no longer accepted, trying
+ *   again with the same credential never works. Go back to sign-in instead of
+ *   looping forever behind a flashing badge.
+ *
+ *   SAY WHICH IT IS. "Reconnecting" and "the hub is not reachable" are different
+ *   situations and a person can act on the second one.
+ */
 function connect() {
+  // Cancel anything already pending, so a stray timer cannot start a second
+  // socket alongside this one.
+  if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+  if (state.ws) { try { state.ws.onclose = null; state.ws.close(); } catch { /* already gone */ } }
+
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${location.host}/ws?role=watcher&access_token=${encodeURIComponent(state.token)}`;
   const ws = new WebSocket(url);
   state.ws = ws;
-  setConn('connecting');
+  setConn(state.reconnectAttempt ? 'retrying' : 'connecting');
 
-  ws.onopen = () => setConn('live');
-  ws.onclose = () => { setConn('down'); setTimeout(connect, 2000); };
-  ws.onerror = () => setConn('down');
+  ws.onopen = () => {
+    state.reconnectAttempt = 0;
+    setConn('live');
+  };
+
+  ws.onclose = async (ev) => {
+    if (state.ws !== ws) return;   // superseded; not ours to react to
+
+    // 1008 is a policy refusal: the hub understood us and said no. Confirm with
+    // a cheap request rather than guessing, because an expired token and an
+    // unreachable hub look identical from a closed socket.
+    if (ev && ev.code === 1008) {
+      try {
+        await api('/api/me');
+      } catch (e) {
+        if (e.status === 401 || e.status === 403) {
+          localStorage.removeItem('squad-hub-token');
+          return showSignIn();
+        }
+      }
+    }
+
+    state.reconnectAttempt = (state.reconnectAttempt || 0) + 1;
+    // 1s, 2s, 4s, 8s, capped at 30s. Quick enough that a restart is barely
+    // noticed, slow enough that a long outage is not a strobe light.
+    const wait = Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000);
+    setConn(state.reconnectAttempt > 2 ? 'offline' : 'retrying');
+    state.reconnectTimer = setTimeout(connect, wait);
+    return undefined;
+  };
+
+  // onerror always precedes onclose, so leave the state change to onclose --
+  // otherwise the badge changes twice for one event.
+  ws.onerror = () => {};
+
   ws.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
@@ -363,10 +416,42 @@ function connect() {
   };
 }
 
+/**
+ * Show the signed-in person's avatar, or their initial.
+ *
+ * The initial is the FALLBACK, not a placeholder to be replaced later: if the
+ * image fails -- blocked, offline, a provider with no avatar -- the initial
+ * stays. A broken-image icon in the account menu would look like a bug.
+ */
+function setAvatar(url, name) {
+  const el = $('avatar');
+  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
+  el.textContent = initial;
+  el.style.backgroundImage = '';
+  if (!url) return;
+  const img = new Image();
+  img.onload = () => {
+    el.textContent = '';
+    el.style.backgroundImage = `url("${url}")`;
+  };
+  // No onerror handler needed beyond doing nothing: the initial is already there.
+  img.src = url;
+}
+
+const CONN_LABEL = {
+  live: 'live',
+  connecting: 'connecting',
+  retrying: 'reconnecting',
+  offline: 'hub unreachable',
+};
+
 function setConn(s) {
   const el = $('conn');
   el.dataset.state = s;
-  el.textContent = s === 'live' ? 'live' : s;
+  el.textContent = CONN_LABEL[s] || s;
+  el.title = s === 'offline'
+    ? 'The hub is not answering. This page keeps retrying; your devices are unaffected.'
+    : '';
 }
 
 async function refresh() {
@@ -538,11 +623,32 @@ async function onMenu(action) {
   toggleMenu(false);
   if (action === 'refresh') {
     // A real round trip, not a cosmetic toast. The page also polls and holds a
-    // live socket, so this earns its place mainly when that socket has dropped
-    // -- which is why it reports the connection state rather than a bare
-    // "Refreshed" that would look identical either way.
-    await refresh();
-    toast(state.ws && state.ws.readyState === 1 ? 'Refreshed — live updates are connected' : 'Refreshed — live updates are NOT connected');
+    // live socket, so this earns its place mainly when that socket has dropped.
+    //
+    // The feedback has to appear WHERE THE DATA IS. This used to show only a
+    // toast at the bottom of the page, so someone clicking a menu at the top
+    // right saw nothing at all and reasonably concluded it had done nothing.
+    const stamp = $('updated');
+    stamp.hidden = false;
+    stamp.textContent = 'refreshing…';
+    try {
+      await refresh();
+    } catch (e) {
+      stamp.textContent = `could not refresh: ${e.message}`;
+      return;
+    }
+    const t = new Date();
+    const hh = String(t.getHours()).padStart(2, '0');
+    const mm = String(t.getMinutes()).padStart(2, '0');
+    const ss = String(t.getSeconds()).padStart(2, '0');
+    // A moving timestamp is evidence. "Refreshed" looks identical whether or
+    // not anything happened.
+    stamp.textContent = `updated ${hh}:${mm}:${ss}`;
+    stamp.classList.remove('flash');
+    void stamp.offsetWidth;          // restart the animation
+    stamp.classList.add('flash');
+    const connected = state.ws && state.ws.readyState === 1;
+    toast(connected ? 'Refreshed — live updates are connected' : 'Refreshed — live updates are NOT connected');
     return;
   }
   if (action === 'connect') { openConnect(); return; }
@@ -732,9 +838,11 @@ function signInHint(mode) {
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';
-    // An initial, the way every other tool does it. Cheap, and it makes the
-    // account menu findable at a glance rather than by reading.
-    $('avatar').textContent = (state.me.name || '?').trim().charAt(0).toUpperCase() || '?';
+    // The user's own avatar where the provider supplies one, an initial
+    // otherwise. The image is set up to fall back on its own if it fails to
+    // load, so a blocked or broken avatar shows the initial rather than a
+    // broken-image icon.
+    setAvatar(state.me.avatar, state.me.name);
     // A hub split across instances loses devices intermittently. Say so where
     // the user will notice it, not only in a log.
     if (state.me.warning) showBanner(state.me.warning);

@@ -288,6 +288,9 @@ class HubService {
         name: me.name,
         tenantId: me.tid,
         subject: me.key,
+        // The signed-in user's own avatar, where the provider supplies one.
+        // Null everywhere else, and the UI falls back to an initial.
+        avatar: me.avatar || null,
         // The UI shows this as a banner. A user whose devices keep vanishing
         // deserves to be told why on the screen where they notice it, not in a
         // log they will never read.
