@@ -153,8 +153,27 @@ function tryDeviceSocket(token, deviceId) {
   // Does the web app hand anything out before sign-in?
   const idx = await req('/');
   if (idx.status === 200) {
-    const leaks = /token|secret|[A-Za-z0-9_-]{40,}/.test(idx.raw);
-    record(leaks ? 'LEAK' : 'ok', 'GET / (the web app)', leaks ? 'the page contains token-like text' : 'no credential in the page');
+    /**
+     * Look for a CREDENTIAL, not for the word "credential".
+     *
+     * The first version matched /token|secret/, so a sign-in page that says
+     * "paste a token" was reported as leaking one. A probe that cries wolf is a
+     * probe people stop reading, and the next real finding goes with it.
+     *
+     * These are the shapes an actual credential takes here: a hub device token,
+     * a GitHub token of any vintage, a JWT, or a signed dev token -- base64url
+     * with a dot, which is what distinguishes one from ordinary long text like
+     * a base64 image or a minified script.
+     */
+    const CREDENTIAL_SHAPES = [
+      /sqhd1\.[A-Za-z0-9_-]{20,}/,            // a hub device token
+      /gh[pousr]_[A-Za-z0-9]{20,}/,           // GitHub classic tokens
+      /github_pat_[A-Za-z0-9_]{20,}/,         // GitHub fine-grained
+      /eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/, // a JWT or a signed dev token
+    ];
+    const hit = CREDENTIAL_SHAPES.find((re) => re.test(idx.raw));
+    record(hit ? 'LEAK' : 'ok', 'GET / (the web app)',
+      hit ? `the page contains something shaped like a credential (${hit})` : 'no credential in the page');
   }
 
   log('');
