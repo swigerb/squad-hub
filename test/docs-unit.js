@@ -17,6 +17,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -242,10 +243,28 @@ check('the architecture doc states the one-instance limit', () => {
  * hostname it was guarding against -- which put that hostname into the
  * repository, in the very file whose job was to keep it out.
  */
-check('no private deployment hostnames appear anywhere in the repo', () => {
-  const endpoint = /\b([a-z0-9][a-z0-9-]{2,})\.(?:azurewebsites\.net|azurecontainerapps\.io)\b/gi;
-  // Names a reader would recognise as "put your own here".
-  const placeholder = /^(my-?hub|my-?squad-?hub|your-?hub|example|app|name|squad-?hub|contoso|fabrikam)$/i;
+/**
+ * Every file GIT WOULD ACTUALLY SHIP.
+ *
+ * These checks claim to be about what is "in the repo", so they should look at
+ * what is in the repo. Walking the working tree instead scans untracked and
+ * ignored files, which turned a vendored third-party template into a build
+ * failure -- a file that was never going to be published in the first place.
+ *
+ * If git cannot answer, fall back to walking the filesystem. That is STRICTER,
+ * not looser: a guard that quietly checks nothing when its tool is missing is
+ * the failure this whole suite exists to prevent.
+ */
+function repoFiles(extensions = /\.(md|js|ps1|ya?ml|json)$/) {
+  try {
+    const out = spawnSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' });
+    if (out.status === 0 && out.stdout) {
+      return out.stdout.split('\0')
+        .filter((p) => p && extensions.test(p))
+        .map((p) => path.join(ROOT, p))
+        .filter((p) => fs.existsSync(p));
+    }
+  } catch { /* fall through to the stricter walk */ }
 
   const files = [];
   const walk = (dir) => {
@@ -253,10 +272,19 @@ check('no private deployment hostnames appear anywhere in the repo', () => {
       if (e.name === '.git' || e.name === 'node_modules' || e.name === 'images') continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (/\.(md|js|ps1|ya?ml|json)$/.test(e.name)) files.push(p);
+      else if (extensions.test(e.name)) files.push(p);
     }
   };
   walk(ROOT);
+  return files;
+}
+
+check('no private deployment hostnames appear anywhere in the repo', () => {
+  const endpoint = /\b([a-z0-9][a-z0-9-]{2,})\.(?:azurewebsites\.net|azurecontainerapps\.io)\b/gi;
+  // Names a reader would recognise as "put your own here".
+  const placeholder = /^(my-?hub|my-?squad-?hub|your-?hub|example|app|name|squad-?hub|contoso|fabrikam)$/i;
+
+  const files = repoFiles();
 
   const hits = [];
   for (const f of files) {
@@ -290,17 +318,22 @@ check('no real email addresses appear anywhere in the repo', () => {
     'work.example', 'personal.example',
     'a.com', 'b.com', 'c.com', 'x.com', 'y.com', 'z.com',
   ]);
+  /**
+   * Subdomains of the RFC 2606 reserved names are documentation too --
+   * "prod.example.com" is as fictional as "example.com".
+   *
+   * The boundary is a leading DOT, deliberately. Matching a bare suffix is what
+   * let "somecompany.com" pass as safe because it ends with "y.com".
+   */
+  const safeSuffixes = ['.example.com', '.example.org', '.example.net', '.example'];
+  /**
+   * Not an address. This is the SSH remote form every git user pastes, and
+   * allowing the exact string is far narrower than trusting github.com, where a
+   * real person's address could hide.
+   */
+  const notAddresses = new Set(['git@github.com']);
 
-  const files = [];
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (e.name === '.git' || e.name === 'node_modules' || e.name === 'images') continue;
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (/\.(md|js|ps1|ya?ml|json)$/.test(e.name)) files.push(p);
-    }
-  };
-  walk(ROOT);
+  const files = repoFiles();
 
   const hits = [];
   for (const f of files) {
@@ -310,8 +343,11 @@ check('no real email addresses appear anywhere in the repo', () => {
     // this check, which is how a real leak gets waved through.
     const body = fs.readFileSync(f, 'utf8').replace(/\bhttps?:\/\/\S+/gi, '');
     for (const m of body.matchAll(email)) {
-      const domain = m[0].split('@')[1].toLowerCase();
+      const address = m[0].toLowerCase();
+      const domain = address.split('@')[1];
+      if (notAddresses.has(address)) continue;
       if (safeDomains.has(domain)) continue;
+      if (safeSuffixes.some((sfx) => domain.endsWith(sfx))) continue;
       hits.push(`${path.relative(ROOT, f)}: ${m[0]}`);
     }
   }

@@ -1,3 +1,35 @@
 node_modules/
 *.log
 .DS_Store
+# Squad: ignore runtime state (logs, inbox, sessions)
+# Note: .squad/casting/* is identity and MUST be committed to main, not ignored
+.squad/orchestration-log/
+.squad/log/
+.squad/decisions/inbox/
+.squad/sessions/
+.squad/.scratch/
+.squad/.cache/
+# Squad: SubSquad activation file (local to this machine)
+.squad-workstream
+
+# Squad: vendored boilerplate, not authored here.
+#
+# `squad init` copies ~140 files of Squad CLI templates and skills into the
+# repo. They are regenerable by re-running it, and committing them would bury
+# the handful of files that ARE authored -- the charters and routing that say
+# how this project is maintained -- under someone else's boilerplate.
+#
+# Re-create with: squad init
+.squad/templates/
+.github/skills/
+.copilot/
+
+# Squad: per-machine runtime state, not team configuration.
+.squad/memory/
+.squad/identity/
+.squad/.first-run
+.squad/casting/history.json
+.squad/casting/registry.json
+.squad/rai/audit-trail.md
+.squad/fact-checker/audit-trail.md
+.squad/agents/*/history.md
