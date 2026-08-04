@@ -217,6 +217,11 @@ async function cmdServe(argv) {
     allowedUsers: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
     owner: (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean),
     audience: process.env.SQUAD_HUB_AUDIENCE || null,
+    // Device tokens are the hub's own credential, so they need a secret that
+    // outlives the process. Without one they still work, but every device
+    // token dies on restart -- which the startup banner says out loud rather
+    // than leaving someone to discover it when a device silently drops off.
+    deviceSecret: process.env.SQUAD_HUB_DEVICE_SECRET || null,
   });
 
   const svc = new HubService({ auth });
@@ -228,6 +233,13 @@ async function cmdServe(argv) {
   const permittedList = [...auth.owner, ...auth.allowedUsers];
   out(`  allowed:   ${permittedList.length ? permittedList.join(', ') : 'ANYONE who authenticates'}`);
   if (auth.owner.length > 1) out(`  owner:     ${auth.owner.length} identities share one view`);
+  if (auth.deviceTokens && auth.deviceTokens.ephemeral) {
+    // Say it now, rather than letting someone discover it when every device
+    // drops off after a restart and the tokens they were issued stop working.
+    out('  device tokens: signed with a GENERATED secret, so they will not');
+    out('                 survive a restart. Set SQUAD_HUB_DEVICE_SECRET to');
+    out('                 keep them working.');
+  }
 
   // The combination that matters: reachable from a network, and no restriction
   // on who may use it. On a laptop bound to localhost this is fine; on a public

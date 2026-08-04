@@ -28,6 +28,8 @@
 const crypto = require('crypto');
 const https = require('https');
 
+const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
+
 const MODES = Object.freeze({ ENTRA: 'entra', GITHUB: 'github', DEV: 'dev' });
 
 class AuthError extends Error {
@@ -92,9 +94,38 @@ class Authenticator {
     // endpoint is proven separately by spike/github-auth-probe.js -- a mock
     // alone would only prove the mock.
     this._verifyGitHubFetch = opts.githubFetch || fetchGitHubUser;
+
+    /**
+     * Device tokens. Enabled unless explicitly turned off, because the
+     * alternative -- a device carrying a full user credential -- is the thing
+     * this exists to stop.
+     *
+     * The secret must outlive the process or every device token dies on
+     * restart, so it comes from configuration. It is never written to disk by
+     * the hub: on App Service the persistent volume cannot enforce file
+     * permissions (measured; see docs/security.md).
+     */
+    this.deviceTokens = opts.deviceTokens === false
+      ? null
+      : (opts.deviceTokens || new DeviceTokens({ secret: opts.deviceSecret }));
+    /**
+     * Injected rather than owned, so this class keeps knowing nothing about
+     * where revocations live. Absent means nothing is revoked, which is the
+     * correct reading for a hub that has never revoked anything -- an
+     * UNREADABLE store is a different case, and the store itself fails closed
+     * rather than reporting an empty list.
+     */
+    this.isDeviceTokenRevoked = opts.isDeviceTokenRevoked || null;
+
     if (this.mode === MODES.DEV && !this.devSecret) {
       throw new Error('dev mode requires a secret; refusing to run an unauthenticated hub');
     }
+  }
+
+  /** Mint a device token for a partition. See src/service/device-token.js. */
+  mintDeviceToken(opts) {
+    if (!this.deviceTokens) throw new Error('device tokens are disabled on this hub');
+    return this.deviceTokens.mint(opts);
   }
 
   /** Mint a dev token. Only meaningful in dev mode. */
@@ -110,6 +141,43 @@ class Authenticator {
     const m = raw.match(/^Bearer\s+(.+)$/i);
     if (!m) throw new AuthError('missing bearer token');
     const token = m[1].trim();
+
+    // Device tokens are checked FIRST, and independently of the auth mode.
+    // They are the hub's own credential rather than a reinterpretation of
+    // GitHub's or Entra's, so they behave identically everywhere -- and a hub
+    // in github mode must not hand a device token to GitHub, which would spend
+    // a rate-limit call to be told something we already know.
+    if (DeviceTokens.looksLikeDeviceToken(token)) {
+      if (!this.deviceTokens) {
+        throw new AuthError('device tokens are not enabled on this hub');
+      }
+      let claims;
+      try {
+        claims = this.deviceTokens.verify(token);
+      } catch (e) {
+        throw new AuthError(e.message, e.status || 401);
+      }
+      if (this.isDeviceTokenRevoked && this.isDeviceTokenRevoked(claims.jti)) {
+        throw new AuthError('this device token has been revoked', 401);
+      }
+      return {
+        kind: KIND_DEVICE,
+        // The partition was decided when the token was minted, so a device
+        // lands where it belongs without a round trip to an identity provider.
+        key: claims.key,
+        name: claims.name || claims.label || 'device',
+        tid: null,
+        oid: null,
+        // A device is never an owner. Owner grants API reach, and the whole
+        // point of this credential is that it has none.
+        isOwner: false,
+        jti: claims.jti,
+        label: claims.label || null,
+        didPrefix: claims.did || null,
+        expiresAt: claims.exp,
+      };
+    }
+
     if (this.mode === MODES.ENTRA) return this._verifyEntra(token);
     if (this.mode === MODES.GITHUB) return this._verifyGitHub(token);
     return this._verifyDev(token);
@@ -243,6 +311,10 @@ class Authenticator {
     }
 
     return {
+      // Stated explicitly rather than inferred. The API asks for kind 'user'
+      // and refuses anything else, so a future third kind is refused by
+      // default instead of being quietly admitted by a `!== 'device'` test.
+      kind: KIND_USER,
       tid: claims.tid,
       oid: claims.oid,
       name,

@@ -21,6 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { Authenticator, AuthError, MODES } = require('./auth');
+const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store, PRESENCE } = require('./store');
 const ws = require('./ws');
@@ -224,6 +225,27 @@ class HubService {
       let principal;
       try { principal = await this.auth.verify(req.headers.authorization); }
       catch (e) { return send(e.status || 401, { error: e.message }); }
+
+      // THE SECURITY PROPERTY, in one place.
+      //
+      // A device credential lives in places a user credential must not: a
+      // container image, a job secret, an environment variable in the cloud.
+      // Without this line, anything holding one could list your devices and
+      // POST /api/devices/<your-laptop>/spawn -- so a leaked job secret would
+      // be a shell on the machine you are sitting at.
+      //
+      // Written as "must be a user" rather than "must not be a device", so a
+      // third kind added later is refused by default instead of admitted by
+      // an inverted test nobody revisited.
+      if (principal.kind !== KIND_USER) {
+        // 403, not 401: the credential is genuine and current. It simply does
+        // not authorise this surface, and saying so plainly saves someone
+        // hunting for a token problem they do not have.
+        return send(403, {
+          error: 'a device token cannot be used to call the API; sign in with your own account',
+        });
+      }
+
       try { return await this._api(url, req, res, principal, send); }
       catch (e) { return send(e.status || 500, { error: e.message }); }
     }
@@ -372,6 +394,16 @@ class HubService {
     if (!conn) return;
 
     const role = url.searchParams.get('role') === 'device' ? 'device' : 'watcher';
+
+    // A device token authorises exactly one thing: being a device. Letting one
+    // open a WATCHER socket would hand back the live event stream -- every
+    // session, every prompt, every approval -- which is most of what refusing
+    // it on the API was protecting.
+    if (me.kind === KIND_DEVICE && role !== 'device') {
+      conn.close(1008, 'a device token cannot open a watcher socket');
+      return;
+    }
+
     if (role === 'device') this._attachDevice(me, conn, url);
     else this._attachWatcher(me, conn);
   }
@@ -379,6 +411,15 @@ class HubService {
   _attachDevice(me, conn, url) {
     const deviceId = url.searchParams.get('deviceId');
     if (!deviceId) { conn.close(1008); return; }
+
+    // Least privilege inside the device role, not merely at its edge. A token
+    // minted for ACA jobs with didPrefix 'aca-' may register 'aca-<execution>'
+    // and cannot claim to be your laptop -- so a leaked job secret cannot take
+    // over the device slot of the machine you are sitting at.
+    if (!DeviceTokens.allowsDeviceId({ did: me.didPrefix }, deviceId)) {
+      conn.close(1008, 'this token may not register that device id');
+      return;
+    }
 
     if (!this._devices.has(me.key)) this._devices.set(me.key, new Map());
     const existing = this._devices.get(me.key).get(deviceId);

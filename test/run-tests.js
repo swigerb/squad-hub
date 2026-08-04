@@ -584,6 +584,7 @@ async function suiteTeams() {
 async function suiteGitHubAuth() {
   console.log('\n[GITHUB AUTH] a GitHub token as a sign-in');
   runChildSuite(path.join(__dirname, 'github-auth-unit.js'), 'github');
+runChildSuite(path.join(__dirname, 'device-token-unit.js'), 'device-tokens');
 }
 
 /**

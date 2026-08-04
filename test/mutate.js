@@ -345,6 +345,52 @@ const MUTATIONS = [
   return {`,
     mustFail: 'the confinement path is NEVER in the reportable view',
   },
+
+  // ---- device tokens: the credential that can be a device and nothing else --
+  {
+    name: 'the API stops refusing device tokens',
+    file: 'src/service/hub-service.js',
+    find: `      if (principal.kind !== KIND_USER) {`,
+    replace: `      if (process.env.MUTANT ? false : principal.kind !== KIND_USER) { // MUTATION`,
+    mustFail: 'a device token CANNOT read the API',
+  },
+  {
+    name: 'a device token may open a watcher socket',
+    file: 'src/service/hub-service.js',
+    find: `    if (me.kind === KIND_DEVICE && role !== 'device') {`,
+    replace: `    if (!process.env.MUTANT && me.kind === KIND_DEVICE && role !== 'device') { // MUTATION`,
+    mustFail: 'a device token CANNOT open a watcher socket',
+  },
+  {
+    name: 'the device-id binding is not enforced',
+    file: 'src/service/hub-service.js',
+    find: `    if (!DeviceTokens.allowsDeviceId({ did: me.didPrefix }, deviceId)) {`,
+    replace: `    if (!process.env.MUTANT && !DeviceTokens.allowsDeviceId({ did: me.didPrefix }, deviceId)) { // MUTATION`,
+    mustFail: 'a bound token cannot register a device outside its prefix',
+  },
+  {
+    name: 'device token expiry is not checked',
+    file: 'src/service/device-token.js',
+    find: `    if (!Number.isFinite(claims.exp) || Date.now() >= claims.exp) {`,
+    replace: `    if (!process.env.MUTANT && (!Number.isFinite(claims.exp) || Date.now() >= claims.exp)) { // MUTATION`,
+    mustFail: 'an expired token is refused',
+  },
+  {
+    name: 'the revocation hook is never consulted',
+    file: 'src/service/auth.js',
+    find: `      if (this.isDeviceTokenRevoked && this.isDeviceTokenRevoked(claims.jti)) {`,
+    replace: `      if (!process.env.MUTANT && this.isDeviceTokenRevoked && this.isDeviceTokenRevoked(claims.jti)) { // MUTATION`,
+    mustFail: 'a revoked device token is refused everywhere',
+  },
+  {
+    name: 'a device token inherits owner status',
+    file: 'src/service/auth.js',
+    find: `        isOwner: false,
+        jti: claims.jti,`,
+    replace: `        isOwner: process.env.MUTANT ? true : false, // MUTATION
+        jti: claims.jti,`,
+    mustFail: 'a device principal is never an owner',
+  },
 ];
 
 /**

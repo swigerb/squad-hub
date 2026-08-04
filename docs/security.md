@@ -333,6 +333,64 @@ confirming that a device exists is itself a disclosure.
 Conflating them would let anyone who can register a device also spend someone
 else's Copilot entitlement.
 
+## Device tokens
+
+A credential that can be a device and **nothing else**.
+
+### The problem it solves
+
+The hub verifies the browser API and the device WebSocket with the same
+function. So a credential good enough to register a device was also good enough
+to call `POST /api/devices/<your-laptop>/spawn` — to run a command on the
+machine you are sitting at.
+
+That is tolerable while the token stays on your own laptop. It stops being
+tolerable the moment one is copied into a container in the cloud, which is
+exactly what running sessions on Container Apps requires. A leaked job secret
+would otherwise be a shell on your laptop.
+
+### What a device token can and cannot do
+
+| | |
+|---|---|
+| Register as a device | **Yes** |
+| Read any `/api/*` endpoint | **No — 403** |
+| Start work on another device | **No — 403** |
+| Open a watcher socket (the live event stream) | **No** |
+| Register a device id outside its binding | **No** |
+| Be an owner | **Never**, regardless of who minted it |
+
+The refusal is **403, not 401**: the credential is genuine and current, it
+simply does not authorise that surface. A 401 would send someone hunting for a
+token problem they do not have.
+
+### Why it is safer than a user credential
+
+- **Issued by the hub**, so it is not a GitHub or Entra credential and carries
+  no authority anywhere else. A leak is worth one hub, not one identity.
+- **It expires.** A token that escapes stops working on its own. For a cloud
+  job this can be hours, which beats any revocation story.
+- **It can be bound to a device id prefix.** A token minted for Container Apps
+  jobs with `aca-` may register `aca-<execution>` and cannot claim to be your
+  laptop — least privilege *inside* the device role, not merely at its edge.
+- **It carries an id**, so one token can be revoked without disturbing others.
+
+### What is never stored
+
+The token itself. Only its id is ever written down, and only when revoked.
+The hub holds no table of live device tokens, so there is none to leak.
+
+### The signing secret
+
+`SQUAD_HUB_DEVICE_SECRET`. It must outlive the process, or every device token
+dies on restart — so it comes from configuration, and the startup banner says
+so plainly when one was generated instead.
+
+It is **never written to disk by the hub**. On App Service the persistent
+volume is a CIFS mount that reports every file as world readable and silently
+ignores `chmod`, so a secret written there would be a secret in plain sight.
+Measured, not assumed — see below.
+
 ### Use a least-privilege credential for the device token
 
 The two variables are separate. The **identity behind them** is not, unless you

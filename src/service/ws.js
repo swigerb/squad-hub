@@ -134,10 +134,15 @@ class WsConnection extends EventEmitter {
     return true;
   }
 
-  close(code = 1000) {
+  close(code = 1000, reason = '') {
     if (this.closed) return;
-    const p = Buffer.alloc(2);
+    // A close frame may carry a reason, and a client can read it. Without one,
+    // a rejected device sees only 1008 and has no idea whether its token was
+    // wrong, expired, or simply not allowed to claim that device id.
+    const r = Buffer.from(String(reason || ''), 'utf8').subarray(0, 123);
+    const p = Buffer.alloc(2 + r.length);
     p.writeUInt16BE(code, 0);
+    r.copy(p, 2);
     this._send(0x8, p);
     this.closed = true;
     try { this.socket.end(); } catch { /* closing */ }
