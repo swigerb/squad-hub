@@ -283,6 +283,13 @@ class Daemon extends EventEmitter {
       });
     });
     this.link.on('disconnected', () => { this.log('hub connection lost; retrying'); this._writeState(); });
+    // A refusal is not a disconnection. Retrying would never succeed and would
+    // bury the one line that says what to fix.
+    this.link.on('refused', (why) => {
+      this.log(`the hub refused this device: ${why}`);
+      this._writeState();
+      this.emit('hub-refused', why);
+    });
     this.link.on('command', (m) => this._hubCommand(m));
 
     this.link.startHeartbeat(() => {

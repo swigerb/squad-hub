@@ -68,6 +68,16 @@ class HubLink extends EventEmitter {
         conn.on('close', () => {
           this.connected = false;
           this.conn = null;
+
+          // 1008 is a POLICY refusal: the hub understood us and said no. A bad
+          // token, an expired one, or a device id this token may not register.
+          // None of those become true by trying again, so retrying is a hot
+          // loop that also buries the reason. Same reasoning as the 401/403
+          // case below -- this one just arrives after the upgrade succeeded.
+          if (conn.closeCode === 1008) {
+            this.emit('refused', conn.closeReason || 'the hub refused this connection');
+            return;
+          }
           this.emit('disconnected');
           this._scheduleReconnect();
         });

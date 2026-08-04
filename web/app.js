@@ -153,6 +153,22 @@ function render() {
   $('groups').innerHTML = html;
   $('empty').hidden = (counts.sessions || 0) > 0;
 
+  // With no device online there is nothing + New could do, so say what to do
+  // first rather than leaving a live button that opens a dialog with an empty
+  // dropdown and fails on submit.
+  const online = devices.filter((d) => d.presence !== 'offline');
+  const newBtn = $('newBtn');
+  newBtn.classList.toggle('needs-device', online.length === 0);
+  newBtn.title = online.length ? 'Start a session' : 'Connect a device first';
+  const emptyEl = $('empty');
+  if (!emptyEl.hidden) {
+    emptyEl.innerHTML = online.length
+      ? `<h3>No sessions yet</h3><p>Start one on a device with <code>squad-hub run "…"</code>, or use <b>+ New</b> to launch one remotely.</p>`
+      : `<h3>No devices connected</h3><p>A device is the machine that actually runs the agent — your laptop, a dev box, or a container.</p><p><button class="primary" id="emptyConnect">Connect a device</button></p>`;
+    const ec = document.getElementById('emptyConnect');
+    if (ec) ec.onclick = () => openConnect();
+  }
+
   $('deviceList').innerHTML = `<div class="card">${devices.map((d) => `
     <div class="device">
       <span class="dot ${d.presence}"></span>
@@ -381,6 +397,11 @@ function wire() {
   };
 
   $('newBtn').onclick = () => openNew();
+  $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
+  $('cnCreate').onclick = () => createDeviceToken();
+  $('cnCopy').onclick = async () => {
+    toast(await copy($('cnCmd').textContent) ? 'Command copied' : 'Select and copy the command above');
+  };
   $('nsCancel').onclick = () => { $('newScrim').hidden = true; };
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
   $('dtClose').onclick = () => { $('detailScrim').hidden = true; state.currentSession = null; };
@@ -516,21 +537,15 @@ async function copy(text) {
 async function onMenu(action) {
   toggleMenu(false);
   if (action === 'refresh') {
+    // A real round trip, not a cosmetic toast. The page also polls and holds a
+    // live socket, so this earns its place mainly when that socket has dropped
+    // -- which is why it reports the connection state rather than a bare
+    // "Refreshed" that would look identical either way.
     await refresh();
-    toast('Refreshed');
+    toast(state.ws && state.ws.readyState === 1 ? 'Refreshed — live updates are connected' : 'Refreshed — live updates are NOT connected');
     return;
   }
-  if (action === 'devices') {
-    const el = document.querySelector('.devices');
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    el.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 600 });
-    return;
-  }
-  if (action === 'attach') {
-    const cmd = `squad-hub start --hub ${location.origin} --token ${state.token}`;
-    toast(await copy(cmd) ? 'Attach command copied' : cmd);
-    return;
-  }
+  if (action === 'connect') { openConnect(); return; }
   if (action === 'install') {
     if (state.installPrompt) {
       state.installPrompt.prompt();
@@ -551,12 +566,67 @@ async function onMenu(action) {
 
 function openNew(deviceId) {
   const online = state.overview.devices.filter((d) => d.presence !== 'offline');
+
+  // With no device online this dialog used to open with an EMPTY dropdown: you
+  // could type a prompt, press Start, and get a failure. Offering an action
+  // that cannot succeed teaches people the product is unreliable, so say what
+  // is missing and how to fix it instead.
+  if (!online.length) {
+    openConnect();
+    return;
+  }
+
   $('nsDevice').innerHTML = online.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.name)}</option>`).join('');
   if (deviceId) $('nsDevice').value = deviceId;
   $('nsErr').hidden = true;
   updateCwdHint();
   $('newScrim').hidden = false;
   $('nsPrompt').focus();
+}
+
+/**
+ * Connect a device.
+ *
+ * This mints a DEVICE TOKEN rather than handing out the signed-in user's own
+ * credential. An earlier build copied a command containing the user token,
+ * which meant following the built-in instructions produced the insecure setup:
+ * a credential on a server that could also read this page's data and start work
+ * on every other device.
+ */
+function openConnect() {
+  $('cnErr').hidden = true;
+  $('cnResult').hidden = true;
+  $('cnCreate').disabled = false;
+  $('cnCreate').textContent = 'Create token';
+  $('connectScrim').hidden = false;
+  $('cnLabel').focus();
+}
+
+async function createDeviceToken() {
+  const btn = $('cnCreate');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  $('cnErr').hidden = true;
+  try {
+    const r = await api('/api/device-tokens', {
+      method: 'POST',
+      body: {
+        label: $('cnLabel').value.trim() || null,
+        didPrefix: $('cnPrefix').value.trim() || null,
+        ttlHours: Number($('cnTtl').value),
+      },
+    });
+    const cmd = `squad-hub start --hub ${location.origin} --token ${r.token}`;
+    $('cnCmd').textContent = cmd;
+    $('cnResult').hidden = false;
+    btn.textContent = 'Create another';
+    btn.disabled = false;
+  } catch (e) {
+    $('cnErr').textContent = e.message;
+    $('cnErr').hidden = false;
+    btn.disabled = false;
+    btn.textContent = 'Create token';
+  }
 }
 
 /**
@@ -662,6 +732,9 @@ function signInHint(mode) {
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';
+    // An initial, the way every other tool does it. Cheap, and it makes the
+    // account menu findable at a glance rather than by reading.
+    $('avatar').textContent = (state.me.name || '?').trim().charAt(0).toUpperCase() || '?';
     // A hub split across instances loses devices intermittently. Say so where
     // the user will notice it, not only in a log.
     if (state.me.warning) showBanner(state.me.warning);

@@ -111,6 +111,16 @@ d.deviceName = deviceName;
     process.stdout.write(`not connected yet (${e.message}); retrying\n`);
   }
 
+  // A refusal arrives AFTER the upgrade succeeded, so "connected" may already
+  // have been printed. Say plainly that it did not stick, and stop -- retrying
+  // a policy refusal never succeeds, and a container that sits in that loop
+  // looks healthy while doing nothing at all.
+  d.on('hub-refused', (why) => {
+    process.stderr.write(`\nthe hub refused this device: ${why}\n`);
+    process.stderr.write('This is a policy refusal, not an outage; retrying would not help.\n');
+    process.exit(77);
+  });
+
   // Keep the process in the foreground for the orchestrator.
   setInterval(() => {}, 60000);
 })().catch((e) => {

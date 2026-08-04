@@ -34,6 +34,8 @@ const FAKE = path.join(__dirname, 'fake-agent.js');
 
 let pass = 0; let fail = 0;
 const failures = [];
+/** Suites that deliberately did not run. Reported, never counted as passing. */
+const skipped = [];
 
 function check(name, fn) {
   try { fn(); pass += 1; console.log(`  ok   ${name}`); }
@@ -357,7 +359,15 @@ function runChildSuite(file, label) {
   }
   for (const [, verdict, name, why] of results) {
     if (verdict === 'ok') { pass += 1; console.log(`  ok   ${name}`); }
-    else { fail += 1; failures.push({ name, error: why || 'failed' }); console.log(`  FAIL ${name}\n         ${why || ''}`); }
+    else if (verdict === 'skip') {
+      // A suite may legitimately not run -- the browser tests need Playwright,
+      // which is deliberately not a dependency. That must not fail the run, and
+      // it must not silently look like a pass either: it is counted separately
+      // and named again in the summary, because "270 passed" while a whole
+      // suite quietly did nothing is the reporting failure worth avoiding.
+      skipped.push(name);
+      console.log(`  SKIP ${name}`);
+    } else { fail += 1; failures.push({ name, error: why || 'failed' }); console.log(`  FAIL ${name}\n         ${why || ''}`); }
   }
   const anyFailed = results.some(([, v]) => v === 'fail');
   if (r.status !== 0 && !anyFailed) {
@@ -585,6 +595,7 @@ async function suiteGitHubAuth() {
   console.log('\n[GITHUB AUTH] a GitHub token as a sign-in');
   runChildSuite(path.join(__dirname, 'github-auth-unit.js'), 'github');
 runChildSuite(path.join(__dirname, 'device-token-unit.js'), 'device-tokens');
+runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser');
 }
 
 /**
@@ -625,7 +636,12 @@ async function suiteDocs() {
 
   console.log('');
   console.log('='.repeat(60));
-  console.log(`${pass} passed, ${fail} failed  (${Math.round((Date.now() - t0) / 1000)}s)`);
+  console.log(`${pass} passed, ${fail} failed${skipped.length ? `, ${skipped.length} SKIPPED` : ''}  (${Math.round((Date.now() - t0) / 1000)}s)`);
+if (skipped.length) {
+  // Named again, so a green run cannot be mistaken for a complete one.
+  console.log('\nSKIPPED (not checked at all):');
+  for (const s of skipped) console.log(` - ${s}`);
+}
   if (fail) {
     console.log('\nFAILURES');
     for (const f of failures) console.log(` - ${f.name}\n   ${f.error}`);

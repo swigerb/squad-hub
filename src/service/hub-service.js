@@ -22,6 +22,7 @@ const crypto = require('crypto');
 
 const { Authenticator, AuthError, MODES } = require('./auth');
 const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
+const { DeviceTokenRegistry } = require('./device-token-registry');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store, PRESENCE } = require('./store');
 const ws = require('./ws');
@@ -39,6 +40,15 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
 };
+
+/**
+ * The longest a device token may live.
+ *
+ * A lifetime is a security control: expiry is what makes a credential shipped
+ * to a cloud job self-limiting, and an unbounded one would make that
+ * decorative. Ninety days is generous for a laptop; a job should ask for hours.
+ */
+const MAX_DEVICE_TOKEN_HOURS = 90 * 24;
 
 /**
  * Am I one of several instances?
@@ -70,6 +80,7 @@ class HubService {
       audience: process.env.SQUAD_HUB_AUDIENCE || null,
     });
     this.store = opts.store || new Store();
+    this.deviceTokenRegistry = opts.deviceTokenRegistry || new DeviceTokenRegistry();
     this.serveWeb = opts.serveWeb !== false;
     this.oauth = opts.oauth || new GitHubOAuth();
     this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
@@ -289,6 +300,68 @@ class HubService {
 
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(200, { sessions: this.store.listSessions(me.key) });
+    }
+
+    // -- device tokens --------------------------------------------------------
+    //
+    // A token is minted FOR THE CALLER'S OWN PARTITION, always. The partition
+    // comes from the verified principal and is never read from the request, so
+    // there is no request shape that could mint a credential into somebody
+    // else's hub view. That is why this needs no separate ownership check.
+    if (p === '/api/device-tokens' && req.method === 'POST') {
+      if (!this.auth.deviceTokens) {
+        return send(501, { error: 'device tokens are not enabled on this hub' });
+      }
+      const body = await readJson(req);
+
+      // A lifetime is a security control, so it is bounded here rather than
+      // trusted from the caller. An unbounded token would make expiry -- the
+      // thing that makes a leaked cloud credential self-limiting -- decorative.
+      const hours = Number(body.ttlHours);
+      if (body.ttlHours !== undefined && (!Number.isFinite(hours) || hours <= 0)) {
+        return send(400, { error: 'ttlHours must be a positive number' });
+      }
+      if (Number.isFinite(hours) && hours > MAX_DEVICE_TOKEN_HOURS) {
+        return send(400, {
+          error: `ttlHours may not exceed ${MAX_DEVICE_TOKEN_HOURS} (${MAX_DEVICE_TOKEN_HOURS / 24} days)`,
+        });
+      }
+
+      const label = body.label ? String(body.label).slice(0, 80) : null;
+      const didPrefix = body.didPrefix ? String(body.didPrefix).slice(0, 40) : null;
+      const token = this.auth.mintDeviceToken({
+        key: me.key,
+        name: label,
+        label,
+        didPrefix,
+        ...(Number.isFinite(hours) ? { ttlMs: hours * 3600 * 1000 } : {}),
+      });
+      const claims = this.auth.deviceTokens.verify(token);
+      this.deviceTokenRegistry.record(me.key, {
+        jti: claims.jti,
+        label: claims.label,
+        didPrefix: claims.did,
+        issuedAt: claims.iat,
+        expiresAt: claims.exp,
+      });
+
+      // Returned once and never again: the hub does not keep it. Said plainly
+      // in the response so a caller who discards it knows to mint another
+      // rather than go looking for a way to read it back.
+      return send(201, {
+        token,
+        jti: claims.jti,
+        label: claims.label,
+        didPrefix: claims.did,
+        expiresAt: claims.exp,
+        note: 'This token is shown once. The hub does not store it.',
+      });
+    }
+
+    if (p === '/api/device-tokens' && req.method === 'GET') {
+      // Metadata only. There is no endpoint that returns a token, because
+      // there is nowhere it could be read from.
+      return send(200, { tokens: this.deviceTokenRegistry.list(me.key) });
     }
 
     // Control operations, all routed to a device the caller owns.

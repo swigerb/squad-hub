@@ -391,6 +391,29 @@ const MUTATIONS = [
         jti: claims.jti,`,
     mustFail: 'a device principal is never an owner',
   },
+  {
+    name: 'the minting partition is taken from the request body',
+    file: 'src/service/hub-service.js',
+    find: `      const token = this.auth.mintDeviceToken({
+        key: me.key,`,
+    replace: `      const token = this.auth.mintDeviceToken({
+        key: process.env.MUTANT ? (body.key || me.key) : me.key, // MUTATION`,
+    mustFail: 'the partition comes from the caller, never the request',
+  },
+  {
+    name: 'device token lifetimes are unbounded',
+    file: 'src/service/hub-service.js',
+    find: `      if (Number.isFinite(hours) && hours > MAX_DEVICE_TOKEN_HOURS) {`,
+    replace: `      if (!process.env.MUTANT && Number.isFinite(hours) && hours > MAX_DEVICE_TOKEN_HOURS) { // MUTATION`,
+    mustFail: 'an unbounded lifetime is refused',
+  },
+  {
+    name: 'a close frame carries no reason',
+    file: 'src/service/ws.js',
+    find: `    const r = Buffer.from(String(reason || ''), 'utf8').subarray(0, 123);`,
+    replace: `    const r = process.env.MUTANT ? Buffer.alloc(0) : Buffer.from(String(reason || ''), 'utf8').subarray(0, 123); // MUTATION`,
+    mustFail: 'a refused device is told WHY, not just closed',
+  },
 ];
 
 /**
@@ -418,6 +441,24 @@ function failedTestNames(out) {
 (async () => {
   console.log('squad-hub mutation harness');
   console.log('='.repeat(60));
+
+  // A previous run may have been force-killed. Signal handlers restore the file
+  // on SIGINT, SIGTERM and friends, but NOTHING can catch a forced kill -- so a
+  // live mutation can survive into the working tree, where the next `git add -A`
+  // commits it. That has happened.
+  //
+  // Refuse to start rather than mutating on top of a mutation, which would make
+  // the restore write back the ALREADY-BROKEN text and bake the damage in.
+  const dirty = [...new Set(MUTATIONS.map((m) => m.file))]
+    .filter((f) => { try { return fs.readFileSync(path.join(ROOT, f), 'utf8').includes('MUTATION'); } catch { return false; } });
+  if (dirty.length) {
+    console.log('\nA previous run left live mutations in the working tree:');
+    for (const f of dirty) console.log(`  ${f}`);
+    console.log('\nRestore them before running again:');
+    console.log(`  git checkout -- ${dirty.join(' ')}`);
+    console.log('\n(Take care if those files also hold work you have not committed.)');
+    process.exit(3);
+  }
 
   console.log('\nbaseline (unmutated): expecting a clean pass');
   const base = runTests({});

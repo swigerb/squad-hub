@@ -380,6 +380,56 @@ token problem they do not have.
 The token itself. Only its id is ever written down, and only when revoked.
 The hub holds no table of live device tokens, so there is none to leak.
 
+### Issuing one
+
+```bash
+# mint: --prefix restricts which device ids it may register
+squad-hub device-token --hub <url> --token <your token> \
+    --label "aca jobs" --prefix aca- --ttl-hours 4
+
+# see what is out there (metadata only; the token itself is never stored)
+squad-hub device-token --hub <url> --token <your token> --list
+```
+
+`--token` is **your own** sign-in credential. A device token cannot mint
+another one — otherwise the expiry and the prefix binding would both be
+escapable, since a job token could simply mint itself an unbound, longer-lived
+replacement.
+
+The partition a token is minted for comes from the verified caller and is never
+read from the request, so there is no request shape that mints a credential
+into somebody else's hub view.
+
+A lifetime is capped at **90 days**. Expiry is what makes a credential shipped
+to a cloud job self-limiting; an unbounded one would make that decorative. A
+job should ask for hours.
+
+The token is printed once. The hub keeps no copy, so it cannot be shown again —
+mint another if it is lost.
+
+### Connecting a device from the browser
+
+The account menu (top right) has **Connect a device…**. It mints a device token
+and shows the exact command to run, once.
+
+An earlier build copied a command containing **your own sign-in credential**,
+which meant following the built-in instructions produced the insecure setup: a
+credential on a server that could also read your hub and start work on every
+other device. The button now mints a device token instead.
+
+### When a device is refused
+
+A refusal closes the socket with a **reason**, and the daemon prints it and
+stops rather than reconnecting:
+
+```
+the hub refused this device: this token may not register that device id
+This is a policy refusal, not an outage; retrying would not help.
+```
+
+A refusal that retried forever would look like a healthy container doing
+nothing, and would bury the one line that says what to fix.
+
 ### The signing secret
 
 `SQUAD_HUB_DEVICE_SECRET`. It must outlive the process, or every device token

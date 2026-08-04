@@ -12,22 +12,31 @@
 </head>
 <body>
 <header class="topbar">
-  <button class="icon-btn" id="menuBtn" aria-label="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
   <div class="brand"><img class="mark" src="/logo.jpg" alt=""> Squad Hub</div>
   <div class="spacer"></div>
   <button class="icon-btn bell" id="bellBtn" aria-label="Notifications">
     🔔<span class="badge" id="bellCount" hidden>0</span>
   </button>
-  <div class="who" id="who">—</div>
+  <!--
+    The account menu belongs top right, where every other tool puts it and
+    where people already look for "sign out". An earlier build had a hamburger
+    top left, which is the convention for PRIMARY NAVIGATION -- and this app has
+    exactly one view, so there was nothing to navigate.
+  -->
+  <button class="account" id="menuBtn" aria-label="Account menu" aria-haspopup="true" aria-expanded="false">
+    <span class="avatar" id="avatar" aria-hidden="true">?</span>
+    <span class="who" id="who">—</span>
+    <span class="caret" aria-hidden="true">▾</span>
+  </button>
 </header>
 
 <nav class="menu" id="menu" hidden>
+  <div class="menu-meta" id="menuMeta"></div>
+  <div class="menu-sep"></div>
   <button data-menu="refresh">Refresh now</button>
-  <button data-menu="devices">Show connected devices</button>
-  <button data-menu="attach">Copy the command to attach a device</button>
+  <button data-menu="connect">Connect a device…</button>
   <button data-menu="install">Install as an app</button>
   <div class="menu-sep"></div>
-  <div class="menu-meta" id="menuMeta"></div>
   <button data-menu="signout" class="danger">Sign out</button>
 </nav>
 
@@ -143,6 +152,46 @@
     <div class="composer">
       <input id="dtInput" placeholder="Send follow-up input to the running agent">
       <button class="primary" id="dtSend">Send</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="connectScrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cnTitle">
+    <h2 id="cnTitle">Connect a device</h2>
+    <p class="sub">
+      This mints a <strong>device token</strong> — a credential that can be a
+      device and nothing else. It cannot read this page's data or start work on
+      your other devices, so it is safe to put on a server or in a container.
+    </p>
+    <label class="field">
+      <span>What is it for?</span>
+      <input id="cnLabel" placeholder="my laptop, a build server, ACA jobs" maxlength="80">
+    </label>
+    <label class="field">
+      <span>Expires after</span>
+      <select id="cnTtl">
+        <option value="4">4 hours</option>
+        <option value="24">1 day</option>
+        <option value="168">7 days</option>
+        <option value="720" selected>30 days</option>
+        <option value="2160">90 days (maximum)</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Restrict to device ids starting with (optional)</span>
+      <input id="cnPrefix" placeholder="aca-" maxlength="40">
+      <small class="hint">A token for cloud jobs then cannot claim to be your laptop.</small>
+    </label>
+    <div class="err" id="cnErr" hidden></div>
+    <div class="cnresult" id="cnResult" hidden>
+      <p class="sub">Run this on the device. <strong>Shown once</strong> — the hub keeps no copy.</p>
+      <pre id="cnCmd" class="cncmd"></pre>
+      <button class="primary" id="cnCopy">Copy command</button>
+    </div>
+    <div class="modal-actions">
+      <button id="cnCancel">Close</button>
+      <button class="primary" id="cnCreate">Create token</button>
     </div>
   </div>
 </div>

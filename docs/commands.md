@@ -64,6 +64,26 @@ silently using somewhere else.
 Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 `~/.squad-hub`.
 
+## Device tokens
+
+A credential that can be a device and **nothing else** — it cannot read the
+API, start work on another device, or watch the event stream. Give one to a
+cloud device instead of your own credential.
+
+| | |
+|---|---|
+| `squad-hub device-token --hub <url> --token <yours> [--label <t>] [--ttl-hours <n>] [--prefix <p>]` | Mint one. Printed once. |
+| `squad-hub device-token --hub <url> --token <yours> --list` | What has been issued. Metadata only. |
+
+`--token` is your own sign-in credential; a device token cannot mint another.
+`--prefix` restricts which device ids it may register, so a token for cloud
+jobs cannot claim to be your laptop. Lifetimes are capped at 90 days.
+
+`SQUAD_HUB_USER_TOKEN` supplies `--token` when set, so a script does not have
+to put your credential on a command line where it lands in shell history.
+
+See [security.md](security.md#device-tokens).
+
 ## Environment
 
 ### The service

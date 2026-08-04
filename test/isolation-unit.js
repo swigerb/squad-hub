@@ -627,6 +627,17 @@ function api(port, path, token, opts = {}) {
       assert.match(logo.headers['content-type'] || '', /image\/jpeg/,
         'served as a generic byte stream, which browsers may download rather than draw');
 
+      // Every asset the app actually loads, with the type a browser needs.
+      // A missing MIME entry is easy to delete by accident and produces a hub
+      // that returns 200 for everything while rendering nothing -- a browser
+      // will not execute a script served as application/octet-stream.
+      for (const [file, type] of [['/app.js', /javascript/], ['/app.css', /text\/css/], ['/index.html', /text\/html/]]) {
+        const r = await api(p, file, null);
+        assert.strictEqual(r.status, 200, `${file} is not served at all`);
+        assert.match(r.headers['content-type'] || '', type,
+          `${file} is served as "${r.headers['content-type']}", which a browser will not use`);
+      }
+
       const methods = await api(p, '/api/auth-methods', null);
       assert.strictEqual(methods.status, 200, 'the sign-in page cannot ask what to offer');
       assert.ok('githubOAuth' in methods.body, 'no way to know whether to show a button');

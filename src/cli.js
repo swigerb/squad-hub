@@ -311,6 +311,107 @@ async function cmdTrackAll(argv) {
   return 0;
 }
 
+/**
+ * One small JSON-over-HTTP call, for the few CLI commands that talk to the hub
+ * rather than to the local daemon.
+ *
+ * Rejecting only on transport failure, never on status: an HTTP error is an
+ * answer, and the caller needs to see WHICH one to say anything useful.
+ */
+function httpJson(url, { method = 'GET', headers = {}, body = null } = {}) {
+  const u = typeof url === 'string' ? new URL(url) : url;
+  const mod = u.protocol === 'https:' ? require('https') : require('http');
+  return new Promise((resolve, reject) => {
+    const req = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method,
+      headers: { ...headers, ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}) },
+      timeout: 20000,
+    }, (res) => {
+      let b = '';
+      res.on('data', (d) => { b += d; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(b); } catch { /* not json */ }
+        resolve({ status: res.statusCode, body: json, raw: b });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timed out talking to the hub')));
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Mint a device token against a running hub.
+ *
+ * Deliberately a call to the hub rather than local signing. Minting locally
+ * would mean putting the signing secret on every machine that wants a token,
+ * which is the opposite of the point -- and the hub is the only thing that
+ * knows which partition the caller belongs to.
+ */
+async function cmdDeviceToken(argv) {
+  const hub = value(argv, 'hub', config.read().server);
+  const token = value(argv, 'token', process.env.SQUAD_HUB_USER_TOKEN);
+  if (!hub || !token) {
+    err('usage: squad-hub device-token --hub <url> --token <your own token> [--label <text>]');
+    err('                              [--ttl-hours <n>] [--prefix <device-id prefix>] [--list]');
+    err('');
+    err('The token is YOUR sign-in credential, not a device token: a device');
+    err('token cannot mint another one.');
+    return 2;
+  }
+
+  const listing = flag(argv, 'list');
+  const url = new URL('/api/device-tokens', hub);
+  const body = listing ? null : JSON.stringify({
+    label: value(argv, 'label', null),
+    didPrefix: value(argv, 'prefix', null),
+    ...(value(argv, 'ttl-hours', null) ? { ttlHours: Number(value(argv, 'ttl-hours', null)) } : {}),
+  });
+
+  const res = await httpJson(url, {
+    method: listing ? 'GET' : 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body,
+  });
+
+  if (res.status === 403) {
+    err('That credential cannot mint a device token.');
+    err('Device tokens can be a device and nothing else, so one cannot mint another.');
+    return 1;
+  }
+  if (res.status >= 400) {
+    err(`the hub refused: ${(res.body && res.body.error) || res.status}`);
+    return 1;
+  }
+
+  if (listing) {
+    const rows = (res.body.tokens || []);
+    if (!rows.length) { out('no device tokens issued'); return 0; }
+    for (const t of rows) {
+      const days = Math.round((t.expiresAt - Date.now()) / 86400000);
+      out(`${t.jti}  ${(t.label || '(no label)').padEnd(24)}  expires in ${days}d${t.didPrefix ? `  device ids: ${t.didPrefix}*` : ''}`);
+    }
+    return 0;
+  }
+
+  // Printed once because it exists once. The hub keeps no copy, so there is no
+  // way to read it back -- say that here rather than letting someone discover
+  // it when they go looking.
+  out(res.body.token);
+  err('');
+  err(`id ${res.body.jti}, expires ${new Date(res.body.expiresAt).toISOString()}`);
+  err('Shown once. The hub does not store it; mint another if this is lost.');
+  return 0;
+}
+
 function usage() {
   out(`squad-hub - see and control your Squad sessions
 
@@ -332,6 +433,15 @@ function usage() {
   squad-hub track-all <on|off>
   squad-hub config [show|server <url>|unset-server|enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>]
 
+  DEVICE TOKENS
+  squad-hub device-token --hub <url> --token <your token> [--label <t>] [--ttl-hours <n>] [--prefix <p>]
+  squad-hub device-token --hub <url> --token <your token> --list
+
+A device token can be a device and NOTHING else: it cannot read the API, start
+work on another device, or watch the event stream. Give one to a cloud device
+instead of your own credential. --prefix restricts which device ids it may
+register, so a token for cloud jobs cannot claim to be your laptop.
+
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. The confinement path stays
 on this device and is never sent to the hub service.`);
@@ -350,6 +460,7 @@ async function main(argv) {
     case 'kill': return cmdStopSession(rest);
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
+    case 'device-token': return cmdDeviceToken(rest);
     case '--version': case '-v': out(require('../package.json').version); return 0;
     case undefined: case 'help': case '--help': case '-h': usage(); return 0;
     default: err(`unknown command: ${cmd}`); usage(); return 2;

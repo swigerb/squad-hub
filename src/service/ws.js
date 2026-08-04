@@ -74,7 +74,18 @@ class WsConnection extends EventEmitter {
   }
 
   _handleFrame(f) {
-    if (f.opcode === 0x8) { this.close(1000); return; }
+    if (f.opcode === 0x8) {
+      // Keep the code and reason before replying. Discarding them leaves the
+      // other end unable to tell "the hub restarted" from "your token may not
+      // register that device id" -- and a client that cannot tell the
+      // difference reconnects forever against a refusal it will never satisfy.
+      if (f.payload && f.payload.length >= 2) {
+        this.closeCode = f.payload.readUInt16BE(0);
+        this.closeReason = f.payload.length > 2 ? f.payload.subarray(2).toString('utf8') : '';
+      }
+      this.close(this.closeCode || 1000);
+      return;
+    }
     if (f.opcode === 0x9) { this._send(0xa, f.payload); return; } // ping -> pong
     if (f.opcode === 0xa) return;                                  // pong
 

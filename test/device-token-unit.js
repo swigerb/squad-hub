@@ -89,12 +89,16 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
       // as well as the later 'data' events. Reading only 'data' made a refused
       // socket look accepted.
       let closedCode = null;
+      let closedReason = null;
       const scan = (buf) => {
-        if (buf && buf.length >= 4 && (buf[0] & 0x0f) === 0x8) closedCode = buf.readUInt16BE(2);
+        if (buf && buf.length >= 4 && (buf[0] & 0x0f) === 0x8) {
+          closedCode = buf.readUInt16BE(2);
+          closedReason = buf.length > 4 ? buf.subarray(4).toString('utf8') : '';
+        }
       };
       scan(head);
       socket.on('data', scan);
-      setTimeout(() => { try { socket.destroy(); } catch { /* gone */ } done({ upgraded: true, closedCode }); }, 250);
+      setTimeout(() => { try { socket.destroy(); } catch { /* gone */ } done({ upgraded: true, closedCode, closedReason }); }, 250);
     });
     req.on('response', (res) => done({ upgraded: false, status: res.statusCode }));
     req.on('error', (e) => done({ upgraded: false, error: e.message }));
@@ -287,6 +291,98 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
   await checkAsync('a hub with device tokens disabled refuses them outright', async () => {
     const off = new Authenticator({ mode: MODES.DEV, devSecret: 's', deviceTokens: false });
     await assert.rejects(() => off.verify(`Bearer ${dt.mint({ key: 'k' })}`), /not enabled/);
+  });
+
+  // ---- minting ------------------------------------------------------------
+  await checkAsync('a person can mint a device token for their own partition', async () => {
+    const r = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'aca jobs', didPrefix: 'aca-', ttlHours: 4 },
+    });
+    assert.strictEqual(r.status, 201, `minting failed: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.token, 'no token came back');
+    const claims = auth.deviceTokens.verify(r.body.token);
+    assert.strictEqual(claims.key, partition, 'the token was minted for the wrong partition');
+    assert.strictEqual(claims.did, 'aca-');
+  });
+
+  await checkAsync('a minted token cannot be read back afterwards', async () => {
+    // The hub keeps no copy, so the listing must expose metadata and never the
+    // credential. A "show me that token again" endpoint would recreate exactly
+    // the store this design avoids.
+    const r = await api(port, '/api/device-tokens', userToken);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.tokens.length > 0, 'nothing was recorded, so nothing could be revoked later');
+    for (const t of r.body.tokens) {
+      assert.ok(t.jti, 'a record with no id could never be revoked');
+      assert.strictEqual(JSON.stringify(t).includes('sqhd1.'), false, 'the listing leaked a token');
+    }
+  });
+
+  await checkAsync('the partition comes from the caller, never the request', async () => {
+    // The security-relevant bit: there is no request shape that mints a
+    // credential into somebody else's hub view.
+    const r = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'x', key: 'someone-elses-partition', sub: 'evil' },
+    });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(auth.deviceTokens.verify(r.body.token).key, partition,
+      'a request body chose the partition');
+  });
+
+  await checkAsync('an unbounded lifetime is refused', async () => {
+    // Expiry is what makes a leaked cloud credential self-limiting. Letting a
+    // caller ask for ten years would make it decorative.
+    const tooLong = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'forever', ttlHours: 24 * 365 },
+    });
+    assert.strictEqual(tooLong.status, 400, 'a one-year device token was issued');
+    for (const bad of [0, -5, 'soon', NaN]) {
+      const r = await api(port, '/api/device-tokens', userToken, {
+        method: 'POST', body: { label: 'bad', ttlHours: bad },
+      });
+      assert.strictEqual(r.status, 400, `ttlHours ${bad} was accepted`);
+    }
+  });
+
+  await checkAsync('a device token cannot mint another device token', async () => {
+    // Otherwise the expiry and the prefix binding are both escapable: a job
+    // token could mint itself an unbound, longer-lived one.
+    const r = await api(port, '/api/device-tokens', deviceToken, {
+      method: 'POST', body: { label: 'escalation' },
+    });
+    assert.strictEqual(r.status, 403, 'a device token minted another credential');
+  });
+
+  await checkAsync('one person cannot see another person s device tokens', async () => {
+    const other = auth.mintDevToken('t2', 'u2', 'somebody else');
+    const mine = await api(port, '/api/device-tokens', userToken);
+    const theirs = await api(port, '/api/device-tokens', other);
+    assert.ok(mine.body.tokens.length > 0);
+    assert.strictEqual(theirs.body.tokens.length, 0, 'device tokens leaked across partitions');
+  });
+
+  await checkAsync('a minted token actually works as a device', async () => {
+    // End to end rather than in pieces: mint through the API, then attach with
+    // what came back.
+    const r = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'real', didPrefix: 'job-' },
+    });
+    const ok = await tryDeviceSocket(port, r.body.token, 'job-1');
+    assert.strictEqual(ok.upgraded, true, 'a freshly minted token could not attach');
+    assert.strictEqual(ok.closedCode, null, `attached then closed with ${ok.closedCode}`);
+  });
+
+  await checkAsync('a refused device is told WHY, not just closed', async () => {
+    // A close with no reason leaves someone unable to tell "the hub restarted"
+    // from "your token may not register that id" -- and a client that cannot
+    // tell reconnects forever against a refusal it will never satisfy.
+    const r = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'bound', didPrefix: 'only-' },
+    });
+    const bad = await tryDeviceSocket(port, r.body.token, 'something-else');
+    assert.strictEqual(bad.closedCode, 1008, `expected a policy close, saw ${bad.closedCode}`);
+    assert.match(bad.closedReason || '', /device id/i,
+      `the refusal carried no usable reason: "${bad.closedReason}"`);
   });
 
   await svc.close();
