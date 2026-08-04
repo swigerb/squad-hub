@@ -117,6 +117,22 @@ class Authenticator {
      */
     this.isDeviceTokenRevoked = opts.isDeviceTokenRevoked || null;
 
+    /**
+     * Refuse a USER credential where a device credential belongs.
+     *
+     * Off by default so an existing deployment keeps working while its devices
+     * are migrated. Turning it on is the real end state: a device may only
+     * attach with a credential that can be a device and nothing else, so a
+     * secret copied into a cloud container can never drive the machine you are
+     * sitting at.
+     *
+     * Explicit rather than implied, because flipping it disconnects every
+     * device still using the old credential -- which is the point, but should
+     * happen when someone decides it, not by surprise.
+     */
+    this.requireDeviceTokens = opts.requireDeviceTokens
+      || /^(1|true|yes|on)$/i.test(process.env.SQUAD_HUB_REQUIRE_DEVICE_TOKENS || '');
+
     if (this.mode === MODES.DEV && !this.devSecret) {
       throw new Error('dev mode requires a secret; refusing to run an unauthenticated hub');
     }

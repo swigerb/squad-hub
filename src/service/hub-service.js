@@ -22,7 +22,8 @@ const crypto = require('crypto');
 
 const { Authenticator, AuthError, MODES } = require('./auth');
 const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
-const { DeviceTokenRegistry } = require('./device-token-registry');
+const { DeviceTokenStore } = require('./device-token-store');
+const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store, PRESENCE } = require('./store');
 const ws = require('./ws');
@@ -80,7 +81,20 @@ class HubService {
       audience: process.env.SQUAD_HUB_AUDIENCE || null,
     });
     this.store = opts.store || new Store();
-    this.deviceTokenRegistry = opts.deviceTokenRegistry || new DeviceTokenRegistry();
+    /**
+     * Device token records and revocations.
+     *
+     * Persisted under SQUAD_HUB_HOME so a revocation survives a restart --
+     * revocation that forgets is not revocation. Where no directory is
+     * configured it stays in memory and says so, rather than pretending.
+     */
+    this.deviceTokenStore = opts.deviceTokenStore
+      || new DeviceTokenStore({ dir: opts.deviceTokenDir || paths.home(), persist: opts.persistDeviceTokens !== false });
+    // The authenticator asks this on every device token it verifies. Injected
+    // rather than owned, so auth.js keeps knowing nothing about storage.
+    if (this.auth && !this.auth.isDeviceTokenRevoked) {
+      this.auth.isDeviceTokenRevoked = (jti) => this.deviceTokenStore.isRevoked(jti);
+    }
     this.serveWeb = opts.serveWeb !== false;
     this.oauth = opts.oauth || new GitHubOAuth();
     this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
@@ -337,7 +351,7 @@ class HubService {
         ...(Number.isFinite(hours) ? { ttlMs: hours * 3600 * 1000 } : {}),
       });
       const claims = this.auth.deviceTokens.verify(token);
-      this.deviceTokenRegistry.record(me.key, {
+      this.deviceTokenStore.record(me.key, {
         jti: claims.jti,
         label: claims.label,
         didPrefix: claims.did,
@@ -361,7 +375,31 @@ class HubService {
     if (p === '/api/device-tokens' && req.method === 'GET') {
       // Metadata only. There is no endpoint that returns a token, because
       // there is nowhere it could be read from.
-      return send(200, { tokens: this.deviceTokenRegistry.list(me.key) });
+      return send(200, {
+        tokens: this.deviceTokenStore.list(me.key),
+        // Said plainly rather than left to be discovered: a hub that cannot
+        // persist will forget every revocation when it restarts.
+        durable: this.deviceTokenStore.persist,
+      });
+    }
+
+    // Revoke one token, within the caller's own partition. Revoking by bare id
+    // across partitions would let one person kill another person's devices.
+    const rv = p.match(/^\/api\/device-tokens\/([^/]+)$/);
+    if (rv && req.method === 'DELETE') {
+      const jti = decodeURIComponent(rv[1]);
+      let done;
+      try {
+        done = this.deviceTokenStore.revoke(me.key, jti);
+      } catch (e) {
+        // The store could not be read, so it must not be written either --
+        // saving on top of it would destroy every revocation already recorded.
+        return send(503, { error: e.message });
+      }
+      // Not 403: revealing the difference between "not yours" and "does not
+      // exist" is itself a disclosure.
+      if (!done) return send(404, { error: 'no such device token' });
+      return send(200, { revoked: jti });
     }
 
     // Control operations, all routed to a device the caller owns.
@@ -474,6 +512,14 @@ class HubService {
     // it on the API was protecting.
     if (me.kind === KIND_DEVICE && role !== 'device') {
       conn.close(1008, 'a device token cannot open a watcher socket');
+      return;
+    }
+
+    // The converse, once enforcement is on: a person's own credential may not
+    // stand in for a device credential. Off by default so existing deployments
+    // keep working while their devices are migrated.
+    if (role === 'device' && me.kind !== KIND_DEVICE && this.auth.requireDeviceTokens) {
+      conn.close(1008, 'this hub requires a device token; run: squad-hub device-token --list');
       return;
     }
 

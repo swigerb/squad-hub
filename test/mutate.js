@@ -414,6 +414,35 @@ const MUTATIONS = [
     replace: `    const r = process.env.MUTANT ? Buffer.alloc(0) : Buffer.from(String(reason || ''), 'utf8').subarray(0, 123); // MUTATION`,
     mustFail: 'a refused device is told WHY, not just closed',
   },
+  {
+    name: 'the revocation store fails OPEN when it cannot be read',
+    file: 'src/service/device-token-store.js',
+    find: `    if (!this.ok) return true;
+    return this._revoked.has(String(jti));`,
+    replace: `    if (!this.ok) return process.env.MUTANT ? false : true; // MUTATION
+    return this._revoked.has(String(jti));`,
+    mustFail: 'AN UNREADABLE STORE REFUSES EVERY DEVICE TOKEN',
+  },
+  {
+    name: 'revocations are not persisted',
+    file: 'src/service/device-token-store.js',
+    find: `  _save() {
+    if (!this.persist) return;`,
+    replace: `  _save() {
+    if (process.env.MUTANT) return; // MUTATION
+    if (!this.persist) return;`,
+    mustFail: 'a revocation survives a restart',
+  },
+  {
+    name: 'revocation is not scoped to the caller partition',
+    file: 'src/service/device-token-store.js',
+    find: `    const rec = this._bucket(key).get(jti);
+    if (!rec) return false;`,
+    replace: `    let rec = this._bucket(key).get(jti);
+    if (process.env.MUTANT && !rec) { for (const [, m] of this._byKey) { if (m.get(jti)) { rec = m.get(jti); break; } } } // MUTATION
+    if (!rec) return false;`,
+    mustFail: 'one person cannot revoke another person s token',
+  },
 ];
 
 /**

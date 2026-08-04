@@ -17,10 +17,20 @@
 const assert = require('assert');
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// Isolate the persisted device-token store. Without this the suite writes into
+// the developer's real ~/.squad-hub and accumulates records there -- which it
+// did, and which nothing noticed until the file was looked at.
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'devtok-'));
+process.env.SQUAD_HUB_HOME = TEST_HOME;
 
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { DeviceTokens, DeviceTokenError } = require('../src/service/device-token');
+const { DeviceTokenStore } = require('../src/service/device-token-store');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -253,13 +263,14 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
     // hook is actually consulted, so wiring a store to it will work.
     const revoked = auth.mintDeviceToken({ key: partition, label: 'doomed' });
     const claims = auth.deviceTokens.verify(revoked);
+    const prior = auth.isDeviceTokenRevoked;
     auth.isDeviceTokenRevoked = (jti) => jti === claims.jti;
     try {
       const sock = await tryDeviceSocket(port, revoked, 'cloud-3');
       assert.strictEqual(sock.upgraded, false, 'a revoked token still attached');
       const still = await tryDeviceSocket(port, deviceToken, 'cloud-4');
       assert.strictEqual(still.upgraded, true, 'revoking one token killed the others');
-    } finally { auth.isDeviceTokenRevoked = null; }
+    } finally { auth.isDeviceTokenRevoked = prior; }
   });
 
   await checkAsync('device tokens work in github mode without calling GitHub', async () => {
@@ -385,7 +396,147 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
       `the refusal carried no usable reason: "${bad.closedReason}"`);
   });
 
+  // ---- persistence and revocation (B3) ------------------------------------
+  await checkAsync('the suite is NOT writing to the real home directory', async () => {
+    // It was. Nothing noticed until the file was looked at, so this asserts it
+    // from now on: a test that pollutes the developer's machine is a test that
+    // will eventually be debugged as a product bug.
+    assert.ok(String(TEST_HOME).includes(os.tmpdir().split(path.sep).pop()) || TEST_HOME.startsWith(os.tmpdir()),
+      `tests are persisting to ${TEST_HOME}`);
+    const real = path.join(os.homedir(), '.squad-hub', 'device-tokens.json');
+    assert.strictEqual(fs.existsSync(real), false, `the suite wrote to ${real}`);
+  });
+
+  await checkAsync('a revocation survives a restart', async () => {
+    // The whole point of persisting anything. Revocation that forgets is not
+    // revocation -- you would believe a credential was dead while it was live.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-'));
+    const s1 = new DeviceTokenStore({ dir });
+    s1.record('k', { jti: 'j1', label: 'x', expiresAt: Date.now() + 3600000 });
+    s1.revoke('k', 'j1');
+
+    const s2 = new DeviceTokenStore({ dir });   // a genuinely fresh instance
+    assert.strictEqual(s2.isRevoked('j1'), true, 'the revocation was lost on restart');
+    assert.strictEqual(s2.list('k')[0].revoked, true, 'the listing forgot it was revoked');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await checkAsync('AN UNREADABLE STORE REFUSES EVERY DEVICE TOKEN', async () => {
+    // Fail closed. A store that fails OPEN is worse than none at all.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'revbroken-'));
+    fs.writeFileSync(path.join(dir, 'device-tokens.json'), '{ not json');
+    const s = new DeviceTokenStore({ dir });
+    assert.strictEqual(s.ok, false, 'a corrupt store loaded successfully');
+    assert.strictEqual(s.isRevoked('anything-at-all'), true,
+      'FAILED OPEN: a revoked credential would have been accepted as live');
+    assert.throws(() => s.revoke('k', 'j'), /did not load/,
+      'writing over an unreadable store would destroy every revocation in it');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await checkAsync('a hub that has revoked nothing still works', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'revempty-'));
+    const s = new DeviceTokenStore({ dir });
+    assert.strictEqual(s.ok, true, 'a missing file was treated as an error');
+    assert.strictEqual(s.isRevoked('x'), false, 'everything was refused; the hub is bricked');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await checkAsync('revoking a token stops it attaching, immediately', async () => {
+    const r = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'doomed' },
+    });
+    const live = await tryDeviceSocket(port, r.body.token, 'doomed-1');
+    assert.strictEqual(live.upgraded, true, 'the token did not work before revocation');
+
+    const del = await api(port, `/api/device-tokens/${encodeURIComponent(r.body.jti)}`, userToken, { method: 'DELETE' });
+    assert.strictEqual(del.status, 200, `revoke failed: ${JSON.stringify(del.body)}`);
+
+    const dead = await tryDeviceSocket(port, r.body.token, 'doomed-2');
+    assert.strictEqual(dead.upgraded, false, 'a revoked token still attached');
+
+    const api2 = await api(port, '/api/me', r.body.token);
+    assert.strictEqual(api2.status, 401, 'a revoked token was still authenticated');
+  });
+
+  await checkAsync('revoking one token does not disturb the others', async () => {
+    const keep = await api(port, '/api/device-tokens', userToken, { method: 'POST', body: { label: 'keep' } });
+    const drop = await api(port, '/api/device-tokens', userToken, { method: 'POST', body: { label: 'drop' } });
+    await api(port, `/api/device-tokens/${encodeURIComponent(drop.body.jti)}`, userToken, { method: 'DELETE' });
+    const still = await tryDeviceSocket(port, keep.body.token, 'keep-1');
+    assert.strictEqual(still.upgraded, true, 'revoking one token killed another');
+  });
+
+  await checkAsync('one person cannot revoke another person s token', async () => {
+    const mine = await api(port, '/api/device-tokens', userToken, { method: 'POST', body: { label: 'mine' } });
+    const other = auth.mintDevToken('t9', 'u9', 'somebody else');
+    const attempt = await api(port, `/api/device-tokens/${encodeURIComponent(mine.body.jti)}`, other, { method: 'DELETE' });
+    assert.strictEqual(attempt.status, 404, 'someone else revoked my device token');
+    const still = await tryDeviceSocket(port, mine.body.token, 'mine-1');
+    assert.strictEqual(still.upgraded, true, 'the token was revoked by someone else after all');
+  });
+
+  await checkAsync('a device token cannot revoke anything', async () => {
+    const victim = await api(port, '/api/device-tokens', userToken, { method: 'POST', body: { label: 'victim' } });
+    const r = await api(port, `/api/device-tokens/${encodeURIComponent(victim.body.jti)}`, deviceToken, { method: 'DELETE' });
+    assert.strictEqual(r.status, 403, 'a device token revoked a credential');
+  });
+
+  await checkAsync('the store says when it cannot persist', async () => {
+    // A hub that will forget its revocations on restart must say so, rather
+    // than letting someone believe a revocation is durable when it is not.
+    const r = await api(port, '/api/device-tokens', userToken);
+    assert.strictEqual(typeof r.body.durable, 'boolean', 'no way to know whether revocation survives');
+  });
+
+  await checkAsync('expired records are dropped so the file cannot grow forever', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'revprune-'));
+    const s = new DeviceTokenStore({ dir });
+    s.record('k', { jti: 'old', expiresAt: Date.now() - 1000 });
+    s.record('k', { jti: 'new', expiresAt: Date.now() + 3600000 });
+    const ids = s.list('k').map((t) => t.jti);
+    assert.deepStrictEqual(ids, ['new'], `expected only the live record, saw ${ids.join(', ')}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  await checkAsync('enforcement refuses a user credential as a device credential', async () => {
+    // The end state, and it must be opt-in: turning it on disconnects every
+    // device still using the old credential, which is the point but should be
+    // a decision rather than a surprise.
+    const strictAuth = new Authenticator({
+      mode: MODES.DEV, devSecret: 'user-secret', deviceSecret: 'test-device-secret',
+      requireDeviceTokens: true,
+    });
+    const strict = new HubService({ auth: strictAuth, deviceTokenDir: TEST_HOME });
+    const a2 = await strict.listen(0, '127.0.0.1');
+    try {
+      const u = strictAuth.mintDevToken('t1', 'u1', 'a person');
+      const meR = await api(a2.port, '/api/me', u);
+      const dTok = strictAuth.mintDeviceToken({ key: meR.body.subject, label: 'ok' });
+
+      const refused = await tryDeviceSocket(a2.port, u, 'laptop');
+      const denied = !refused.upgraded || refused.closedCode === 1008;
+      assert.ok(denied, 'a user credential still registered a device under enforcement');
+
+      const allowed = await tryDeviceSocket(a2.port, dTok, 'laptop');
+      assert.strictEqual(allowed.upgraded, true, 'a device token was refused under enforcement');
+      assert.strictEqual(allowed.closedCode, null);
+
+      // A person must still be able to USE the hub; enforcement is about
+      // device registration, not about locking the owner out of the browser.
+      assert.strictEqual((await api(a2.port, '/api/me', u)).status, 200,
+        'enforcement locked the person out of their own hub');
+    } finally { await strict.close(); }
+  });
+
+  await checkAsync('enforcement is off unless it is asked for', async () => {
+    const relaxed = new Authenticator({ mode: MODES.DEV, devSecret: 's', deviceSecret: 'd' });
+    assert.strictEqual(relaxed.requireDeviceTokens, false,
+      'existing deployments would break on upgrade');
+  });
+
   await svc.close();
+  fs.rmSync(TEST_HOME, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.log(`ERROR: ${e.message}`); console.log(e.stack); process.exit(1); });

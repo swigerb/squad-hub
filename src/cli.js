@@ -358,7 +358,8 @@ async function cmdDeviceToken(argv) {
   const token = value(argv, 'token', process.env.SQUAD_HUB_USER_TOKEN);
   if (!hub || !token) {
     err('usage: squad-hub device-token --hub <url> --token <your own token> [--label <text>]');
-    err('                              [--ttl-hours <n>] [--prefix <device-id prefix>] [--list]');
+    err('                              [--ttl-hours <n>] [--prefix <device-id prefix>]')
+    err('                              [--list] [--revoke <id>]');
     err('');
     err('The token is YOUR sign-in credential, not a device token: a device');
     err('token cannot mint another one.');
@@ -366,6 +367,18 @@ async function cmdDeviceToken(argv) {
   }
 
   const listing = flag(argv, 'list');
+  const revokeId = value(argv, 'revoke', null);
+
+  if (revokeId) {
+    const rr = await httpJson(new URL(`/api/device-tokens/${encodeURIComponent(revokeId)}`, hub), {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+    });
+    if (rr.status === 200) { out(`revoked ${revokeId}`); return 0; }
+    if (rr.status === 404) { err(`no such device token in your view: ${revokeId}`); return 1; }
+    err(`the hub refused: ${(rr.body && rr.body.error) || rr.status}`);
+    return 1;
+  }
+
   const url = new URL('/api/device-tokens', hub);
   const body = listing ? null : JSON.stringify({
     label: value(argv, 'label', null),
@@ -394,10 +407,16 @@ async function cmdDeviceToken(argv) {
 
   if (listing) {
     const rows = (res.body.tokens || []);
+    if (res.body.durable === false) {
+      err('NOTE: this hub is not persisting device tokens, so revocations will');
+      err('      be forgotten when it restarts. Set SQUAD_HUB_HOME to a durable path.');
+      err('');
+    }
     if (!rows.length) { out('no device tokens issued'); return 0; }
     for (const t of rows) {
       const days = Math.round((t.expiresAt - Date.now()) / 86400000);
-      out(`${t.jti}  ${(t.label || '(no label)').padEnd(24)}  expires in ${days}d${t.didPrefix ? `  device ids: ${t.didPrefix}*` : ''}`);
+      const state = t.revoked ? 'REVOKED' : `expires in ${days}d`;
+      out(`${t.jti}  ${(t.label || '(no label)').padEnd(24)}  ${state}${t.didPrefix ? `  device ids: ${t.didPrefix}*` : ''}`);
     }
     return 0;
   }
@@ -436,6 +455,7 @@ function usage() {
   DEVICE TOKENS
   squad-hub device-token --hub <url> --token <your token> [--label <t>] [--ttl-hours <n>] [--prefix <p>]
   squad-hub device-token --hub <url> --token <your token> --list
+  squad-hub device-token --hub <url> --token <your token> --revoke <id>
 
 A device token can be a device and NOTHING else: it cannot read the API, start
 work on another device, or watch the event stream. Give one to a cloud device

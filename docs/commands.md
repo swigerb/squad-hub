@@ -74,6 +74,7 @@ cloud device instead of your own credential.
 |---|---|
 | `squad-hub device-token --hub <url> --token <yours> [--label <t>] [--ttl-hours <n>] [--prefix <p>]` | Mint one. Printed once. |
 | `squad-hub device-token --hub <url> --token <yours> --list` | What has been issued. Metadata only. |
+| `squad-hub device-token --hub <url> --token <yours> --revoke <id>` | Revoke one, by the id `--list` shows. |
 
 `--token` is your own sign-in credential; a device token cannot mint another.
 `--prefix` restricts which device ids it may register, so a token for cloud
@@ -98,6 +99,7 @@ See [security.md](security.md#device-tokens).
 | `SQUAD_HUB_OWNER` | Identities that are all **you**. Each may sign in, and they share one view. |
 | `SQUAD_HUB_ALLOWED_USERS` | Other people who may sign in. Each gets their **own** separate view. |
 | `SQUAD_HUB_GITHUB_CLIENT_ID` | OAuth App client id. Set this **and** the secret to put a "Sign in with GitHub" button on the sign-in page. Without both, the hub still accepts a pasted token but cannot start a browser sign-in. |
+| `SQUAD_HUB_REQUIRE_DEVICE_TOKENS` | Refuse a person's own credential where a **device token** belongs. Off by default so existing devices keep working; turning it on disconnects any device still using the old credential, which is the point. |
 | `SQUAD_HUB_GITHUB_CLIENT_SECRET` | OAuth App client secret. Never commit it; set it as an app setting. |
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |

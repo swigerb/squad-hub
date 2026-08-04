@@ -417,6 +417,46 @@ which meant following the built-in instructions produced the insecure setup: a
 credential on a server that could also read your hub and start work on every
 other device. The button now mints a device token instead.
 
+### Revoking one
+
+```bash
+squad-hub device-token --hub <url> --token <your token> --list
+squad-hub device-token --hub <url> --token <your token> --revoke <id>
+```
+
+A revoked token stops working immediately, for attaching a device and for
+everything else. Revoking one does not disturb the others, and you can only
+revoke tokens in your own view — revoking by bare id across partitions would
+let one person kill another person's devices.
+
+**Revocation is persisted** under `SQUAD_HUB_HOME`, because revocation that is
+forgotten on restart is not revocation. What is written is the id, label,
+issue and expiry times and the revoked flag — never the token. Records are
+dropped once the token would have expired anyway, so the file cannot grow
+without bound.
+
+**If that file cannot be read, every device token is refused.** A revocation
+list that fails *open* is worse than having none at all: you would believe a
+revoked credential was dead while it was live and working. `--list` reports
+`durable: false` when a hub cannot persist at all, rather than letting you
+assume a revocation will survive.
+
+### Requiring them
+
+Once every device carries a device token, close the old door:
+
+```
+SQUAD_HUB_REQUIRE_DEVICE_TOKENS=1
+```
+
+A person's own credential is then refused where a device credential belongs.
+It is **off by default**, because turning it on disconnects any device still
+using the old credential — which is the point, but should be a decision rather
+than a surprise on upgrade. Signing in to the browser is unaffected.
+
+The migration is therefore: mint tokens, move each device onto one, then set
+the flag.
+
 ### When a device is refused
 
 A refusal closes the socket with a **reason**, and the daemon prints it and

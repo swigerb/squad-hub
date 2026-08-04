@@ -151,6 +151,30 @@ if ($Audience) { $settings += "SQUAD_HUB_AUDIENCE=$Audience" }
 if ($AllowedUsers) { $settings += "SQUAD_HUB_ALLOWED_USERS=$($AllowedUsers -join ',')" }
 if ($Owner) { $settings += "SQUAD_HUB_OWNER=$($Owner -join ',')" }
 
+# The device-token signing secret.
+#
+# It MUST outlive the process: without a stable secret every device token dies
+# on restart, and every device silently drops off. Generated once and then
+# preserved across deploys, exactly like the dev secret.
+#
+# It lives as an app setting and NEVER as a file. /home on App Service is a
+# CIFS mount that reports every file as world readable and silently ignores
+# chmod (measured), so a secret written there would be a secret in plain sight.
+$deviceSecret = az webapp config appsettings list -n $Name -g $ResourceGroup `
+  --query "[?name=='SQUAD_HUB_DEVICE_SECRET'].value | [0]" -o tsv 2>$null
+if (-not $deviceSecret) {
+  $deviceSecret = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Max 16) })
+  Write-Host 'generated a device-token signing secret'
+} else {
+  Write-Host 'kept the existing device-token secret, so existing device tokens still work'
+}
+$settings += "SQUAD_HUB_DEVICE_SECRET=$deviceSecret"
+
+# Where revocations are persisted. /home survives a restart (measured on a live
+# instance); without this the store falls back to a path inside the app image
+# and every revocation is forgotten on redeploy.
+$settings += 'SQUAD_HUB_HOME=/home/data/squad-hub'
+
 # GitHub OAuth App, for the browser "Sign in with GitHub" button.
 #
 # Refuse a half-configured pair rather than deploying it. With only one of the
