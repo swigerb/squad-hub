@@ -231,5 +231,15 @@ check('a real publish failure is NOT mistaken for an already-published version',
   assert.ok(!release.isAlreadyPublished(''), 'an empty output counts as already published');
 });
 
+check('the release documentation describes the release that exists', () => {
+  // Release instructions are followed on a machine nobody is watching, months
+  // later, usually at the worst possible moment. A stale command in here is a
+  // failed release, so tie the prose to the script it describes.
+  const doc = fs.readFileSync(path.join(ROOT, 'docs/releasing.md'), 'utf8');
+  const missing = [release.PRIMARY, release.ALIAS, 'npm run release', release.REGISTRY.replace(/\/$/, '')]
+    .filter((s) => !doc.includes(s));
+  assert.deepStrictEqual(missing, [], `docs/releasing.md never mentions: ${missing.join(', ')}`);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

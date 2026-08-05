@@ -8,6 +8,7 @@
 | [Security](security.md) | Locking a hub down to just you |
 | [Running in the cloud](cloud.md) | App Service, Container Apps, and Kubernetes |
 | [Sessions on Container Apps](aca.md) | Supervising Squad on ACA runs, so a job can ask a human |
+| [Releasing](releasing.md) | Publishing to npm, under both of its names |
 
 ## How this is tested
 
