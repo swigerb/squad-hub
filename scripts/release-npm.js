@@ -68,6 +68,40 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+/**
+ * What the runtime needs, derived from disk rather than from a list. The
+ * server serves its entire UI out of `web/`, and the CLI is whatever `bin`
+ * points at; a package missing either installs cleanly and then does nothing.
+ */
+function requiredInPackage(pkg, listWebFiles) {
+  const web = listWebFiles().filter((f) => !/\.(map|log)$/.test(f));
+  const bins = Object.values(pkg.bin || {}).map((t) => t.replace(/^\.\//, ''));
+  return [...new Set([...web, ...bins])].map((f) => f.replace(/\\/g, '/'));
+}
+
+/** Required paths that the tarball does not contain. */
+function missingFromPack(packed, required) {
+  const have = new Set(packed.map((f) => f.replace(/\\/g, '/')));
+  return required.filter((f) => !have.has(f));
+}
+
+function webFilesOnDisk() {
+  const dir = path.join(ROOT, 'web');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true, recursive: true })
+    .filter((d) => d.isFile())
+    .map((d) => path.relative(ROOT, path.join(d.parentPath || d.path, d.name)).replace(/\\/g, '/'));
+}
+
+/** Ask npm what it would actually ship, rather than re-deriving its rules. */
+function packedPaths() {
+  const r = run('npm', ['pack', '--dry-run', '--json'], { timeout: 180000 });
+  const out = r.stdout || '';
+  const start = out.indexOf('[');
+  if (r.status !== 0 || start === -1) throw new Error(`npm pack failed:\n${out}${r.stderr || ''}`);
+  return JSON.parse(out.slice(start))[0].files.map((f) => f.path.replace(/\\/g, '/'));
+}
+
 function step(n, msg) { console.log(`\n[${n}] ${msg}`); }
 function die(msg) { console.error(`\nFAILED: ${msg}\n`); process.exit(1); }
 
@@ -100,7 +134,10 @@ function main() {
   if (status.stdout.trim()) {
     die(`the working tree has uncommitted changes:\n${status.stdout}\nCommit or stash them -- a release must match a commit.`);
   }
-  console.log('    clean');
+  const branch = (run('git', ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim();
+  const commit = (run('git', ['rev-parse', '--short', 'HEAD']).stdout || '').trim();
+  console.log(`    clean -- ${branch} @ ${commit}`);
+  console.log(`    publishing THIS commit. If that is not what you meant, stop now.`);
 
   step(2, 'checking you are logged in to the public registry');
   const who = run('npm', ['whoami', '--registry', REGISTRY]);
@@ -117,10 +154,25 @@ function main() {
   const tests = run('npm', ['test'], { stdio: 'inherit' });
   if (tests.status !== 0) die('tests failed -- nothing published');
 
-  step(4, `publishing ${PRIMARY}`);
+  step(4, 'checking the tarball contains what the code reads');
+  // Independent of the test suite on purpose. This runs against whatever
+  // commit is checked out, including one whose suite predates the packaging
+  // fix or lacks it entirely -- which is exactly the checkout most likely to
+  // ship a package that installs cleanly and serves a blank page. npm
+  // versions are immutable, so this must be caught BEFORE publish, not after.
+  const required = requiredInPackage(pkg, webFilesOnDisk);
+  const missing = missingFromPack(packedPaths(), required);
+  if (missing.length) {
+    die(`the package would ship without files the code reads:\n  ${missing.join('\n  ')}\n`
+      + `\nThe "files" list in package.json does not cover them. This checkout is not `
+      + `releasable -- publishing it would put a broken ${pkg.version} on the registry permanently.`);
+  }
+  console.log(`    ${required.length} runtime files present in the tarball`);
+
+  step(5, `publishing ${PRIMARY}`);
   const primary = publish(PRIMARY, extraArgs, dryRun);
 
-  step(5, `publishing ${ALIAS}`);
+  step(6, `publishing ${ALIAS}`);
   let alias;
   try {
     fs.writeFileSync(PKG_PATH, withName(original, ALIAS));
@@ -146,4 +198,7 @@ if (require.main === module) {
   }
 }
 
-module.exports = { isAlreadyPublished, sameRegistry, withName, PRIMARY, ALIAS, REGISTRY };
+module.exports = {
+  isAlreadyPublished, sameRegistry, withName, requiredInPackage, missingFromPack,
+  PRIMARY, ALIAS, REGISTRY,
+};

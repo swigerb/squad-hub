@@ -241,5 +241,67 @@ check('the release documentation describes the release that exists', () => {
   assert.deepStrictEqual(missing, [], `docs/releasing.md never mentions: ${missing.join(', ')}`);
 });
 
+check('the release refuses a checkout whose package.json omits the web UI', () => {
+  // The exact shape of the bug this project already had, and the exact shape
+  // of the accident the docs invite: cloning the default branch, where the
+  // `files` list has not been fixed and no test suite would catch it.
+  const stale = { bin: pkg.bin, files: ['bin', 'src', 'README.md', 'LICENSE'] };
+  const web = () => ['web/index.html', 'web/app.js', 'web/app.css'];
+  const required = release.requiredInPackage(stale, web);
+
+  // What npm would pack from that `files` list: no web/ at all.
+  const packedWithoutWeb = ['package.json', 'README.md', 'LICENSE', 'bin/squad-hub.js', 'src/cli.js'];
+  const missingNow = release.missingFromPack(packedWithoutWeb, required);
+  assert.deepStrictEqual(missingNow.sort(), web().sort(),
+    'a package with no web/ at all is reported as complete -- the release would go out broken');
+});
+
+check('the release accepts a checkout that does ship the web UI', () => {
+  // The other half: a guard that rejects everything is as useless as one that
+  // rejects nothing, and would simply be disabled by whoever hits it.
+  const web = () => ['web/index.html', 'web/app.js'];
+  const required = release.requiredInPackage(pkg, web);
+  const packed = ['package.json', 'bin/squad-hub.js', 'web/index.html', 'web/app.js'];
+  assert.deepStrictEqual(release.missingFromPack(packed, required), []);
+});
+
+check('the release checks the CLI entry point, not just the UI', () => {
+  const required = release.requiredInPackage({ bin: { 'squad-hub': './bin/squad-hub.js' } }, () => []);
+  assert.deepStrictEqual(required, ['bin/squad-hub.js'], 'the bin target is not checked');
+  assert.deepStrictEqual(release.missingFromPack(['package.json'], required), ['bin/squad-hub.js']);
+});
+
+check('the release checks every web asset, not merely that web/ exists', () => {
+  // Shipping index.html without app.js is a blank page with extra steps, so
+  // "some of web/ made it" is not a passing condition.
+  const web = () => ['web/index.html', 'web/app.js', 'web/app.css', 'web/logo.jpg'];
+  const required = release.requiredInPackage(pkg, web);
+  const missing = release.missingFromPack(['bin/squad-hub.js', 'web/index.html'], required);
+  assert.deepStrictEqual(missing.sort(), ['web/app.css', 'web/app.js', 'web/logo.jpg']);
+});
+
+check('the release tells you which commit it is about to publish', () => {
+  // A release run on the wrong branch is unrecoverable, because versions are
+  // immutable. The one cheap defence is showing the human what is happening
+  // while they can still stop it.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  assert.match(src, /rev-parse[^\n]*abbrev-ref/, 'the release never reports its branch');
+  assert.match(src, /rev-parse[^\n]*--short/, 'the release never reports its commit');
+});
+
+check('the release docs point at a checkout that has the release script', () => {
+  // docs/releasing.md previously said `git clone <repo>` with no branch, which
+  // lands on the default branch -- where, until this work merges, there is no
+  // release script and package.json still omits web/. Following the document
+  // exactly was the failure path.
+  const doc = fs.readFileSync(path.join(ROOT, 'docs/releasing.md'), 'utf8');
+  const onDefaultBranch = spawnSync('git', ['branch', '-r', '--contains', 'HEAD'],
+    { cwd: ROOT, encoding: 'utf8' });
+  const merged = /origin\/main\b/.test(onDefaultBranch.stdout || '');
+  if (merged) return; // a plain clone is correct once this is on main
+  assert.match(doc, /clone -b/,
+    'the release is not on the default branch yet, but the docs tell you to clone without one');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

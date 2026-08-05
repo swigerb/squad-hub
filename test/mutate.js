@@ -913,6 +913,21 @@ const MUTATIONS = [
   const norm = (u) => String(u || '').trim().replace(/\\/+$/, '').toLowerCase();`,
     mustFail: 'the release goes to the public registry, not a mirror or proxy',
   },
+  {
+    name: 'the release never notices files missing from the tarball',
+    file: 'scripts/release-npm.js',
+    find: `function missingFromPack(packed, required) {`,
+    replace: `function missingFromPack(packed, required) {
+  if (process.env.MUTANT) return []; // MUTATION`,
+    mustFail: 'the release refuses a checkout whose package.json omits the web UI',
+  },
+  {
+    name: 'the release stops treating the web UI as required',
+    file: 'scripts/release-npm.js',
+    find: `  const web = listWebFiles().filter((f) => !/\\.(map|log)$/.test(f));`,
+    replace: `  const web = process.env.MUTANT ? [] : listWebFiles().filter((f) => !/\\.(map|log)$/.test(f)); // MUTATION`,
+    mustFail: 'the release checks every web asset, not merely that web/ exists',
+  },
 ];
 
 /**

@@ -38,7 +38,26 @@ npm run release
 That is the whole thing. `npm login` opens a browser. There is no build step
 and no `npm install` — Squad Hub has no dependencies.
 
-To rehearse without publishing anything:
+### Releasing from a branch
+
+`npm run release` publishes **the commit you have checked out**, and prints
+which one that is before it does anything. So if the release you want is not
+yet on the default branch — which is the normal case while the release
+tooling itself is changing — clone that branch instead:
+
+```bash
+git clone -b <branch> https://github.com/swigerb/squad-hub
+```
+
+> **Right now that applies.** The release tooling and the packaging fix live
+> on **`s0-packaging`** ([PR #13](https://github.com/swigerb/squad-hub/pull/13))
+> and have not merged yet. Clone `-b s0-packaging` until they have. Cloning
+> the default branch instead gets you a `package.json` that omits `web/`, and
+> no `release` script to catch it. Delete this note once the PR is merged.
+
+### Rehearsing
+
+To run every check and publish nothing:
 
 ```bash
 npm run release -- --dry-run
@@ -54,13 +73,18 @@ npm run release -- --otp=123456
 ## What the release does, in order
 
 1. **Refuses a dirty working tree.** A release must correspond to a commit.
+   It prints the branch and commit it is about to publish.
 2. **Refuses if you are not logged in** to `registry.npmjs.org`.
 3. **Runs the full test suite.** A failure publishes nothing.
-4. **Publishes `squad-hub`.**
-5. **Publishes `@mightybs/squad-hub`** — the same contents with the name
+4. **Checks the tarball against the code**, independently of the suite: every
+   file under `web/` and every `bin` target must actually be in the package.
+   This is the guard that survives a wrong or outdated checkout, whose test
+   suite may not contain the check — or may not exist.
+5. **Publishes `squad-hub`.**
+6. **Publishes `@mightybs/squad-hub`** — the same contents with the name
    rewritten, then `package.json` restored.
 
-Step 5 restores `package.json` in a `finally`, so an interrupted release never
+Step 6 restores `package.json` in a `finally`, so an interrupted release never
 leaves the checkout claiming to be the alias package.
 
 ### If it stops half way
