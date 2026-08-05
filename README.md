@@ -52,14 +52,43 @@ on your PATH — that is the agent Squad Hub supervises.
 There is **nothing to build and nothing to install**. Squad Hub has no
 dependencies, so there is no `npm install` step and no `node_modules`.
 
-The recommended workflow, once you have a hub — either one already hosted for
-your team, or one you started yourself with `serve` below:
+### Getting the `squad-hub` command
+
+Three ways, easiest first. All of them give you the same command.
+
+**1. Run it without installing anything.** `npx` fetches, caches and runs it:
+
+```bash
+npx squad-hub squad
+```
+
+**2. Install it globally**, so `squad-hub` is on your `PATH` for good:
+
+```bash
+npm i -g squad-hub
+squad-hub squad
+```
+
+**3. Clone it**, if you intend to change it — see
+[`npm link`](#what-npm-link-actually-does) below:
 
 ```bash
 git clone https://github.com/swigerb/squad-hub
 cd squad-hub
-npm link                                              # once, see below
+npm link
+```
 
+> The package is also published as **`@mightybs/squad-hub`**, which is the same
+> code under the org's namespace — use it if you prefer a scoped dependency.
+> To run the unreleased `main` instead of the last release, both npm commands
+> take `github:swigerb/squad-hub` in place of `squad-hub`.
+
+### Then, whichever way you got it
+
+The recommended workflow, once you have a hub — either one already hosted for
+your team, or one you started yourself with `serve` below:
+
+```bash
 squad-hub connect --hub <url> --token <device-token>  # once, per machine
 
 cd my-project
@@ -73,6 +102,8 @@ interactive terminal on a new session — or, given a prompt
 (`squad-hub squad "implement issue 42"`), starts that session and returns.
 
 ### What `npm link` actually does
+
+This applies to the **clone** route only; `npx` and `npm i -g` do not need it.
 
 It creates **one global symlink** — `squad-hub` on your `PATH` — pointing at
 this checkout. That is it. It does not install anything into the checkout,

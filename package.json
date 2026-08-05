@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "description": "One place to see and control your Squad sessions, across every substrate.",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/swigerb/squad-hub.git" },
+  "homepage": "https://github.com/swigerb/squad-hub#readme",
+  "bugs": { "url": "https://github.com/swigerb/squad-hub/issues" },
+  "keywords": ["copilot", "squad", "agent", "cli", "acp"],
   "bin": { "squad-hub": "./bin/squad-hub.js" },
-  "main": "src/index.js",
   "scripts": {
     "test": "node test/run-tests.js",
-    "start": "node bin/squad-hub.js serve"
+    "start": "node bin/squad-hub.js serve",
+    "release": "node scripts/release-npm.js"
   },
   "engines": { "node": ">=18" },
-  "files": ["bin", "src", "README.md", "LICENSE"]
+  "files": ["bin", "src", "web", "README.md", "LICENSE"]
 }

@@ -848,6 +848,71 @@ const MUTATIONS = [
   }`,
     mustFail: 'a bad .squad-hub.json produces a WARN-level agent-selection-warnings check, not silence',
   },
+
+  // -------------------------------------------------------------------------
+  // The published package. These mutate package.json rather than a .js file,
+  // so they cannot carry a `process.env.MUTANT` guard -- JSON has no
+  // conditionals. They stay safe because each still carries the MUTATION
+  // marker the harness scans for on start-up, so a stranded one is refused
+  // rather than silently shipped.
+  // -------------------------------------------------------------------------
+  {
+    name: 'the published package drops the web UI (the shipped-blank-page bug)',
+    file: 'package.json',
+    find: `  "files": ["bin", "src", "web", "README.md", "LICENSE"]`,
+    replace: `  "_MUTATION": "files",
+  "files": ["bin", "src", "README.md", "LICENSE"]`,
+    mustFail: 'every file in web/ is in the published package',
+  },
+  {
+    name: 'package.json again promises a main entry point that does not exist',
+    file: 'package.json',
+    find: `  "bin": { "squad-hub": "./bin/squad-hub.js" },`,
+    replace: `  "_MUTATION": "main",
+  "main": "src/index.js",
+  "bin": { "squad-hub": "./bin/squad-hub.js" },`,
+    mustFail: 'main, if declared, resolves to a real shipped file',
+  },
+  {
+    name: 'the server serves its UI from somewhere the package does not ship',
+    file: 'src/service/hub-service.js',
+    find: `const WEB_ROOT = path.join(__dirname, '..', '..', 'web');`,
+    replace: `const WEB_ROOT = process.env.MUTANT ? path.join(__dirname, '..', '..', 'assets') : path.join(__dirname, '..', '..', 'web'); // MUTATION`,
+    mustFail: 'the server still serves its UI from web/, so that is the directory to ship',
+  },
+
+  // -------------------------------------------------------------------------
+  // The two-name release. Its failure mode is asymmetric: publishing the
+  // primary and silently not publishing the alias strands the two names on
+  // different versions FOREVER, because npm versions are immutable.
+  // -------------------------------------------------------------------------
+  {
+    name: 'the release treats every publish failure as "already published"',
+    file: 'scripts/release-npm.js',
+    find: `function isAlreadyPublished(output) {
+  const s = String(output || '');`,
+    replace: `function isAlreadyPublished(output) {
+  if (process.env.MUTANT) return true; // MUTATION
+  const s = String(output || '');`,
+    mustFail: 'a real publish failure is NOT mistaken for an already-published version',
+  },
+  {
+    name: 'the alias rename silently no-ops instead of failing',
+    file: 'scripts/release-npm.js',
+    find: `  if (next === json) throw new Error('could not find the "name" field in package.json');`,
+    replace: `  if (next === json && !process.env.MUTANT) throw new Error('could not find the "name" field in package.json'); // MUTATION`,
+    mustFail: 'renaming refuses to guess when there is no name to change',
+  },
+  {
+    name: 'the release cannot tell an internal proxy from the public registry',
+    file: 'scripts/release-npm.js',
+    find: `function sameRegistry(a, b) {
+  const norm = (u) => String(u || '').trim().replace(/\\/+$/, '').toLowerCase();`,
+    replace: `function sameRegistry(a, b) {
+  if (process.env.MUTANT) return true; // MUTATION
+  const norm = (u) => String(u || '').trim().replace(/\\/+$/, '').toLowerCase();`,
+    mustFail: 'the release goes to the public registry, not a mirror or proxy',
+  },
 ];
 
 /**
