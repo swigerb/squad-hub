@@ -600,12 +600,109 @@ runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser');
 }
 
 /**
+ * E2: automatic, per-session Squad custom-agent selection. Precedence
+ * (explicit > project > auto > default), .squad-hub.json schema/validation,
+ * array-safe argv building, and a real daemon proving selection happens per
+ * session rather than once at daemon startup.
+ */
+async function suiteAgentSelect() {
+  console.log('\n[AGENT SELECT] explicit > project > auto > default, per session');
+  runChildSuite(path.join(__dirname, 'agent-select-unit.js'), 'agent-select');
+}
+
+/**
+ * E1: the one-time `squad-hub connect`. Argument/URL validation, a real hub
+ * accepting a valid device token, a real refusal, and -- the property that
+ * matters most -- a hub that never completes the handshake must never be
+ * reported as connected.
+ */
+async function suiteConnect() {
+  console.log('\n[CONNECT] one-time setup: validate, attach, never lie about it');
+  runChildSuite(path.join(__dirname, 'connect-unit.js'), 'connect');
+}
+
+/**
+ * E4: the interactive local terminal. Scripted stdin against a real daemon
+ * and a real fake agent, asserting a genuine tool side effect after an
+ * approval -- and the two-stage Ctrl+C safety behaviour, which never kills a
+ * running session out from under you.
+ */
+async function suiteInteractive() {
+  console.log('\n[INTERACTIVE] a plain terminal over the same session the Hub sees');
+  runChildSuite(path.join(__dirname, 'interactive-unit.js'), 'interactive');
+}
+
+/**
+ * E5: optional login-startup service management. Every assertion here uses
+ * --dry-run / {dryRun:true} -- this suite must never register a real login
+ * task on the machine that runs it.
+ */
+async function suiteServiceInstall() {
+  console.log('\n[SERVICE INSTALL] login-startup, dry-run only, never touches the machine');
+  runChildSuite(path.join(__dirname, 'service-install-unit.js'), 'service-install');
+}
+
+/**
+ * E6: `squad-hub doctor`. Deterministic PATH manipulation drives the
+ * Copilot-CLI check; the property that matters is that a `fail` always
+ * yields a nonzero exit code and a `warn` never does.
+ */
+async function suiteDoctor() {
+  console.log('\n[DOCTOR] one command, every independent health check');
+  runChildSuite(path.join(__dirname, 'doctor-unit.js'), 'doctor');
+}
+
+/**
+ * The intended fresh workflow, end to end: an isolated SQUAD_HUB_HOME with
+ * nothing configured yet, through connect, auto-detected Squad selection,
+ * a session started and visible in the hub, an approval answered remotely,
+ * and a genuine tool side effect -- the whole E1-E4 story in one pass.
+ */
+async function suiteFreshWorkflow() {
+  console.log('\n[FRESH WORKFLOW] connect -> attach -> auto-detect -> run -> approve -> effect');
+  runChildSuite(path.join(__dirname, 'fresh-workflow-unit.js'), 'fresh-workflow');
+}
+
+/**
+ * B1's transcript cursor (proven directly against AcpSession/Daemon, not
+ * through the interactive terminal), N4's stale-daemon-cwd fallback, and the
+ * hub spawn/local start-session result-shape symmetry suggestion.
+ */
+async function suiteDaemonFixes() {
+  console.log('\n[DAEMON FIXES] transcript cursor survives a cap slide; cwd fallback is never process.cwd()');
+  runChildSuite(path.join(__dirname, 'daemon-fixes-unit.js'), 'daemon-fixes');
+}
+
+/**
+ * N6: noninteractive `run`/`squad "<prompt>"` must never be silent about a
+ * hub that is configured but not actually attached -- refused, connecting,
+ * and connected/not-configured all read differently on stderr.
+ */
+async function suiteHubWarning() {
+  console.log('\n[HUB WARNING] `run`/`squad` never silent about a configured-but-unattached hub');
+  runChildSuite(path.join(__dirname, 'hub-warning-unit.js'), 'hub-warning');
+  runChildSuite(path.join(__dirname, 'hub-link-unit.js'), 'hub-link');
+}
+
+/**
  * Documentation, checked against the code. Prose drifts silently; a renamed
  * command or an undocumented variable fails no build and wastes an afternoon.
  */
 async function suiteDocs() {
   console.log('\n[DOCS] every promise kept, every variable documented');
   runChildSuite(path.join(__dirname, 'docs-unit.js'), 'docs');
+}
+
+/**
+ * Stored XSS (Opus review, HIGH): `.squad-hub.json` agent/model ->
+ * `agentSelection` -> the hub -> `web/app.js`'s `sessionRow`. Proven directly
+ * against the file's pure, DOM-free prefix -- no jsdom, per the zero-runtime-
+ * dependency constraint -- a malicious agent/model/source must render as
+ * inert escaped text, never live markup.
+ */
+async function suiteWebXss() {
+  console.log('\n[WEB XSS] agentSelection fields render as text, never live markup');
+  runChildSuite(path.join(__dirname, 'web-xss-unit.js'), 'web-xss');
 }
 
 // ===========================================================================
@@ -633,7 +730,16 @@ async function suiteDocs() {
   await suiteSquadContext();
   await suiteTeams();
   await suiteGitHubAuth();
+  await suiteAgentSelect();
+  await suiteConnect();
+  await suiteInteractive();
+  await suiteServiceInstall();
+  await suiteDoctor();
+  await suiteFreshWorkflow();
+  await suiteDaemonFixes();
+  await suiteHubWarning();
   await suiteDocs();
+  await suiteWebXss();
 
   console.log('');
   console.log('='.repeat(60));

@@ -87,10 +87,18 @@ function sessionRow(s, deviceName) {
   const pending = (s.pendingApprovals || []).length > 0;
   const title = (s.prompt || s.id).slice(0, 70);
   const sq = s.squad;
+  const sel = s.agentSelection;
+  // `sel` (session.agentSelection) and `deviceName`/`sq.project`/`s.cwd` all
+  // ultimately trace back to attacker-influenceable input: a project's own
+  // `.squad-hub.json` (agent/model), a device's self-reported name, or a
+  // relayed hub's session/device records. None of it is trusted HTML, so
+  // every field landing in this string gets `esc()`'d -- a stored payload
+  // (e.g. an `agent` of `<img src=x onerror=...>`) must render as inert text,
+  // never live markup, however it got here.
   const meta = [
-    deviceName,
-    sq ? sq.project : s.cwd,
-    s.agent || 'Copilot CLI',
+    esc(deviceName),
+    esc(sq ? sq.project : s.cwd),
+    sel ? `${esc(sel.agent)}${sel.model ? ` (${esc(sel.model)})` : ''} — ${esc(sel.source)}` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? ago(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
   ].filter(Boolean).join(' &middot; ');
@@ -180,7 +188,7 @@ function render() {
         </div>
       </div>
       <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
-    </div>`).join('') || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub start</code>.</div></div>'}</div>`;
+    </div>`).join('') || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
 
   const sel = $('deviceFilter');
   const keep = sel.value;
@@ -722,7 +730,7 @@ async function createDeviceToken() {
         ttlHours: Number($('cnTtl').value),
       },
     });
-    const cmd = `squad-hub start --hub ${location.origin} --token ${r.token}`;
+    const cmd = `squad-hub connect --hub ${location.origin} --token ${r.token}`;
     $('cnCmd').textContent = cmd;
     $('cnResult').hidden = false;
     btn.textContent = 'Create another';

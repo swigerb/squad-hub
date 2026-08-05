@@ -6,18 +6,185 @@
 squad-hub serve [--port 7420] [--host 0.0.0.0] [--auth github|entra|dev]
 ```
 
-Runs the control plane and serves the web app from the same process. In dev
-auth it prints a ready-to-open URL carrying a token, and the command to attach a
-device.
+Runs the control plane and serves the web app from the same process. Most
+people never run this: a hub is normally already hosted for you, and you only
+need `squad-hub connect` below. Run `serve` yourself only if you want a local
+hub — for example, to try Squad Hub before anyone deploys one.
+
+In dev auth it prints a ready-to-open URL carrying a token, and the command to
+connect a device.
+
+## Everyday use
+
+```
+squad-hub connect --hub <url> --token <device-token>   # once, per machine
+squad-hub squad                                         # every time after that
+```
+
+That is the whole workflow. See "Connect once" and "`squad`: the everyday
+front door" below.
+
+## Connect once
+
+```
+squad-hub connect --hub <url> --token <device-token> [--name <device-name>]
+                   [--allow-files|--allow-files-all] [--track-all] [--force]
+```
+
+The one command a new machine needs. It:
+
+1. validates `--hub` (must be `http://` or `https://`) and `--token` (must have
+   the device-token shape) before touching anything,
+2. reads the CURRENTLY saved config first and checks whether the candidate
+   hub/token/flags are genuinely a change at all,
+3. proves the candidate hub/token actually works with a bounded, disposable
+   WebSocket probe — under a one-off device id, never this machine's real
+   one — **before writing anything or touching a daemon that may already be
+   running**. A refused, expired, wrong-prefix, or unreachable candidate
+   leaves the existing configuration and any running daemon/sessions exactly
+   as they were, and is reported as a failure, never as success,
+4. if the candidate is good and actually changes the live configuration, and a
+   daemon is already up **carrying running sessions**, refuses to restart
+   without `--force` — naming the sessions and the risk. Re-run with `--force`
+   to restart anyway (this stops them). With no running sessions, or with
+   `--force`, it saves the config and restarts the daemon so the new settings
+   take effect,
+5. waits for the daemon to come up **and** for the hub to actually accept the
+   token, distinguishing "still connecting" from "refused" — a refused,
+   expired, or wrong-prefix token is reported as a failure, never as success.
+
+Running `connect` again with the exact same hub/token/flags while already
+connected is a true no-op: nothing is probed, nothing is written, nothing
+restarts, and no running session is disturbed — this is what makes reconnect
+idempotent even while work is in flight. `--force` is only ever needed when the
+candidate genuinely changes the connection AND a session is running; the web
+"Connect a device" flow never needs it, since it always targets the same hub
+the user is already looking at.
+
+After a restart, `connect` waits on the daemon's reported state before
+trusting it. The old daemon is fully stopped and its on-disk state file
+deleted (`cmdStop`) before the new one is even spawned, so there is no stale
+state left over from the previous process for a fast poll to misread as the
+new connection's result — the wait loop either sees nothing (no daemon up
+yet) or the new daemon's own freshly-written state, never a leftover.
+
+Get a device token from the hub's account menu → **Connect a device**, which
+mints one and shows you the exact `squad-hub connect …` command to run. It is
+shown once; the hub does not store it.
+
+`connect` never prints or logs the token itself, other than echoing it back
+into the one-time command the browser already showed you.
+
+## `squad`: the everyday front door
+
+```
+squad-hub squad                          # interactive terminal
+squad-hub squad "<prompt>"               # start a session and return
+```
+
+Run from inside the project you want worked on. `squad` starts the daemon
+automatically if it is not already running (using whatever `connect` saved),
+picks the right Copilot agent for the project (see "Agent selection" below),
+and either:
+
+- starts a session with the given prompt and returns, same as `run`, or
+- with no prompt, opens a local interactive terminal on a new session.
+
+### The interactive terminal
+
+Not a re-implementation of the Copilot CLI's own TUI, and it does not claim to
+be one. It is a plain, scriptable `readline` loop that talks to the **same**
+daemon-owned session the web Hub can see and drive. That is deliberate: there
+is no supported way to attach to a `copilot` process someone already started
+by hand (see "Why Squad Hub cannot attach to a running `copilot`" in the
+[README](../README.md)), so the daemon has to own the ACP process from the
+very first prompt — and this terminal is just one more client of that.
+
+On start it prints the project, the selected agent/model and why, the daemon
+pid, and whether a hub is connected. The first line you type starts the
+session; every line after that steers the same session. Updates from the agent
+print as they arrive, deduplicated so nothing repeats.
+
+Slash commands:
+
+| Command | |
+|---|---|
+| `/status` | This session's current status and activity. |
+| `/approve <approvalId> <optionId>` | Answer a pending approval. |
+| `/stop` | Stop the running session. |
+| `/exit` | Leave the terminal. The session keeps running. |
+| `/help` | Show this list. |
+
+Anything else is sent to the agent as the next line of conversation.
+
+**Ctrl+C is safe.** With a session running, the first press only warns — it
+never kills anything silently. A second press within two seconds detaches:
+the terminal exits, but the session keeps running and stays fully visible and
+controllable in the web Hub, exactly as if you had closed a browser tab.
+
+**There is no local reattach yet.** Every `squad-hub squad` (or `run`) with no
+prompt starts a **new** session — it never resumes a previous terminal's
+session, even if that one is still running. If you detach (or the terminal
+just exits) and later run `squad-hub squad` again from the same project, you
+will be talking to a second, independent session, not the one you left. To
+manage a session you have already detached from, either send it a targeted
+command through the web Hub (which can see and drive every session on every
+connected device), or stop it outright with `squad-hub status` to find its id
+and the appropriate stop control. Keep this in mind before detaching from
+something you intend to come back to from the terminal.
+
+`squad` flags:
+
+| Flag | |
+|---|---|
+| `--cwd <dir>` | Project directory. Defaults to where you ran the command. |
+| `--agent <name>` | Override agent selection (`squad`, `default`, or any custom agent name). |
+| `--model <name>` | Override model selection. |
+
+## Agent selection
+
+`run` and `squad` pick a Copilot agent per session — not once, globally, at
+daemon startup. The precedence, highest first:
+
+1. **Explicit** — `--agent`/`--model` on the command line.
+2. **Project config** — `agent`/`model` in a `.squad-hub.json` file at the
+   project root (see below).
+3. **Squad auto-detect** — if the project has a `.squad/` directory or a
+   `.github/agents/squad.agent.md` file, the agent is `squad`. Detection walks
+   upward from the working directory to find it — you don't have to run from
+   the exact project root — but the walk stops at whichever comes first: the
+   nearest `.git` repository boundary (so an unrelated sibling checkout never
+   leaks in), or your home directory (so a scratch folder under your home
+   directory never inherits unrelated Squad config that happens to live there,
+   e.g. this very framework's own `~/.squad/`). Outside of any repo or home
+   tree, the walk falls back to the filesystem root.
+4. **Default** — otherwise, Copilot's own default agent.
+
+`squad-hub status` and the web Hub's session view show which agent/model was
+picked and which of the four reasons applied.
+
+### `.squad-hub.json` (optional, project-level)
+
+```json
+{ "agent": "squad", "model": "claude-sonnet-4.5" }
+```
+
+Only `agent` and `model` are read from it. Hub URLs, tokens, and any other
+credential belong in the user-level config (`squad-hub connect`), never in a
+file that might be committed to a repository — a stray credential-shaped key
+here is reported as a warning and otherwise ignored. It is resolved with the
+same upward walk and the same two boundaries as Squad auto-detect above, so
+running from a nested subdirectory of the project still picks it up.
 
 ## This device
 
 | Command | What it does |
 |---|---|
-| `squad-hub start` | Start the background daemon. |
+| `squad-hub start` | Start the background daemon directly (lower-level than `connect`; kept for explicit control and scripting). |
 | `squad-hub stop` | Stop the daemon. Its agents are killed with it. |
 | `squad-hub status [--json]` | Daemon state, sessions, and what each is waiting for. |
 | `squad-hub reset` | Restore factory defaults and restart. |
+| `squad-hub doctor [--json]` | Diagnose the whole setup end to end. See "Doctor" below. |
 
 `start` flags:
 
@@ -29,25 +196,94 @@ device.
 | `--allow-files-all` | Allow any working directory. |
 | `--track-all` | Report every session on this device. |
 
+`connect` accepts the same `--allow-files`/`--allow-files-all`/`--track-all`
+flags and is the recommended way to set them, since it also saves the hub and
+token in the same step.
+
 `reset` takes the same file-access flags. Without them, file access returns to
 **off** — that is the point of a reset.
 
 `status` exits **3** when no daemon is running, so a script can tell "stopped"
 from "broken".
 
+## Doctor
+
+```
+squad-hub doctor [--json] [--cwd <dir>] [--agent <name>] [--model <name>]
+```
+
+Runs a fixed set of independent checks and reports each as `OK`, `WARN`, or
+`FAIL`:
+
+| Check | |
+|---|---|
+| `node-version` | Node satisfies the version in `package.json`'s `engines`. |
+| `copilot-cli` | The `copilot` executable is on `PATH`. |
+| `copilot-auth` | Bounded and non-destructive: never reaches `OK` -- an env credential's presence and a prior `copilot login`'s on-disk breadcrumb are both checked, but neither proves the CLI can authenticate right now (values are never inspected, and a login can expire or be revoked since). Always `WARN`, with a message describing exactly what evidence (if any) was found. |
+| `squad-project` | Whether the current directory is a Squad project. |
+| `squad-agent-file` | If it is a Squad project, whether `.github/agents/squad.agent.md` exists — the file the auto-selected `squad` agent actually needs. |
+| `hub-url` | A hub URL is saved and has a valid `http(s)` scheme. |
+| `device-token` | A device token is saved. Its value is never printed. |
+| `hub-reachable` | An unauthenticated, bounded request to the hub's `/healthz`. |
+| `daemon-running` | The local daemon answers a ping. |
+| `daemon-hub-attach` | The daemon reports itself connected to the configured hub. A hub that actively **refused** this device is `FAIL` (every session started right now is silently local-only, which is exactly why nothing shows up remotely); still connecting, or unreachable, is `WARN`. |
+| `selected-agent` | The agent/model this project would use, and which precedence rule picked it. |
+| `agent-selection-warnings` | Any warning produced while resolving the agent/model — a `.squad-hub.json` value rejected for an invalid name, a stray credential-shaped key (`token`, `hub`, ...) in the project config, or a rejected `--agent`/`--model` value. `WARN` if any exist, `OK` if none. Only key names and reasons are ever shown; credential *values* are never printed. The same warnings (if any) are also printed on `squad-hub run`/`squad "<prompt>"` startup and in the interactive terminal's banner — not only here. |
+
+Only `node-version`, `copilot-cli`, a malformed `hub-url`, and a `daemon-hub-attach`
+refusal are `FAIL` checks — they are the ones a session genuinely cannot work
+without, or is silently broken by. Everything else is a `WARN`: a machine with
+no hub configured yet, or a daemon not currently running, is a normal state,
+not a broken one.
+
+Exit code is **0** when nothing failed, non-zero when at least one `FAIL`
+check exists — warnings never affect it. `--json` prints the full report
+instead of the human summary.
+
+## Login startup (optional)
+
+```
+squad-hub install-service [--dry-run] [--json]
+squad-hub uninstall-service [--dry-run] [--json]
+squad-hub service-status [--dry-run] [--json]
+```
+
+Registers a login task that runs `squad-hub start` once when you sign in, so
+the daemon comes up without a terminal. Never requires admin or root:
+
+| Platform | Mechanism |
+|---|---|
+| Windows | Task Scheduler task, current user, at logon. |
+| Linux | A systemd **user** unit (`systemctl --user`). Needs `loginctl enable-linger $USER` to start before you graphically log in, on some distributions. |
+| macOS | A LaunchAgent in `~/Library/LaunchAgents`. |
+| Anything else | Reported clearly as unsupported — nothing is installed. |
+
+Both the Node executable and `bin/squad-hub.js` are located from the running
+process itself, so this works correctly whether Squad Hub was installed with
+`npm link` or run from a full checkout, and even when either path contains
+spaces.
+
+Install and uninstall are **idempotent** — running either twice does not
+error and does not duplicate the task.
+
+`--dry-run` reports the exact command(s) and file(s) it would use without
+touching the machine at all — useful to see what would happen, and how the
+test suite verifies this behaviour without ever installing a real login task.
+
 ## Sessions
 
 | Command | |
 |---|---|
-| `squad-hub run "<prompt>" [--cwd <dir>]` | Start a session on this device. |
+| `squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]` | Start a session. Starts the daemon automatically if needed. |
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
 
 `<option>` is one of `allow_once`, `allow_always`, `reject_once` — whichever the
 agent offered. An option it did not offer is refused.
 
-`--cwd` requires file access to be on. Without it the daemon refuses rather than
-silently using somewhere else.
+`--cwd` defaults to the directory you ran the command from. It requires file
+access to be on when it names somewhere other than that default; without file
+access, the daemon refuses rather than silently using somewhere else.
 
 ## Settings
 
@@ -88,6 +324,7 @@ See [security.md](security.md#device-tokens).
 
 ## Environment
 
+
 ### The service
 
 | Variable | |
@@ -126,6 +363,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
 | `SQUAD_HUB_AGENT_ARGS` | Agent arguments. Default `--acp`. |
 | `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
+| `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
 
 **The two tokens are separate on purpose.** The hub token says which device this
 is; the agent token spends a Copilot entitlement. Conflating them would let
