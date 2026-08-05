@@ -411,7 +411,11 @@ mint another if it is lost.
 ### Connecting a device from the browser
 
 The account menu (top right) has **Connect a device…**. It mints a device token
-and shows the exact command to run, once.
+and shows the exact `squad-hub connect --hub <url> --token <device-token>`
+command to run, once. That single command saves the hub and token, then starts
+(or restarts) the daemon and waits for it to actually attach — a refused,
+expired, or wrong-prefix token is reported as a failure, never as a false
+success.
 
 Use this rather than sharing your own sign-in credential. A device token can be
 a device and nothing else, so it is safe on a server or in a container.
@@ -525,6 +529,27 @@ squad-hub start --allow-files-all   # the whole filesystem
 The confinement root is enforced **by the daemon** and never leaves the device.
 The heartbeat reports only whether file access is on and whether it is scoped —
 not the path.
+
+**A separate, ungated channel exists for the local CLI only.** When `squad-hub
+run`/`squad` is typed directly on the machine with no explicit `--cwd`, the
+daemon runs the session in whatever directory that local command was typed
+from (`process.cwd()` of the CLI process itself, carried over the local IPC
+socket as `localCwd`) — regardless of whether file access is otherwise off or
+scoped for this device. This is deliberate, not an oversight: it is exactly
+"run where I already am", the same trust boundary as running any other
+command-line tool from that directory, and requires nothing more than what
+typing a shell command already requires — an interactive session on the
+machine itself. It is reachable **only** from that local socket. The
+hub-driven remote `spawn` path never sends or reaches for a `localCwd` — a
+remote "+" (new session) with no explicit directory always falls back to the
+device's configured `filesRoot` if one is set, or otherwise the user's home
+directory, never to whichever directory the background daemon happened to be
+launched from days earlier. An explicit `--cwd` (from either the local CLI or
+a remote spawn) is a genuinely different directory being asked for, and stays
+behind the `--allow-files` gate and root-confinement check exactly as
+described above in every case. In short: local convenience never weakens
+remote confinement, and remote confinement is never widened by what the local
+CLI is allowed to do.
 
 ## Where state is kept
 

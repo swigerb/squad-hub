@@ -27,6 +27,8 @@ class HubLink extends EventEmitter {
     this._retry = 0;
     this._timer = null;
     this._stopped = false;
+    this._req = null;
+    this._reconnectTimer = null;
   }
 
   connect() {
@@ -41,6 +43,17 @@ class HubLink extends EventEmitter {
     const lib = isTls ? https : http;
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const resolveOnce = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const rejectOnce = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
       const req = lib.request({
         hostname: u.hostname,
         port: u.port || (isTls ? 443 : 80),
@@ -52,20 +65,37 @@ class HubLink extends EventEmitter {
           'Sec-WebSocket-Version': '13',
         },
       });
+      // Tracked so `stop()` can abort a handshake that never resolves --
+      // otherwise the socket sits open in the agent pool and a short-lived
+      // caller (a bounded validation probe, not the long-lived daemon) hangs
+      // past the point it believed it had given up.
+      this._req = req;
 
       req.on('upgrade', (res, socket, head) => {
+        this._req = null;
         socket.setNoDelay(true);
         const conn = new WsConnection(socket);
-        if (head && head.length) conn._onData(head);
         this.conn = conn;
-        this.connected = true;
-        this._retry = 0;
 
         conn.on('message', (m) => {
+          /**
+           * An HTTP 101 only says the socket upgraded. The hub applies
+           * device-token prefix and role policy AFTER the upgrade, then sends
+           * `welcome` only when the device was actually registered. Treating
+           * 101 as connected produced a brief false success before the
+           * immediate 1008 refusal arrived.
+           */
+          if (m.type === 'welcome' && m.deviceId === this.deviceId) {
+            this.connected = true;
+            this._retry = 0;
+            this.emit('connected');
+            resolveOnce(conn);
+          }
           if (m.type === 'command') this.emit('command', m);
           else this.emit('message', m);
         });
         conn.on('close', () => {
+          const wasConnected = this.connected;
           this.connected = false;
           this.conn = null;
 
@@ -75,31 +105,50 @@ class HubLink extends EventEmitter {
           // loop that also buries the reason. Same reasoning as the 401/403
           // case below -- this one just arrives after the upgrade succeeded.
           if (conn.closeCode === 1008) {
-            this.emit('refused', conn.closeReason || 'the hub refused this connection');
+            const why = conn.closeReason || 'the hub refused this connection';
+            this.emit('refused', why);
+            rejectOnce(Object.assign(new Error(why), { status: 403 }));
             return;
+          }
+          if (!wasConnected) {
+            rejectOnce(new Error('the hub closed the socket before registering this device'));
           }
           this.emit('disconnected');
           this._scheduleReconnect();
         });
 
-        this.emit('connected');
-        resolve(conn);
+        // Attach handlers before consuming buffered upgrade bytes. A fast hub
+        // can place the welcome frame in `head`; consuming it first would lose
+        // the one message that proves registration succeeded.
+        if (head && head.length) conn._onData(head);
       });
 
       req.on('response', (res) => {
+        this._req = null;
         // A non-101 answer means the hub rejected us. Retry, unless it was an
         // auth failure -- a bad token will not become good by trying again, and
         // a reconnect loop against 401 is just noise.
         const status = res.statusCode;
-        if (status !== 401 && status !== 403) this._scheduleReconnect();
-        reject(Object.assign(new Error(`the hub refused the connection (HTTP ${status})`), { status }));
+        const e = Object.assign(new Error(`the hub refused the connection (HTTP ${status})`), { status });
+        if (status === 401 || status === 403) {
+          // This arrives BEFORE the upgrade, unlike the 1008 case above, so it
+          // is the only signal a caller gets for a bad/expired/wrong-prefix
+          // token that the server rejects outright. Emit the same event either
+          // way, so `squad-hub connect` (and anything else watching daemon
+          // state) sees one refusal reason regardless of which stage rejected.
+          this.emit('refused', e.message);
+        } else {
+          this._scheduleReconnect();
+        }
+        rejectOnce(e);
       });
       req.on('error', (e) => {
+        this._req = null;
         // The hub may simply not be up yet. An initial failure that never
         // retries leaves the device permanently and silently detached, which is
         // worse than being slow to attach.
         this._scheduleReconnect();
-        reject(e);
+        rejectOnce(e);
       });
       req.end();
     });
@@ -109,7 +158,12 @@ class HubLink extends EventEmitter {
     if (this._stopped) return;
     this._retry += 1;
     const delay = Math.min(30000, 500 * 2 ** Math.min(this._retry, 6));
-    setTimeout(() => { this.connect().catch(() => {}); }, delay);
+    // Tracked and cleared by `stop()`, and unref'd, so a caller that gives up
+    // on this link -- the daemon on shutdown, or a short-lived validation
+    // probe that never even wants a retry -- is not held open by a pending
+    // timer whose callback will no-op anyway once `_stopped` is set.
+    this._reconnectTimer = setTimeout(() => { this.connect().catch(() => {}); }, delay);
+    if (this._reconnectTimer.unref) this._reconnectTimer.unref();
   }
 
   send(obj) {
@@ -135,7 +189,15 @@ class HubLink extends EventEmitter {
   stop() {
     this._stopped = true;
     if (this._timer) clearInterval(this._timer);
+    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
     if (this.conn) this.conn.close();
+    // A handshake still in flight (the socket case in `connect()` above) has
+    // no `conn` yet, so it would otherwise keep a socket -- and, for a
+    // short-lived caller, the whole process -- alive indefinitely.
+    if (this._req) {
+      try { this._req.destroy(); } catch { /* best effort */ }
+      this._req = null;
+    }
   }
 }
 

@@ -52,41 +52,74 @@ on your PATH — that is the agent Squad Hub supervises.
 There is **nothing to build and nothing to install**. Squad Hub has no
 dependencies, so there is no `npm install` step and no `node_modules`.
 
+The recommended workflow, once you have a hub — either one already hosted for
+your team, or one you started yourself with `serve` below:
+
 ```bash
 git clone https://github.com/swigerb/squad-hub
 cd squad-hub
+npm link                                              # once, see below
 
-# 1. run the service
+squad-hub connect --hub <url> --token <device-token>  # once, per machine
+
+cd my-project
+squad-hub squad                                       # every time after that
+```
+
+`squad-hub squad` starts the daemon if it is not already running, picks the
+Squad custom agent automatically in a Squad project (see
+[docs/commands.md](docs/commands.md#agent-selection)), and opens an
+interactive terminal on a new session — or, given a prompt
+(`squad-hub squad "implement issue 42"`), starts that session and returns.
+
+### What `npm link` actually does
+
+It creates **one global symlink** — `squad-hub` on your `PATH` — pointing at
+this checkout. That is it. It does not install anything into the checkout,
+does not run a build, and does not start anything. Every `squad-hub …`
+afterward runs the exact code in this clone, with no `node …` prefix required.
+It is a developer-installation step, run **once**, not something that starts a
+service — `squad-hub connect`/`squad-hub start` do that.
+
+Without `npm link`, run the same commands as `node bin/squad-hub.js …` instead
+of `squad-hub …`.
+
+### Hosted hub vs. running one yourself
+
+Most people never run `squad-hub serve`. A production or team hub is normally
+already hosted somewhere (an Azure App Service, a Container App — see "Running
+it in the cloud" below), and connecting to it is the one-time
+`squad-hub connect --hub <url> --token <device-token>` above. Get that command,
+with a fresh token already filled in, from the hub's own account menu →
+**Connect a device**.
+
+Run `serve` yourself only if you want a **local** hub — for example, to try
+Squad Hub before your team deploys one:
+
+```bash
 node bin/squad-hub.js serve
 ```
 
 It prints a URL containing a token — open that, and you are signed in. It also
-prints the exact command to attach a device. In a **second terminal**, in the
-same folder:
+prints the exact `connect` command for this device. In a **second terminal**,
+in the same folder:
 
 ```bash
-# 2. attach this machine as a device
-node bin/squad-hub.js start --hub http://localhost:7420 --token <token>
+node bin/squad-hub.js connect --hub http://localhost:7420 --token <token>
 
-# 3. start a session, in whatever repository you want it to work on
 cd /path/to/your/project
-node /path/to/squad-hub/bin/squad-hub.js run "add a health endpoint and a test for it"
+node /path/to/squad-hub/bin/squad-hub.js squad "add a health endpoint and a test for it"
 ```
 
-The commands it prints are written as `squad-hub …`, which assumes the command
-is on your PATH. Until you run `npm link` below, put `node bin/squad-hub.js` in
-its place.
-
 When the agent asks to run something, the approval card appears in the browser —
-on your desktop, or your phone.
-
-Prefer a short command? `npm link` once in the clone puts `squad-hub` on your
-PATH, and then every example above is just `squad-hub …`.
+on your desktop, or your phone — **and** in the interactive terminal if you
+have one open on that session.
 
 Everything works from the CLI too:
 
 ```bash
 squad-hub status          # sessions, and what each is waiting for
+squad-hub doctor          # diagnose the whole setup end to end
 squad-hub approve <session> <approval> allow_once
 squad-hub kill <session>
 ```
@@ -217,9 +250,26 @@ See [docs/security.md](docs/security.md), and check your own deployment with
 
 ## A constraint worth knowing up front
 
-**The Hub has to start the session.** A daemon cannot attach to a `copilot`
-session you launched by hand — there is no supported attach surface. Sessions
-begin through the Hub, as ACP clients.
+**The Hub has to start the session.** There is no supported way to attach an
+ACP client to a `copilot` process someone already launched by hand — running
+`copilot`, then picking the Squad custom agent with `/agent`, produces a
+session with no ACP surface for anything else to attach to. That is why
+`squad-hub squad`/`squad-hub run` launch `copilot --acp` themselves, from the
+very first prompt, with the Squad agent selected automatically when the
+project calls for it (`--agent squad`) — the daemon owns the process from the
+start instead of trying to attach to one later.
+
+## Keep it running at login (optional)
+
+```bash
+squad-hub install-service   # Windows Task Scheduler / systemd --user / LaunchAgent
+squad-hub uninstall-service
+squad-hub service-status
+```
+
+Registers a login task that runs `squad-hub start` once at sign-in, so the
+daemon is already up the next time you need it. Never requires admin or root.
+See [docs/commands.md](docs/commands.md#login-startup-optional).
 
 ## Testing
 

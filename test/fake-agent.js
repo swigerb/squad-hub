@@ -24,6 +24,18 @@ const MODE = process.env.FAKE_AGENT_MODE || 'approve-gate';
 const MARKER = process.env.FAKE_AGENT_MARKER || 'fake-agent-marker.txt';
 const COMMAND = process.env.FAKE_AGENT_COMMAND || `echo ran > ${MARKER}`;
 
+// When set, record the REAL argv this process was launched with -- so a test
+// can assert what the daemon actually put on the command line (e.g. `--agent
+// squad --model x`) as a genuine side effect, not just what daemon.js's status
+// output claims it did. Resolved against THIS process's own cwd (the
+// session's real working directory, since the daemon spawns each agent with
+// `cwd: dir`) rather than a fixed path -- a value baked into the DAEMON's own
+// env at startup still lands in each session's own directory correctly, even
+// when one daemon runs several sessions in different projects.
+if (process.env.FAKE_AGENT_ARGV_FILE) {
+  try { fs.writeFileSync(path.resolve(process.cwd(), process.env.FAKE_AGENT_ARGV_FILE), JSON.stringify(process.argv.slice(2))); } catch { /* best effort */ }
+}
+
 let buf = '';
 const sessions = new Map();
 

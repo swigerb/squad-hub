@@ -522,6 +522,332 @@ const MUTATIONS = [
     replace: `      if (process.env.MUTANT || !retryable.has(e.code) || attempt >= 7) throw e; // MUTATION`,
     mustFail: 'a transient Windows file lock is retried without losing atomicity',
   },
+  {
+    name: 'Squad auto-detection is disabled',
+    file: 'src/agent-select.js',
+    find: `function isSquadProject(cwd) {
+  if (!cwd) return false;`,
+    replace: `function isSquadProject(cwd) {
+  if (process.env.MUTANT) return false; // MUTATION
+  if (!cwd) return false;`,
+    mustFail: 'a directory with .squad/ is a Squad project',
+  },
+  {
+    name: '`run` no longer auto-starts the daemon',
+    file: 'src/cli.js',
+    find: `  const up = await spawnDaemonProcess();
+  if (!up) return { ok: false, started: true, reason: \`the daemon did not come up; see \${paths.log()}\` };
+  return { ok: true, started: true, hint };`,
+    replace: `  if (process.env.MUTANT) return { ok: false, started: false, reason: 'auto-start disabled' }; // MUTATION
+  const up = await spawnDaemonProcess();
+  if (!up) return { ok: false, started: true, reason: \`the daemon did not come up; see \${paths.log()}\` };
+  return { ok: true, started: true, hint };`,
+    mustFail: '`squad-hub run` with no daemon running starts one automatically',
+  },
+  {
+    name: 'the interactive /approve never reaches the daemon',
+    file: 'src/interactive.js',
+    find: `        try {
+          await client.call('approve', { sessionId, approvalId: cmd.approvalId, optionId: cmd.optionId });
+          write(\`answered \${cmd.approvalId} with \${cmd.optionId}\`);`,
+    replace: `        try {
+          if (!process.env.MUTANT) await client.call('approve', { sessionId, approvalId: cmd.approvalId, optionId: cmd.optionId }); // MUTATION
+          write(\`answered \${cmd.approvalId} with \${cmd.optionId}\`);`,
+    mustFail: 'approving from the terminal produces a REAL tool side effect on disk',
+  },
+  {
+    name: 'connect reports success before the hub attachment is confirmed',
+    file: 'src/cli.js',
+    find: `  let refused = null;
+  const linked = await waitFor(async () => {`,
+    replace: `  let refused = null;
+  const linked = process.env.MUTANT ? true : await waitFor(async () => { // MUTATION`,
+    // Bypassing the real waitFor no longer breaks the stalled-hub test: that
+    // scenario is now caught earlier, by the candidate probe, before this
+    // line is ever reached. The line still matters for the one case the
+    // probe cannot pre-validate -- a token whose device-id binding only the
+    // REAL, stable device id can satisfy or fail (see candidateDeviceId).
+    mustFail: 'a token whose device binding this machine cannot satisfy is refused, not accepted',
+  },
+  {
+    name: 'HubLink treats the HTTP upgrade as a successful device registration',
+    file: 'src/hub-link.js',
+    find: `        this.conn = conn;
+
+        conn.on('message', (m) => {`,
+    replace: `        this.conn = conn;
+        if (process.env.MUTANT) { this.connected = true; this.emit('connected'); resolveOnce(conn); } // MUTATION
+
+        conn.on('message', (m) => {`,
+    mustFail: 'HubLink does NOT report connected merely because HTTP upgraded',
+  },
+  {
+    name: 'service dry-run reports the wrong (or an absent) plan',
+    file: 'src/service-install.js',
+    find: `  if (dryRun) return { ok: true, dryRun: true, ...p };
+
+  if (p.file) {
+    fs.mkdirSync(p.dir, { recursive: true });`,
+    replace: `  if (dryRun) return process.env.MUTANT ? { ok: true, dryRun: true } : { ok: true, dryRun: true, ...p }; // MUTATION
+
+  if (p.file) {
+    fs.mkdirSync(p.dir, { recursive: true });`,
+    mustFail: 'dryRun install() reports the exact plan shape a real install would use',
+  },
+  {
+    name: 'install() bypasses the dry-run early return and could run a real command',
+    file: 'src/service-install.js',
+    find: `function install({ dryRun = false, run = runStep, platform, home, nodeExe, binJs } = {}) {
+  const p = plan({ platform, home, nodeExe, binJs });
+  if (!p.supported) return { ok: false, supported: false, platform: p.platform, reason: p.reason };
+
+  if (dryRun) return { ok: true, dryRun: true, ...p };`,
+    replace: `function install({ dryRun = false, run = runStep, platform, home, nodeExe, binJs } = {}) {
+  const p = plan({ platform, home, nodeExe, binJs });
+  if (!p.supported) return { ok: false, supported: false, platform: p.platform, reason: p.reason };
+
+  if (process.env.MUTANT ? false : dryRun) return { ok: true, dryRun: true, ...p }; // MUTATION`,
+    mustFail: 'install({dryRun:true}) never invokes an injected runner, even if the early return were removed',
+  },
+  {
+    name: 'an unsupported service platform silently loses supported:false',
+    file: 'src/service-install.js',
+    find: `  if (!p.supported) return { ok: false, supported: false, platform: p.platform, reason: p.reason };
+
+  if (dryRun) return { ok: true, dryRun: true, ...p };
+
+  if (p.file) {
+    fs.mkdirSync(p.dir, { recursive: true });`,
+    replace: `  if (!p.supported) return process.env.MUTANT ? { ok: false, platform: p.platform, reason: p.reason } : { ok: false, supported: false, platform: p.platform, reason: p.reason }; // MUTATION
+
+  if (dryRun) return { ok: true, dryRun: true, ...p };
+
+  if (p.file) {
+    fs.mkdirSync(p.dir, { recursive: true });`,
+    mustFail: 'install()/uninstall()/status() on an unsupported platform all set supported:false explicitly (not just ok:false)',
+  },
+  {
+    name: 'the systemd ExecStart= line loses its per-argument quoting',
+    file: 'src/service-install.js',
+    find: `      \`ExecStart=\${systemdQuoteArg(nodeExe)} \${systemdQuoteArg(binJs)} start\`,`,
+    replace: `      (process.env.MUTANT ? \`ExecStart=\${nodeExe} \${binJs} start\` : \`ExecStart=\${systemdQuoteArg(nodeExe)} \${systemdQuoteArg(binJs)} start\`), // MUTATION`,
+    mustFail: 'the systemd ExecStart= line quotes node/bin paths independently -- a space in either does not split into extra tokens',
+  },
+  {
+    name: 'plan() ignores an injected platform override',
+    file: 'src/service-install.js',
+    find: `function plan({ platform = process.platform, home = os.homedir(), nodeExe = NODE_EXE, binJs = BIN_JS } = {}) {
+  if (platform === 'win32') {`,
+    replace: `function plan({ platform = process.platform, home = os.homedir(), nodeExe = NODE_EXE, binJs = BIN_JS } = {}) {
+  if (process.env.MUTANT) platform = process.platform; // MUTATION
+  if (platform === 'win32') {`,
+    mustFail: 'plan({platform:"linux"}) builds a systemd user unit plan regardless of host OS',
+  },
+  {
+    name: 'macOS install/uninstall loses its "already loaded" idempotency tolerance',
+    file: 'src/service-install.js',
+    find: `function isIdempotentMacResult(result) {
+  const text = \`\${result.stdout || ''} \${result.stderr || ''}\`.toLowerCase();
+  return /already loaded|service already loaded|no such process|not loaded|could not find specified service/.test(text);
+}`,
+    replace: `function isIdempotentMacResult(result) {
+  if (process.env.MUTANT) return false; // MUTATION
+  const text = \`\${result.stdout || ''} \${result.stderr || ''}\`.toLowerCase();
+  return /already loaded|service already loaded|no such process|not loaded|could not find specified service/.test(text);
+}`,
+    mustFail: 'macOS install() tolerates launchctl reporting "already loaded" on a second run (idempotent, not a failure)',
+  },
+  {
+    name: 'the transcript seq counter stops being monotonic (reverts to the array-index bug)',
+    file: 'src/acp-session.js',
+    find: `    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update: u });`,
+    replace: `    this.transcript.push({ seq: process.env.MUTANT ? 1 : this._nextSeq++, at: Date.now(), update: u }); // MUTATION`,
+    mustFail: 'a capped transcript keeps only the newest N entries but seq stays monotonic and never reused',
+  },
+  {
+    name: 'the daemon ignores the since cursor and always returns a plain tail',
+    file: 'src/daemon.js',
+    find: `    if (!Number.isInteger(req.since)) {`,
+    replace: `    if (process.env.MUTANT || !Number.isInteger(req.since)) { // MUTATION`,
+    mustFail: 'polling with a since cursor after every push sees every entry exactly once, even while the window slides past the old array-index scheme',
+  },
+  {
+    name: 'the daemon never reports gap:true for a stale, evicted cursor',
+    file: 'src/daemon.js',
+    find: `    const gap = oldestRetained !== null && since < oldestRetained - 1;`,
+    replace: `    const gap = process.env.MUTANT ? false : (oldestRetained !== null && since < oldestRetained - 1); // MUTATION`,
+    mustFail: 'a cursor behind data that was evicted before it was ever read reports gap:true, not silent loss',
+  },
+  {
+    name: 'the interactive terminal never stops polling after a terminal status',
+    file: 'src/interactive.js',
+    find: `        announcedTerminal = true;
+        write(\`[session \${s.status}]\${s.error ? \` \${s.error}\` : ''}\`);
+        stopPolling();`,
+    replace: `        announcedTerminal = true;
+        write(\`[session \${s.status}]\${s.error ? \` \${s.error}\` : ''}\`);
+        if (!process.env.MUTANT) stopPolling(); // MUTATION`,
+    mustFail: 'polling actually STOPS after the terminal status -- not just announced once while the timer keeps firing',
+  },
+  {
+    name: 'doctor ignores a required failure when deciding "healthy"',
+    file: 'src/doctor.js',
+    find: `  const failed = checks.filter((c) => c.level === 'fail');
+  const warned = checks.filter((c) => c.level === 'warn');
+  return { healthy: failed.length === 0, checks, failedCount: failed.length, warnedCount: warned.length };`,
+    replace: `  const failed = checks.filter((c) => c.level === 'fail');
+  const warned = checks.filter((c) => c.level === 'warn');
+  return { healthy: process.env.MUTANT ? true : failed.length === 0, checks, failedCount: failed.length, warnedCount: warned.length }; // MUTATION`,
+    mustFail: '`squad-hub doctor` exits NONZERO when a required check (Copilot CLI) fails',
+  },
+  {
+    name: 'connect accepts a refused/unreachable candidate hub as valid',
+    file: 'src/cli.js',
+    find: `  const probe = await probeHubConnection({ hub, token });
+  if (!probe.ok) {`,
+    replace: `  const probe = await probeHubConnection({ hub, token });
+  if (process.env.MUTANT) probe.ok = true; // MUTATION
+  if (!probe.ok) {`,
+    mustFail: 'a refused candidate during connect fails and never restarts the daemon',
+  },
+  {
+    name: 'connect restarts the daemon over a live session without requiring --force',
+    file: 'src/cli.js',
+    find: `    if (live.length && !force) {`,
+    replace: `    if (live.length && !force && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'connect refuses to restart the daemon while a session is running, without --force',
+  },
+  {
+    name: 'connect restarts an already-live, unchanged connection instead of no-op-ing',
+    file: 'src/cli.js',
+    find: `  if (!wouldChange && daemonWasAlive && currentlyConnected) {`,
+    replace: `  if (!process.env.MUTANT && !wouldChange && daemonWasAlive && currentlyConnected) { // MUTATION`,
+    mustFail: 'an identical reconnect does not restart the daemon (same pid)',
+  },
+  {
+    name: 'connect ignores a disconnected hub link and gates restart on config changes alone',
+    file: 'src/cli.js',
+    find: `  const restartNeeded = daemonWasAlive && (wouldChange || !currentlyConnected);`,
+    replace: `  const restartNeeded = daemonWasAlive && (process.env.MUTANT ? wouldChange : (wouldChange || !currentlyConnected)); // MUTATION`,
+    mustFail: 'an identical reconnect against a disconnected daemon still refuses to restart over a live session, without --force',
+  },
+  {
+    name: 'noninteractive run/squad silently drops the hub-not-attached warning',
+    file: 'src/cli.js',
+    find: `  const hub = await client.call('hub-status').catch(() => null);
+  if (hub && hub.configured && !hub.connected) {`,
+    replace: `  const hub = await client.call('hub-status').catch(() => null);
+  if (!process.env.MUTANT && hub && hub.configured && !hub.connected) { // MUTATION`,
+    mustFail: 'a hub that refused this device -> `run` warns by name, not silently',
+  },
+  {
+    name: 'doctor treats a bare GITHUB_TOKEN env var as proof of Copilot auth (copilot-auth flips to ok)',
+    file: 'src/doctor.js',
+    find: `  add('copilot-auth', 'warn', authMessage);`,
+    replace: `  add('copilot-auth', (process.env.MUTANT && hasEnvCred) ? 'ok' : 'warn', authMessage); // MUTATION`,
+    mustFail: 'copilot-auth with GITHUB_TOKEN present is STILL a WARNING, not OK -- presence alone is not proof',
+  },
+  {
+    name: 'doctor downgrades a refused daemon-hub-attach back to a warning instead of a FAIL',
+    file: 'src/doctor.js',
+    find: `        add('daemon-hub-attach', 'fail', \`the hub refused this device: \${hub.refusedReason}\`);`,
+    replace: `        add('daemon-hub-attach', process.env.MUTANT ? 'warn' : 'fail', \`the hub refused this device: \${hub.refusedReason}\`); // MUTATION`,
+    mustFail: '`squad-hub doctor` exits NONZERO because of a refused hub attach, not just warnings',
+  },
+  {
+    name: 'pingHub accepts a non-200 status as a reachable hub',
+    file: 'src/doctor.js',
+    find: `        if (res.statusCode !== 200) { finish({ ok: false, reason: \`/healthz returned HTTP \${res.statusCode}, not 200\` }); return; }`,
+    replace: `        if (!process.env.MUTANT && res.statusCode !== 200) { finish({ ok: false, reason: \`/healthz returned HTTP \${res.statusCode}, not 200\` }); return; } // MUTATION`,
+    mustFail: 'pingHub: a plain HTTP 404 is NOT reachable',
+  },
+  {
+    name: 'pingHub destroys an oversized response without settling',
+    file: 'src/doctor.js',
+    find: `          finish({ ok: false, reason: '/healthz reply was larger than 8 KB; this is not a Squad Hub health response' });
+          res.destroy(); // stop downloading the unrelated/oversized response`,
+    replace: `          if (!process.env.MUTANT) finish({ ok: false, reason: '/healthz reply was larger than 8 KB; this is not a Squad Hub health response' }); // MUTATION
+          res.destroy(); // stop downloading the unrelated/oversized response`,
+    mustFail: 'pingHub: an oversized 200 response settles as NOT reachable',
+  },
+  {
+    name: 'Squad/project-config detection walks past the home directory into unrelated ancestor config',
+    file: 'src/agent-select.js',
+    find: `    const isHome = home !== null && sameDir(dir, home);`,
+    replace: `    const isHome = process.env.MUTANT ? false : (home !== null && sameDir(dir, home)); // MUTATION`,
+    mustFail: 'a plain directory is not a Squad project',
+  },
+  {
+    name: 'Squad detection ignores the .git repository boundary and leaks into an unrelated ancestor project',
+    file: 'src/agent-select.js',
+    find: `    if (isRepoBoundary) return null; // repo root checked and had no marker; never leak into its parent`,
+    replace: `    if (isRepoBoundary && !process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'Squad detection never leaks past a nested repo\'s own .git boundary into an unrelated ancestor project',
+  },
+  {
+    name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
+    file: 'web/app.js',
+    find: `esc(sel.agent)`,
+    replace: `(process.env.MUTANT ? sel.agent : esc(sel.agent))`,
+    mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
+  },
+  {
+    name: 'sessionRow renders agentSelection.model unescaped (stored XSS)',
+    file: 'web/app.js',
+    find: `esc(sel.model)`,
+    replace: `(process.env.MUTANT ? sel.model : esc(sel.model))`,
+    mustFail: 'a malicious agentSelection.model renders as inert escaped text',
+  },
+  {
+    name: 'sessionRow renders agentSelection.source unescaped (stored XSS)',
+    file: 'web/app.js',
+    find: `esc(sel.source)`,
+    replace: `(process.env.MUTANT ? sel.source : esc(sel.source))`,
+    mustFail: 'a malicious agentSelection.source renders as inert escaped text',
+  },
+  {
+    name: 'agent-select stops validating agent/model names, letting an HTML-shaped .squad-hub.json value through',
+    file: 'src/agent-select.js',
+    find: `function isValidName(s) {
+  return typeof s === 'string' && NAME_RE.test(s);
+}`,
+    replace: `function isValidName(s) {
+  if (process.env.MUTANT) return typeof s === 'string' && s.length > 0; // MUTATION
+  return typeof s === 'string' && NAME_RE.test(s);
+}`,
+    mustFail: 'an HTML-shaped "agent" value in .squad-hub.json is rejected with a warning, never selected',
+  },
+  {
+    name: 'interactive terminal stops serializing burst/pasted lines through a promise queue',
+    file: 'src/interactive.js',
+    find: `  let lineQueue = Promise.resolve();
+  return new Promise((resolve) => {
+    rl.on('line', (line) => {
+      lineQueue = lineQueue.then(() => handleLine(line)).catch((e) => write(\`error: \${e.message}\`));
+    });`,
+    replace: `  let lineQueue = Promise.resolve();
+  return new Promise((resolve) => {
+    rl.on('line', (line) => {
+      if (process.env.MUTANT) { handleLine(line).catch((e) => write(\`error: \${e.message}\`)); return; } // MUTATION
+      lineQueue = lineQueue.then(() => handleLine(line)).catch((e) => write(\`error: \${e.message}\`));
+    });`,
+    mustFail: 'a two-line paste before start-session returns produces exactly one session',
+  },
+  {
+    name: 'doctor stops surfacing agent/model selection warnings (.squad-hub.json credential-shaped keys go unseen)',
+    file: 'src/doctor.js',
+    find: `  if (sel.warnings.length) {
+    add('agent-selection-warnings', 'warn', sel.warnings.join(' | '), { warnings: sel.warnings });
+  } else {
+    add('agent-selection-warnings', 'ok', 'no warnings from agent/model selection or .squad-hub.json');
+  }`,
+    replace: `  if (sel.warnings.length && !process.env.MUTANT) { // MUTATION
+    add('agent-selection-warnings', 'warn', sel.warnings.join(' | '), { warnings: sel.warnings });
+  } else {
+    add('agent-selection-warnings', 'ok', 'no warnings from agent/model selection or .squad-hub.json');
+  }`,
+    mustFail: 'a bad .squad-hub.json produces a WARN-level agent-selection-warnings check, not silence',
+  },
 ];
 
 /**

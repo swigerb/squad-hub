@@ -9,6 +9,7 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -17,6 +18,7 @@ const paths = require('./paths');
 const config = require('./config');
 const client = require('./client');
 const { Daemon, alive } = require('./daemon');
+const { selectAgent, isSquadProject } = require('./agent-select');
 
 const out = (s = '') => process.stdout.write(s + '\n');
 const err = (s) => process.stderr.write(s + '\n');
@@ -25,6 +27,14 @@ function flag(argv, name) { return argv.includes(`--${name}`); }
 function value(argv, name, dflt = null) {
   const i = argv.indexOf(`--${name}`);
   return i !== -1 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : dflt;
+}
+
+/** http(s) only -- a device dials OUT, and anything else is not a hub URL. */
+function looksLikeUrl(u) {
+  try {
+    const p = new URL(u);
+    return p.protocol === 'http:' || p.protocol === 'https:';
+  } catch { return false; }
 }
 
 async function waitFor(fn, ms = 8000, step = 100) {
@@ -36,6 +46,62 @@ async function waitFor(fn, ms = 8000, step = 100) {
   return false;
 }
 
+/**
+ * Spawn the detached daemon process and wait for it to answer a ping.
+ *
+ * Shared by `start`, `connect`, and the auto-start in `run`/`squad`, so there
+ * is exactly one place that knows how to bring the daemon up -- not three
+ * copies that can drift.
+ *
+ * `cwd: os.homedir()` is deliberate: the daemon is detached and outlives
+ * whichever `squad-hub run`/`squad` invocation happened to auto-start it, so
+ * its OWN working directory must not be "whichever project the first caller
+ * happened to be standing in". Every session's real working directory
+ * already travels explicitly (`localCwd` from the CLI, an explicit `--cwd`,
+ * or the hub's own `cwd`) -- see `Daemon._resolveCwd` -- so the daemon
+ * process itself never needs to be IN a project directory, and pinning it to
+ * a neutral, stable one keeps a stray fallback (see `_resolveCwd`) from ever
+ * landing a session in a directory nobody asked for.
+ */
+async function spawnDaemonProcess() {
+  paths.ensureHome();
+  const outFd = fs.openSync(paths.log(), 'a');
+  const child = spawn(process.execPath, [path.join(__dirname, 'daemon-main.js')], {
+    detached: true,
+    cwd: os.homedir(),
+    stdio: ['ignore', outFd, outFd],
+    // Without this, Windows gives every detached daemon its own console window.
+    // A background service that flashes a window at the user is not background.
+    windowsHide: true,
+    env: process.env,
+  });
+  child.unref();
+
+  return waitFor(async () => {
+    try { await client.call('ping', {}, { timeoutMs: 1000 }); return true; } catch { return false; }
+  });
+}
+
+/**
+ * `squad-hub run` / `squad-hub squad` should not need a separate `start`
+ * first -- that second command is exactly the ergonomics gap this exists to
+ * close. Never silent about the outcome: a caller gets back either a live
+ * daemon or a reason it isn't one, never a false "started".
+ */
+async function ensureDaemonRunning() {
+  if (client.daemonAlive()) return { ok: true, started: false };
+
+  const cfg = config.read();
+  const hint = (!cfg.server || !cfg.token)
+    ? 'no hub is configured on this device, so this session will only be visible locally.\n'
+      + "Run 'squad-hub connect --hub <url> --token <device-token>' once to see it in the web Hub."
+    : null;
+
+  const up = await spawnDaemonProcess();
+  if (!up) return { ok: false, started: true, reason: `the daemon did not come up; see ${paths.log()}` };
+  return { ok: true, started: true, hint };
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -45,7 +111,7 @@ async function waitFor(fn, ms = 8000, step = 100) {
  * `run "do the thing" --cwd /tmp/x` produced the prompt "do the thing /tmp/x".
  * Visible in the session list as a title with a path glued onto it.
  */
-function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth']) {
+function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth', 'agent', 'model', 'name']) {
   const out = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -77,20 +143,7 @@ async function cmdStart(argv) {
   if (Object.keys(patch).length) config.update(patch);
 
   paths.ensureHome();
-  const outFd = fs.openSync(paths.log(), 'a');
-  const child = spawn(process.execPath, [path.join(__dirname, 'daemon-main.js')], {
-    detached: true,
-    stdio: ['ignore', outFd, outFd],
-    // Without this, Windows gives every detached daemon its own console window.
-    // A background service that flashes a window at the user is not background.
-    windowsHide: true,
-    env: process.env,
-  });
-  child.unref();
-
-  const up = await waitFor(async () => {
-    try { await client.call('ping', {}, { timeoutMs: 1000 }); return true; } catch { return false; }
-  });
+  const up = await spawnDaemonProcess();
   if (!up) { err('daemon did not come up; see ' + paths.log()); return 1; }
 
   const st = client.readState();
@@ -144,6 +197,10 @@ async function cmdStatus(argv) {
     out(`  ${s.id}  ${badge}`);
     out(`    ${s.activity}`);
     out(`    ${s.cwd}  ${s.agent}  ${s.toolCallCount} tools  pid ${s.pid}`);
+    if (s.agentSelection) {
+      const sel = s.agentSelection;
+      out(`    squad agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source})`);
+    }
     if (s.error) out(`    error: ${s.error}`);
     for (const a of s.pendingApprovals) {
       out(`    -> wants to run: ${a.command || a.title}`);
@@ -167,13 +224,316 @@ async function cmdReset(argv) {
   return cmdStart(argv);
 }
 
+/**
+ * A device id for a VALIDATION PROBE ONLY -- never this machine's real,
+ * stable id (see daemon-main.js). Reusing the real one would mean probing a
+ * hub this machine is already attached to bumps that live connection off the
+ * device slot (hub-service.js `_attachDevice` closes any EXISTING socket
+ * registered under the same device id) -- exactly the disruption a
+ * validate-before-you-touch-anything probe exists to avoid.
+ *
+ * When the candidate token IS bound to a device-id prefix (`did`), the probe
+ * id is built to start with that prefix so the same `allowsDeviceId` gate a
+ * real connection must pass is exercised here too, rather than silently
+ * skipped for bound tokens. The token body is not signature-verified
+ * client-side (that requires the hub's secret) -- reading `did` out of it is
+ * just for constructing a plausible probe id; the hub still does the real
+ * verification.
+ */
+function candidateDeviceId(token) {
+  let did = null;
+  try {
+    const parts = String(token).split('.');
+    if (parts.length === 3) {
+      const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      if (claims && claims.did) did = String(claims.did);
+    }
+  } catch { /* best effort only; an unrestricted-looking id below still works for unbound tokens */ }
+  const suffix = `connect-probe-${crypto.randomBytes(4).toString('hex')}`;
+  return did ? `${did}${suffix}` : suffix;
+}
+
+/**
+ * Validate a candidate hub + token pair WITHOUT touching the running daemon,
+ * its config, or its live hub link -- a disposable `HubLink` is opened under a
+ * one-off device id and torn down the moment the outcome is known (or the
+ * bound wait elapses). This is what lets `connect` refuse a bad candidate
+ * while leaving a perfectly good existing connection running.
+ */
+async function probeHubConnection({ hub, token }, timeoutMs = 8000) {
+  const { HubLink } = require('./hub-link');
+  const wsUrl = hub.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ws';
+  const link = new HubLink({ url: wsUrl, token, deviceId: candidateDeviceId(token) });
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { link.stop(); } catch { /* best-effort teardown of the probe only */ }
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({
+      ok: false,
+      reason: `no response from the hub within ${Math.round(timeoutMs / 1000)}s (unreachable, or blocked by a firewall/proxy)`,
+    }), timeoutMs);
+    link.on('connected', () => finish({ ok: true }));
+    link.on('refused', (why) => finish({ ok: false, reason: why || 'the hub refused this token' }));
+    link.connect().catch((e) => finish({ ok: false, reason: e.message }));
+  });
+}
+
+/**
+ * The one-time setup: persist a hub + device token, then (re)start the daemon
+ * so it takes effect immediately. This is the ONLY command that should ever
+ * need `--hub`/`--token` for someone using a hosted hub -- everyday work is
+ * `squad-hub squad`.
+ *
+ * Never reports success before the daemon has genuinely finished the
+ * WebSocket handshake: a running daemon with a refused token looks identical
+ * to one still connecting unless the outcome is actually watched for.
+ *
+ * Validate-before-you-touch-anything (N5): the prior config is read before any
+ * write, a candidate hub/token is proven via a disposable probe BEFORE the
+ * live config or daemon is touched, a live-session gate requires `--force` to
+ * restart a daemon that is carrying running work, and re-running connect with
+ * the identical hub/token that is already live is a pure no-op.
+ */
+async function cmdConnect(argv) {
+  const hub = value(argv, 'hub');
+  const token = value(argv, 'token');
+  if (!hub || !token) {
+    err('usage: squad-hub connect --hub <url> --token <device-token> [--name <device-name>]');
+    err('                          [--allow-files|--allow-files-all] [--track-all] [--force]');
+    err('');
+    err('Mint a device token from the hub: account menu -> Connect a device,');
+    err('or `squad-hub device-token --hub <url> --token <your own token>`.');
+    return 2;
+  }
+  if (!looksLikeUrl(hub)) {
+    err(`--hub must be an http:// or https:// URL, got: ${hub}`);
+    return 2;
+  }
+
+  // An offline, no-network check: a token with the wrong shape is never going
+  // to be accepted, and failing on it instantly is kinder than a 10s timeout.
+  const { DeviceTokens } = require('./service/device-token');
+  if (!DeviceTokens.looksLikeDeviceToken(token)) {
+    err(`that does not look like a device token (expected the "${DeviceTokens.PREFIX}." prefix).`);
+    err('A device token is minted FOR a device; your own sign-in token will not work here.');
+    err('Mint one: account menu -> Connect a device, or `squad-hub device-token --hub <url> --token <your token>`.');
+    return 2;
+  }
+
+  const name = value(argv, 'name');
+  const force = flag(argv, 'force');
+  const patch = { server: hub, token };
+  if (name) patch.deviceName = name;
+  if (flag(argv, 'allow-files-all')) { patch.allowFiles = true; patch.allowFilesAll = true; patch.filesRoot = null; }
+  else if (flag(argv, 'allow-files')) { patch.allowFiles = true; patch.allowFilesAll = false; patch.filesRoot = process.cwd(); }
+  if (flag(argv, 'track-all')) patch.trackAll = true;
+
+  // Read the config this connect would REPLACE before anything is written, so
+  // a refused/unreachable candidate can leave it exactly as it was.
+  const prior = config.read();
+  const wouldChange = Object.keys(patch).some((k) => prior[k] !== patch[k]);
+  const daemonWasAlive = client.daemonAlive();
+  const priorState = daemonWasAlive ? client.readState() : null;
+  const currentlyConnected = !!(priorState && priorState.hub && priorState.hub.connected);
+
+  // Truly idempotent: the exact same connection, already live AND attached to
+  // the hub. Nothing to probe, nothing to restart, nothing at risk.
+  if (!wouldChange && daemonWasAlive && currentlyConnected) {
+    out(`already connected to ${hub} (no change; the daemon was left running)`);
+    return 0;
+  }
+
+  // Validate the CANDIDATE before deciding to change anything. A device token
+  // cannot call the API to do this the normal way, so a bounded, disposable
+  // WebSocket probe stands in -- see probeHubConnection above. This never
+  // touches the daemon that is (maybe) already running.
+  out(`checking ${hub}...`);
+  const probe = await probeHubConnection({ hub, token });
+  if (!probe.ok) {
+    err(`connect FAILED: ${probe.reason}`);
+    err('The existing configuration and any running daemon/sessions were left untouched.');
+    return 1;
+  }
+
+  // The candidate is good. A restart is required whenever it CHANGES the live
+  // configuration, OR the daemon is up but not currently attached to the hub
+  // (link down, or previously refused) -- in both cases the only way this
+  // candidate's settings take effect is to bounce the daemon, and that must
+  // never happen to a daemon carrying sessions someone is relying on, unless
+  // told to. Gating this on `wouldChange` alone let an otherwise-IDENTICAL
+  // reconnect against a daemon whose hub link had merely dropped restart it --
+  // and kill any live session -- with no --force check at all, because the
+  // config bytes never moved.
+  const restartNeeded = daemonWasAlive && (wouldChange || !currentlyConnected);
+  if (restartNeeded) {
+    const snap = await client.call('status').catch(() => null);
+    const live = ((snap && snap.sessions) || []).filter((s) => !['done', 'failed', 'stopped'].includes(s.status));
+    if (live.length && !force) {
+      err(`refusing to reconnect: restarting the daemon now would stop ${live.length} running session(s):`);
+      for (const s of live) err(`  ${s.id}  ${s.status}  ${s.cwd}`);
+      err('Re-run with --force if that is what you want.');
+      return 1;
+    }
+  }
+
+  config.update(patch);
+
+  if (restartNeeded) {
+    out('restarting the daemon with the new connection...');
+    await cmdStop();
+  }
+
+  // Undo the config write (and daemon swap) this attempt just made, restoring
+  // exactly what was running before -- used when the probe passed but the
+  // REAL, stable-device-id attach is still refused. The probe deliberately
+  // proves the token/hub with a one-off id (see candidateDeviceId) rather than
+  // the daemon's actual device id, precisely so it never has to touch a
+  // connection that may already be live under that real id -- but that means
+  // a token restricted to a *different* device (didPrefix) can still pass the
+  // probe and only get refused once the real device id is presented. That is
+  // a genuine, permanent refusal, not a fluke, so it gets the same "nothing
+  // was left changed" guarantee as a probe failure.
+  async function restorePrior() {
+    await cmdStop().catch(() => {});
+    config.write(prior);
+    if (daemonWasAlive) await spawnDaemonProcess().catch(() => {});
+  }
+
+  const up = await spawnDaemonProcess();
+  if (!up) {
+    err(`the daemon did not come up; see ${paths.log()}`);
+    await restorePrior();
+    err('The prior configuration and daemon (if any) have been restored.');
+    return 1;
+  }
+  out(`daemon started (pid ${client.readState().pid})`);
+
+  // The probe already proved the token works; this just waits for the real,
+  // stable-device-id link to actually finish, so the final report is not a
+  // guess. Distinguish "still connecting" from "refused" rather than
+  // collapsing both into one boolean -- `daemon.js` tracks WHY a hub attach
+  // failed exactly so this can tell the difference.
+  let refused = null;
+  const linked = await waitFor(async () => {
+    const s = client.readState();
+    if (s && s.hub && s.hub.refusedReason) { refused = s.hub.refusedReason; return true; }
+    // HubLink marks connected only after the hub's post-policy `welcome`
+    // message, not at the earlier HTTP upgrade.
+    return !!(s && s.hub && s.hub.connected);
+  }, 12000, 150);
+
+  if (refused) {
+    err(`connect FAILED: the hub refused this device: ${refused}`);
+    err('Check the token was copied in full, has not expired, and was minted for this hub.');
+    await restorePrior();
+    err('The prior configuration and daemon (if any) have been restored.');
+    return 1;
+  }
+  if (!linked) {
+    err(`connect could not confirm the hub connection within the timeout; see ${paths.log()}`);
+    err('The daemon is running and will keep retrying in the background.');
+    err('Check again with: squad-hub status');
+    return 1;
+  }
+
+  out(`connected to ${hub}`);
+  out('');
+  out('Everyday use, from any project on this machine:');
+  out('  cd your-project');
+  out('  squad-hub squad');
+  return 0;
+}
+
+/**
+ * Bring the daemon up if needed and start one session, printing what got
+ * picked and why. Shared by `run` and `squad "<prompt>"` -- they are the same
+ * operation, just reached by two doors.
+ *
+ * `cwd` is only set when the caller passed an explicit `--cwd <dir>` -- it is
+ * a genuinely different directory being requested, and the daemon keeps that
+ * behind `--allow-files` as before. `localCwd` is always this CLI process's
+ * own `process.cwd()`; the daemon treats it as an ungated "run where I
+ * already am" default so `squad-hub squad` works out of the box from any
+ * project directory without first turning file access on.
+ */
+async function startSessionAndReport({ prompt, cwd, localCwd, agent, model }) {
+  const ensured = await ensureDaemonRunning();
+  if (!ensured.ok) { err(ensured.reason || 'the daemon could not be started'); return 1; }
+  if (ensured.started) out(`daemon started (pid ${client.readState().pid})`);
+  if (ensured.hint) out(ensured.hint);
+
+  const r = await client.call('start-session', { prompt, cwd, localCwd, agent, model });
+  out(`session ${r.id} started (agent pid ${r.pid}) in ${r.cwd}`);
+  if (r.agentSelection) {
+    const sel = r.agentSelection;
+    out(`  agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source}${sel.isSquad ? ', Squad project' : ''})`);
+    // Same "never let a noninteractive run stay silent about something
+    // worth knowing" reasoning as the hub-attach warning just below: a
+    // rejected .squad-hub.json value or a stray credential-shaped key must
+    // reach stderr here, not only be visible via `squad-hub doctor`. Only
+    // the reason is ever printed -- `sel.warnings` never contains a
+    // credential value (see agent-select.js's safePreview/credential guard).
+    for (const w of Array.isArray(sel.warnings) ? sel.warnings : []) err(`warning: ${w}`);
+  }
+
+  // A hub that is configured but not actually attached means this session is
+  // running LOCAL-ONLY: nothing shows up on the web or in Teams. The
+  // interactive terminal says so in its banner every time it starts; a
+  // noninteractive `run`/`squad "<prompt>"` has no equivalent moment, so it
+  // has to say so here instead of leaving the caller to discover it later via
+  // `squad-hub status` (or, worse, never).
+  const hub = await client.call('hub-status').catch(() => null);
+  if (hub && hub.configured && !hub.connected) {
+    if (hub.refusedReason) {
+      err(`warning: the hub refused this device (${hub.refusedReason}) -- this session is LOCAL-ONLY and will not be mirrored.`);
+    } else {
+      err('warning: not yet connected to the configured hub -- this session is LOCAL-ONLY for now (it may still attach in the background).');
+    }
+  }
+
+  out('watch it with: squad-hub status');
+  return 0;
+}
+
 async function cmdRun(argv) {
   const prompt = positionals(argv).join(' ');
-  if (!prompt) { err('usage: squad-hub run "<prompt>" [--cwd <dir>]'); return 2; }
-  if (!client.daemonAlive()) { err("no daemon is running (try: squad-hub start)"); return 3; }
-  const r = await client.call('start-session', { prompt, cwd: value(argv, 'cwd') });
-  out(`session ${r.id} started (agent pid ${r.pid}) in ${r.cwd}`);
-  out('watch it with: squad-hub status');
+  if (!prompt) { err('usage: squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]'); return 2; }
+
+  return startSessionAndReport({
+    prompt,
+    cwd: value(argv, 'cwd'),
+    localCwd: process.cwd(),
+    agent: value(argv, 'agent'),
+    model: value(argv, 'model'),
+  });
+}
+
+/**
+ * `squad-hub squad` -- the everyday front door. With a prompt it behaves like
+ * `run`; without one it opens a live local terminal on the same kind of
+ * session, so "start something" and "sit with it" are the same command.
+ */
+async function cmdSquad(argv) {
+  const explicitCwd = value(argv, 'cwd');
+  const cwd = explicitCwd || process.cwd();
+  const agent = value(argv, 'agent');
+  const model = value(argv, 'model');
+  const prompt = positionals(argv).join(' ');
+
+  if (prompt) return startSessionAndReport({ prompt, cwd: explicitCwd, localCwd: cwd, agent, model });
+
+  const ensured = await ensureDaemonRunning();
+  if (!ensured.ok) { err(ensured.reason || 'the daemon could not be started'); return 1; }
+  if (ensured.started) out(`daemon started (pid ${client.readState().pid})`);
+  if (ensured.hint) out(ensured.hint);
+
+  const { runInteractive } = require('./interactive');
+  await runInteractive({ cwd, explicitCwd, agent, model });
   return 0;
 }
 
@@ -431,22 +791,111 @@ async function cmdDeviceToken(argv) {
   return 0;
 }
 
+/**
+ * Print an install/uninstall/status result the same way whether it really
+ * touched the machine or was a `--dry-run`, so a test can read the exact
+ * same shape either way.
+ */
+function printServiceResult(action, r, json) {
+  if (json) { out(JSON.stringify(r, null, 2)); return; }
+  if (r.supported === false) { err(`${action}: ${r.reason}`); return; }
+  out(`${action}: ${r.kind}${r.dryRun ? ' (dry run -- nothing was changed)' : ''}`);
+  if (r.file) out(`  file:    ${r.file}`);
+  const step = r.install || r.uninstall || r.status;
+  if (step) out(`  command: ${step.command} ${step.args.join(' ')}`);
+  if (r.result) {
+    if (r.result.error) err(`  failed:  ${r.result.error}`);
+    else out(`  exit:    ${r.result.status}`);
+    if (r.result.stdout) out(`  ${r.result.stdout}`);
+    if (r.result.stderr) err(`  ${r.result.stderr}`);
+  }
+  if (r.note) out(`  note:    ${r.note}`);
+  if ('installed' in r) out(`  installed: ${r.installed}`);
+}
+
+async function cmdInstallService(argv) {
+  const svc = require('./service-install');
+  const r = svc.install({ dryRun: flag(argv, 'dry-run') });
+  printServiceResult('install-service', r, flag(argv, 'json'));
+  return r.supported === false || r.ok === false ? 1 : 0;
+}
+
+async function cmdUninstallService(argv) {
+  const svc = require('./service-install');
+  const r = svc.uninstall({ dryRun: flag(argv, 'dry-run') });
+  printServiceResult('uninstall-service', r, flag(argv, 'json'));
+  return r.supported === false || r.ok === false ? 1 : 0;
+}
+
+async function cmdServiceStatus(argv) {
+  const svc = require('./service-install');
+  const r = svc.status({ dryRun: flag(argv, 'dry-run') });
+  printServiceResult('service-status', r, flag(argv, 'json'));
+  // Belt-and-suspenders: `supported === false` is the real signal (an
+  // unsupported platform never gets a chance to be "installed" or not), but
+  // also fail on `ok === false` in case a future status() failure mode ever
+  // reports ok:false without also setting supported:false.
+  return r.supported === false || r.ok === false ? 1 : 0;
+}
+
+/**
+ * `squad-hub doctor` -- runs every independent health check and reports
+ * ok/warn/fail per check, with a nonzero exit ONLY when something in the
+ * `fail` category is wrong. A warning (no hub configured, daemon not
+ * running, Copilot auth unverifiable offline) is a normal state for a
+ * machine that has not been set up yet, not a broken one.
+ */
+async function cmdDoctor(argv) {
+  const { runDoctor } = require('./doctor');
+  const report = await runDoctor({
+    cwd: value(argv, 'cwd') || process.cwd(),
+    explicitAgent: value(argv, 'agent'),
+    explicitModel: value(argv, 'model'),
+  });
+
+  if (flag(argv, 'json')) { out(JSON.stringify(report, null, 2)); return report.healthy ? 0 : 1; }
+
+  for (const c of report.checks) {
+    const badge = c.level === 'ok' ? 'OK  ' : c.level === 'warn' ? 'WARN' : 'FAIL';
+    (c.level === 'fail' ? err : out)(`[${badge}] ${c.id.padEnd(20)} ${c.message}`);
+  }
+  out('');
+  out(report.healthy
+    ? `healthy (${report.warnedCount} warning(s))`
+    : `${report.failedCount} required check(s) failed, ${report.warnedCount} warning(s)`);
+  return report.healthy ? 0 : 1;
+}
+
 function usage() {
   out(`squad-hub - see and control your Squad sessions
 
-  THE SERVICE
+  EVERYDAY (after a one-time connect)
+  squad-hub squad                      interactive terminal, in a Squad project this uses the squad agent
+  squad-hub squad "<prompt>"           start a session with a prompt and return
+  squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]
+
+  ONE-TIME PER MACHINE
+  squad-hub connect --hub <url> --token <device-token> [--name <device-name>]
+                     [--allow-files|--allow-files-all] [--track-all]
+
+  THE SERVICE (hosted already for most people -- do not run this to use a hosted hub)
   squad-hub serve [--port 7420] [--auth dev|github|entra]
 
-  THIS DEVICE
+  THIS DEVICE (lower-level; "connect" calls these for you)
   squad-hub start [--hub <url> --token <t>] [--allow-files|--allow-files-all] [--track-all]
   squad-hub stop
   squad-hub status [--json]
   squad-hub reset [--allow-files|--allow-files-all]
+  squad-hub doctor [--json]
 
   SESSIONS
-  squad-hub run "<prompt>" [--cwd <dir>]
   squad-hub approve <sessionId> <approvalId> <optionId>
   squad-hub kill <sessionId>
+
+  LOGIN STARTUP (optional; never needs admin/root)
+  squad-hub install-service [--dry-run] [--json]
+  squad-hub uninstall-service [--dry-run] [--json]
+  squad-hub service-status [--dry-run] [--json]
 
   SETTINGS
   squad-hub track-all <on|off>
@@ -462,6 +911,11 @@ work on another device, or watch the event stream. Give one to a cloud device
 instead of your own credential. --prefix restricts which device ids it may
 register, so a token for cloud jobs cannot claim to be your laptop.
 
+In a Squad project (a ".squad" directory, or ".github/agents/squad.agent.md"),
+"run"/"squad" select the "squad" custom agent automatically; anywhere else they
+use Copilot's default agent. --agent/--model on the command line always wins;
+see docs/commands.md for the full precedence order.
+
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. The confinement path stays
 on this device and is never sent to the hub service.`);
@@ -471,16 +925,22 @@ async function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
     case 'start': return cmdStart(rest);
+    case 'connect': return cmdConnect(rest);
     case 'serve': return cmdServe(rest);
     case 'stop': return cmdStop(rest);
     case 'status': return cmdStatus(rest);
     case 'reset': return cmdReset(rest);
     case 'run': return cmdRun(rest);
+    case 'squad': return cmdSquad(rest);
     case 'approve': return cmdApprove(rest);
     case 'kill': return cmdStopSession(rest);
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);
+    case 'install-service': return cmdInstallService(rest);
+    case 'uninstall-service': return cmdUninstallService(rest);
+    case 'service-status': return cmdServiceStatus(rest);
+    case 'doctor': return cmdDoctor(rest);
     case '--version': case '-v': out(require('../package.json').version); return 0;
     case undefined: case 'help': case '--help': case '-h': usage(); return 0;
     default: err(`unknown command: ${cmd}`); usage(); return 2;

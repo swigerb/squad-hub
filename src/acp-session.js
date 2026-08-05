@@ -41,8 +41,18 @@ class AcpSession extends EventEmitter {
     this.error = null;
     this.acpSessionId = null;
     this.agentInfo = null;
+    this.agentSelection = null;
     this.toolCallCount = 0;
     this.transcript = [];
+    // Every transcript entry gets a monotonic sequence number that survives
+    // the 500-entry cap below. A client tracking "how many entries have I
+    // seen" by ARRAY INDEX goes silent forever once the window first slides
+    // (index 500 never arrives a second time); a client tracking the highest
+    // `seq` it has seen keeps working across any number of slides. The cap
+    // is overridable so a test can drive a slide in a handful of updates
+    // instead of five hundred.
+    this._nextSeq = 1;
+    this._transcriptCap = Number(process.env.SQUAD_HUB_TRANSCRIPT_CAP) || 500;
     this.pendingApprovals = new Map();
     this.activity = 'Starting...';
 
@@ -133,10 +143,16 @@ class AcpSession extends EventEmitter {
     this.emit('approval', approval);
   }
 
+  _pushTranscript(u) {
+    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update: u });
+    if (this.transcript.length > this._transcriptCap) {
+      this.transcript.splice(0, this.transcript.length - this._transcriptCap);
+    }
+  }
+
   _update(params) {
     const u = (params && params.update) || {};
-    this.transcript.push({ at: Date.now(), update: u });
-    if (this.transcript.length > 500) this.transcript.splice(0, this.transcript.length - 500);
+    this._pushTranscript(u);
     if (u.sessionUpdate === 'tool_call') {
       this.toolCallCount += 1;
       this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
@@ -206,12 +222,12 @@ class AcpSession extends EventEmitter {
       return false;
     }
     if (!this.acpSessionId) return false;
-    this.transcript.push({ at: Date.now(), update: { sessionUpdate: 'user_message', content: { text } } });
+    this._pushTranscript({ sessionUpdate: 'user_message', content: { text } });
     this._request('session/prompt', {
       sessionId: this.acpSessionId,
       prompt: [{ type: 'text', text }],
     }).catch((e) => {
-      this.transcript.push({ at: Date.now(), update: { sessionUpdate: 'error', content: { text: e.message } } });
+      this._pushTranscript({ sessionUpdate: 'error', content: { text: e.message } });
     });
     this._setStatus(STATUS.ACTIVE, 'Processing...');
     return true;
@@ -268,6 +284,7 @@ class AcpSession extends EventEmitter {
       endedAt: this.endedAt,
       error: this.error,
       agent: this.agentInfo ? `${this.agentInfo.name} ${this.agentInfo.version}` : 'Copilot CLI',
+      agentSelection: this.agentSelection || null,
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
       squad: this.squadContext(),

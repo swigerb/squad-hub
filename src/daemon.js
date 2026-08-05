@@ -31,6 +31,7 @@ const { EventEmitter } = require('events');
 const paths = require('./paths');
 const config = require('./config');
 const { AcpSession, STATUS } = require('./acp-session');
+const { selectAgent, buildAgentArgs } = require('./agent-select');
 
 class Daemon extends EventEmitter {
   constructor(opts = {}) {
@@ -48,6 +49,11 @@ class Daemon extends EventEmitter {
     this.server = null;
     this._timer = null;
     this._seq = 0;
+    // Set on a hub POLICY refusal (bad/expired/wrong-prefix token) and cleared
+    // on a successful connect. `connected: false` alone cannot be told apart
+    // from "still trying" -- `squad-hub connect` needs that distinction to
+    // report a failure instead of hanging until its timeout says nothing.
+    this._hubRefusedReason = null;
   }
 
   // -- children on disk -----------------------------------------------------
@@ -144,6 +150,7 @@ class Daemon extends EventEmitter {
           configured: !!(this.link && this.link.url),
           connected: !!(this.link && this.link.connected),
           url: this.link ? this.link.url : null,
+          refusedReason: this._hubRefusedReason || null,
         },
       }, null, 2));
     } catch { /* best effort */ }
@@ -203,14 +210,24 @@ class Daemon extends EventEmitter {
 
   // -- sessions -------------------------------------------------------------
 
-  startSession({ prompt, cwd }) {
-    const dir = this._resolveCwd(cwd);
+  /**
+   * Which custom agent/model this session runs is decided HERE, per session,
+   * from the cwd it is actually starting in -- not once at daemon startup.
+   * `this.agentArgs` (default `['--acp']`) is the base every session shares;
+   * `--agent`/`--model` are appended per selection, so one long-lived daemon
+   * can run a Squad project and a plain repo side by side correctly.
+   */
+  startSession({ prompt, cwd, localCwd, agent, model }) {
+    const dir = this._resolveCwd(cwd, localCwd);
     const id = `s${(++this._seq).toString().padStart(3, '0')}-${Date.now().toString(36)}`;
+    const selection = selectAgent({ cwd: dir, explicitAgent: agent, explicitModel: model });
+    const args = buildAgentArgs(this.agentArgs, selection);
     const s = new AcpSession({
       id, cwd: dir, prompt,
       agentCommand: this.agentCommand,
-      agentArgs: this.agentArgs,
+      agentArgs: args,
     });
+    s.agentSelection = selection;
     this.sessions.set(id, s);
     this._trackChild(s.pid, id);
 
@@ -228,25 +245,88 @@ class Daemon extends EventEmitter {
    * File access is off by default, and when it is scoped the daemon -- not the
    * service -- enforces the boundary. A caller may not escape the root by
    * asking nicely, or by asking with '..'.
+   *
+   * `localCwd` is a SEPARATE, ungated channel: it is only ever the local CLI's
+   * own `process.cwd()`, sent over the local IPC socket by the same account
+   * that is typing the command. There is no folder picker and no directory
+   * hop involved -- it is exactly "run where I already am", the same trust
+   * boundary as running any other local command-line tool from that
+   * directory. `requested` (an explicit `--cwd <dir>`, whether from the local
+   * CLI or a hub-driven `spawn`) is a genuinely different directory being
+   * asked for, and stays behind the `--allow-files` gate as before.
+   *
+   * NEITHER requested NOR localCwd is exactly the hub-driven `spawn` case
+   * with no `cwd` in the request body (the web "+" button lets that field be
+   * blank -- and stays blank by design for a `fileAccess: 'off'` device,
+   * which never offers a folder picker at all). Falling back to
+   * `process.cwd()` here used to mean the DAEMON's own working directory --
+   * for the auto-started, detached daemon, whichever project happened to
+   * auto-start it, however many days ago. That is never what anyone asked
+   * for, and is the actual bug: NOT that a fallback exists, but that it was
+   * an ACCIDENT of which directory the daemon happened to be launched from
+   * rather than a deliberate, stable choice. The fix is the fallback itself
+   * being deliberate: a configured `filesRoot` if there is one, otherwise
+   * the user's real home directory -- always the same regardless of which
+   * directory launched the daemon, and different in kind from "whatever
+   * `process.cwd()` resolves to right now".
    */
-  _resolveCwd(requested) {
+  _resolveCwd(requested, localCwd) {
     const cfg = config.read();
-    if (!requested) return cfg.filesRoot || process.cwd();
-    if (!cfg.allowFiles) {
-      const e = new Error('file access is off on this device; start the daemon with --allow-files to choose a working directory');
-      e.code = 'FILE_ACCESS_OFF';
-      throw e;
+    if (requested) {
+      if (!cfg.allowFiles) {
+        const e = new Error('file access is off on this device; start the daemon with --allow-files to choose a working directory');
+        e.code = 'FILE_ACCESS_OFF';
+        throw e;
+      }
+      const abs = path.resolve(requested);
+      if (cfg.allowFilesAll) return abs;
+      const root = path.resolve(cfg.filesRoot || process.cwd());
+      const rel = path.relative(root, abs);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        const e = new Error(`working directory is outside this device's allowed root`);
+        e.code = 'OUTSIDE_ROOT';
+        throw e;
+      }
+      return abs;
     }
-    const abs = path.resolve(requested);
-    if (cfg.allowFilesAll) return abs;
-    const root = path.resolve(cfg.filesRoot || process.cwd());
-    const rel = path.relative(root, abs);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      const e = new Error(`working directory is outside this device's allowed root`);
-      e.code = 'OUTSIDE_ROOT';
-      throw e;
+    if (localCwd) return path.resolve(localCwd);
+    if (cfg.filesRoot) return path.resolve(cfg.filesRoot);
+    return os.homedir();
+  }
+
+  /**
+   * Answer a `transcript` request either as a plain tail (`limit`, the
+   * original behaviour -- used by the hub, which always wants "the last N")
+   * or as a cursor read (`since`): every entry with a `seq` greater than the
+   * one the caller has already seen.
+   *
+   * WHY a cursor at all: `AcpSession.transcript` is capped (see
+   * `_transcriptCap` on AcpSession) and trimmed from the front as a session
+   * runs long. A caller that remembered "I've seen the first 500 entries" by
+   * ARRAY INDEX goes silent forever the moment the window first slides --
+   * index 500 never exists again. A caller that remembers the highest `seq`
+   * it has seen keeps working no matter how many times the window slides,
+   * because `seq` is assigned once and never reused.
+   *
+   * `gap: true` tells an honest caller when its cursor is now behind the
+   * oldest entry actually retained -- i.e. some transcript it has not seen
+   * was evicted rather than delivered. Silently skipping that is worse than
+   * saying so.
+   */
+  _transcriptSince(s, req) {
+    if (!Number.isInteger(req.since)) {
+      const list = s.transcript.slice(-(req.limit || 100));
+      const nextSince = list.length ? list[list.length - 1].seq : 0;
+      return { transcript: list, nextSince, gap: false };
     }
-    return abs;
+    const since = req.since;
+    const list = s.transcript.filter((e) => e.seq > since);
+    const oldestRetained = s.transcript.length ? s.transcript[0].seq : null;
+    const gap = oldestRetained !== null && since < oldestRetained - 1;
+    const nextSince = list.length
+      ? list[list.length - 1].seq
+      : (s.transcript.length ? s.transcript[s.transcript.length - 1].seq : since);
+    return { transcript: list, nextSince, gap };
   }
 
   snapshot() {
@@ -274,6 +354,7 @@ class Daemon extends EventEmitter {
 
     this.link.on('connected', () => {
       this.log('connected to hub');
+      this._hubRefusedReason = null;
       this._writeState();
       const snap = this.snapshot();
       this.link.send({
@@ -287,6 +368,7 @@ class Daemon extends EventEmitter {
     // bury the one line that says what to fix.
     this.link.on('refused', (why) => {
       this.log(`the hub refused this device: ${why}`);
+      this._hubRefusedReason = why || 'the hub refused this device';
       this._writeState();
       this.emit('hub-refused', why);
     });
@@ -315,8 +397,8 @@ class Daemon extends EventEmitter {
       let result;
       switch (m.op) {
         case 'spawn': {
-          const s = this.startSession({ prompt: m.prompt, cwd: m.cwd });
-          result = { id: s.id, pid: s.pid, cwd: s.cwd };
+          const s = this.startSession({ prompt: m.prompt, cwd: m.cwd, agent: m.agent, model: m.model });
+          result = { id: s.id, pid: s.pid, cwd: s.cwd, agentSelection: s.agentSelection };
           break;
         }
         case 'approve':
@@ -372,14 +454,18 @@ class Daemon extends EventEmitter {
           configured: !!(this.link && this.link.url),
           connected: !!(this.link && this.link.connected),
           url: this.link ? this.link.url : null,
+          refusedReason: this._hubRefusedReason || null,
         };
       case 'status':
         return this.snapshot();
       case 'beat':
         return { transitions: this.beat(), beats: this.beats };
       case 'start-session': {
-        const s = this.startSession({ prompt: req.prompt, cwd: req.cwd });
-        return { id: s.id, pid: s.pid, cwd: s.cwd };
+        // Reached only over the local IPC socket (see client.js) -- so
+        // `req.localCwd`, when present, is trusted as the caller's own
+        // directory, never a remotely-requested one.
+        const s = this.startSession({ prompt: req.prompt, cwd: req.cwd, localCwd: req.localCwd, agent: req.agent, model: req.model });
+        return { id: s.id, pid: s.pid, cwd: s.cwd, agentSelection: s.agentSelection };
       }
       case 'approve': {
         const s = this.sessions.get(req.sessionId);
@@ -398,7 +484,7 @@ class Daemon extends EventEmitter {
       case 'transcript': {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
-        return { transcript: s.transcript.slice(-(req.limit || 100)) };
+        return this._transcriptSince(s, req);
       }
       case 'steer': {
         const s = this.sessions.get(req.sessionId);

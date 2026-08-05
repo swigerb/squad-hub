@@ -118,6 +118,17 @@ d.deviceName = deviceName;
   d.log(`cloud device ${deviceName} (${deviceId}) attaching to ${wsUrl}`);
   process.stdout.write(`squad-hub cloud device ${deviceName} attaching to ${HUB}\n`);
 
+  // Subscribe BEFORE connecting. HubLink now treats the hub's post-policy
+  // `welcome` as the successful handshake, so a 1008 refusal is emitted and
+  // the attach promise rejects in the same turn. Registering this listener
+  // afterwards would miss the only refusal signal and let one-shot mode run
+  // locally with a token the hub has definitively rejected.
+  d.on('hub-refused', (why) => {
+    process.stderr.write(`\nthe hub refused this device: ${why}\n`);
+    process.stderr.write('This is a policy refusal, not an outage; retrying would not help.\n');
+    process.exit(77);
+  });
+
   try {
     await d.attachHub({ url: wsUrl, token: TOKEN, deviceId });
     process.stdout.write('connected\n');
@@ -126,16 +137,6 @@ d.deviceName = deviceName;
     // because the hub was briefly unreachable turns a blip into a crash loop.
     process.stdout.write(`not connected yet (${e.message}); retrying\n`);
   }
-
-  // A refusal arrives AFTER the upgrade succeeded, so "connected" may already
-  // have been printed. Say plainly that it did not stick, and stop -- retrying
-  // a policy refusal never succeeds, and a container that sits in that loop
-  // looks healthy while doing nothing at all.
-  d.on('hub-refused', (why) => {
-    process.stderr.write(`\nthe hub refused this device: ${why}\n`);
-    process.stderr.write('This is a policy refusal, not an outage; retrying would not help.\n');
-    process.exit(77);
-  });
 
   /**
    * ONE-SHOT MODE: run one session, then leave.
