@@ -303,5 +303,136 @@ check('the release docs point at a checkout that has the release script', () => 
     'the release is not on the default branch yet, but the docs tell you to clone without one');
 });
 
+// ---------------------------------------------------------------------------
+// What npm does to package.json on the way to the registry
+// ---------------------------------------------------------------------------
+
+/**
+ * npm rewrites `bin` at publish time and announces it as
+ *   "bin[squad-hub]" script name bin/squad-hub.js was invalid and removed
+ * which reads like the CLI has been dropped from the package. It has not --
+ * npm keeps the entry and rewrites the path -- but nobody running a release
+ * at midnight should have to read npm's source to establish that.
+ *
+ * So: no rewrite, no warning. Asked of npm's own normalizer rather than a
+ * regex, because the rules here are npm's and they change.
+ */
+function npmNormalizedBin(pkgObject) {
+  const npmPath = spawnSync(process.platform === 'win32' ? 'where.exe' : 'which', ['npm'],
+    { encoding: 'utf8' });
+  if (npmPath.status !== 0) return null;
+  const first = (npmPath.stdout || '').split(/\r?\n/).find(Boolean);
+  if (!first) return null;
+  const lib = path.join(path.dirname(first.trim()), 'node_modules', 'npm',
+    'node_modules', '@npmcli', 'package-json', 'lib', 'normalize.js');
+  if (!fs.existsSync(lib)) return null;
+
+  // npm normalizes `bin` inside its ASYNC step, so the synchronous entry
+  // point never reaches it -- calling that instead reports no changes for any
+  // input at all, which looks exactly like success. Hence a child process:
+  // this harness runs checks synchronously, and correctness here matters more
+  // than elegance. Arguments go through argv, not a shell, so nothing needs
+  // quoting.
+  const child = `
+    const { normalize } = require(process.argv[1]);
+    const content = JSON.parse(process.argv[2]);
+    const changes = [];
+    normalize({ content, path: process.argv[3] }, { steps: ['bin'], changes, root: process.argv[3] })
+      .then(() => process.stdout.write(JSON.stringify({ bin: content.bin, changes })))
+      .catch((e) => process.stdout.write(JSON.stringify({ error: e.message })));
+  `;
+  const r = spawnSync(process.execPath, ['-e', child, lib, JSON.stringify(pkgObject), ROOT],
+    { encoding: 'utf8', timeout: 60000 });
+  if (r.status !== 0 || !r.stdout) return null;
+
+  let parsed;
+  try { parsed = JSON.parse(r.stdout); } catch { return null; }
+  if (parsed.error) return null;
+  return { content: { bin: parsed.bin }, changes: parsed.changes };
+}
+
+check('publishing does not rewrite bin, so it raises no alarming warning', () => {
+  const probe = npmNormalizedBin(pkg);
+  if (probe === null) {
+    // Falling back rather than skipping: a check that quietly evaporates when
+    // its tool moves is the failure this whole suite exists to prevent.
+    const offenders = Object.entries(pkg.bin || {}).filter(([, v]) => /^\.\//.test(v));
+    assert.deepStrictEqual(offenders, [], 'a bin path starts with "./", which npm will rewrite');
+    return;
+  }
+  const noisy = probe.changes.filter((c) => /bin/i.test(c));
+  assert.deepStrictEqual(noisy, [],
+    `npm rewrites bin on publish, and says so alarmingly:\n  ${noisy.join('\n  ')}`);
+});
+
+check('the probe can actually detect a rewrite, rather than always finding none', () => {
+  // The check above passes trivially if the probe reports nothing whatever it
+  // is given. Feed it the exact package.json that produced the warning.
+  const probe = npmNormalizedBin({ ...pkg, bin: { 'squad-hub': './bin/squad-hub.js' } });
+  if (probe === null) return; // covered by the fallback path above
+  const noisy = probe.changes.filter((c) => /bin/i.test(c));
+  assert.ok(noisy.length >= 1, 'the probe does not notice npm rewriting "./bin/squad-hub.js"');
+});
+
+check('the CLI command still survives whatever npm does to bin', () => {
+  // The half that actually matters. A canonical path is only worth having
+  // because the command it installs is still there afterwards.
+  const probe = npmNormalizedBin(pkg);
+  if (probe === null) {
+    assert.ok(pkg.bin && pkg.bin['squad-hub'], 'no squad-hub command declared');
+    return;
+  }
+  assert.ok(probe.content.bin, 'npm removed the entire bin field');
+  assert.strictEqual(probe.content.bin['squad-hub'], 'bin/squad-hub.js',
+    `npx ${release.PRIMARY} would not install a command`);
+});
+
+check('the release refuses a bin path npm would rewrite', () => {
+  assert.deepStrictEqual(release.binIsCanonical(pkg), [], 'this package would trip the guard');
+  assert.deepStrictEqual(
+    release.binIsCanonical({ bin: { 'squad-hub': './bin/squad-hub.js' } }),
+    ['squad-hub: ./bin/squad-hub.js'],
+    'the exact form that produced the warning is not caught');
+});
+
+// ---------------------------------------------------------------------------
+// Two-factor authentication -- the thing that actually stopped the release
+// ---------------------------------------------------------------------------
+
+check('a demand for a one-time password is recognised, not reported as a failure', () => {
+  const real = 'npm error code EOTP\nnpm error This operation requires a one-time password.';
+  assert.ok(release.needsOneTimePassword(real), 'the real npm 2FA failure is not recognised');
+  assert.ok(release.needsOneTimePassword('npm error This operation requires a one-time password.'),
+    'the prose form is not recognised, only the code');
+});
+
+check('an ordinary failure is not mistaken for a one-time password prompt', () => {
+  // Retrying interactively on a genuine failure would hang a release forever
+  // waiting for a prompt that is never coming.
+  const others = [
+    'npm error code ENEEDAUTH\nnpm error need auth',
+    'npm error code E403\nnpm error 403 Forbidden',
+    'npm error code ENOTFOUND\nnpm error network request failed',
+    '',
+  ];
+  const confused = others.filter((o) => release.needsOneTimePassword(o));
+  assert.deepStrictEqual(confused, [], `these would be retried as a 2FA prompt: ${confused.join(' | ')}`);
+});
+
+check('a one-time password prompt is answered by handing npm the terminal', () => {
+  // The prompt only arrived as an error because this script pipes npm's
+  // output. Passing --otp is documented, but the release must not REQUIRE
+  // reading a document to get past a prompt npm can ask for itself.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  assert.match(src, /stdio:\s*'inherit'/, 'npm is never given the terminal, so it can never ask');
+  assert.match(src, /isTTY/, 'an interactive retry is attempted even with no terminal to prompt on');
+});
+
+check('the docs explain the one-time password, since 2FA is the normal case', () => {
+  const doc = fs.readFileSync(path.join(ROOT, 'docs/releasing.md'), 'utf8');
+  assert.match(doc, /one-time password|OTP|two-factor/i,
+    'docs/releasing.md never mentions 2FA, which is what stopped the first real release');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -63,12 +63,39 @@ To run every check and publish nothing:
 npm run release -- --dry-run
 ```
 
-If your account has two-factor authentication enabled for publishing, pass the
-code straight through:
+### Two-factor authentication
+
+If your npm account requires a one-time password to publish — most do — npm
+asks for one. The release hands the terminal over to npm at that point, so
+just follow its prompt: it prints a URL, you authenticate in the browser, and
+the release continues.
+
+**Each name is a separate publish, so expect to be asked twice.** A code is
+consumed by one publish and cannot be reused for the other.
+
+If you would rather supply a code up front, or you are running somewhere
+without an interactive terminal:
 
 ```bash
 npm run release -- --otp=123456
 ```
+
+Codes expire in about 30 seconds, and one code cannot cover both publishes —
+so if the second publish then fails asking for a password, simply re-run
+`npm run release`. It skips the name that is already up and finishes the other.
+
+## Warnings you can ignore
+
+npm may report, on publish:
+
+```
+npm warn publish "bin[squad-hub]" script name bin/squad-hub.js was invalid and removed
+```
+
+That wording is wrong — npm keeps the command and merely rewrites the path.
+The release checks for this before publishing and refuses if `bin` is written
+in a form npm would rewrite, so if you see this warning, something has put a
+leading `./` back into `package.json`.
 
 ## What the release does, in order
 

@@ -45,6 +45,17 @@ function isAlreadyPublished(output) {
     || /You cannot publish over the previously published versions/i.test(s);
 }
 
+/**
+ * npm demands a one-time password when the account has 2FA on publishing.
+ * That is not an error to report and give up on -- it is a prompt, and the
+ * only reason it arrived as a failure is that this script pipes npm's output
+ * and so denied npm the terminal it needed to ask.
+ */
+function needsOneTimePassword(output) {
+  const s = String(output || '');
+  return /\bEOTP\b/.test(s) || /one-time password/i.test(s);
+}
+
 /** Registry URLs differ only by a trailing slash far too often to compare raw. */
 function sameRegistry(a, b) {
   const norm = (u) => String(u || '').trim().replace(/\/+$/, '').toLowerCase();
@@ -102,6 +113,20 @@ function packedPaths() {
   return JSON.parse(out.slice(start))[0].files.map((f) => f.path.replace(/\\/g, '/'));
 }
 
+/**
+ * npm rewrites `bin` on publish, and reports the rewrite with the alarming
+ * wording `script name <path> was invalid and removed` -- even though it keeps
+ * the entry. Writing the value npm would have rewritten it to means there is
+ * nothing to rewrite, no warning, and no need for whoever runs the next
+ * release to work out whether the CLI just vanished from the package.
+ */
+function binIsCanonical(pkg) {
+  const offenders = Object.entries(pkg.bin || {})
+    .filter(([, target]) => typeof target === 'string')
+    .filter(([, target]) => target !== target.replace(/^\.\//, '').replace(/\\/g, '/'));
+  return offenders.map(([key, target]) => `${key}: ${target}`);
+}
+
 function step(n, msg) { console.log(`\n[${n}] ${msg}`); }
 function die(msg) { console.error(`\nFAILED: ${msg}\n`); process.exit(1); }
 
@@ -109,14 +134,36 @@ function publish(name, extraArgs, dryRun) {
   const args = ['publish', '--access', 'public', '--registry', REGISTRY, ...extraArgs];
   if (dryRun) args.push('--dry-run');
   console.log(`    npm ${args.join(' ')}   (as ${name})`);
+
+  // Piped, so the output can be inspected -- that is how an already-published
+  // version is told apart from a real failure.
   const r = run('npm', args, { stdio: ['inherit', 'pipe', 'pipe'] });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   process.stdout.write(out);
   if (r.status === 0) return 'published';
+
   if (isAlreadyPublished(out)) {
     console.log(`    already on the registry at this version -- skipping`);
     return 'skipped';
   }
+
+  // A one-time password is a question, not a failure. Piping npm's output is
+  // what turned it into one: npm needs the terminal to show its
+  // authentication URL and wait. So hand the terminal over and ask again.
+  // Both names need this separately -- an OTP is consumed by one publish, so
+  // carrying a code over from the first would fail the second.
+  if (needsOneTimePassword(out) && !dryRun) {
+    if (!process.stdin.isTTY) {
+      throw new Error(`${name} needs a one-time password, and this is not an interactive terminal.\n`
+        + `Re-run it yourself with a code:  npm run release -- --otp=<code>`);
+    }
+    console.log('\n    npm needs a one-time password for this publish.');
+    console.log('    Handing the terminal to npm -- follow its prompt, then it will continue.\n');
+    const retry = run('npm', args, { stdio: 'inherit' });
+    if (retry.status === 0) return 'published';
+    throw new Error(`npm publish failed for ${name} after the one-time password prompt (exit ${retry.status})`);
+  }
+
   throw new Error(`npm publish failed for ${name} (exit ${r.status})`);
 }
 
@@ -169,6 +216,14 @@ function main() {
   }
   console.log(`    ${required.length} runtime files present in the tarball`);
 
+  const rewritten = binIsCanonical(pkg);
+  if (rewritten.length) {
+    die(`npm would rewrite these bin entries on publish:\n  ${rewritten.join('\n  ')}\n`
+      + `\nIt reports that as "script name ... was invalid and removed", which reads like the\n`
+      + `CLI is being dropped. Write the path without a leading "./" so there is nothing to rewrite.`);
+  }
+  console.log('    bin is in npm\'s canonical form, so publish will not rewrite it');
+
   step(5, `publishing ${PRIMARY}`);
   const primary = publish(PRIMARY, extraArgs, dryRun);
 
@@ -199,6 +254,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  isAlreadyPublished, sameRegistry, withName, requiredInPackage, missingFromPack,
+  isAlreadyPublished, needsOneTimePassword, sameRegistry, withName,
+  requiredInPackage, missingFromPack, binIsCanonical,
   PRIMARY, ALIAS, REGISTRY,
 };

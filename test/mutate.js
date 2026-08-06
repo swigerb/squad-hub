@@ -928,6 +928,30 @@ const MUTATIONS = [
     replace: `  const web = process.env.MUTANT ? [] : listWebFiles().filter((f) => !/\\.(map|log)$/.test(f)); // MUTATION`,
     mustFail: 'the release checks every web asset, not merely that web/ exists',
   },
+  {
+    name: 'the release treats a one-time password demand as a plain failure',
+    file: 'scripts/release-npm.js',
+    find: `function needsOneTimePassword(output) {
+  const s = String(output || '');`,
+    replace: `function needsOneTimePassword(output) {
+  if (process.env.MUTANT) return false; // MUTATION
+  const s = String(output || '');`,
+    mustFail: 'a demand for a one-time password is recognised, not reported as a failure',
+  },
+  {
+    name: 'the release retries EVERY failure as if it were a password prompt',
+    file: 'scripts/release-npm.js',
+    find: `  return /\\bEOTP\\b/.test(s) || /one-time password/i.test(s);`,
+    replace: `  return process.env.MUTANT ? true : (/\\bEOTP\\b/.test(s) || /one-time password/i.test(s)); // MUTATION`,
+    mustFail: 'an ordinary failure is not mistaken for a one-time password prompt',
+  },
+  {
+    name: 'the release stops noticing a bin path npm would rewrite',
+    file: 'scripts/release-npm.js',
+    find: `    .filter(([, target]) => target !== target.replace(/^\\.\\//, '').replace(/\\\\/g, '/'));`,
+    replace: `    .filter(([, target]) => process.env.MUTANT ? false : target !== target.replace(/^\\.\\//, '').replace(/\\\\/g, '/')); // MUTATION`,
+    mustFail: 'the release refuses a bin path npm would rewrite',
+  },
 ];
 
 /**
