@@ -375,6 +375,65 @@ check('no real email addresses appear anywhere in the repo', () => {
   assert.deepStrictEqual(hits, [], `a real address leaked into the repo:\n  ${hits.join('\n  ')}`);
 });
 
+/**
+ * Internal-only codenames, and the internal documentation host, must never
+ * reach a public repository. This is a one-way door: once pushed, the term is
+ * in clones, forks, caches and the GitHub API, and deleting it later does not
+ * un-publish it.
+ *
+ * The forbidden terms are assembled from character codes rather than written
+ * out, because a guard that spells the secret it protects is itself the leak
+ * -- and would match itself, making the check permanently red.
+ */
+check('no internal codename or internal doc host appears anywhere in the repo', () => {
+  const term = (...codes) => String.fromCharCode(...codes);
+  const forbidden = [
+    { what: 'an internal codename', re: new RegExp(term(97, 103, 101, 110, 99, 121), 'gi') },
+    { what: 'the internal doc host', re: new RegExp(term(101, 110, 103) + '\\.' + term(109, 115), 'gi') },
+  ];
+
+  // Every tracked file, not just documentation: a codename in a comment, a
+  // fixture or a test name is just as public as one in the README.
+  const files = repoFiles(/./);
+  assert.ok(files.length >= 20, `only ${files.length} files scanned; the scan is broken`);
+
+  // Prove the detector detects. A guard that scans everything and matches
+  // nothing is indistinguishable from a guard whose pattern never matches
+  // anything at all -- both are silently, permanently green.
+  for (const { what, re } of forbidden) {
+    const canary = what.includes('host')
+      ? `see ${String.fromCharCode(101, 110, 103)}.${String.fromCharCode(109, 115)}/docs`
+      : `parity with ${String.fromCharCode(97, 103, 101, 110, 99, 121)} hub`;
+    re.lastIndex = 0;
+    assert.ok(re.test(canary), `the detector for ${what} does not detect it`);
+    re.lastIndex = 0;
+  }
+
+  const hits = [];
+  for (const f of files) {
+    let body;
+    try { body = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    if (body.includes('\0')) continue; // binary
+    for (const { what, re } of forbidden) {
+      const found = body.match(re);
+      if (found) hits.push(`${path.relative(ROOT, f)}: ${what} (${found.length}x)`);
+    }
+  }
+  assert.deepStrictEqual(hits, [], `internal-only terms leaked into a public repo:\n  ${hits.join('\n  ')}`);
+});
+
+check('no internal codename appears in the commit history', () => {
+  // Rewriting published history is disruptive and incomplete, so the only
+  // real defence is never committing the term. Catch it while it is still
+  // local and a rebase is cheap.
+  const term = String.fromCharCode(97, 103, 101, 110, 99, 121);
+  const log = spawnSync('git', ['log', '--all', '-i', `--grep=${term}`, '--oneline'],
+    { cwd: ROOT, encoding: 'utf8' });
+  if (log.status !== 0) return; // no git; the file scan above still applies
+  const hits = log.stdout.trim().split('\n').filter(Boolean);
+  assert.deepStrictEqual(hits, [], `an internal codename is in a commit message:\n  ${hits.join('\n  ')}`);
+});
+
 check('the docs do not carry sprint-by-sprint history', () => {
   // Reference documentation, not a changelog. Someone arriving to USE this
   // should not have to read how it was built.

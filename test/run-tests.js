@@ -694,6 +694,15 @@ async function suiteDocs() {
 }
 
 /**
+ * The shipped artefact, not the working tree. A green suite proves the code
+ * works where the tests run; it says nothing about what a consumer installs.
+ */
+async function suitePackage() {
+  console.log('\n[PACKAGE] what actually ships is what the server needs');
+  runChildSuite(path.join(__dirname, 'package-unit.js'), 'package');
+}
+
+/**
  * Stored XSS (Opus review, HIGH): `.squad-hub.json` agent/model ->
  * `agentSelection` -> the hub -> `web/app.js`'s `sessionRow`. Proven directly
  * against the file's pure, DOM-free prefix -- no jsdom, per the zero-runtime-
@@ -739,6 +748,7 @@ async function suiteWebXss() {
   await suiteDaemonFixes();
   await suiteHubWarning();
   await suiteDocs();
+  await suitePackage();
   await suiteWebXss();
 
   console.log('');
