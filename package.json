@@ -11,7 +11,8 @@
   "scripts": {
     "test": "node test/run-tests.js",
     "start": "node bin/squad-hub.js serve",
-    "release": "node scripts/release-npm.js"
+    "release": "node scripts/release-npm.js",
+    "verify": "node scripts/release-npm.js --verify-only"
   },
   "engines": { "node": ">=18" },
   "files": ["bin", "src", "web", "README.md", "LICENSE"]

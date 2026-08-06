@@ -464,6 +464,71 @@ check('the release verifies the published package by running it', () => {
     'a broken publish leaves no guidance, though the version can never be replaced');
 });
 
+check('verification names the package and the command separately', () => {
+  // `npx <pkg> --version` lets npm read `--version` as its OWN flag, so the
+  // check can report npm's version instead of the package's -- failing a
+  // healthy release, or passing a broken one.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  assert.match(src, /'--package'/, 'the package spec is not passed explicitly');
+  assert.match(src, /'--',\s*bin/, 'command arguments are not separated from npm\'s own');
+});
+
+check('verification can be re-run on its own, without publishing again', () => {
+  // A release that published correctly but could not yet see itself must be
+  // re-checkable. Re-running the whole release would refuse anyway, since a
+  // version cannot be published twice.
+  const verify = (pkg.scripts || {}).verify;
+  assert.ok(verify, 'there is no way to re-check a release except by releasing again');
+  assert.match(verify, /--verify-only/, 'the verify script does not run in verify-only mode');
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  assert.match(src, /--verify-only/, 'the script does not implement the mode its own script asks for');
+});
+
+check('verification tells "not published yet" apart from "installs no command"', () => {
+  // They demand opposite responses: one is worth waiting for, the other never
+  // improves and means the version is spent. Reporting both as one failure is
+  // how a propagation delay gets mistaken for a broken release, and a broken
+  // release for a slow one.
+  //
+  // Exercised against real npm output. Reading the source for the right words
+  // would pass even if the logic behind them were removed.
+  const c = release.classifyAttempt;
+
+  assert.strictEqual(
+    c(1, 'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/squad-hub', '0.1.1'),
+    'not-published-yet', 'a version that has not propagated yet is not recognised as such');
+
+  assert.strictEqual(
+    c(1, 'npm error could not determine executable to run', '0.1.1'),
+    'installs-no-command', 'the failure v0.1.0 actually produced is not recognised');
+
+  assert.strictEqual(
+    c(1, "'squad-hub' is not recognized as an internal or external command", '0.1.1'),
+    'installs-no-command', 'the Windows wording of a missing command is not recognised');
+
+  assert.strictEqual(c(0, '0.1.1', '0.1.1'), 'ok', 'a healthy answer is not accepted');
+
+  // npm printing its OWN version must never pass as the package's -- that is
+  // the ambiguity the separated npx invocation exists to avoid.
+  assert.notStrictEqual(c(0, '10.8.2', '0.1.1'), 'ok',
+    "npm's own version is accepted as the package's");
+});
+
+check('the verification failure is reported in full, not summarised away', () => {
+  const lines = ['npm error code E404', 'npm error 404 Not Found'];
+  const logged = [];
+  const spy = console.error;
+  console.error = (m) => logged.push(String(m));
+  try {
+    release.reportVerification('squad-hub', '9.9.9',
+      { ok: false, reason: 'unresolved', output: lines.join('\n') });
+  } finally { console.error = spy; }
+  const all = logged.join('\n');
+  for (const l of lines) {
+    assert.ok(all.includes(l), `the report drops npm's own output: ${l}`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Two-factor authentication -- the thing that actually stopped the release
 // ---------------------------------------------------------------------------

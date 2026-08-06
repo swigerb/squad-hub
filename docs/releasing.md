@@ -138,21 +138,46 @@ cause, then run `npm run release` again.
 ## Verifying
 
 The release does this for you as its last step — it installs the published
-package from the registry and runs it. If that fails, it says so loudly, and
-the version is already immutable.
+package from the registry and runs it.
 
-To check by hand afterwards:
+A newly published version is not resolvable straight away, so a verification
+failure often just means the registry has not caught up. Re-check at any time,
+without publishing anything:
 
 ```bash
-npx squad-hub@latest --version
-npm view @mightybs/squad-hub version
+npm run verify
 ```
 
-Both must report the same version. Then check the UI actually shipped — this
-is the defect the packaging suite exists to prevent:
+That checks **both** names and prints npm's own output when something is
+wrong, so a propagation delay is distinguishable from a genuinely broken
+package.
+
+To check by hand:
 
 ```bash
-npx squad-hub@latest serve
+npm view squad-hub@0.1.1 bin        # must show the squad-hub command
+npm view squad-hub version
+npm view @mightybs/squad-hub version
+
+npx --yes --package squad-hub@0.1.1 -- squad-hub --version
+```
+
+> Name the package and the command separately, as above. In the shorter form
+> `npx squad-hub@0.1.1 --version`, npm may read `--version` as its own flag
+> and print **npm's** version instead of the package's.
+
+The most decisive check is a real install:
+
+```bash
+npm i -g squad-hub@0.1.1
+squad-hub --version
+```
+
+Then check the UI actually shipped — this is the defect the packaging suite
+exists to prevent:
+
+```bash
+squad-hub serve
 ```
 
 Open the printed URL. A blank page means `web/` did not make it into the

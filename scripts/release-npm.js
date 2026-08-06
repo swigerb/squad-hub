@@ -153,22 +153,81 @@ function packedManifest() {
 }
 
 /**
- * Prove the published package installs a working command. Everything before
- * this checks intent; this checks the registry's answer, which is the only
- * one a user ever sees. A new version takes a moment to propagate, so retry
- * rather than declaring failure on the first miss.
+ * Decide what a single verification attempt actually means.
+ *
+ * Kept separate, and pure, so it can be tested against real npm output
+ * instead of by reading this file for the right words -- a check that stays
+ * green even when the logic behind it is gutted.
+ *
+ * The failures are not interchangeable. A version that has not propagated yet
+ * is worth waiting for; a package that resolves but installs no command never
+ * improves and means the version is spent. Collapsing the two is how a delay
+ * gets mistaken for a broken release, and a broken release for a delay.
  */
-function verifyPublished(name, version, attempts = 5) {
-  for (let i = 1; i <= attempts; i += 1) {
-    const r = run('npx', ['--yes', `${name}@${version}`, '--version'], { timeout: 180000 });
-    const out = `${r.stdout || ''}${r.stderr || ''}`;
-    if (r.status === 0 && out.includes(version)) return true;
-    if (i < attempts) {
-      console.log(`    not resolvable yet (attempt ${i}/${attempts}); waiting for the registry...`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000);
-    } else {
-      console.log(`\n    last output from npx:\n${out.split('\n').slice(-8).join('\n')}`);
+function classifyAttempt(status, output, version) {
+  const text = String(output || '');
+  if (status === 0 && text.split(/\s+/).includes(version)) return 'ok';
+  if (/could not determine executable|is not recognized|command not found/i.test(text)) {
+    return 'installs-no-command';
+  }
+  if (/E404|404 Not Found|no matching version|is not in this registry/i.test(text)) {
+    return 'not-published-yet';
+  }
+  return 'no-answer';
+}
+
+/**
+ * Prove the published package actually installs a working command. Everything
+ * before this checks intent; this checks the registry's answer, which is the
+ * only one a user ever sees.
+ *
+ * The package spec and the command are named separately, and the arguments
+ * for the command sit after `--`. `npx <pkg> --version` leaves npm free to
+ * read `--version` as its own flag, which makes a healthy package look broken
+ * and, worse, could make a broken one look healthy.
+ *
+ * A newly published version is not resolvable immediately, so a miss is
+ * retried with a growing wait rather than treated as a verdict.
+ */
+function verifyPublished(name, version, bin = PRIMARY, waits = [5, 10, 20, 30, 60]) {
+  let last = '';
+  for (let i = 0; i <= waits.length; i += 1) {
+    const r = run('npx', ['--yes', '--package', `${name}@${version}`, '--', bin, '--version'],
+      { timeout: 300000 });
+    last = `${r.stdout || ''}${r.stderr || ''}`.trim();
+
+    const verdict = classifyAttempt(r.status, last, version);
+    if (verdict === 'ok') return { ok: true, output: last };
+
+    // Only "not there yet" is worth waiting on. A package that resolves and
+    // installs no command is a verdict, not a delay.
+    if (verdict === 'installs-no-command') {
+      return { ok: false, reason: 'installs-no-command', output: last };
     }
+
+    if (i < waits.length) {
+      const s = waits[i];
+      console.log(`    ${verdict === 'not-published-yet' ? 'not on the registry yet' : 'no answer yet'}`
+        + `; retrying in ${s}s (${i + 1}/${waits.length})`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s * 1000);
+    }
+  }
+  return { ok: false, reason: 'unresolved', output: last };
+}
+
+/** Report a verification result in full, since a bad one cannot be undone. */
+function reportVerification(name, version, result) {
+  if (result.ok) {
+    console.log(`    ${name}@${version} installs and runs -- reports ${version}`);
+    return true;
+  }
+  console.error(`\n    ${name}@${version} did NOT verify (${result.reason}).`);
+  console.error(`    npx said:\n${result.output.split('\n').map((l) => `      ${l}`).join('\n')}`);
+  if (result.reason === 'installs-no-command') {
+    console.error(`\n    The package resolved but installs no command -- the v0.1.0 failure.`);
+  } else {
+    console.error(`\n    The package did not resolve. That is often just propagation:`);
+    console.error(`    wait a minute and run  npm run verify`);
   }
   return false;
 }
@@ -214,10 +273,30 @@ function publish(name, extraArgs, dryRun) {
 }
 
 function main() {
-  const extraArgs = process.argv.slice(2).filter((a) => a !== '--dry-run');
+  const extraArgs = process.argv.slice(2).filter((a) => a !== '--dry-run' && a !== '--verify-only');
   const dryRun = process.argv.slice(2).includes('--dry-run');
   const original = fs.readFileSync(PKG_PATH, 'utf8');
   const pkg = JSON.parse(original);
+
+  // Verification is separable from publishing on purpose. A release that
+  // published correctly but could not yet SEE itself on the registry must be
+  // re-checkable without touching the registry again -- there is nothing left
+  // to publish, and a version can never be published twice anyway.
+  if (process.argv.slice(2).includes('--verify-only')) {
+    console.log(`Verifying v${pkg.version} on ${REGISTRY}\n`);
+    const results = [
+      [PRIMARY, verifyPublished(PRIMARY, pkg.version)],
+      [ALIAS, verifyPublished(ALIAS, pkg.version)],
+    ];
+    let allOk = true;
+    for (const [name, result] of results) {
+      console.log(`\n[${name}]`);
+      if (!reportVerification(name, pkg.version, result)) allOk = false;
+    }
+    if (!allOk) process.exit(1);
+    console.log(`\nBoth names are live and verified at ${pkg.version}.`);
+    return;
+  }
 
   console.log(`Squad Hub release -- v${pkg.version}${dryRun ? '  (DRY RUN, nothing is published)' : ''}`);
 
@@ -318,16 +397,16 @@ function main() {
   // only answer a user ever gets -- and is how 0.1.0's missing command would
   // have been found in the release that created it, rather than by hand
   // afterwards, once the version was already immutable.
-  const ok = verifyPublished(PRIMARY, pkg.version);
-  if (!ok) {
-    console.error(`\nPUBLISHED, BUT BROKEN: npx ${PRIMARY}@${pkg.version} does not run.`);
-    console.error(`This version cannot be replaced -- npm versions are immutable. Instead:`);
+  const verified = reportVerification(PRIMARY, pkg.version, verifyPublished(PRIMARY, pkg.version));
+  if (!verified) {
+    console.error(`\nPUBLISHED, BUT NOT VERIFIED.`);
+    console.error(`If it is only propagation, re-check with:  npm run verify`);
+    console.error(`If it genuinely installs no command, this version cannot be replaced:`);
     console.error(`  1. npm deprecate ${PRIMARY}@${pkg.version} "broken packaging, use a later version"`);
     console.error(`  2. fix the cause, bump the version, and release again.\n`);
     process.exit(1);
   }
-  console.log(`    npx ${PRIMARY}@${pkg.version} runs and reports ${pkg.version}`);
-  console.log(`\nBoth names are live and verified.`);
+  console.log(`\nBoth names are live. Verify the alias too with:  npm run verify`);
 }
 
 if (require.main === module) {
@@ -340,6 +419,7 @@ if (require.main === module) {
 
 module.exports = {
   isAlreadyPublished, needsOneTimePassword, sameRegistry, withName,
-  requiredInPackage, missingFromPack, binIsCanonical, packedManifest, verifyPublished,
+  requiredInPackage, missingFromPack, binIsCanonical, packedManifest,
+  classifyAttempt, verifyPublished, reportVerification,
   PRIMARY, ALIAS, REGISTRY,
 };

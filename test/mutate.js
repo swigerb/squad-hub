@@ -867,10 +867,10 @@ const MUTATIONS = [
   {
     name: 'package.json again promises a main entry point that does not exist',
     file: 'package.json',
-    find: `  "bin": { "squad-hub": "./bin/squad-hub.js" },`,
+    find: `  "bin": { "squad-hub": "bin/squad-hub.js" },`,
     replace: `  "_MUTATION": "main",
   "main": "src/index.js",
-  "bin": { "squad-hub": "./bin/squad-hub.js" },`,
+  "bin": { "squad-hub": "bin/squad-hub.js" },`,
     mustFail: 'main, if declared, resolves to a real shipped file',
   },
   {
@@ -959,6 +959,20 @@ const MUTATIONS = [
     replace: `function packedManifest() {
   if (process.env.MUTANT) return null; // MUTATION`,
     mustFail: 'the tarball can actually be opened, so these checks are not silently skipped',
+  },
+  {
+    name: 'verification cannot tell a missing version from a missing command',
+    file: 'scripts/release-npm.js',
+    find: `    return 'installs-no-command';`,
+    replace: `    return process.env.MUTANT ? 'not-published-yet' : 'installs-no-command'; // MUTATION`,
+    mustFail: 'verification tells "not published yet" apart from "installs no command"',
+  },
+  {
+    name: 'a failed verification hides what npm actually said',
+    file: 'scripts/release-npm.js',
+    find: `  console.error(\`    npx said:\\n\${result.output.split('\\n').map((l) => \`      \${l}\`).join('\\n')}\`);`,
+    replace: `  if (!process.env.MUTANT) console.error(\`    npx said:\\n\${result.output.split('\\n').map((l) => \`      \${l}\`).join('\\n')}\`); // MUTATION`,
+    mustFail: 'the verification failure is reported in full, not summarised away',
   },
 ];
 
