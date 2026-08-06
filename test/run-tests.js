@@ -703,6 +703,16 @@ async function suitePackage() {
 }
 
 /**
+ * The command surface itself: the verbs and global options a person types.
+ * `autostart` had to arrive without breaking the three older spellings, and a
+ * global option has to mean the same thing on either side of the subcommand.
+ */
+async function suiteCliParity() {
+  console.log('\n[CLI PARITY] autostart, config edit/env, --env, --no-config-cache');
+  runChildSuite(path.join(__dirname, 'cli-parity-unit.js'), 'cli-parity');
+}
+
+/**
  * Stored XSS (Opus review, HIGH): `.squad-hub.json` agent/model ->
  * `agentSelection` -> the hub -> `web/app.js`'s `sessionRow`. Proven directly
  * against the file's pure, DOM-free prefix -- no jsdom, per the zero-runtime-
@@ -747,6 +757,7 @@ async function suiteWebXss() {
   await suiteFreshWorkflow();
   await suiteDaemonFixes();
   await suiteHubWarning();
+  await suiteCliParity();
   await suiteDocs();
   await suitePackage();
   await suiteWebXss();

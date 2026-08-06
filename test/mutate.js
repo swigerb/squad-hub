@@ -974,6 +974,138 @@ const MUTATIONS = [
     replace: `  if (!process.env.MUTANT) console.error(\`    npx said:\\n\${result.output.split('\\n').map((l) => \`      \${l}\`).join('\\n')}\`); // MUTATION`,
     mustFail: 'the verification failure is reported in full, not summarised away',
   },
+
+  // -------------------------------------------------------------------------
+  // S1: the command surface
+  // -------------------------------------------------------------------------
+  {
+    // The whole point of a GLOBAL option: `--env ppe status` must not be read
+    // as the command `--env`. Leaving the option in argv makes the first
+    // token wrong AND shifts every positional after it.
+    name: 'global options are left in argv instead of being taken out',
+    file: 'src/cli.js',
+    find: `function takeGlobalOptions(argv) {
+  const rest = [];`,
+    replace: `function takeGlobalOptions(argv) {
+  if (process.env.MUTANT) return { argv, env: null, noConfigCache: false }; // MUTATION
+  const rest = [];`,
+    mustFail: '--env is accepted BEFORE the subcommand',
+  },
+  {
+    // Silently ignoring an unresolvable environment is the failure mode that
+    // matters: the command still runs, just not where the user meant.
+    name: 'an unconfigured --env falls back to local-only instead of failing',
+    file: 'src/cli.js',
+    find: `  const url = config.resolveEnvironment(env, cfg);
+  if (!url) {`,
+    replace: `  const url = config.resolveEnvironment(env, cfg);
+  if (process.env.MUTANT) return 0; // MUTATION
+  if (!url) {`,
+    mustFail: 'an UNCONFIGURED --env fails loudly instead of falling back to local-only',
+  },
+  {
+    // A pin is an explicit, persisted decision. An option that quietly
+    // overrode it would make `config server` mean nothing.
+    name: '--env overrides a pinned server instead of deferring to it',
+    file: 'src/cli.js',
+    find: `  const cfg = config.read();
+  if (cfg.server) {
+    err(\`--env \${env} ignored: a server is pinned`,
+    replace: `  const cfg = config.read();
+  if (cfg.server && !process.env.MUTANT) { // MUTATION
+    err(\`--env \${env} ignored: a server is pinned`,
+    mustFail: 'a pinned server WINS over --env, and says so',
+  },
+  {
+    // Pinning what --env resolved looks harmless and is not: the NEXT --env
+    // would then be ignored, because a server is now pinned.
+    name: '--env pins the server it resolved',
+    file: 'src/cli.js',
+    find: `  process.env.SQUAD_HUB_URL = url;
+  return 0;
+}`,
+    replace: `  process.env.SQUAD_HUB_URL = url;
+  if (process.env.MUTANT) config.update({ server: url }); // MUTATION
+  return 0;
+}`,
+    mustFail: '--env does NOT pin the server it resolved',
+  },
+  {
+    // The blind cache. Keyed on "read it once" rather than on the file, a
+    // daemon keeps serving settings the CLI already changed.
+    name: 'the config cache never re-checks the file it was read from',
+    file: 'src/config.js',
+    find: `function stamp() {
+  try {`,
+    replace: `function stamp() {
+  if (process.env.MUTANT) return 'blind'; // MUTATION
+  try {`,
+    mustFail: 'the config cache notices a file changed by ANOTHER process',
+  },
+  {
+    // Handing out the live memo lets any caller edit every later reader's
+    // config without a single byte reaching disk.
+    name: 'read() hands out the cache itself instead of a copy',
+    file: 'src/config.js',
+    find: `  return { ...cache.value, environments: { ...cache.value.environments } };`,
+    replace: `  return process.env.MUTANT ? cache.value : { ...cache.value, environments: { ...cache.value.environments } }; // MUTATION`,
+    mustFail: 'a caller cannot mutate the cache through what read() handed it',
+  },
+  {
+    name: '--no-config-cache is accepted but does nothing',
+    file: 'src/config.js',
+    find: `function read() {
+  if (!cacheEnabled) return readFromDisk();`,
+    replace: `function read() {
+  if (!cacheEnabled && !process.env.MUTANT) return readFromDisk(); // MUTATION`,
+    mustFail: '--no-config-cache reads a change the stamp cannot see',
+  },
+  {
+    // The rename is only an improvement if the old name never stops working.
+    name: 'the old service verbs report themselves under the new name',
+    file: 'src/cli.js',
+    find: `    case 'install-service': return cmdInstallService(rest, 'install-service');`,
+    replace: `    case 'install-service': return cmdInstallService(rest, process.env.MUTANT ? undefined : 'install-service'); // MUTATION`,
+    mustFail: '`install-service` still works, and is still labelled by its own name',
+  },
+  {
+    name: 'autostart accepts any verb at all',
+    file: 'src/cli.js',
+    find: `  if (sub === 'status') return cmdServiceStatus(argv, 'autostart status');
+  err('usage: squad-hub autostart <enable|disable|status> [--dry-run] [--json]');`,
+    replace: `  if (sub === 'status' || process.env.MUTANT) return cmdServiceStatus(argv, 'autostart status'); // MUTATION
+  err('usage: squad-hub autostart <enable|disable|status> [--dry-run] [--json]');`,
+    mustFail: '`autostart nonsense` is refused rather than guessed at',
+  },
+  {
+    // An editor opened on a path that does not exist edits nothing, and an
+    // empty buffer saved over it is worse.
+    name: 'config edit opens an editor on a file that may not exist',
+    file: 'src/cli.js',
+    find: `  if (!fs.existsSync(file)) config.write(config.read());`,
+    replace: `  if (!fs.existsSync(file) && !process.env.MUTANT) config.write(config.read()); // MUTATION`,
+    mustFail: '`config edit` creates the config file before opening an editor on it',
+  },
+  {
+    // Reporting success over a broken config leaves every setting silently
+    // reading as its default.
+    name: 'config edit calls invalid JSON a success',
+    file: 'src/cli.js',
+    find: `  try {
+    JSON.parse(after);
+  } catch (e) {`,
+    replace: `  try {
+    if (!process.env.MUTANT) JSON.parse(after); // MUTATION
+  } catch (e) {`,
+    mustFail: '`config edit` refuses to call invalid JSON a success',
+  },
+  {
+    name: 'config edit prefers $EDITOR over $VISUAL',
+    file: 'src/cli.js',
+    find: `  const chosen = process.env.VISUAL || process.env.EDITOR;`,
+    replace: `  const chosen = process.env.MUTANT ? (process.env.EDITOR || process.env.VISUAL) : (process.env.VISUAL || process.env.EDITOR); // MUTATION`,
+    mustFail: '$VISUAL is preferred over $EDITOR',
+  },
 ];
 
 /**
@@ -997,6 +1129,12 @@ function failedTestNames(out) {
     .filter((l) => l.trim().startsWith('FAIL '))
     .map((l) => l.trim().slice(5).trim());
 }
+
+// The catalogue is the valuable part and is worth reading from elsewhere --
+// test/mutate-probe.js runs a subset against a single child suite for fast
+// iteration. Requiring this file must therefore NOT start a full sweep.
+module.exports = { MUTATIONS };
+if (require.main !== module) return;
 
 (async () => {
   console.log('squad-hub mutation harness');

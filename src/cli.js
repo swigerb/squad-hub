@@ -29,6 +29,79 @@ function value(argv, name, dflt = null) {
   return i !== -1 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : dflt;
 }
 
+/**
+ * Options that belong to the CLI itself rather than to any one subcommand, and
+ * are therefore accepted on EITHER side of it -- `squad-hub --env ppe status`
+ * and `squad-hub status --env ppe` mean the same thing. They are removed from
+ * argv before dispatch so no subcommand has to know they exist, and so
+ * `positionals()` cannot mistake `ppe` for a subcommand argument.
+ *
+ * Returns null when the options are used incorrectly, having already said why.
+ */
+function takeGlobalOptions(argv) {
+  const rest = [];
+  let env = null;
+  let noConfigCache = false;
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--no-config-cache') { noConfigCache = true; continue; }
+    if (a === '--env') {
+      const next = argv[i + 1];
+      if (!next || next.startsWith('--')) {
+        err(`--env needs a value (${config.ENVIRONMENTS.join(' or ')})`);
+        return null;
+      }
+      env = next;
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('--env=')) { env = a.slice('--env='.length); continue; }
+    rest.push(a);
+  }
+
+  if (env !== null && !config.ENVIRONMENTS.includes(env)) {
+    err(`unknown --env: ${env} (expected ${config.ENVIRONMENTS.join(' or ')})`);
+    return null;
+  }
+
+  return { argv: rest, env, noConfigCache };
+}
+
+/**
+ * Turn `--env <name>` into a hub URL, or explain why it cannot.
+ *
+ * A pinned server wins outright and the environment is IGNORED -- a pin is an
+ * explicit, persisted decision, and an option that silently overrode it would
+ * make `config server` mean nothing. Says so out loud rather than dropping the
+ * option on the floor.
+ *
+ * An unresolvable name is a usage error, never a quiet fall back to local-only:
+ * someone who typed `--env ppe` wants ppe, and ignoring that is how work lands
+ * somewhere it was not meant to.
+ */
+function applyEnvironment(env) {
+  if (!env) return 0;
+  const cfg = config.read();
+  if (cfg.server) {
+    err(`--env ${env} ignored: a server is pinned (${cfg.server}). Run "squad-hub config unset-server" to use environments.`);
+    return 0;
+  }
+  const url = config.resolveEnvironment(env, cfg);
+  if (!url) {
+    err(`--env ${env} is not configured on this machine.`);
+    err(`Set it with: squad-hub config env ${env} <url>`);
+    err(`Or export ${config.ENVIRONMENT_VARS[env]}.`);
+    return 2;
+  }
+  if (!looksLikeUrl(url)) {
+    err(`--env ${env} resolves to ${url}, which is not an http:// or https:// URL`);
+    return 2;
+  }
+  process.env.SQUAD_HUB_URL = url;
+  return 0;
+}
+
 /** http(s) only -- a device dials OUT, and anything else is not a hub URL. */
 function looksLikeUrl(u) {
   try {
@@ -125,6 +198,15 @@ function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'ho
   return out;
 }
 
+/**
+ * The hub this invocation will actually talk to. A pin wins; `--env` fills the
+ * gap when there is no pin (it sets SQUAD_HUB_URL, which the detached daemon
+ * inherits). Nothing configured means local-only, which is a valid state.
+ */
+function effectiveServer(cfg = config.read()) {
+  return cfg.server || process.env.SQUAD_HUB_URL || null;
+}
+
 async function cmdStart(argv) {
   if (client.daemonAlive()) {
     const st = client.readState();
@@ -148,18 +230,19 @@ async function cmdStart(argv) {
 
   const st = client.readState();
   const cfg = config.read();
+  const server = effectiveServer(cfg);
   out(`daemon started (pid ${st.pid})`);
   out(`  device       ${st.deviceName}`);
   out(`  endpoint     ${st.ipc}`);
   out(`  file access  ${config.publicView(cfg).fileAccess}${cfg.allowFiles && !cfg.allowFilesAll ? ` (root: ${cfg.filesRoot})` : ''}`);
-  if (cfg.server) {
+  if (server) {
     // Read the daemon's published state rather than polling it over IPC.
     // Polling delayed the very connection it was checking for.
     const linked = await waitFor(async () => {
       const s = client.readState();
       return !!(s && s.hub && s.hub.connected);
     }, 10000, 150);
-    out(`  hub          ${cfg.server} ${linked ? '(connected)' : '(NOT connected - see ' + paths.log() + ')'}`);
+    out(`  hub          ${server} ${linked ? '(connected)' : '(NOT connected - see ' + paths.log() + ')'}`);
   }
   return 0;
 }
@@ -650,16 +733,141 @@ async function cmdServe(argv) {
   return 0;
 }
 
+/**
+ * The editor to open `config edit` in.
+ *
+ * `$VISUAL` before `$EDITOR` is the long-standing convention: `$EDITOR` may be
+ * a line editor chosen for non-interactive use, `$VISUAL` is the full-screen
+ * one a person actually wants. The platform fallback is deliberately the most
+ * boring thing guaranteed to exist.
+ */
+function editorCommand() {
+  const chosen = process.env.VISUAL || process.env.EDITOR;
+  if (chosen && chosen.trim()) return chosen.trim();
+  return process.platform === 'win32' ? 'notepad' : 'vi';
+}
+
+/**
+ * `squad-hub config edit` -- open the config file in an editor.
+ *
+ * Materialises the file first: an editor opened on a path that does not exist
+ * is how someone ends up saving an empty buffer over their defaults, or
+ * quietly editing nothing at all.
+ *
+ * Validates afterwards and reports a broken file rather than leaving the next
+ * command to silently fall back to defaults, which is exactly how a mistyped
+ * comma turns into "my hub setting vanished".
+ */
+async function cmdConfigEdit() {
+  paths.ensureHome();
+  const file = paths.config();
+  if (!fs.existsSync(file)) config.write(config.read());
+
+  const before = fs.readFileSync(file, 'utf8');
+  const cmd = editorCommand();
+
+  // A plain, single-token editor (`notepad`, `vi`, `code`) is spawned directly:
+  // no shell, so a path with spaces needs no quoting and nothing can be
+  // reinterpreted. Only a command that already carries its own arguments
+  // (`EDITOR="code --wait"`) needs a shell to make sense of it, and then the
+  // whole line is built as a string -- passing an args array alongside
+  // `shell: true` concatenates without escaping, which Node now deprecates.
+  const needsShell = /\s/.test(cmd);
+  const code = await new Promise((resolve) => {
+    const child = needsShell
+      ? spawn(`${cmd} "${file}"`, { stdio: 'inherit', shell: true })
+      : spawn(cmd, [file], { stdio: 'inherit' });
+    child.on('error', () => resolve(-1));
+    child.on('exit', (c) => resolve(c === null ? 1 : c));
+  });
+
+  if (code === -1) { err(`could not launch an editor (${cmd}). Set $EDITOR or edit ${file} directly.`); return 1; }
+  if (code !== 0) { err(`${cmd} exited with ${code}; ${file} was left as the editor saved it.`); return 1; }
+
+  const after = fs.readFileSync(file, 'utf8');
+  if (after === before) { out(`no changes (${file})`); return 0; }
+
+  try {
+    JSON.parse(after);
+  } catch (e) {
+    err(`${file} is no longer valid JSON: ${e.message}`);
+    err('Every setting will read as its default until that is fixed.');
+    return 1;
+  }
+
+  // The file moved, so anything this process cached about it is now wrong.
+  config.invalidate();
+  out(`saved ${file}`);
+  if (client.daemonAlive()) out('the daemon is running; restart it to pick this up: squad-hub stop && squad-hub start');
+  return 0;
+}
+
 async function cmdConfig(argv) {
-  const [sub, val] = positionals(argv);
+  const [sub, val, val2] = positionals(argv);
   if (!sub || sub === 'show') { out(JSON.stringify(config.read(), null, 2)); return 0; }
+  if (sub === 'edit') return cmdConfigEdit();
   if (sub === 'server') { config.update({ server: val }); out(`server pinned to ${val}`); return 0; }
   if (sub === 'unset-server') { config.update({ server: null }); out('server unpinned'); return 0; }
+  if (sub === 'env') return cmdConfigEnv(val, val2);
   if (sub === 'enable-auto-shutdown') { config.update({ autoShutdown: true }); out('auto-shutdown enabled'); return 0; }
   if (sub === 'disable-auto-shutdown') { config.update({ autoShutdown: false }); out('auto-shutdown disabled'); return 0; }
   if (sub === 'set-auto-shutdown-grace') { config.update({ autoShutdownGraceSeconds: Number(val) }); out(`grace = ${val}s`); return 0; }
   err(`unknown config subcommand: ${sub}`);
   return 2;
+}
+
+/**
+ * `squad-hub config env [<name> [<url>]]` -- the persisted half of `--env`.
+ *
+ * Named environments live here rather than being compiled in, because Squad
+ * Hub is self-hosted: there is no vendor "prod" to hardcode, and hardcoding
+ * one would put somebody's private deployment in a public repo.
+ */
+async function cmdConfigEnv(name, url) {
+  const cfg = config.read();
+
+  if (!name) {
+    const rows = config.ENVIRONMENTS.map((n) => {
+      const fromEnv = config.environmentOverride(n);
+      const saved = (cfg.environments || {})[n];
+      if (fromEnv) return `  ${n.padEnd(5)} ${fromEnv}  (from ${config.ENVIRONMENT_VARS[n]})`;
+      return `  ${n.padEnd(5)} ${saved || '(not set)'}`;
+    });
+    out('environments:');
+    for (const r of rows) out(r);
+    if (cfg.server) out(`\na server is pinned (${cfg.server}), so --env is ignored until you run "squad-hub config unset-server".`);
+    return 0;
+  }
+
+  if (!config.ENVIRONMENTS.includes(name)) {
+    err(`unknown environment: ${name} (expected ${config.ENVIRONMENTS.join(' or ')})`);
+    return 2;
+  }
+
+  if (url === undefined) {
+    err(`usage: squad-hub config env ${name} <url>`);
+    err(`       squad-hub config env ${name} none   (to clear it)`);
+    return 2;
+  }
+
+  const environments = { ...(cfg.environments || {}) };
+  if (url === 'none') {
+    delete environments[name];
+    config.update({ environments });
+    out(`${name} cleared`);
+    return 0;
+  }
+
+  if (!looksLikeUrl(url)) {
+    err(`--env URLs must be http:// or https://, got: ${url}`);
+    return 2;
+  }
+
+  environments[name] = url;
+  config.update({ environments });
+  out(`${name} = ${url}`);
+  if (cfg.server) out(`note: a server is pinned (${cfg.server}), so --env stays ignored until you run "squad-hub config unset-server".`);
+  return 0;
 }
 
 async function cmdTrackAll(argv) {
@@ -714,7 +922,7 @@ function httpJson(url, { method = 'GET', headers = {}, body = null } = {}) {
  * knows which partition the caller belongs to.
  */
 async function cmdDeviceToken(argv) {
-  const hub = value(argv, 'hub', config.read().server);
+  const hub = value(argv, 'hub', effectiveServer());
   const token = value(argv, 'token', process.env.SQUAD_HUB_USER_TOKEN);
   if (!hub || !token) {
     err('usage: squad-hub device-token --hub <url> --token <your own token> [--label <text>]');
@@ -813,29 +1021,47 @@ function printServiceResult(action, r, json) {
   if ('installed' in r) out(`  installed: ${r.installed}`);
 }
 
-async function cmdInstallService(argv) {
+async function cmdInstallService(argv, label = 'autostart enable') {
   const svc = require('./service-install');
   const r = svc.install({ dryRun: flag(argv, 'dry-run') });
-  printServiceResult('install-service', r, flag(argv, 'json'));
+  printServiceResult(label, r, flag(argv, 'json'));
   return r.supported === false || r.ok === false ? 1 : 0;
 }
 
-async function cmdUninstallService(argv) {
+async function cmdUninstallService(argv, label = 'autostart disable') {
   const svc = require('./service-install');
   const r = svc.uninstall({ dryRun: flag(argv, 'dry-run') });
-  printServiceResult('uninstall-service', r, flag(argv, 'json'));
+  printServiceResult(label, r, flag(argv, 'json'));
   return r.supported === false || r.ok === false ? 1 : 0;
 }
 
-async function cmdServiceStatus(argv) {
+async function cmdServiceStatus(argv, label = 'autostart status') {
   const svc = require('./service-install');
   const r = svc.status({ dryRun: flag(argv, 'dry-run') });
-  printServiceResult('service-status', r, flag(argv, 'json'));
+  printServiceResult(label, r, flag(argv, 'json'));
   // Belt-and-suspenders: `supported === false` is the real signal (an
   // unsupported platform never gets a chance to be "installed" or not), but
   // also fail on `ok === false` in case a future status() failure mode ever
   // reports ok:false without also setting supported:false.
   return r.supported === false || r.ok === false ? 1 : 0;
+}
+
+/**
+ * `squad-hub autostart enable|disable|status` -- the primary spelling for the
+ * login task.
+ *
+ * "install-service" described the mechanism; "autostart" describes what the
+ * user wanted. The old three verbs keep working as aliases forever, because
+ * they are already sitting in people's scripts and login tasks -- renaming a
+ * command is only an improvement if the old name never stops working.
+ */
+async function cmdAutostart(argv) {
+  const [sub] = positionals(argv);
+  if (sub === 'enable') return cmdInstallService(argv, 'autostart enable');
+  if (sub === 'disable') return cmdUninstallService(argv, 'autostart disable');
+  if (sub === 'status') return cmdServiceStatus(argv, 'autostart status');
+  err('usage: squad-hub autostart <enable|disable|status> [--dry-run] [--json]');
+  return 2;
 }
 
 /**
@@ -893,13 +1119,19 @@ function usage() {
   squad-hub kill <sessionId>
 
   LOGIN STARTUP (optional; never needs admin/root)
-  squad-hub install-service [--dry-run] [--json]
-  squad-hub uninstall-service [--dry-run] [--json]
-  squad-hub service-status [--dry-run] [--json]
+  squad-hub autostart enable [--dry-run] [--json]
+  squad-hub autostart disable [--dry-run] [--json]
+  squad-hub autostart status [--dry-run] [--json]
+  squad-hub install-service / uninstall-service / service-status  (older spellings, still work)
 
   SETTINGS
   squad-hub track-all <on|off>
-  squad-hub config [show|server <url>|unset-server|enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>]
+  squad-hub config [show|edit|server <url>|unset-server|env [<name> [<url>]]
+                   |enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>]
+
+  ANYWHERE ON THE LINE
+  --env prod|ppe        use a named hub, if no server is pinned
+  --no-config-cache     re-read the config file on every access
 
   DEVICE TOKENS
   squad-hub device-token --hub <url> --token <your token> [--label <t>] [--ttl-hours <n>] [--prefix <p>]
@@ -922,7 +1154,20 @@ on this device and is never sent to the hub service.`);
 }
 
 async function main(argv) {
-  const [cmd, ...rest] = argv;
+  const globals = takeGlobalOptions(argv);
+  if (!globals) return 2;
+  if (globals.noConfigCache) config.setCacheEnabled(false);
+
+  const [cmd, ...rest] = globals.argv;
+
+  // `help` and `--version` answer without touching a hub, so an unconfigured
+  // environment must not stop someone reading the usage text.
+  const needsEnvironment = cmd !== undefined && !['help', '--help', '-h', '--version', '-v'].includes(cmd);
+  if (needsEnvironment) {
+    const code = applyEnvironment(globals.env);
+    if (code !== 0) return code;
+  }
+
   switch (cmd) {
     case 'start': return cmdStart(rest);
     case 'connect': return cmdConnect(rest);
@@ -937,9 +1182,12 @@ async function main(argv) {
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);
-    case 'install-service': return cmdInstallService(rest);
-    case 'uninstall-service': return cmdUninstallService(rest);
-    case 'service-status': return cmdServiceStatus(rest);
+    case 'autostart': return cmdAutostart(rest);
+    // The pre-`autostart` spellings. Kept working forever: they are in scripts,
+    // in login tasks, and in other people's notes.
+    case 'install-service': return cmdInstallService(rest, 'install-service');
+    case 'uninstall-service': return cmdUninstallService(rest, 'uninstall-service');
+    case 'service-status': return cmdServiceStatus(rest, 'service-status');
     case 'doctor': return cmdDoctor(rest);
     case '--version': case '-v': out(require('../package.json').version); return 0;
     case undefined: case 'help': case '--help': case '-h': usage(); return 0;
