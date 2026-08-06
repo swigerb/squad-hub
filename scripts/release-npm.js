@@ -115,14 +115,18 @@ function packedPaths() {
 }
 
 /**
- * npm rewrites `bin` on publish, and reports the rewrite with the alarming
- * wording `script name <path> was invalid and removed` -- even though it keeps
- * the entry. Writing the value npm would have rewritten it to means there is
- * nothing to rewrite, no warning, and no need for whoever runs the next
- * release to work out whether the CLI just vanished from the package.
- * It is not only cosmetic. A `./`-prefixed target survived publish-time
- * normalization but was dropped by the INSTALLING npm, which is how 0.1.0
- * reached the registry and then produced `squad-hub is not recognized`.
+ * Keep `bin` in the form npm itself writes: no leading `./`.
+ *
+ * This is hygiene, not a bug fix. A `./` prefix has drawn a publish-time
+ * rewrite reported with the alarming wording `script name <path> was invalid
+ * and removed`, which reads as though the CLI had vanished from the package.
+ * Writing the canonical value means there is nothing to rewrite and nothing
+ * for the next person to interpret.
+ *
+ * It is deliberately NOT claimed that a `./` prefix breaks installation. That
+ * was this project's working theory for a time and it did not survive testing:
+ * on npm 11 the prefix survives pack and install intact and still yields a
+ * working command, and the published 0.1.0 tarball never carried one.
  */
 function binIsCanonical(pkg) {
   const offenders = Object.entries(pkg.bin || {})
@@ -224,7 +228,7 @@ function reportVerification(name, version, result) {
   console.error(`\n    ${name}@${version} did NOT verify (${result.reason}).`);
   console.error(`    npx said:\n${result.output.split('\n').map((l) => `      ${l}`).join('\n')}`);
   if (result.reason === 'installs-no-command') {
-    console.error(`\n    The package resolved but installs no command -- the v0.1.0 failure.`);
+    console.error(`\n    The package resolved but installs no command.`);
   } else {
     console.error(`\n    The package did not resolve. That is often just propagation:`);
     console.error(`    wait a minute and run  npm run verify`);
@@ -349,10 +353,10 @@ function main() {
   }
   console.log('    bin is in npm\'s canonical form, so publish will not rewrite it');
 
-  // The tarball's own package.json, not this one. They can differ, and it is
-  // the tarball's that a consumer's npm reads when deciding what command to
-  // install. 0.1.0 shipped a `./`-prefixed bin that survived publish and was
-  // then dropped on install, which no check of the source file would catch.
+  // The tarball's own package.json, not this one. They can differ -- files can
+  // be excluded, and the manifest can be rewritten on the way out -- and it is
+  // the tarball's copy that a consumer's npm reads when deciding what command
+  // to install. No check of the source file can see that.
   const shipped = packedManifest();
   if (shipped === null) {
     console.log('    note: no tar available to open the tarball -- checked the source manifest only');
@@ -394,9 +398,8 @@ function main() {
 
   step(7, 'proving the published package actually installs a working command');
   // Every check so far inspected intent. This asks the registry, which is the
-  // only answer a user ever gets -- and is how 0.1.0's missing command would
-  // have been found in the release that created it, rather than by hand
-  // afterwards, once the version was already immutable.
+  // only answer a user ever gets, and the only one that can distinguish a
+  // package that merely looks right from one that installs and runs.
   const verified = reportVerification(PRIMARY, pkg.version, verifyPublished(PRIMARY, pkg.version));
   if (!verified) {
     console.error(`\nPUBLISHED, BUT NOT VERIFIED.`);

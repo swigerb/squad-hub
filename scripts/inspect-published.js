@@ -150,7 +150,10 @@ function installAndRun(tarball, dir) {
     return { installed: true, command: false, listing };
   }
 
-  const run = spawnSync(q(found[0]), ['--version'],
+  // Args are folded into the command string rather than passed alongside
+  // shell:true, which Node deprecates (DEP0190) because they would not be
+  // escaped, only concatenated.
+  const run = spawnSync(`${q(found[0])} --version`, [],
     { encoding: 'utf8', timeout: 120000, shell: true });
   return { installed: true, command: true, path: found[0], output: out(run), status: run.status };
 }

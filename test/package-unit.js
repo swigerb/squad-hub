@@ -400,12 +400,17 @@ check('the release refuses a bin path npm would rewrite', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * `npm pack` copies package.json verbatim, so what publish-time normalization
- * reports and what a consumer actually installs are two different things.
- * v0.1.0 shipped `"bin": {"squad-hub": "./bin/squad-hub.js"}`: publish kept
- * it, the installing npm dropped it, and `npx squad-hub` answered
- * `squad-hub is not recognized`. Nothing that read the source manifest could
- * have seen that -- only the artefact.
+ * `npm pack` copies package.json verbatim, so the source manifest and the file
+ * a consumer actually installs are two different artefacts, and only the
+ * second one decides what gets installed. Files can be excluded, and the
+ * manifest can be rewritten on the way out; nothing that reads the source can
+ * see either. These checks therefore open the tarball.
+ *
+ * Note on provenance: these checks were originally written in the belief that
+ * v0.1.0 shipped a `./`-prefixed bin which the installing npm dropped. That
+ * turned out to be false -- the published 0.1.0 tarball carries the canonical
+ * path, installs a command, and runs. The checks are kept because opening the
+ * artefact is right regardless, not because they caught that.
  */
 const shipped = (() => {
   try { return release.packedManifest(); } catch { return null; }
@@ -434,10 +439,10 @@ check('the tarball declares a command at all', () => {
   assert.ok(bins.includes(release.PRIMARY), `the tarball does not install "${release.PRIMARY}"`);
 });
 
-check('the tarball\'s bin survives the INSTALLING npm, not just publish', () => {
+check('the tarball\'s bin is in npm\'s canonical form', () => {
   if (shipped === null) return; // covered by the source-manifest check above
   assert.deepStrictEqual(release.binIsCanonical(shipped), [],
-    'the tarball ships a bin path the installing npm drops -- this is the v0.1.0 bug');
+    'the tarball ships a non-canonical bin path, which npm may rewrite on publish');
 });
 
 check('the tarball\'s bin target is a file that is actually in the tarball', () => {
@@ -454,9 +459,9 @@ check('the tarball carries the version being released, not a stale one', () => {
 });
 
 check('the release verifies the published package by running it', () => {
-  // Intent-checking is what let 0.1.0 through: everything agreed the package
-  // was correct, and the registry disagreed. The release must ask the
-  // registry, since that is the only answer a user ever receives.
+  // Checking intent proves only that the package looks right. The registry is
+  // the one answer a user actually receives, so the release must ask it --
+  // and, having asked, must be able to tell a slow answer from a bad one.
   const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
   assert.match(src, /function verifyPublished/, 'nothing verifies the published artefact');
   assert.match(src, /npx/, 'the verification never actually installs the published package');
@@ -500,7 +505,7 @@ check('verification tells "not published yet" apart from "installs no command"',
 
   assert.strictEqual(
     c(1, 'npm error could not determine executable to run', '0.1.1'),
-    'installs-no-command', 'the failure v0.1.0 actually produced is not recognised');
+    'installs-no-command', 'a package that resolves but installs no command is not recognised');
 
   assert.strictEqual(
     c(1, "'squad-hub' is not recognized as an internal or external command", '0.1.1'),

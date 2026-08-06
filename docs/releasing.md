@@ -152,6 +152,23 @@ That checks **both** names and prints npm's own output when something is
 wrong, so a propagation delay is distinguishable from a genuinely broken
 package.
 
+If you need to know what a version *actually* shipped — not what this
+checkout intended — inspect the published tarballs directly:
+
+```bash
+node scripts/inspect-published.js            # every published version
+node scripts/inspect-published.js 0.1.0      # or just one
+```
+
+It downloads each published tarball, prints the `bin` npm really shipped,
+installs it into a throwaway prefix, and reports whether a command appears and
+runs. It publishes and deprecates nothing.
+
+> Run it where npm can reach **registry.npmjs.org**. Behind a mirror it will
+> refuse to give a verdict rather than mistake a lagging feed for a missing
+> package — which is exactly the error that once got v0.1.0 blamed for a
+> defect it did not have.
+
 To check by hand:
 
 ```bash
@@ -190,14 +207,42 @@ restricted. Deprecate it so npm warns anyone who installs it, then release a
 fixed version:
 
 ```bash
-npm deprecate squad-hub@0.1.0 "broken packaging: installs no command, use 0.1.1 or later"
+npm deprecate squad-hub@<version> "broken packaging: installs no command, use <newer> or later"
 ```
 
-**v0.1.0 is such a version.** It shipped `"bin": {"squad-hub":
-"./bin/squad-hub.js"}`. Publishing accepted it, but the *installing* npm
-dropped the leading `./` entry, so `npx squad-hub@0.1.0` answered
-`squad-hub is not recognized`. It is fixed in 0.1.1, and the release now
-refuses to publish a tarball whose `bin` has that shape.
+Deprecate only on evidence. Confirm the published artefact is genuinely
+broken first — see below — because a deprecation notice is public, permanent
+in effect, and cannot be justified by a symptom seen on one machine.
+
+## What actually happened with v0.1.0
+
+For a time this project believed v0.1.0 was broken: that it shipped
+`"bin": {"squad-hub": "./bin/squad-hub.js"}`, that the installing npm dropped
+the `./`, and that this is why `npx squad-hub@0.1.0` answered
+`squad-hub is not recognized`. The 0.1.1 bump, and several of the checks in
+this repo, were written on that belief.
+
+**It was wrong.** Inspecting the published tarballs directly:
+
+- the published 0.1.0 manifest carries `"bin": {"squad-hub": "bin/squad-hub.js"}` —
+  the canonical path, with no `./` at all
+- it installs a `squad-hub` command, runs, and reports `0.1.0`
+- the same holds for 0.1.1, and for both versions under `@mightybs/squad-hub`
+- `web/` shipped in every one
+
+A `./` prefix was also tested deliberately: on npm 11 it survives `npm pack`
+and installation intact and still produces a working command. It is worth
+avoiding — npm may rewrite it on publish and say so in alarming words — but it
+does not break installation.
+
+The original symptom is best explained by the environment it was seen in: that
+machine resolves npm through a mirror that lags the public registry by days,
+so a freshly published version is simply absent there for a while. **A package
+that cannot be found on a stale mirror looks exactly like a package that was
+never published correctly.** That is the trap this document now exists to keep
+you out of.
+
+Nothing here needs deprecating. Both versions work.
 
 ## Cutting a new version
 
