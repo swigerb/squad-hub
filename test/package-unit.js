@@ -396,6 +396,75 @@ check('the release refuses a bin path npm would rewrite', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The tarball's OWN package.json -- the file a consumer's npm reads
+// ---------------------------------------------------------------------------
+
+/**
+ * `npm pack` copies package.json verbatim, so what publish-time normalization
+ * reports and what a consumer actually installs are two different things.
+ * v0.1.0 shipped `"bin": {"squad-hub": "./bin/squad-hub.js"}`: publish kept
+ * it, the installing npm dropped it, and `npx squad-hub` answered
+ * `squad-hub is not recognized`. Nothing that read the source manifest could
+ * have seen that -- only the artefact.
+ */
+const shipped = (() => {
+  try { return release.packedManifest(); } catch { return null; }
+})();
+
+/** Is `tar` actually available? Only then is a null manifest excusable. */
+const hasTar = spawnSync('tar', ['--version'], { encoding: 'utf8' }).status === 0;
+
+check('the tarball can actually be opened, so these checks are not silently skipped', () => {
+  // Every check below falls back to something weaker when the tarball cannot
+  // be read. That fallback must be reachable ONLY when the tool is genuinely
+  // missing -- otherwise the strongest checks in this suite quietly evaporate
+  // and report success, which is the exact failure they exist to prevent.
+  if (!hasTar) return;
+  assert.ok(shipped !== null, 'tar is available but the tarball was not read; the tarball checks are inert');
+  assert.strictEqual(shipped.name, pkg.name, 'the tarball manifest is not this package');
+});
+
+check('the tarball declares a command at all', () => {
+  if (shipped === null) {
+    assert.ok(pkg.bin && Object.keys(pkg.bin).length, 'no bin declared');
+    return;
+  }
+  const bins = Object.keys(shipped.bin || {});
+  assert.ok(bins.length >= 1, 'the tarball installs no command; the package would do nothing');
+  assert.ok(bins.includes(release.PRIMARY), `the tarball does not install "${release.PRIMARY}"`);
+});
+
+check('the tarball\'s bin survives the INSTALLING npm, not just publish', () => {
+  if (shipped === null) return; // covered by the source-manifest check above
+  assert.deepStrictEqual(release.binIsCanonical(shipped), [],
+    'the tarball ships a bin path the installing npm drops -- this is the v0.1.0 bug');
+});
+
+check('the tarball\'s bin target is a file that is actually in the tarball', () => {
+  if (shipped === null) return;
+  for (const [name, target] of Object.entries(shipped.bin || {})) {
+    assert.ok(fs.existsSync(path.join(ROOT, target)), `bin "${name}" points at missing ${target}`);
+    assert.ok(inPackage(target), `bin "${name}" points at ${target}, which is not shipped`);
+  }
+});
+
+check('the tarball carries the version being released, not a stale one', () => {
+  if (shipped === null) return;
+  assert.strictEqual(shipped.version, pkg.version, 'the tarball version disagrees with package.json');
+});
+
+check('the release verifies the published package by running it', () => {
+  // Intent-checking is what let 0.1.0 through: everything agreed the package
+  // was correct, and the registry disagreed. The release must ask the
+  // registry, since that is the only answer a user ever receives.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  assert.match(src, /function verifyPublished/, 'nothing verifies the published artefact');
+  assert.match(src, /npx/, 'the verification never actually installs the published package');
+  assert.match(src, /deprecate/i,
+    'a broken publish leaves no guidance, though the version can never be replaced');
+});
+
+// ---------------------------------------------------------------------------
 // Two-factor authentication -- the thing that actually stopped the release
 // ---------------------------------------------------------------------------
 

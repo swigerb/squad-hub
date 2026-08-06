@@ -952,6 +952,14 @@ const MUTATIONS = [
     replace: `    .filter(([, target]) => process.env.MUTANT ? false : target !== target.replace(/^\\.\\//, '').replace(/\\\\/g, '/')); // MUTATION`,
     mustFail: 'the release refuses a bin path npm would rewrite',
   },
+  {
+    name: 'the release stops looking inside the tarball at all',
+    file: 'scripts/release-npm.js',
+    find: `function packedManifest() {`,
+    replace: `function packedManifest() {
+  if (process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'the tarball can actually be opened, so these checks are not silently skipped',
+  },
 ];
 
 /**

@@ -104,12 +104,15 @@ leading `./` back into `package.json`.
 2. **Refuses if you are not logged in** to `registry.npmjs.org`.
 3. **Runs the full test suite.** A failure publishes nothing.
 4. **Checks the tarball against the code**, independently of the suite: every
-   file under `web/` and every `bin` target must actually be in the package.
-   This is the guard that survives a wrong or outdated checkout, whose test
-   suite may not contain the check — or may not exist.
+   file under `web/` and every `bin` target must actually be in the package,
+   and the tarball's own `package.json` must declare a command the installing
+   npm will honour.
 5. **Publishes `squad-hub`.**
 6. **Publishes `@mightybs/squad-hub`** — the same contents with the name
    rewritten, then `package.json` restored.
+7. **Installs what it just published, from the registry, and runs it.**
+   Everything before this checks intent; only this checks the answer a user
+   gets.
 
 Step 6 restores `package.json` in a `finally`, so an interrupted release never
 leaves the checkout claiming to be the alias package.
@@ -134,6 +137,12 @@ cause, then run `npm run release` again.
 
 ## Verifying
 
+The release does this for you as its last step — it installs the published
+package from the registry and runs it. If that fails, it says so loudly, and
+the version is already immutable.
+
+To check by hand afterwards:
+
 ```bash
 npx squad-hub@latest --version
 npm view @mightybs/squad-hub version
@@ -148,6 +157,22 @@ npx squad-hub@latest serve
 
 Open the printed URL. A blank page means `web/` did not make it into the
 tarball.
+
+## When a published version turns out to be broken
+
+You cannot replace it. npm versions are immutable, and unpublishing is
+restricted. Deprecate it so npm warns anyone who installs it, then release a
+fixed version:
+
+```bash
+npm deprecate squad-hub@0.1.0 "broken packaging: installs no command, use 0.1.1 or later"
+```
+
+**v0.1.0 is such a version.** It shipped `"bin": {"squad-hub":
+"./bin/squad-hub.js"}`. Publishing accepted it, but the *installing* npm
+dropped the leading `./` entry, so `npx squad-hub@0.1.0` answered
+`squad-hub is not recognized`. It is fixed in 0.1.1, and the release now
+refuses to publish a tarball whose `bin` has that shape.
 
 ## Cutting a new version
 

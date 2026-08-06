@@ -21,6 +21,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
@@ -119,12 +120,57 @@ function packedPaths() {
  * the entry. Writing the value npm would have rewritten it to means there is
  * nothing to rewrite, no warning, and no need for whoever runs the next
  * release to work out whether the CLI just vanished from the package.
+ * It is not only cosmetic. A `./`-prefixed target survived publish-time
+ * normalization but was dropped by the INSTALLING npm, which is how 0.1.0
+ * reached the registry and then produced `squad-hub is not recognized`.
  */
 function binIsCanonical(pkg) {
   const offenders = Object.entries(pkg.bin || {})
     .filter(([, target]) => typeof target === 'string')
     .filter(([, target]) => target !== target.replace(/^\.\//, '').replace(/\\/g, '/'));
   return offenders.map(([key, target]) => `${key}: ${target}`);
+}
+
+/**
+ * The package.json INSIDE the tarball -- the file a consumer's npm reads.
+ * `npm pack` copies it verbatim, so it is the last chance to see what will
+ * actually be installed, and it is not necessarily what publish-time
+ * normalization reports.
+ */
+function packedManifest() {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-pack-'));
+  try {
+    const r = run('npm', ['pack', '--pack-destination', dest], { timeout: 180000 });
+    if (r.status !== 0) throw new Error(`npm pack failed:\n${r.stdout || ''}${r.stderr || ''}`);
+    const tgz = fs.readdirSync(dest).find((f) => f.endsWith('.tgz'));
+    if (!tgz) throw new Error('npm pack produced no tarball');
+    const out = run('tar', ['-xzOf', path.join(dest, tgz), 'package/package.json'], { timeout: 60000 });
+    if (out.status !== 0 || !out.stdout) return null; // no tar; caller falls back
+    return JSON.parse(out.stdout);
+  } finally {
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Prove the published package installs a working command. Everything before
+ * this checks intent; this checks the registry's answer, which is the only
+ * one a user ever sees. A new version takes a moment to propagate, so retry
+ * rather than declaring failure on the first miss.
+ */
+function verifyPublished(name, version, attempts = 5) {
+  for (let i = 1; i <= attempts; i += 1) {
+    const r = run('npx', ['--yes', `${name}@${version}`, '--version'], { timeout: 180000 });
+    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    if (r.status === 0 && out.includes(version)) return true;
+    if (i < attempts) {
+      console.log(`    not resolvable yet (attempt ${i}/${attempts}); waiting for the registry...`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000);
+    } else {
+      console.log(`\n    last output from npx:\n${out.split('\n').slice(-8).join('\n')}`);
+    }
+  }
+  return false;
 }
 
 function step(n, msg) { console.log(`\n[${n}] ${msg}`); }
@@ -224,6 +270,30 @@ function main() {
   }
   console.log('    bin is in npm\'s canonical form, so publish will not rewrite it');
 
+  // The tarball's own package.json, not this one. They can differ, and it is
+  // the tarball's that a consumer's npm reads when deciding what command to
+  // install. 0.1.0 shipped a `./`-prefixed bin that survived publish and was
+  // then dropped on install, which no check of the source file would catch.
+  const shipped = packedManifest();
+  if (shipped === null) {
+    console.log('    note: no tar available to open the tarball -- checked the source manifest only');
+  } else {
+    const shippedBin = binIsCanonical(shipped);
+    if (shippedBin.length) {
+      die(`the TARBALL declares bin paths npm will drop on install:\n  ${shippedBin.join('\n  ')}`);
+    }
+    const bins = Object.keys(shipped.bin || {});
+    if (!bins.length) {
+      die('the tarball declares no bin at all -- installing it would give the user no command.');
+    }
+    for (const [name, target] of Object.entries(shipped.bin)) {
+      if (!fs.existsSync(path.join(ROOT, target))) {
+        die(`the tarball's bin "${name}" points at ${target}, which does not exist`);
+      }
+    }
+    console.log(`    the tarball installs: ${bins.join(', ')}`);
+  }
+
   step(5, `publishing ${PRIMARY}`);
   const primary = publish(PRIMARY, extraArgs, dryRun);
 
@@ -240,9 +310,24 @@ function main() {
   }
 
   console.log(`\nDone. v${pkg.version}: ${PRIMARY} ${primary}, ${ALIAS} ${alias}.`);
-  if (!dryRun) {
-    console.log(`\nVerify with:\n  npx ${PRIMARY}@${pkg.version} --version\n  npm view ${ALIAS} version`);
+
+  if (dryRun) return;
+
+  step(7, 'proving the published package actually installs a working command');
+  // Every check so far inspected intent. This asks the registry, which is the
+  // only answer a user ever gets -- and is how 0.1.0's missing command would
+  // have been found in the release that created it, rather than by hand
+  // afterwards, once the version was already immutable.
+  const ok = verifyPublished(PRIMARY, pkg.version);
+  if (!ok) {
+    console.error(`\nPUBLISHED, BUT BROKEN: npx ${PRIMARY}@${pkg.version} does not run.`);
+    console.error(`This version cannot be replaced -- npm versions are immutable. Instead:`);
+    console.error(`  1. npm deprecate ${PRIMARY}@${pkg.version} "broken packaging, use a later version"`);
+    console.error(`  2. fix the cause, bump the version, and release again.\n`);
+    process.exit(1);
   }
+  console.log(`    npx ${PRIMARY}@${pkg.version} runs and reports ${pkg.version}`);
+  console.log(`\nBoth names are live and verified.`);
 }
 
 if (require.main === module) {
@@ -255,6 +340,6 @@ if (require.main === module) {
 
 module.exports = {
   isAlreadyPublished, needsOneTimePassword, sameRegistry, withName,
-  requiredInPackage, missingFromPack, binIsCanonical,
+  requiredInPackage, missingFromPack, binIsCanonical, packedManifest, verifyPublished,
   PRIMARY, ALIAS, REGISTRY,
 };
