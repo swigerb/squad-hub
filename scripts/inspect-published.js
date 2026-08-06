@@ -20,6 +20,9 @@
  * reads their manifests, installs them into a throwaway prefix, and reports
  * whether a command actually appears and runs.
  *
+ * If npm here resolves through a mirror, it refuses to run rather than fire
+ * blocked requests at npmjs.org. Pass --force only where that is permitted.
+ *
  *   node scripts/inspect-published.js
  *   node scripts/inspect-published.js 0.1.0 0.1.1
  */
@@ -54,21 +57,36 @@ function npm(args, opts = {}) {
 function out(r) { return `${r.stdout || ''}${r.stderr || ''}`.trim(); }
 
 /**
- * A mirror cannot answer this question. Say so up front rather than letting
- * a stale feed produce a confident, wrong verdict.
+ * A mirror cannot answer this question -- but the answer to that is to STOP,
+ * not to go around it.
+ *
+ * An earlier version of this script warned about a proxy and then queried
+ * npmjs.org anyway, on the reasoning that only the public registry can settle
+ * the question. On a machine where npmjs.org is blocked by policy that is not
+ * diligence, it is a machine-gun of denied connections and security popups for
+ * whoever is sitting there. A configured mirror is usually a deliberate
+ * decision by someone who outranks this script.
+ *
+ * So: if npm is not already pointed at the public registry, refuse, explain,
+ * and let a human opt in with --force on a machine where that is allowed.
  */
 function checkRegistry() {
   const configured = out(npm(['config', 'get', 'registry']));
   const isPublic = /^https:\/\/registry\.npmjs\.org\/?$/.test(configured);
-  console.log(`registry: ${configured}`);
-  if (!isPublic) {
-    console.log(`\n  WARNING: that is not the public registry.`);
-    console.log(`  A mirror may lag by days, so "not found" here proves nothing.`);
-    console.log(`  Re-run against npmjs.org directly:\n`);
-    console.log(`    npm --registry ${PUBLIC} ...`);
-    console.log(`  or set it for this shell:  npm config set registry ${PUBLIC}\n`);
-  }
+  console.log(`registry: ${configured || '(could not read npm config)'}`);
   return isPublic;
+}
+
+function refuse(configured) {
+  console.log(`\nSTOPPING. npm here resolves through a mirror, not registry.npmjs.org.`);
+  console.log(`\nThis script deliberately asks the PUBLIC registry, because only the`);
+  console.log(`published artefact can settle what a version really shipped. Doing that`);
+  console.log(`from a machine whose network policy blocks npmjs.org produces nothing but`);
+  console.log(`denied connections -- and, on a managed desktop, a security prompt for`);
+  console.log(`every one of them.`);
+  console.log(`\nRun it instead on a machine that can reach the public registry.`);
+  console.log(`\nIf you are certain this machine is allowed to, opt in explicitly:`);
+  console.log(`    node scripts/inspect-published.js --force`);
 }
 
 /**
@@ -158,6 +176,26 @@ function installAndRun(tarball, dir) {
   return { installed: true, command: true, path: found[0], output: out(run), status: run.status };
 }
 
+/**
+ * Is this version flagged deprecated on the registry?
+ *
+ * Worth asking separately: a deprecated version still installs and runs
+ * perfectly, so every functional check here can pass while npm warns each
+ * person who installs it. The two questions look alike and are not.
+ */
+function deprecationOf(name, version) {
+  const r = npm(['view', `${name}@${version}`, 'deprecated', '--json', '--registry', PUBLIC]);
+  if (!r.ranAtAll || r.status !== 0) return { known: false };
+  const text = out(r);
+  if (!text) return { known: true, deprecated: false };
+  try {
+    const v = JSON.parse(text);
+    return { known: true, deprecated: Boolean(v), message: typeof v === 'string' ? v : '' };
+  } catch {
+    return { known: true, deprecated: true, message: text };
+  }
+}
+
 function inspect(name, version) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqh-inspect-'));
   console.log(`\n--- ${name}@${version} ---`);
@@ -184,6 +222,11 @@ function inspect(name, version) {
     const web = fs.existsSync(path.join(dir, 'package', 'web'));
     console.log(`  web/ shipped : ${web ? 'yes' : 'NO -- the UI would be blank'}`);
 
+    const dep = deprecationOf(name, version);
+    if (!dep.known) console.log(`  deprecated   : could not tell`);
+    else if (dep.deprecated) console.log(`  deprecated   : YES -- "${dep.message}"`);
+    else console.log(`  deprecated   : no`);
+
     const r = installAndRun(m.tarball, dir);
     if (!r.installed) {
       console.log(`  install      : FAILED\n    ${r.error.split('\n').slice(0, 4).join('\n    ')}`);
@@ -197,7 +240,10 @@ function inspect(name, version) {
     const ran = r.status === 0 && r.output.split(/\s+/).includes(version);
     console.log(`  command      : ${r.path}`);
     console.log(`  running it   : ${r.output.split('\n')[0] || '(no output)'} ${ran ? '' : '  <-- did not report ' + version}`);
-    return { name, version, verdict: ran ? 'works' : 'command exists, unexpected output' };
+    return {
+      name, version, deprecated: dep.known && dep.deprecated,
+      verdict: ran ? 'works' : 'command exists, unexpected output',
+    };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -205,7 +251,13 @@ function inspect(name, version) {
 
 function main() {
   console.log('Squad Hub -- inspecting what is actually published (read-only)\n');
-  checkRegistry();
+
+  const force = process.argv.slice(2).includes('--force');
+  if (!checkRegistry() && !force) {
+    refuse();
+    process.exitCode = 3;
+    return;
+  }
 
   const asked = process.argv.slice(2).filter((a) => !a.startsWith('-'));
   const results = [];
@@ -245,8 +297,11 @@ function main() {
     console.log('Nothing could be inspected. Check the registry line above first.');
     return;
   }
-  for (const r of results) console.log(`  ${r.name}@${r.version}  ->  ${r.verdict}`);
+  for (const r of results) {
+    console.log(`  ${r.name}@${r.version}  ->  ${r.verdict}${r.deprecated ? '  (DEPRECATED)' : ''}`);
+  }
   const broken = results.filter((r) => r.verdict === 'INSTALLS NO COMMAND');
+  const wronglyFlagged = results.filter((r) => r.verdict === 'works' && r.deprecated);
   console.log('');
   if (broken.length) {
     console.log(`Confirmed broken: ${broken.map((r) => `${r.name}@${r.version}`).join(', ')}`);
@@ -254,6 +309,17 @@ function main() {
   } else {
     console.log(`No version installs a broken command. If a version was blamed for that,`);
     console.log(`the blame is unsupported -- do not deprecate it on that basis.`);
+  }
+
+  // A deprecation is reversible, and saying so matters: a version wrongly
+  // flagged goes on warning every installer until someone clears it.
+  if (wronglyFlagged.length) {
+    console.log(`\nThese versions install and run correctly, yet are marked deprecated:`);
+    for (const r of wronglyFlagged) console.log(`    ${r.name}@${r.version}`);
+    console.log(`\nIf that flag was a mistake, clear it with an empty message:`);
+    for (const r of wronglyFlagged) console.log(`    npm deprecate ${r.name}@${r.version} ""`);
+    console.log(`\n  In PowerShell the shell eats the empty string -- use:`);
+    console.log(`    npm --% deprecate <name>@<version> ""`);
   }
   if (blind) console.log(`\n(One or more names could not be checked -- see above.)`);
 }

@@ -164,10 +164,10 @@ It downloads each published tarball, prints the `bin` npm really shipped,
 installs it into a throwaway prefix, and reports whether a command appears and
 runs. It publishes and deprecates nothing.
 
-> Run it where npm can reach **registry.npmjs.org**. Behind a mirror it will
-> refuse to give a verdict rather than mistake a lagging feed for a missing
-> package — which is exactly the error that once got v0.1.0 blamed for a
-> defect it did not have.
+> Run it where npm can reach **registry.npmjs.org**. Behind a mirror it
+> **refuses to run** rather than fire blocked requests at the public registry —
+> on a managed desktop those produce a security prompt apiece. Pass `--force`
+> only where that is permitted.
 
 To check by hand:
 
@@ -211,8 +211,30 @@ npm deprecate squad-hub@<version> "broken packaging: installs no command, use <n
 ```
 
 Deprecate only on evidence. Confirm the published artefact is genuinely
-broken first — see below — because a deprecation notice is public, permanent
-in effect, and cannot be justified by a symptom seen on one machine.
+broken first — see below — because a deprecation notice is public and warns
+every person who installs that version.
+
+### Undoing a deprecation
+
+A deprecation is **reversible**. Clear it by deprecating the same version
+again with an empty message:
+
+```bash
+npm deprecate squad-hub@<version> ""
+```
+
+```powershell
+# PowerShell strips the empty string, so stop its parsing first:
+npm --% deprecate squad-hub@<version> ""
+```
+
+The empty string must be two double quotes with nothing between them. Do it
+for each name the version was deprecated under — `squad-hub` and
+`@mightybs/squad-hub` are separate packages to npm. Confirm afterwards:
+
+```bash
+npm view squad-hub@<version> deprecated    # prints nothing once cleared
+```
 
 ## What actually happened with v0.1.0
 
@@ -242,7 +264,9 @@ that cannot be found on a stale mirror looks exactly like a package that was
 never published correctly.** That is the trap this document now exists to keep
 you out of.
 
-Nothing here needs deprecating. Both versions work.
+Nothing here needs deprecating. Both versions work. v0.1.0 *was* deprecated
+while the mistaken diagnosis stood; if that flag is still set, clear it using
+the empty-message form above.
 
 ## Cutting a new version
 
