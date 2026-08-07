@@ -452,7 +452,6 @@ reclaim width — the header keeps a count of how many devices can currently
 take work.
 
 ### Telemetry
-
 **Off by default**, like every other thing the daemon could report about the
 machine it runs on.
 
@@ -474,6 +473,49 @@ figure, and says so rather than inventing a zero.
 A device that does not report telemetry shows **no meter at all**, rather than
 an empty bar. "Not reporting" and "idle" look identical at zero, and they are
 entirely different facts.
+
+## Control verification
+
+The web UI's composer is **disabled until the device itself confirms** it can
+take input for that session.
+
+The hub knowing about a session proves only that a heartbeat once mentioned
+it — the hub is a cache, the device is the record. Whether the agent process
+is still alive and still accepting input is a fact only the machine running it
+holds, so it is asked directly, over the same control path a real command
+would take.
+
+| State | Composer | Shown |
+|---|---|---|
+| Checking | Disabled | `Checking control…` |
+| Verified | **Enabled** | `Synced` |
+| Device says no | Disabled | `Not synced`, with the device's reason, and a `Sync session` action |
+| No answer in time | Disabled | `Control couldn't be verified`, and a `Sync session` action |
+
+The transcript is always readable, whatever the control state — a session that
+cannot be controlled is still worth reading, and blocking the transcript on a
+control check would hide the very history that explains why.
+
+A definite "no" and a request that never arrived are deliberately different
+states. Telling someone `Not synced` when the request never left the building
+sends them looking in the wrong place.
+
+**The draft survives everything except a successful send.** Someone typed it;
+clearing it in order to report a transport problem is the wrong trade in every
+case.
+
+### Approval expiry
+
+An approval nobody answers is cancelled after **30 minutes**
+(`SQUAD_HUB_APPROVAL_TTL_MS`), and the session resumes.
+
+An approval gate with no approver is a hang: the agent is blocked on a
+question, the person it was asked of has gone home, and the session holds a
+process and a slot in everyone's list for as long as it is left. A cancelled
+tool call is a normal thing for an agent to handle — waiting forever is not.
+
+It is deliberately long. This is a backstop against a question nobody will
+ever answer, not a deadline for someone who stepped away from their desk.
 
 A credential that can be a device and **nothing else** — it cannot read the
 API, start work on another device, or watch the event stream. Give one to a
@@ -538,6 +580,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_AGENT_ARGS` | Agent arguments. Default `--acp`. |
 | `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
 | `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
+| `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
 
 **The two tokens are separate on purpose.** The hub token says which device this
 is; the agent token spends a Copilot entitlement. Conflating them would let
