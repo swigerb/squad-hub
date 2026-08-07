@@ -218,6 +218,7 @@ async function cmdStart(argv) {
   if (flag(argv, 'allow-files-all')) { patch.allowFiles = true; patch.allowFilesAll = true; patch.filesRoot = null; }
   else if (flag(argv, 'allow-files')) { patch.allowFiles = true; patch.allowFilesAll = false; patch.filesRoot = process.cwd(); }
   if (flag(argv, 'track-all')) patch.trackAll = true;
+  if (flag(argv, 'telemetry')) patch.reportTelemetry = true;
   const hub = value(argv, 'hub');
   const token = value(argv, 'token');
   if (hub) patch.server = hub;
@@ -438,6 +439,7 @@ async function cmdConnect(argv) {
   if (flag(argv, 'allow-files-all')) { patch.allowFiles = true; patch.allowFilesAll = true; patch.filesRoot = null; }
   else if (flag(argv, 'allow-files')) { patch.allowFiles = true; patch.allowFilesAll = false; patch.filesRoot = process.cwd(); }
   if (flag(argv, 'track-all')) patch.trackAll = true;
+  if (flag(argv, 'telemetry')) patch.reportTelemetry = true;
 
   // Read the config this connect would REPLACE before anything is written, so
   // a refused/unreachable candidate can leave it exactly as it was.
@@ -834,6 +836,19 @@ async function cmdConfig(argv) {
   if (sub === 'env') return cmdConfigEnv(val, val2);
   if (sub === 'enable-auto-shutdown') { config.update({ autoShutdown: true }); out('auto-shutdown enabled'); return 0; }
   if (sub === 'disable-auto-shutdown') { config.update({ autoShutdown: false }); out('auto-shutdown disabled'); return 0; }
+  if (sub === 'enable-telemetry') {
+    config.update({ reportTelemetry: true });
+    out('telemetry enabled: this device will report CPU and memory load to the hub');
+    out('Two percentages and the machine total. No process list, and nothing about what is running.');
+    if (client.daemonAlive()) out('restart the daemon to apply: squad-hub stop && squad-hub start');
+    return 0;
+  }
+  if (sub === 'disable-telemetry') {
+    config.update({ reportTelemetry: false });
+    out('telemetry disabled');
+    if (client.daemonAlive()) out('restart the daemon to apply: squad-hub stop && squad-hub start');
+    return 0;
+  }
   if (sub === 'set-auto-shutdown-grace') { config.update({ autoShutdownGraceSeconds: Number(val) }); out(`grace = ${val}s`); return 0; }
   err(`unknown config subcommand: ${sub}`);
   return 2;
@@ -1150,7 +1165,8 @@ function usage() {
   SETTINGS
   squad-hub track-all <on|off>
   squad-hub config [show|edit|server <url>|unset-server|env [<name> [<url>]]
-                   |enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>]
+                   |enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>
+                   |enable-telemetry|disable-telemetry]
 
   ANYWHERE ON THE LINE
   --env prod|ppe        use a named hub, if no server is pinned

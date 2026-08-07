@@ -26,6 +26,8 @@ const DEFAULTS = Object.freeze({
   staleAfterMissedBeats: 2,  // online -> stale
   offlineAfterMissedBeats: 4, // stale -> offline
   environments: Object.freeze({}), // named hub URLs for --env; NOT a pinned server
+  reportTelemetry: false,    // CPU/RAM load; off by default, like file access
+  deviceKind: 'local',       // 'local' or 'cloud'; decides roster placement
 });
 
 /**
@@ -133,6 +135,7 @@ function publicView(cfg = read()) {
   return {
     trackAll: cfg.trackAll,
     fileAccess: cfg.allowFiles ? (cfg.allowFilesAll ? 'all' : 'scoped') : 'off',
+    telemetry: !!cfg.reportTelemetry,
   };
 }
 

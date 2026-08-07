@@ -745,6 +745,16 @@ async function suiteListControls() {
   runChildSuite(path.join(__dirname, 'list-controls-unit.js'), 'list-controls');
 }
 
+/**
+ * The device roster: ordering, presence wording, load meters, and the
+ * telemetry that feeds them -- which is off by default, like every other thing
+ * the daemon could report about the machine it runs on.
+ */
+async function suiteDeviceRoster() {
+  console.log('\n[DEVICE ROSTER] cloud first, presence, meters, telemetry');
+  runChildSuite(path.join(__dirname, 'device-roster-unit.js'), 'device-roster');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -784,6 +794,7 @@ async function suiteListControls() {
   await suiteWebXss();
   await suiteSessionMetadata();
   await suiteListControls();
+  await suiteDeviceRoster();
 
   console.log('');
   console.log('='.repeat(60));

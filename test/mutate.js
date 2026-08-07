@@ -1379,6 +1379,127 @@ const MUTATIONS = [
     sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });`,
     mustFail: 'with nothing pinned there is no empty Pinned section',
   },
+
+  // -------------------------------------------------------------------------
+  // S4: device roster
+  // -------------------------------------------------------------------------
+  {
+    name: 'a cloud device is sorted like any other',
+    file: 'web/app.js',
+    find: `    const ak = a.kind === 'cloud' ? 0 : 1;
+    const bk = b.kind === 'cloud' ? 0 : 1;
+    if (ak !== bk) return ak - bk;`,
+    replace: `    const ak = a.kind === 'cloud' ? 0 : 1;
+    const bk = b.kind === 'cloud' ? 0 : 1;
+    if (ak !== bk && !process.env.MUTANT) return ak - bk; // MUTATION`,
+    mustFail: 'a cloud device is listed first',
+  },
+  {
+    name: 'presence outranks kind, so an offline cloud device sinks',
+    file: 'web/app.js',
+    find: `  return [...devices].sort((a, b) => {
+    const ak = a.kind === 'cloud' ? 0 : 1;`,
+    replace: `  return [...devices].sort((a, b) => {
+    if (process.env.MUTANT) { const x = (PRESENCE_RANK[a.presence] ?? 3) - (PRESENCE_RANK[b.presence] ?? 3); if (x) return x; } // MUTATION
+    const ak = a.kind === 'cloud' ? 0 : 1;`,
+    mustFail: 'a cloud device stays first even when it is the only offline one',
+  },
+  {
+    name: 'an unknown presence sorts to the top instead of the bottom',
+    file: 'web/app.js',
+    find: `    const ap = PRESENCE_RANK[a.presence] ?? 3;
+    const bp = PRESENCE_RANK[b.presence] ?? 3;`,
+    replace: `    const ap = PRESENCE_RANK[a.presence] ?? (process.env.MUTANT ? -1 : 3); // MUTATION
+    const bp = PRESENCE_RANK[b.presence] ?? (process.env.MUTANT ? -1 : 3);`,
+    mustFail: 'an unknown presence sorts last rather than first',
+  },
+  {
+    name: 'the roster sorts the caller\'s own array',
+    file: 'web/app.js',
+    find: `function deviceRoster(devices = []) {
+  return [...devices].sort((a, b) => {`,
+    replace: `function deviceRoster(devices = []) {
+  return (process.env.MUTANT ? devices : [...devices]).sort((a, b) => { // MUTATION`,
+    mustFail: 'sorting the roster does not mutate the array it was given',
+  },
+  {
+    name: 'a stale device is counted as unavailable',
+    file: 'web/app.js',
+    find: `  return devices.filter((d) => d.presence !== 'offline').length;`,
+    replace: `  return devices.filter((d) => process.env.MUTANT ? d.presence === 'online' : d.presence !== 'offline').length; // MUTATION`,
+    mustFail: 'the available count excludes offline devices',
+  },
+  {
+    // The whole point of the meter being absent rather than zero.
+    name: 'a device that reports no telemetry gets an empty meter at zero',
+    file: 'web/app.js',
+    find: `  if (fraction == null || !Number.isFinite(fraction)) return '';`,
+    replace: `  if ((fraction == null || !Number.isFinite(fraction)) && !process.env.MUTANT) return ''; // MUTATION`,
+    mustFail: 'the first sample, with no CPU figure yet, renders RAM but not CPU',
+  },
+  {
+    name: 'a meter fill is drawn from an unclamped fraction',
+    file: 'web/app.js',
+    find: `  const pct = Math.round(clamp01(fraction) * 100);`,
+    replace: `  const pct = Math.round((process.env.MUTANT ? fraction : clamp01(fraction)) * 100); // MUTATION`,
+    mustFail: 'a meter fill never draws outside its own bar',
+  },
+  {
+    name: 'a stale device is described as offline',
+    file: 'web/app.js',
+    find: `  const label = d.presence === 'stale' ? 'Stale' : 'Offline';`,
+    replace: `  const label = (d.presence === 'stale' && !process.env.MUTANT) ? 'Stale' : 'Offline'; // MUTATION`,
+    mustFail: 'a stale device is called Stale, not Offline',
+  },
+  {
+    name: 'a device never seen is described as "seen never"',
+    file: 'web/app.js',
+    find: `  const seen = d.lastSeen ? ago(d.lastSeen) : '';`,
+    replace: `  const seen = d.lastSeen ? ago(d.lastSeen) : (process.env.MUTANT ? 'never' : ''); // MUTATION`,
+    mustFail: 'a device never seen reads as Offline alone, not "seen never"',
+  },
+  {
+    name: 'an unrecognised platform is discarded rather than shown',
+    file: 'web/app.js',
+    find: `  return PLATFORM_LABEL[p] || (p ? String(p) : 'Unknown');`,
+    replace: `  return PLATFORM_LABEL[p] || (process.env.MUTANT ? 'Unknown' : (p ? String(p) : 'Unknown')); // MUTATION`,
+    mustFail: 'an unrecognised platform is shown as-is, not as "Unknown"',
+  },
+  {
+    name: 'a device name is interpolated into the roster unescaped',
+    file: 'web/app.js',
+    find: '<div class="device-name">${esc(d.name)}',
+    replace: '<div class="device-name">${process.env.MUTANT ? d.name : esc(d.name)}',
+    mustFail: 'a malicious device name renders as inert escaped text',
+  },
+  {
+    // Reporting an instantaneous cumulative reading gives the average since
+    // boot, which is never what anyone means by "CPU".
+    name: 'the first CPU sample is invented rather than admitted to be absent',
+    file: 'src/telemetry.js',
+    find: `    let cpu = null;
+    if (prev) {`,
+    replace: `    let cpu = process.env.MUTANT ? 0 : null; // MUTATION
+    if (prev) {`,
+    mustFail: 'the first sample has no CPU figure at all',
+  },
+  {
+    name: 'telemetry starts reporting a machine\'s load without being asked',
+    file: 'src/config.js',
+    find: `  reportTelemetry: false,    // CPU/RAM load; off by default, like file access`,
+    replace: `  reportTelemetry: !!process.env.MUTANT, // MUTATION`,
+    mustFail: 'telemetry is off in the shipped defaults',
+  },
+  {
+    name: 'a telemetry sample carries more than two percentages',
+    file: 'src/telemetry.js',
+    find: `      cores: (os.cpus() || []).length,
+      at: Date.now(),`,
+    replace: `      cores: (os.cpus() || []).length,
+      ...(process.env.MUTANT ? { hostname: os.hostname(), uptime: os.uptime() } : {}), // MUTATION
+      at: Date.now(),`,
+    mustFail: 'a sample carries no process list and nothing about what is running',
+  },
 ];
 
 /**
