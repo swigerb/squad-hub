@@ -173,8 +173,15 @@
     <div class="transcript" id="dtTranscript"></div>
     <div class="squadpanel" id="dtSquad" hidden></div>
     <div class="composer">
-      <input id="dtInput" placeholder="Send follow-up input to the running agent">
-      <button class="primary" id="dtSend">Send</button>
+      <div class="control-banner" id="dtControl">
+        <span class="control-state" id="dtControlLabel">Checking control…</span>
+        <span class="control-why" id="dtControlWhy"></span>
+        <button class="ghost" id="dtSync" hidden>Sync session</button>
+      </div>
+      <div class="composer-row">
+        <input id="dtInput" placeholder="Send follow-up input to the running agent" disabled>
+        <button class="primary" id="dtSend" disabled>Send</button>
+      </div>
     </div>
   </div>
 </div>

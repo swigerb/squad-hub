@@ -406,7 +406,7 @@ class HubService {
     }
 
     // Control operations, all routed to a device the caller owns.
-    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript)$/);
+    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript|control-check)$/);
     if (m && req.method === 'POST') {
       const [, deviceId, op] = m;
       const body = await readJson(req);

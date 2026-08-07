@@ -1500,6 +1500,148 @@ const MUTATIONS = [
       at: Date.now(),`,
     mustFail: 'a sample carries no process list and nothing about what is running',
   },
+
+  // -------------------------------------------------------------------------
+  // S5: control verification
+  // -------------------------------------------------------------------------
+  {
+    // The bug the sprint exists to fix: a composer live before anything
+    // confirmed the far end can take input.
+    name: 'controls are enabled before the device has been asked',
+    file: 'web/app.js',
+    find: `function controlsEnabled(controlState) {
+  return controlState === CONTROL.SYNCED;`,
+    replace: `function controlsEnabled(controlState) {
+  if (process.env.MUTANT) return controlState !== CONTROL.NOT_SYNCED; // MUTATION
+  return controlState === CONTROL.SYNCED;`,
+    mustFail: 'controls are DISABLED before anything has been asked',
+  },
+  {
+    // A deny-list fails OPEN: a state added later silently enables the
+    // composer for a session nobody verified.
+    name: 'the enabled check is a deny-list, so an unknown state fails open',
+    file: 'web/app.js',
+    find: `  return controlState === CONTROL.SYNCED;
+}
+
+/** Can the person do anything about it? Only when the answer was "no". */`,
+    replace: `  return process.env.MUTANT ? controlState !== CONTROL.VERIFYING : controlState === CONTROL.SYNCED; // MUTATION
+}
+
+/** Can the person do anything about it? Only when the answer was "no". */`,
+    mustFail: 'a state nobody anticipated defaults to DISABLED',
+  },
+  {
+    name: 'a transport failure is reported as a definite "not synced"',
+    file: 'web/app.js',
+    find: `  if (outcome.error) return CONTROL.UNVERIFIED;`,
+    replace: `  if (outcome.error) return process.env.MUTANT ? CONTROL.NOT_SYNCED : CONTROL.UNVERIFIED; // MUTATION`,
+    mustFail: 'a definite "no" is told apart from a request that never arrived',
+  },
+  {
+    name: 'a timeout enables the controls anyway',
+    file: 'web/app.js',
+    find: `  if (outcome.timedOut) return CONTROL.UNVERIFIED;`,
+    replace: `  if (outcome.timedOut) return process.env.MUTANT ? CONTROL.SYNCED : CONTROL.UNVERIFIED; // MUTATION`,
+    mustFail: 'a timeout is Control could not be verified, not Not synced',
+  },
+  {
+    name: 'a missing controllable flag is treated as permission',
+    file: 'web/app.js',
+    find: `  return outcome.controllable ? CONTROL.SYNCED : CONTROL.NOT_SYNCED;`,
+    replace: `  return (process.env.MUTANT ? !('controllable' in outcome) || outcome.controllable : outcome.controllable) ? CONTROL.SYNCED : CONTROL.NOT_SYNCED; // MUTATION`,
+    mustFail: 'a positive answer is the ONLY thing that produces Synced',
+  },
+  {
+    name: 'the device\'s reason is dropped, leaving only "Not synced"',
+    file: 'web/app.js',
+    find: `    reason: canSync(controlState) ? (reason || '') : '',`,
+    replace: `    reason: process.env.MUTANT ? '' : (canSync(controlState) ? (reason || '') : ''), // MUTATION`,
+    mustFail: 'the banner passes the device\'s reason through',
+  },
+  {
+    name: 'Sync session is offered while a check is already in flight',
+    file: 'web/app.js',
+    find: `  return controlState === CONTROL.NOT_SYNCED || controlState === CONTROL.UNVERIFIED;`,
+    replace: `  return process.env.MUTANT ? controlState !== CONTROL.SYNCED : (controlState === CONTROL.NOT_SYNCED || controlState === CONTROL.UNVERIFIED); // MUTATION`,
+    mustFail: 'Sync session is offered only when there is something to fix',
+  },
+  {
+    // The original bug in the composer: the input was cleared BEFORE the
+    // request, so a failed send threw the text away.
+    name: 'a failed verification clears the draft',
+    file: 'web/app.js',
+    find: `      return { ...s, control, reason: canSync(control) ? reason : '' };`,
+    replace: `      return { ...s, draft: process.env.MUTANT ? '' : s.draft, control, reason: canSync(control) ? reason : '' }; // MUTATION`,
+    mustFail: 'the draft survives a verification that timed out',
+  },
+  {
+    name: 'a failed send clears the draft',
+    file: 'web/app.js',
+    find: `    case 'send-failed':
+      return { ...s, reason: (event.error && String(event.error)) || 'the message was not delivered' };`,
+    replace: `    case 'send-failed':
+      return { ...s, draft: process.env.MUTANT ? '' : s.draft, reason: (event.error && String(event.error)) || 'the message was not delivered' }; // MUTATION`,
+    mustFail: 'the draft survives a failed send',
+  },
+  {
+    name: 'a timeout leaves the person with no explanation at all',
+    file: 'web/app.js',
+    find: `        || (control === CONTROL.UNVERIFIED ? 'the device did not answer in time' : '');`,
+    replace: `        || (control === CONTROL.UNVERIFIED && !process.env.MUTANT ? 'the device did not answer in time' : ''); // MUTATION`,
+    mustFail: 'a timeout says the device did not answer, rather than nothing at all',
+  },
+  {
+    // Only the device can tell you the process is gone; the status field says
+    // "active" right up until something notices.
+    name: 'control-check trusts the status field instead of the process',
+    file: 'src/daemon.js',
+    find: `        if (s.isAgentDead()) {
+          return { controllable: false, sessionId: s.id, status: s.status, reason: 'the agent process is gone' };
+        }`,
+    replace: `        if (s.isAgentDead() && !process.env.MUTANT) { // MUTATION
+          return { controllable: false, sessionId: s.id, status: s.status, reason: 'the agent process is gone' };
+        }`,
+    mustFail: 'a session whose agent has died is NOT controllable',
+  },
+  {
+    name: 'control-check throws for an unknown session instead of answering',
+    file: 'src/daemon.js',
+    find: `        if (!s) return { controllable: false, sessionId: req.sessionId, reason: 'no such session on this device' };`,
+    replace: `        if (!s) { if (process.env.MUTANT) throw new Error('no such session'); return { controllable: false, sessionId: req.sessionId, reason: 'no such session on this device' }; } // MUTATION`,
+    mustFail: 'an unknown session is refused, with a reason, not an exception',
+  },
+  {
+    name: 'a finished session still reports itself as controllable',
+    file: 'src/daemon.js',
+    find: `        if (terminal.includes(s.status)) {`,
+    replace: `        if (terminal.includes(s.status) && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'a done session is not controllable',
+  },
+  {
+    // An approval gate with no approver is a hang.
+    name: 'an unanswered approval waits forever',
+    file: 'src/daemon.js',
+    find: `      if (this._expireStaleApprovals(s)) transitions.push(s.id);`,
+    replace: `      if (!process.env.MUTANT && this._expireStaleApprovals(s)) transitions.push(s.id); // MUTATION`,
+    mustFail: 'an approval nobody answered expires, and the session resumes',
+  },
+  {
+    name: 'every pending approval is expired, however recent',
+    file: 'src/daemon.js',
+    find: `      if (a.requestedAt > cutoff) continue;`,
+    replace: `      if (a.requestedAt > cutoff && !process.env.MUTANT) continue; // MUTATION`,
+    mustFail: 'a RECENT approval is left alone',
+  },
+  {
+    // An exception inside beat() does not fail one session; it stops the loop
+    // that watches every session on the device.
+    name: 'the approval sweep assumes every session has a live approvals map',
+    file: 'src/daemon.js',
+    find: `    if (!s || !s.pendingApprovals || typeof s.expire !== 'function') return false;`,
+    replace: `    if (!process.env.MUTANT && (!s || !s.pendingApprovals || typeof s.expire !== 'function')) return false; // MUTATION`,
+    mustFail: 'a re-adopted session cannot bring the heartbeat down',
+  },
 ];
 
 /**

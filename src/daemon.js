@@ -45,6 +45,11 @@ class Daemon extends EventEmitter {
       ? process.env.SQUAD_HUB_AGENT_ARGS.split(' ')
       : ['--acp']);
     this.heartbeatMs = (opts.heartbeatSeconds || this.cfg.heartbeatSeconds) * 1000;
+    // How long an unanswered approval waits before it is cancelled. Long by
+    // design: a backstop against a question nobody will ever answer, not a
+    // deadline for someone who stepped away. Overridable so a test does not
+    // have to wait half an hour to prove it.
+    this.approvalTtlMs = Number(opts.approvalTtlMs || process.env.SQUAD_HUB_APPROVAL_TTL_MS || 30 * 60 * 1000);
     this.beats = 0;
     this.server = null;
     this._timer = null;
@@ -157,8 +162,9 @@ class Daemon extends EventEmitter {
   }
 
   /**
-   * One heartbeat tick. Two jobs, and the second is the one people forget:
-   * presence is easy, noticing that an agent died under you is not.
+   * One heartbeat tick. Three jobs, and the second and third are the ones
+   * people forget: presence is easy, noticing that an agent died under you is
+   * not, and neither is noticing that nobody ever answered.
    */
   beat() {
     this.beats += 1;
@@ -174,10 +180,42 @@ class Daemon extends EventEmitter {
         this.log(`heartbeat: session ${s.id} marked failed (agent pid ${s.pid} is gone)`);
       }
       if (!live) this._untrackChild(s.pid);
+      if (this._expireStaleApprovals(s)) transitions.push(s.id);
     }
     this.emit('heartbeat', { beats: this.beats, at: Date.now(), transitions });
     this._persistSessions();
     return transitions;
+  }
+
+  /**
+   * Let an approval nobody answered lapse.
+   *
+   * An approval gate with no approver is a hang: the agent is blocked on a
+   * question, the person it was asked of has gone home, and the session sits
+   * there consuming a process and a slot in everyone's list for as long as it
+   * is left. Cancelling the request lets the agent decide what to do about a
+   * refused tool, which is a normal thing for it to handle -- unlike waiting
+   * forever, which is not.
+   *
+   * Deliberately long. This is a backstop against an unanswered question, not
+   * a deadline for a person who stepped away from their desk.
+   */
+  _expireStaleApprovals(s) {
+    // A re-adopted session (recovered from disk after a restart) is a record,
+    // not a live agent connection: it has no pending approvals and no way to
+    // answer one. Guarding rather than assuming matters more here than almost
+    // anywhere else -- this runs inside the heartbeat, and an exception here
+    // does not fail one session, it stops the loop that watches all of them.
+    if (!s || !s.pendingApprovals || typeof s.expire !== 'function') return false;
+    const cutoff = Date.now() - this.approvalTtlMs;
+    let expired = false;
+    for (const a of [...s.pendingApprovals.values()]) {
+      if (a.requestedAt > cutoff) continue;
+      s.expire(a.approvalId);
+      expired = true;
+      this.log(`heartbeat: approval ${a.approvalId} on session ${s.id} expired unanswered`);
+    }
+    return expired;
   }
 
   _persistSessions() {
@@ -433,6 +471,9 @@ class Daemon extends EventEmitter {
         case 'steer':
           result = await this.handle({ op: 'steer', sessionId: m.sessionId, text: m.text });
           break;
+        case 'control-check':
+          result = await this.handle({ op: 'control-check', sessionId: m.sessionId });
+          break;
         default:
           throw new Error(`unknown command: ${m.op}`);
       }
@@ -478,6 +519,33 @@ class Daemon extends EventEmitter {
         };
       case 'status':
         return this.snapshot();
+      case 'control-check': {
+        /**
+         * Can this device take a control command for this session, right now?
+         *
+         * Answered by the DEVICE, not by the hub, and that is the entire
+         * point. The hub knowing about a session proves only that a heartbeat
+         * once mentioned it -- the hub is a cache. Whether the agent process
+         * is still alive and still accepting input is a fact only the machine
+         * running it holds, and enabling a composer on anything less is the
+         * same class of bug as reporting "connected" on an HTTP 101 before the
+         * hub had registered the device.
+         *
+         * Never throws for an unknown session: "no, and here is why" is a
+         * useful answer, and an exception here would be indistinguishable
+         * from the transport failing.
+         */
+        const s = this.sessions.get(req.sessionId);
+        if (!s) return { controllable: false, sessionId: req.sessionId, reason: 'no such session on this device' };
+        if (s.isAgentDead()) {
+          return { controllable: false, sessionId: s.id, status: s.status, reason: 'the agent process is gone' };
+        }
+        const terminal = ['done', 'failed', 'stopped'];
+        if (terminal.includes(s.status)) {
+          return { controllable: false, sessionId: s.id, status: s.status, reason: `the session is ${s.status}` };
+        }
+        return { controllable: true, sessionId: s.id, status: s.status, pid: s.pid };
+      }
       case 'beat':
         return { transitions: this.beat(), beats: this.beats };
       case 'start-session': {

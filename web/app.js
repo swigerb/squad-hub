@@ -19,6 +19,7 @@ const state = {
   groupBy: 'device',
   sortBy: 'started_desc',
   railCollapsed: false,
+  composer: { draft: '', control: 'unknown', reason: '' },
   // Pinned sessions survive a reload; a star that forgets itself is not a
   // favourite, it is a highlight.
   favorites: new Set(),
@@ -381,7 +382,117 @@ function sessionRow(s, deviceName, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// The device roster.
+// Control verification.
+//
+// A composer that is live before anything has confirmed the far end can
+// actually take input is a promise the UI cannot keep. The hub knowing about
+// a session proves only that a heartbeat once mentioned it -- the hub is a
+// cache. Whether the agent is still alive and still accepting input is a fact
+// only the device holds, so it is asked, and the controls stay disabled until
+// it answers.
+//
+// This is the same class of bug as reporting "connected" on an HTTP 101 before
+// the hub had registered the device, which HubLink already had to be fixed for.
+// ---------------------------------------------------------------------------
+
+const CONTROL = Object.freeze({
+  UNKNOWN: 'unknown',       // nothing asked yet
+  VERIFYING: 'verifying',   // asked, waiting
+  SYNCED: 'synced',         // the device says yes
+  NOT_SYNCED: 'not_synced', // the device says no, and why
+  UNVERIFIED: 'unverified', // nobody answered in time
+});
+
+const CONTROL_TEXT = Object.freeze({
+  [CONTROL.UNKNOWN]: 'Checking control…',
+  [CONTROL.VERIFYING]: 'Checking control…',
+  [CONTROL.SYNCED]: 'Synced',
+  [CONTROL.NOT_SYNCED]: 'Not synced',
+  [CONTROL.UNVERIFIED]: "Control couldn't be verified",
+});
+
+/**
+ * Controls are live in exactly one state.
+ *
+ * Written as an allow-list rather than a deny-list on purpose: a state added
+ * later defaults to DISABLED, which is the safe direction. A deny-list would
+ * silently enable the composer for any state nobody remembered to add.
+ */
+function controlsEnabled(controlState) {
+  return controlState === CONTROL.SYNCED;
+}
+
+/** Can the person do anything about it? Only when the answer was "no". */
+function canSync(controlState) {
+  return controlState === CONTROL.NOT_SYNCED || controlState === CONTROL.UNVERIFIED;
+}
+
+/**
+ * Turn a control-check outcome into a state.
+ *
+ * A transport failure and a definite "no" are deliberately different: one is
+ * worth retrying and the other is not, and telling a person "not synced" when
+ * the request never arrived sends them looking in the wrong place.
+ */
+function controlStateFrom(outcome) {
+  if (!outcome) return CONTROL.UNKNOWN;
+  if (outcome.pending) return CONTROL.VERIFYING;
+  if (outcome.timedOut) return CONTROL.UNVERIFIED;
+  if (outcome.error) return CONTROL.UNVERIFIED;
+  return outcome.controllable ? CONTROL.SYNCED : CONTROL.NOT_SYNCED;
+}
+
+/**
+ * What the person is told, and what they can do about it.
+ *
+ * The reason from the device is passed through when there is one -- "the agent
+ * process is gone" and "the session is done" call for very different next
+ * steps, and "Not synced" alone tells nobody which they are looking at.
+ */
+function controlBanner(controlState, reason) {
+  return {
+    state: controlState,
+    label: CONTROL_TEXT[controlState] || CONTROL_TEXT[CONTROL.UNKNOWN],
+    reason: canSync(controlState) ? (reason || '') : '',
+    enabled: controlsEnabled(controlState),
+    canSync: canSync(controlState),
+  };
+}
+
+/**
+ * The composer, as a reducer.
+ *
+ * The one property worth stating outright: THE DRAFT SURVIVES EVERYTHING
+ * except a successful send. Someone typed that. Clearing it because a
+ * verification timed out would throw away work in order to report a transport
+ * problem, which is the wrong trade in every case -- and it is exactly what a
+ * naive "reset the panel on failure" does.
+ */
+function composerReduce(prev, event) {
+  const s = { draft: '', control: CONTROL.UNKNOWN, reason: '', ...(prev || {}) };
+  switch (event && event.type) {
+    case 'type':
+      return { ...s, draft: String(event.text == null ? '' : event.text) };
+    case 'verify-start':
+      return { ...s, control: CONTROL.VERIFYING, reason: '' };
+    case 'verify-result': {
+      const control = controlStateFrom(event.outcome);
+      const reason = (event.outcome && event.outcome.reason)
+        || (event.outcome && event.outcome.error)
+        || (control === CONTROL.UNVERIFIED ? 'the device did not answer in time' : '');
+      return { ...s, control, reason: canSync(control) ? reason : '' };
+    }
+    case 'sent':
+      // The ONLY event that clears the draft, and only because it landed.
+      return { ...s, draft: '' };
+    case 'send-failed':
+      return { ...s, reason: (event.error && String(event.error)) || 'the message was not delivered' };
+    default:
+      return s;
+  }
+}
+
+
 //
 // Pure, for the same reason the list controls are: ordering and presence
 // wording are rules, and a rule that only exists inside a DOM callback cannot
@@ -669,6 +780,14 @@ async function openDetail(key) {
   renderSquadPanel(found.session.squad);
   $('dtTranscript').innerHTML = '<div class="t-entry t-kind">loading…</div>';
   $('detailScrim').hidden = false;
+
+  // The composer starts DISABLED and stays that way until the device itself
+  // says it can take input. The draft is restored rather than reset -- someone
+  // may have typed it, failed to send, and come back.
+  state.composer = composerReduce(state.composer, { type: 'verify-start' });
+  $('dtInput').value = state.composer.draft || '';
+  renderControl();
+
   try {
     const r = await api(`/api/devices/${encodeURIComponent(found.device.deviceId)}/transcript`, {
       method: 'POST', body: { sessionId: found.session.id, limit: 200 },
@@ -677,6 +796,57 @@ async function openDetail(key) {
   } catch (e) {
     $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
   }
+
+  // Deliberately AFTER the transcript: a session that cannot be controlled is
+  // still worth reading, and blocking the transcript on a control check would
+  // make an unreachable device hide the very history explaining why.
+  verifyControl();
+}
+
+/** How long to wait for the device to answer before saying so. */
+const CONTROL_TIMEOUT_MS = 8000;
+
+/**
+ * Ask the device whether it can take a control command for this session.
+ *
+ * The answer comes from the machine running the agent, not from the hub. The
+ * hub is a cache: it knowing about a session proves only that a heartbeat once
+ * mentioned it.
+ */
+async function verifyControl() {
+  const current = state.currentSession;
+  if (!current) return;
+  state.composer = composerReduce(state.composer, { type: 'verify-start' });
+  renderControl();
+
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), CONTROL_TIMEOUT_MS));
+  const ask = api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/control-check`, {
+    method: 'POST', body: { sessionId: current.session.id },
+  }).catch((e) => ({ error: e.message }));
+
+  const outcome = await Promise.race([ask, timeout]);
+
+  // The detail panel may have been closed, or moved to another session, while
+  // this was in flight. Applying a stale answer would enable the composer for
+  // a session nobody verified.
+  if (state.currentSession !== current) return;
+
+  state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
+  renderControl();
+}
+
+function renderControl() {
+  const b = controlBanner(state.composer.control, state.composer.reason);
+  const banner = $('dtControl');
+  if (banner) banner.dataset.state = b.state;
+  $('dtControlLabel').textContent = b.label;
+  $('dtControlWhy').textContent = b.reason;
+  $('dtSync').hidden = !b.canSync;
+  $('dtInput').disabled = !b.enabled;
+  $('dtSend').disabled = !b.enabled;
+  $('dtInput').placeholder = b.enabled
+    ? 'Send follow-up input to the running agent'
+    : 'Controls are disabled until this session is verified';
 }
 
 /**
@@ -1034,16 +1204,30 @@ function wire() {
 
   $('dtSend').onclick = async () => {
     if (!state.currentSession) return;
+    if (!controlsEnabled(state.composer.control)) return;
     const text = $('dtInput').value.trim();
     if (!text) return;
     const { device, session } = state.currentSession;
-    $('dtInput').value = '';
     try {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, {
         method: 'POST', body: { sessionId: session.id, text },
       });
-    } catch (e) { alert(`Could not send: ${e.message}`); }
+      // Cleared only once it LANDED. Clearing first meant a failed send threw
+      // away what the person had written in order to report the failure.
+      state.composer = composerReduce(state.composer, { type: 'sent' });
+      $('dtInput').value = '';
+    } catch (e) {
+      state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });
+      renderControl();
+      alert(`Could not send: ${e.message}`);
+    }
   };
+
+  $('dtInput').oninput = (e) => {
+    state.composer = composerReduce(state.composer, { type: 'type', text: e.target.value });
+  };
+
+  $('dtSync').onclick = () => verifyControl();
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;

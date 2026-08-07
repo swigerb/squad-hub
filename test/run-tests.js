@@ -755,6 +755,16 @@ async function suiteDeviceRoster() {
   runChildSuite(path.join(__dirname, 'device-roster-unit.js'), 'device-roster');
 }
 
+/**
+ * Control verification. The composer stays disabled until the DEVICE confirms
+ * it can take input -- the hub knowing about a session proves only that a
+ * heartbeat once mentioned it. Same shape as the HTTP-101 handshake race.
+ */
+async function suiteControlVerification() {
+  console.log('\n[CONTROL] disabled until the device itself says otherwise');
+  runChildSuite(path.join(__dirname, 'control-verification-unit.js'), 'control');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -795,6 +805,7 @@ async function suiteDeviceRoster() {
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();
+  await suiteControlVerification();
 
   console.log('');
   console.log('='.repeat(60));

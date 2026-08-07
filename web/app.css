@@ -266,6 +266,25 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .listhead .pill.none { color: var(--faint); }
 .listhead-count { color: var(--faint); font-size: 12px; }
 
+/* ---------- control verification ---------- */
+/* The composer is disabled until the DEVICE confirms it can take input. A
+   composer that is live before anything verified the far end is a promise the
+   UI cannot keep. */
+.control-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0 8px; font-size: 12px; color: var(--dim);
+}
+.control-state { font-weight: 600; }
+.control-banner[data-state="synced"] .control-state { color: var(--ok); }
+.control-banner[data-state="not_synced"] .control-state,
+.control-banner[data-state="unverified"] .control-state { color: var(--warn); }
+.control-why { color: var(--faint); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-row { display: flex; gap: 8px; }
+.composer-row input:disabled, .composer-row button:disabled {
+  opacity: .5; cursor: not-allowed;
+}
+
 .empty { text-align: center; color: var(--dim); padding: 48px 16px; }
 .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); }
 
