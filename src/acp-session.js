@@ -54,6 +54,9 @@ class AcpSession extends EventEmitter {
     this._nextSeq = 1;
     this._transcriptCap = Number(process.env.SQUAD_HUB_TRANSCRIPT_CAP) || 500;
     this.pendingApprovals = new Map();
+    // Approvals that lapsed unanswered. Kept so the UI can say what became of
+    // a card someone saw, rather than letting the request vanish.
+    this.expiredApprovals = [];
     this.activity = 'Starting...';
 
     this._nextId = 1;
@@ -212,6 +215,17 @@ class AcpSession extends EventEmitter {
     if (!a) return false;
     this.pendingApprovals.delete(approvalId);
     this._respond(a.rpcId, { outcome: { outcome: 'cancelled' } });
+    // Someone saw a card asking for permission. When it lapses they are owed
+    // an answer to "what happened to that?" -- otherwise the request simply
+    // vanishes and the only visible trace is a session that quietly carried on
+    // without doing the thing it asked about.
+    this.expiredApprovals.push({
+      approvalId,
+      title: a.title || a.command || 'a tool call',
+      requestedAt: a.requestedAt,
+      expiredAt: Date.now(),
+    });
+    if (this.expiredApprovals.length > 20) this.expiredApprovals.shift();
     // An expired approval leaves the session running, not waiting. Without
     // this the status stayed `waiting_approval` with nothing pending, which
     // no badge maps -- so the row rendered the raw status string, and the
@@ -301,6 +315,8 @@ class AcpSession extends EventEmitter {
       agentSelection: this.agentSelection || null,
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
+      expiredApprovals: this.expiredApprovals,
+      resyncCount: this.resyncCount || 0,
       squad: this.squadContext(),
       git: this.gitContext(),
       stderrTail: this.status === STATUS.FAILED ? this._stderr.slice(-1000) : undefined,

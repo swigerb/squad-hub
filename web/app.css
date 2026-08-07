@@ -281,6 +281,10 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
    to notice in a list, quieter than the amber that means "blocked on you". */
 .status.review { color: var(--ok); border-color: #1d4636; }
 .status.failed { color: var(--bad); border-color: #47262b; }
+/* An approval nobody answered. Not a failure -- the session carried on -- but
+   the person who saw the card is owed an answer to "what happened to that?". */
+.status.expired { color: var(--faint); border-color: var(--line); }
+.expiredline { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; }
 
 /* The branch a session's work is landing on. Set apart from the rest of the
    meta line because two sessions on the same repository but different branches

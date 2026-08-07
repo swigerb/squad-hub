@@ -361,6 +361,42 @@ check('waiting_approval alone also carries the coloured edge', () => {
   assert.match(html, /class="row attention"/);
 });
 
+check('an expired approval is shown, not silently dropped', () => {
+  const html = sessionRow({
+    ...base,
+    expiredApprovals: [{ approvalId: 'a1', title: 'Delete the build directory', expiredAt: Date.now() }],
+  }, 'laptop');
+  assert.match(html, /Expired/,
+    'the request vanished; the only trace would be a session that carried on without doing it');
+  assert.match(html, /Delete the build directory/, 'saying something expired without saying WHAT explains nothing');
+});
+
+check('a session with nothing expired shows no Expired line', () => {
+  const html = sessionRow({ ...base, expiredApprovals: [] }, 'laptop');
+  assert.ok(!/Expired/.test(html));
+});
+
+check('the most recent expiry is the one shown', () => {
+  const html = sessionRow({
+    ...base,
+    expiredApprovals: [
+      { approvalId: 'old', title: 'AN OLDER ONE', expiredAt: 1000 },
+      { approvalId: 'new', title: 'THE LATEST ONE', expiredAt: 9000 },
+    ],
+  }, 'laptop');
+  assert.match(html, /THE LATEST ONE/);
+  assert.ok(!/AN OLDER ONE/.test(html));
+});
+
+check('a malicious expired-approval title renders as inert escaped text', () => {
+  const html = sessionRow({
+    ...base,
+    expiredApprovals: [{ approvalId: 'a1', title: XSS, expiredAt: 1 }],
+  }, 'laptop');
+  assert.ok(!html.includes('<img'), 'an expired approval title let a live tag through');
+  assert.ok(html.includes(esc(XSS)));
+});
+
 // ---------------------------------------------------------------------------
 // The CLI says the same thing the web UI does
 // ---------------------------------------------------------------------------
