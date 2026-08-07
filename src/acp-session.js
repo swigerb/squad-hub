@@ -186,6 +186,26 @@ class AcpSession extends EventEmitter {
 
     const s = await this._request('session/new', { cwd: this.cwd, mcpServers: [] });
     this.acpSessionId = s.sessionId;
+
+    // THE AGENT AND MODEL ARE CHOSEN HERE, NOT ON THE COMMAND LINE.
+    //
+    // `copilot --acp` accepts `--agent` and `--model` and silently ignores
+    // both. Not "rejects": accepts, with no error and no stderr, and then runs
+    // the default agent anyway. In `-p` mode the same flags are validated and
+    // an unknown value exits 1, which is what made this so easy to believe was
+    // working -- and it was not. Every session ran as plain Copilot while the
+    // UI reported the agent it had asked for.
+    //
+    // The supported path is `session/new`'s own reply, which advertises the
+    // agents and models this build actually has, and `session/set_config_option`
+    // / `session/set_model` to choose between them.
+    //
+    // Discovery matters more than the fix. The valid values come from the live
+    // response rather than from anything hardcoded here, so a custom agent that
+    // renames itself is matched on whatever it now calls itself, and one that
+    // disappears is REPORTED rather than silently swapped for the default.
+    await this._applySelection(s);
+
     this._setStatus(STATUS.ACTIVE, 'Processing...');
 
     const stop = await this._request('session/prompt', {
@@ -197,6 +217,67 @@ class AcpSession extends EventEmitter {
     this.endedAt = Date.now();
     this.shutdown();
     return stop;
+  }
+
+  /**
+   * Ask for the agent and model this session was started with, and record what
+   * was actually granted.
+   *
+   * Never throws. A session that cannot have its agent set is still a working
+   * session -- it is just not the one that was asked for, and saying so is the
+   * entire job here. Throwing would turn a degraded session into no session.
+   */
+  async _applySelection(newSession) {
+    const want = this.agentSelection || {};
+    this.applied = { agent: null, model: null, warnings: [] };
+
+    if (want.agent && want.agent !== 'default') {
+      const opt = ((newSession && newSession.configOptions) || []).find((o) => o.id === 'agent');
+      const choices = (opt && opt.options) || [];
+      // Case-insensitively, and against the name as well as the value: Copilot
+      // registers Squad's agent as "Squad" while every other surface in this
+      // codebase spells it "squad".
+      const hit = choices.find((o) => String(o.value).toLowerCase() === String(want.agent).toLowerCase())
+        || choices.find((o) => String(o.name || '').toLowerCase() === String(want.agent).toLowerCase());
+      if (!hit) {
+        const offered = choices.map((o) => o.name || o.value).filter(Boolean).join(', ');
+        this.applied.warnings.push(
+          `the agent "${want.agent}" is not installed for this Copilot; running the default agent instead`
+          + (offered ? ` (available: ${offered})` : ''),
+        );
+      } else {
+        try {
+          await this._request('session/set_config_option', {
+            sessionId: this.acpSessionId, configId: 'agent', value: hit.value,
+          });
+          this.applied.agent = hit.value;
+        } catch (e) {
+          this.applied.warnings.push(`could not select the agent "${want.agent}": ${e.message}`);
+        }
+      }
+    }
+
+    if (want.model) {
+      const available = ((newSession && newSession.models && newSession.models.availableModels) || [])
+        .map((m) => m.modelId);
+      const hit = available.find((id) => String(id).toLowerCase() === String(want.model).toLowerCase());
+      if (!hit) {
+        this.applied.warnings.push(
+          `the model "${want.model}" is not available to this account; using the default`
+          + (available.length ? ` (available: ${available.join(', ')})` : ''),
+        );
+      } else {
+        try {
+          await this._request('session/set_model', { sessionId: this.acpSessionId, modelId: hit });
+          this.applied.model = hit;
+        } catch (e) {
+          this.applied.warnings.push(`could not select the model "${want.model}": ${e.message}`);
+        }
+      }
+    }
+
+    for (const w of this.applied.warnings) this.emit('selection-warning', w);
+    return this.applied;
   }
 
   /** Answer a pending approval. Returns false if the id is unknown. */
@@ -330,6 +411,11 @@ class AcpSession extends EventEmitter {
       error: this.error,
       agent: this.agentInfo ? `${this.agentInfo.name} ${this.agentInfo.version}` : 'Copilot CLI',
       agentSelection: this.agentSelection || null,
+      // What the agent process ACTUALLY granted, which is not always what was
+      // asked for. Reported separately rather than folded into agentSelection,
+      // because "we asked for squad" and "we got squad" are different facts and
+      // the UI has to be able to tell them apart.
+      applied: this.applied || null,
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
       expiredApprovals: this.expiredApprovals,

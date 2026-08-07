@@ -397,8 +397,64 @@ check('a malicious expired-approval title renders as inert escaped text', () => 
   assert.ok(html.includes(esc(XSS)));
 });
 
-check('a resolved approval shows who answered it', () => {
+check('the row reports the agent that was actually granted', () => {
   const html = sessionRow({
+    ...base,
+    agentSelection: { agent: 'squad', source: 'auto' },
+    applied: { agent: 'Squad', model: null, warnings: [] },
+  }, 'laptop');
+  assert.match(html, /squad/);
+  assert.ok(!/agent-mismatch/.test(html), 'a session running what it asked for must not be flagged');
+});
+
+check('a session running a DIFFERENT agent to the one named on it says so', () => {
+  /**
+   * The row used to print the request and call it the answer. That held only
+   * because nothing could refuse a request -- and nothing could refuse one
+   * because the request was never being made: `--agent` is silently ignored by
+   * `copilot --acp`. Sessions reported the squad agent while running the
+   * default one.
+   */
+  const html = sessionRow({
+    ...base,
+    agentSelection: { agent: 'squad', source: 'auto' },
+    applied: { agent: null, model: null, warnings: ['not installed'] },
+  }, 'laptop');
+  assert.match(html, /agent-mismatch/, 'a silently substituted agent was not flagged');
+  assert.match(html, /not squad/, 'the row must name what was asked for as well as what is running');
+  assert.match(html, /default agent/);
+});
+
+check('a model that was refused is flagged too', () => {
+  const html = sessionRow({
+    ...base,
+    agentSelection: { agent: 'default', model: 'claude-opus-4.8', source: 'explicit' },
+    applied: { agent: null, model: null, warnings: ['not available'] },
+  }, 'laptop');
+  assert.match(html, /agent-mismatch/);
+});
+
+check('a device too old to report what it applied is not accused of a mismatch', () => {
+  // `applied` is absent on a daemon that predates the fix. Reporting the
+  // request plainly is right there; inventing a mismatch would not be.
+  const html = sessionRow({
+    ...base,
+    agentSelection: { agent: 'squad', source: 'auto' },
+  }, 'laptop');
+  assert.ok(!/agent-mismatch/.test(html));
+  assert.match(html, /squad/);
+});
+
+check('a malicious granted-agent name renders as inert escaped text', () => {
+  const html = sessionRow({
+    ...base,
+    agentSelection: { agent: 'squad', source: 'auto' },
+    applied: { agent: XSS, model: null, warnings: [] },
+  }, 'laptop');
+  assert.ok(!html.includes('<img'), 'the granted agent name let a live tag through');
+});
+
+check('a resolved approval shows who answered it', () => {  const html = sessionRow({
     ...base,
     answeredApprovals: [{ approvalId: 'a1', title: 'Run the tests', optionId: 'allow_once', answeredBy: 'Brian', answeredAt: 5 }],
   }, 'laptop');

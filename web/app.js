@@ -134,6 +134,39 @@ function lastApprovalOutcome(s) {
 
 const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Denied' };
 
+/**
+ * What agent and model this session is ACTUALLY running, and whether that is
+ * what was asked for.
+ *
+ * The row used to print the request and call it the answer. That was true for
+ * as long as nothing could refuse a request, and nothing could refuse a
+ * request only because the request was never being made: `--agent` on the
+ * command line is silently ignored by `copilot --acp`. Every session reported
+ * the agent it wanted while running the default one.
+ *
+ * So: `applied` is what the agent process granted. When it disagrees with the
+ * request, the row says so, because a session quietly running a different
+ * agent to the one named on it is worse than one that admits it.
+ */
+function agentLabel(s) {
+  const want = s.agentSelection;
+  const got = s.applied;
+  if (!want) return { text: s.agent || 'Copilot CLI', mismatch: false };
+
+  const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}`;
+  // No `applied` at all means an older device that predates the fix. Report the
+  // request without dressing it up as confirmation.
+  if (!got) return { text: `${asked} — ${want.source}`, mismatch: false };
+
+  const wantedAgent = want.agent && want.agent !== 'default';
+  const agentOk = !wantedAgent || (got.agent && String(got.agent).toLowerCase() === String(want.agent).toLowerCase());
+  const modelOk = !want.model || (got.model && String(got.model).toLowerCase() === String(want.model).toLowerCase());
+  if (agentOk && modelOk) return { text: `${asked} — ${want.source}`, mismatch: false };
+
+  const running = [got.agent || 'default agent', got.model].filter(Boolean).join(' ');
+  return { text: `running ${running}, not ${asked}`, mismatch: true };
+}
+
 /** Action-needed first, then most recently started. */
 function sessionSort(a, b) {
   const an = (a.pendingApprovals || []).length > 0 || a.status === 'waiting_approval';
@@ -353,6 +386,7 @@ function sessionRow(s, deviceName, opts = {}) {
   const sel = s.agentSelection;
   const git = s.git;
   const outcome = lastApprovalOutcome(s);
+  const agentInfo = agentLabel(s);
   // `sel` (session.agentSelection), `git` (repository/branch read from the
   // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all
   // ultimately trace back to attacker-influenceable input: a project's own
@@ -366,7 +400,7 @@ function sessionRow(s, deviceName, opts = {}) {
     esc(deviceName),
     git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
     git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
-    sel ? `${esc(sel.agent)}${sel.model ? ` (${esc(sel.model)})` : ''} — ${esc(sel.source)}` : esc(s.agent || 'Copilot CLI'),
+    sel ? `<span class="${agentInfo.mismatch ? 'agent-mismatch' : ''}">${esc(agentInfo.text)}</span>` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? ago(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
   ].filter(Boolean).join(' &middot; ');

@@ -806,25 +806,19 @@ const MUTATIONS = [
     mustFail: 'Squad detection never leaks past a nested repo\'s own .git boundary into an unrelated ancestor project',
   },
   {
+    /**
+     * The agent, model and source were escaped at three separate interpolation
+     * points and had a mutation each. They now pass through agentLabel() into
+     * one string with a single esc() around it, so three mutations pointing at
+     * the same escape would be three copies of one question. The other two
+     * named tests still exist and still pass; they are covered by this escape
+     * rather than by mutations of their own.
+     */
     name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
     file: 'web/app.js',
-    find: `esc(sel.agent)`,
-    replace: `(process.env.MUTANT ? sel.agent : esc(sel.agent))`,
+    find: `esc(agentInfo.text)`,
+    replace: `(process.env.MUTANT ? agentInfo.text : esc(agentInfo.text))`,
     mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
-  },
-  {
-    name: 'sessionRow renders agentSelection.model unescaped (stored XSS)',
-    file: 'web/app.js',
-    find: `esc(sel.model)`,
-    replace: `(process.env.MUTANT ? sel.model : esc(sel.model))`,
-    mustFail: 'a malicious agentSelection.model renders as inert escaped text',
-  },
-  {
-    name: 'sessionRow renders agentSelection.source unescaped (stored XSS)',
-    file: 'web/app.js',
-    find: `esc(sel.source)`,
-    replace: `(process.env.MUTANT ? sel.source : esc(sel.source))`,
-    mustFail: 'a malicious agentSelection.source renders as inert escaped text',
   },
   {
     name: 'agent-select stops validating agent/model names, letting an HTML-shaped .squad-hub.json value through',
@@ -1949,6 +1943,97 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `  const all = [...answered, ...expired].sort((a, b) => process.env.MUTANT ? (a.at || 0) - (b.at || 0) : (b.at || 0) - (a.at || 0)); // MUTATION
   return all[0] || null;`,
     mustFail: 'the most recent expiry is the one shown',
+  },
+
+  // -------------------------------------------------------------------------
+  // The agent and model a session actually gets
+  // -------------------------------------------------------------------------
+  {
+    // The bug itself: trusting a flag that `copilot --acp` silently ignores.
+    name: 'the agent is left to the command-line flag, which ACP ignores',
+    file: 'src/acp-session.js',
+    find: `    await this._applySelection(s);`,
+    replace: `    if (!process.env.MUTANT) await this._applySelection(s); // MUTATION`,
+    mustFail: 'run() applies the selection BETWEEN session/new and the prompt',
+  },
+  {
+    // Copilot registers Squad's agent as "Squad"; this codebase spells it
+    // "squad". An exact match silently never applies.
+    name: 'the agent name is matched exactly, so case alone defeats it',
+    file: 'src/acp-session.js',
+    find: `      const hit = choices.find((o) => String(o.value).toLowerCase() === String(want.agent).toLowerCase())
+        || choices.find((o) => String(o.name || '').toLowerCase() === String(want.agent).toLowerCase());`,
+    replace: `      const hit = process.env.MUTANT ? choices.find((o) => o.value === want.agent) // MUTATION
+        : (choices.find((o) => String(o.value).toLowerCase() === String(want.agent).toLowerCase())
+        || choices.find((o) => String(o.name || '').toLowerCase() === String(want.agent).toLowerCase()));`,
+    mustFail: 'the agent name is matched case-insensitively',
+  },
+  {
+    name: 'an uninstalled agent is swapped for the default without a word',
+    file: 'src/acp-session.js',
+    find: `        this.applied.warnings.push(
+          \`the agent "\${want.agent}" is not installed for this Copilot; running the default agent instead\``,
+    replace: `        if (!process.env.MUTANT) this.applied.warnings.push( // MUTATION
+          \`the agent "\${want.agent}" is not installed for this Copilot; running the default agent instead\``,
+    mustFail: 'an agent that is not installed is REPORTED, not silently swapped',
+  },
+  {
+    name: 'an unavailable model is accepted in silence',
+    file: 'src/acp-session.js',
+    find: `        this.applied.warnings.push(
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    replace: `        if (!process.env.MUTANT) this.applied.warnings.push( // MUTATION
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    mustFail: 'a model the account cannot use is reported, and names the ones it can',
+  },
+  {
+    // A session that cannot have its agent set is still a working session.
+    name: 'a peer refusing the selection takes the whole session down',
+    file: 'src/acp-session.js',
+    find: `        } catch (e) {
+          this.applied.warnings.push(\`could not select the agent "\${want.agent}": \${e.message}\`);
+        }`,
+    replace: `        } catch (e) {
+          if (process.env.MUTANT) throw e; // MUTATION
+          this.applied.warnings.push(\`could not select the agent "\${want.agent}": \${e.message}\`);
+        }`,
+    mustFail: 'a peer that refuses the selection degrades, and never takes the session down',
+  },
+  {
+    name: 'the session never publishes what it actually got',
+    file: 'src/acp-session.js',
+    find: `      applied: this.applied || null,`,
+    replace: `      applied: process.env.MUTANT ? null : (this.applied || null), // MUTATION`,
+    mustFail: 'what was granted is published, so a surface can tell it from what was asked',
+  },
+  {
+    name: 'the row goes back to printing the request as though it were the answer',
+    file: 'web/app.js',
+    find: `  if (agentOk && modelOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
+    replace: `  if (agentOk || modelOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
+    mustFail: 'a session running a DIFFERENT agent to the one named on it says so',
+  },
+  {
+    name: 'a device too old to report what it applied is accused of a mismatch',
+    file: 'web/app.js',
+    find: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
+    replace: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: true }; // MUTATION`,
+    mustFail: 'a device too old to report what it applied is not accused of a mismatch',
+  },
+  {
+    // "Could not tell" and "there are none" call for opposite reactions.
+    name: 'an unreadable agent probe claims there are no agents',
+    file: 'src/doctor.js',
+    find: `  if (!m) return { ok: false, reason: 'the agent list could not be read from Copilot', agents: [] };`,
+    replace: `  if (!m) return { ok: process.env.MUTANT ? true : false, reason: 'the agent list could not be read from Copilot', agents: [] }; // MUTATION`,
+    mustFail: 'an unreadable reply says so, rather than claiming there are no agents',
+  },
+  {
+    name: 'the probed agent names keep their punctuation and spacing',
+    file: 'src/doctor.js',
+    find: `  const agents = m[1].split(',').map((s) => s.trim().replace(/[.\\s]+$/, '')).filter(Boolean);`,
+    replace: `  const agents = process.env.MUTANT ? m[1].split(',') : m[1].split(',').map((s) => s.trim().replace(/[.\\s]+$/, '')).filter(Boolean); // MUTATION`,
+    mustFail: 'the agent probe reads the list out of Copilot\'s own refusal',
   },
 
   // -------------------------------------------------------------------------

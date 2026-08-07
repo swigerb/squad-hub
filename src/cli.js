@@ -307,6 +307,10 @@ async function cmdStatus(argv) {
     if (s.agentSelection) {
       const sel = s.agentSelection;
       out(`    squad agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source})`);
+      // What was granted, when it differs from what was asked. Printing only
+      // the request was how a session claiming the squad agent could run the
+      // default one for months without anybody noticing.
+      for (const w of (s.applied && s.applied.warnings) || []) out(`    ! ${w}`);
     }
     if (s.error) out(`    error: ${s.error}`);
     for (const a of s.pendingApprovals) {
@@ -1186,6 +1190,12 @@ In a Squad project (a ".squad" directory, or ".github/agents/squad.agent.md"),
 "run"/"squad" select the "squad" custom agent automatically; anywhere else they
 use Copilot's default agent. --agent/--model on the command line always wins;
 see docs/commands.md for the full precedence order.
+
+The agent and model are applied over the ACP protocol after the session is
+created, against the list that session advertises: "copilot --acp" accepts
+--agent/--model and silently ignores both, so a flag alone is not enough. When
+the agent or model asked for is unavailable, the session runs with the default
+and SAYS SO, rather than quietly substituting.
 
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. The confinement path stays

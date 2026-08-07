@@ -207,8 +207,37 @@ token in the same step.
 `status` exits **3** when no daemon is running, so a script can tell "stopped"
 from "broken".
 
-## What a session shows
+## How the agent and model are chosen
 
+The agent and model are applied **over the ACP protocol**, after the session is
+created, against the list that session advertises.
+
+This matters because `copilot --acp` **accepts `--agent` and `--model` on its
+command line and silently ignores both** — no error, no warning on stderr, the
+default agent runs anyway. In `-p` mode the same flags are validated and an
+unknown value exits 1, which is what made the difference so easy to miss. Squad
+Hub passed those flags and reported the agent it had asked for; the sessions
+were running plain Copilot.
+
+So the selection is now made with `session/set_config_option` and
+`session/set_model`, using values discovered from the `session/new` reply.
+
+**Discovery is the point, not just the fix.** The valid agent names come from
+the live response rather than anything hardcoded, so a custom agent that
+renames itself is still matched, and one that is missing is **reported** rather
+than silently replaced by the default. Matching is case-insensitive: Copilot
+registers Squad's agent as `Squad`, while every other surface here spells it
+`squad`.
+
+When the agent or model asked for is not available, the session still runs —
+with the default, and with a warning naming what was actually used and what was
+available instead. `squad-hub status` prints it, and the web UI marks the row.
+
+`squad-hub doctor` answers the same question before you start anything: it asks
+Copilot which custom agents it has and says whether `squad-hub squad` will
+really run Squad here.
+
+## What a session shows
 Each session carries the context needed to tell it apart from every other one
 at a glance, in both `squad-hub status` and the web UI.
 

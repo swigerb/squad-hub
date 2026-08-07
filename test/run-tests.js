@@ -785,6 +785,17 @@ async function suiteParityAudit() {
   runChildSuite(path.join(__dirname, 'parity-audit-unit.js'), 'parity');
 }
 
+/**
+ * The agent and model a session actually gets. `copilot --acp` accepts
+ * `--agent` and `--model` and silently ignores both, so the selection has to
+ * be made over the protocol -- and what was granted has to be reported, not
+ * assumed from what was asked.
+ */
+async function suiteAgentApply() {
+  console.log('\n[AGENT] the selection is applied over the protocol, and reported honestly');
+  runChildSuite(path.join(__dirname, 'agent-apply-unit.js'), 'agent-apply');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -828,6 +839,7 @@ async function suiteParityAudit() {
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteParityAudit();
+  await suiteAgentApply();
 
   console.log('');
   console.log('='.repeat(60));

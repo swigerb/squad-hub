@@ -290,6 +290,9 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
    "by whom" answers a different question than the one being asked. */
 .status.answered { color: var(--ok); border-color: #1d4636; }
 .expiredline { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; }
+/* A session running a different agent to the one named on it. Worth marking:
+   the request and the result used to be assumed identical, and were not. */
+.agent-mismatch { color: var(--warn); font-weight: 600; }
 
 /* The branch a session's work is landing on. Set apart from the rest of the
    meta line because two sessions on the same repository but different branches
