@@ -1201,6 +1201,56 @@ function resolveDeepLink(wanted, groups) {
 }
 
 
+/**
+ * The hub could not be reached at all.
+ *
+ * Says the true thing and the reassuring thing, in that order. The reassurance
+ * is not padding: the natural fear on seeing a dashboard fail is that the work
+ * it was watching has failed too, and here that is precisely wrong -- sessions
+ * run on the devices, and the hub only watches them. An agent waiting for an
+ * approval is still waiting, and will still be waiting when the network comes
+ * back.
+ *
+ * Recovers by itself. Someone who walks back into signal should not have to
+ * work out that they need to reload.
+ */
+function showOffline() {
+  const main = document.querySelector('main.page');
+  const target = main || document.body;
+  target.innerHTML = `
+    <div class="empty">
+      <h3>Can't reach the hub</h3>
+      <p>You're still signed in — this device just can't get to the hub right now.</p>
+      <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
+         Anything waiting on an approval is still waiting.</p>
+      <p class="empty-actions"><button class="primary" id="offlineRetry">Try again</button></p>
+    </div>`;
+  const retry = document.getElementById('offlineRetry');
+  if (retry) retry.onclick = () => location.reload();
+  // Reload the moment connectivity returns, so this state cannot outlive the
+  // problem it describes.
+  window.addEventListener('online', () => location.reload(), { once: true });
+  return undefined;
+}
+
+
+/**
+ * Register the service worker, which supplies the offline shell.
+ *
+ * Deliberately quiet about failure. A worker needs a secure context, so it
+ * simply does not exist on a hub reached over plain http on a LAN -- and that
+ * is a perfectly normal way to run this. An error in the console there would
+ * be noise about a feature the deployment never asked for.
+ *
+ * It caches the SHELL only; nothing under /api/ is ever stored. See web/sw.js.
+ */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // Registration is fire-and-forget on purpose: the app must not wait on it,
+  // and must work identically whether or not it succeeds.
+  navigator.serviceWorker.register('/sw.js').catch(() => { /* insecure context, or blocked */ });
+}
+
 async function refresh() {
   const params = new URLSearchParams();
   if (state.filters.q) params.set('q', state.filters.q);
@@ -1397,8 +1447,7 @@ function wire() {
   });
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
-    state.installPrompt = e;
-  });
+    state.installPrompt = e;  });
 
   $('nsDevice').onchange = updateCwdHint;
 
@@ -1741,6 +1790,9 @@ function signInHint(mode) {
 
 // ---------------------------------------------------------------------------
 (async function main() {
+  // Before the sign-in gate: the shell is public, and someone installing the
+  // app or opening it on a train should get a readable page either way.
+  registerServiceWorker();
   state.token = loadToken();
   if (!state.token) return showSignIn();
   loadView();
@@ -1764,6 +1816,15 @@ function signInHint(mode) {
       localStorage.removeItem('squad-hub-token');
       return showSignIn();
     }
+    // No status at all means the request never got an ANSWER -- the hub is
+    // unreachable, rather than the credential being refused. Saying "could not
+    // sign in" there is confidently wrong: the person is signed in, and the
+    // fix is to wait or check the network, not to hunt for a credential.
+    //
+    // This is what the offline shell is FOR. Caching the files is the easy
+    // half; without this the cached page loads only to accuse you of not being
+    // signed in, which is worse than the browser's own error page.
+    if (e.status === undefined) return showOffline();
     document.body.innerHTML = `<div class="empty"><h3>Could not sign in</h3><p>${esc(e.message)}</p></div>`;
     return undefined;
   }
