@@ -1241,6 +1241,144 @@ const MUTATIONS = [
     replace: `  if (s.status === 'done' && !process.env.MUTANT) return 'Ready for review'; // MUTATION`,
     mustFail: 'squad-hub status offers a finished session for review',
   },
+
+  // -------------------------------------------------------------------------
+  // S3: list controls
+  // -------------------------------------------------------------------------
+  {
+    // The filter that turns a dashboard for paused agents into a way to lose
+    // work: someone is waiting on an answer and the row is hidden for being old.
+    name: 'the time window hides a session that is blocked on a person',
+    file: 'web/app.js',
+    find: `  if (!needsAttention(s) && !withinWindow(s, f.window, now)) return false;`,
+    replace: `  if ((process.env.MUTANT || !needsAttention(s)) && !withinWindow(s, f.window, now)) return false; // MUTATION`,
+    mustFail: 'a BLOCKED session survives the time window',
+  },
+  {
+    name: 'the time window boundary is a one-millisecond cliff',
+    file: 'web/app.js',
+    find: `  return (now - s.startedAt) <= w.ms;`,
+    replace: `  return process.env.MUTANT ? (now - s.startedAt) < w.ms : (now - s.startedAt) <= w.ms; // MUTATION`,
+    mustFail: 'the window boundary is inclusive, not a one-millisecond cliff',
+  },
+  {
+    name: 'a session with no start time is filtered out by the time window',
+    file: 'web/app.js',
+    find: `  if (!s.startedAt) return true;`,
+    replace: `  if (!s.startedAt) return !process.env.MUTANT; // MUTATION`,
+    mustFail: 'a session with no start time is kept, not filtered out',
+  },
+  {
+    name: 'an unknown window key empties the entire list',
+    file: 'web/app.js',
+    find: `  if (!w || w.ms == null) return true;`,
+    replace: `  if (process.env.MUTANT) return !!(w && w.ms == null); // MUTATION
+  if (!w || w.ms == null) return true;`,
+    mustFail: 'an unknown window key does not silently hide everything',
+  },
+  {
+    name: 'the organisation scope matches prefixes instead of the whole name',
+    file: 'web/app.js',
+    find: `  if (f.org && sessionOrg(s) !== f.org) return false;`,
+    replace: `  if (f.org && (process.env.MUTANT ? !sessionOrg(s).startsWith(f.org) : sessionOrg(s) !== f.org)) return false; // MUTATION`,
+    mustFail: 'the organisation scope is an EXACT match, not a substring',
+  },
+  {
+    name: 'the chosen sort is allowed to bury a blocked session',
+    file: 'web/app.js',
+    find: `    const an = needsAttention(a);
+    const bn = needsAttention(b);
+    if (an !== bn) return an ? -1 : 1;
+    return sort.compare(a, b);`,
+    replace: `    const an = needsAttention(a);
+    const bn = needsAttention(b);
+    if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION
+    return sort.compare(a, b);`,
+    mustFail: 'a blocked session outranks the chosen sort',
+  },
+  {
+    name: 'sorting reorders the caller\'s own array',
+    file: 'web/app.js',
+    find: `  return [...list].sort((a, b) => {
+    const an = needsAttention(a);`,
+    replace: `  return (process.env.MUTANT ? list : [...list]).sort((a, b) => { // MUTATION
+    const an = needsAttention(a);`,
+    mustFail: 'sorting does not mutate the array it was given',
+  },
+  {
+    name: 'a pinned session is also left in its device group',
+    file: 'web/app.js',
+    find: `      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); if (!process.env.MUTANT) continue; } // MUTATION`,
+    mustFail: 'a pinned session does not also appear in its device group',
+  },
+  {
+    name: 'a pinned session is still subject to every filter',
+    file: 'web/app.js',
+    find: `      const entry = { session: s, device: g.device };
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      const entry = { session: s, device: g.device };
+      if (pinnedKeys.has(sessionKey(s))) { if (!process.env.MUTANT || matchesFilters(s, filters, now)) pinned.push(entry); continue; } // MUTATION`,
+    mustFail: 'pinning outranks every filter',
+  },
+  {
+    name: 'a group holding a blocked session is left in alphabetical order',
+    file: 'web/app.js',
+    find: `    const an = buckets.get(a).some((e) => needsAttention(e.session));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    if (an !== bn) return an ? -1 : 1;`,
+    replace: `    const an = buckets.get(a).some((e) => needsAttention(e.session));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION`,
+    mustFail: 'a group holding a blocked session floats to the top',
+  },
+  {
+    name: 'groups are left in whatever order they arrived in',
+    file: 'web/app.js',
+    find: `    return a.localeCompare(b);
+  });
+
+  for (const name of names) {`,
+    replace: `    return process.env.MUTANT ? 0 : a.localeCompare(b); // MUTATION
+  });
+
+  for (const name of names) {`,
+    mustFail: 'groups without a blocked session are ordered by name, stably',
+  },
+  {
+    name: 'grouping by repository silently groups by device instead',
+    file: 'web/app.js',
+    find: `  const keyOf = groupBy === 'repository'`,
+    replace: `  const keyOf = (groupBy === 'repository' && !process.env.MUTANT) // MUTATION`,
+    mustFail: 'grouping by repository crosses device boundaries',
+  },
+  {
+    name: 'a session key is interpolated into the star attribute unescaped',
+    file: 'web/app.js',
+    // Single-quoted on purpose: the anchor itself contains `${...}`, which a
+    // template literal here would try to interpolate.
+    find: 'data-star="${esc(sessionKey(s))}"',
+    replace: 'data-star="${process.env.MUTANT ? sessionKey(s) : esc(sessionKey(s))}"',
+    mustFail: 'a malicious session key cannot break out of the star attribute',
+  },
+  {
+    name: 'the shown count includes rows that were filtered away',
+    file: 'web/app.js',
+    find: `  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+}`,
+    replace: `  return { sections, counts: { pinned: pinned.length, shown: process.env.MUTANT ? groups.reduce((n, g) => n + (g.sessions || []).length, 0) : pinned.length + rest.length } }; // MUTATION
+}`,
+    mustFail: 'the counts describe what is actually on screen',
+  },
+  {
+    name: 'an empty Pinned section is rendered when nothing is pinned',
+    file: 'web/app.js',
+    find: `  if (pinned.length) {
+    sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });`,
+    replace: `  if (pinned.length || process.env.MUTANT) { // MUTATION
+    sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });`,
+    mustFail: 'with nothing pinned there is no empty Pinned section',
+  },
 ];
 
 /**

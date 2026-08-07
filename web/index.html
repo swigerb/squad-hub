@@ -61,11 +61,30 @@
       <option value="">All statuses</option>
       <option value="waiting_approval">Action needed</option>
       <option value="active">Active</option>
-      <option value="done">Done</option>
+      <option value="done">Ready for review</option>
       <option value="failed">Failed</option>
       <option value="stopped">Stopped</option>
     </select>
     <select id="deviceFilter" aria-label="Device"><option value="">All devices</option></select>
+    <select id="repoFilter" aria-label="Repository"><option value="">All repositories</option></select>
+    <select id="orgFilter" aria-label="Organisation"><option value="">All organisations</option></select>
+    <select id="windowFilter" aria-label="Time window">
+      <option value="">Any time</option>
+      <option value="24h">Last 24 hours</option>
+      <option value="7d">Last 7 days</option>
+      <option value="30d">Last 30 days</option>
+    </select>
+    <select id="groupBy" aria-label="Group by">
+      <option value="device">Group: Device</option>
+      <option value="repository">Group: Repository</option>
+      <option value="none">No grouping</option>
+    </select>
+    <select id="sortBy" aria-label="Sort by">
+      <option value="started_desc">Started &#8595;</option>
+      <option value="started_asc">Started &#8593;</option>
+      <option value="tools_desc">Most tool calls</option>
+      <option value="repository">Repository</option>
+    </select>
   </div>
 
   <div class="layout">

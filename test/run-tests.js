@@ -735,6 +735,16 @@ async function suiteSessionMetadata() {
   runChildSuite(path.join(__dirname, 'session-metadata-unit.js'), 'session-metadata');
 }
 
+/**
+ * The list controls -- time window, grouping, sort, repository/organisation
+ * scope and pinning. All pure functions, proven in Node without a browser,
+ * because a rule that lives inside a DOM callback cannot be proven at all.
+ */
+async function suiteListControls() {
+  console.log('\n[LIST CONTROLS] window, grouping, sort, scope, pinning');
+  runChildSuite(path.join(__dirname, 'list-controls-unit.js'), 'list-controls');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -773,6 +783,7 @@ async function suiteSessionMetadata() {
   await suitePackage();
   await suiteWebXss();
   await suiteSessionMetadata();
+  await suiteListControls();
 
   console.log('');
   console.log('='.repeat(60));

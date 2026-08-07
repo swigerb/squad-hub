@@ -239,6 +239,35 @@ Everything in a session row is escaped before it is rendered. A branch name, a
 repository name, and a tool title are all attacker-influenceable — git accepts
 any bytes in a branch name — so none of it is ever treated as markup.
 
+## The session list
+
+The web UI's list controls reshape what is already loaded, so they apply
+instantly rather than on a round trip.
+
+| Control | |
+|---|---|
+| Keyword, status, device | Applied by the hub. |
+| Repository, organisation | Built from the sessions actually on screen, so a scope can never filter everything away. |
+| Time window | `Any time`, `Last 24 hours`, `Last 7 days`, `Last 30 days`. |
+| Group by | `Device`, `Repository`, or none. |
+| Sort by | `Started ↓`, `Started ↑`, `Most tool calls`, `Repository`. |
+| Pin | A star per row. Pinned sessions lift into their own section at the top. |
+
+Two rules override everything else:
+
+**A session blocked on a person is never hidden and never buried.** The time
+window skips it, the sort cannot push it down, and the group holding it floats
+to the top. Someone is waiting on an answer — hiding that row because the
+session started yesterday turns a filter into a way to lose work.
+
+**A pin outranks every filter.** A person pinned it, so it stays until they
+unpin it, and it is not shown twice.
+
+Controls and pins are kept in the browser's local storage, not on the hub.
+This is how one person likes to look at the list, not a property of the
+sessions; syncing it would mean a preference set on a laptop silently
+rearranging a phone.
+
 ## Doctor
 
 ```

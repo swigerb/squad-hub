@@ -15,7 +15,12 @@ const state = {
   token: null,
   me: null,
   overview: { devices: [], groups: [], counts: {} },
-  filters: { q: '', status: '', device: '' },
+  filters: { q: '', status: '', device: '', repo: '', org: '', window: '' },
+  groupBy: 'device',
+  sortBy: 'started_desc',
+  // Pinned sessions survive a reload; a star that forgets itself is not a
+  // favourite, it is a highlight.
+  favorites: new Set(),
   ws: null,
   currentSession: null,
   seenApprovals: new Set(),
@@ -117,8 +122,212 @@ function sessionSort(a, b) {
   return (b.startedAt || 0) - (a.startedAt || 0);
 }
 
-function sessionRow(s, deviceName) {
-  const pending = (s.pendingApprovals || []).length > 0 || s.status === 'waiting_approval';
+// ---------------------------------------------------------------------------
+// List controls.
+//
+// Every function below is PURE: state in, a plain value out, no DOM and no
+// `state` global. That is not tidiness for its own sake -- it is what lets the
+// filtering and sorting rules be proven in Node without a browser, and it is
+// the only reason a mutation can be pointed at them at all.
+// ---------------------------------------------------------------------------
+
+/** Time windows, as milliseconds. `null` means "no limit". */
+const TIME_WINDOWS = {
+  '': { label: 'Any time', ms: null },
+  '24h': { label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
+  '7d': { label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  '30d': { label: 'Last 30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+};
+
+const SORTS = {
+  started_desc: { label: 'Started ↓', compare: (a, b) => (b.startedAt || 0) - (a.startedAt || 0) },
+  started_asc: { label: 'Started ↑', compare: (a, b) => (a.startedAt || 0) - (b.startedAt || 0) },
+  tools_desc: { label: 'Most tool calls', compare: (a, b) => (b.toolCallCount || 0) - (a.toolCallCount || 0) },
+  repository: {
+    label: 'Repository',
+    compare: (a, b) => String(sessionRepo(a) || '').localeCompare(String(sessionRepo(b) || '')),
+  },
+};
+
+const GROUPINGS = { device: 'Device', repository: 'Repository', none: 'No grouping' };
+
+/**
+ * Is this session blocked on a person?
+ *
+ * One definition, used by the badge, the row edge, the ordering and the
+ * filters alike. Three copies of this predicate is three chances for the badge
+ * and the sort to disagree about the same row.
+ */
+function needsAttention(s) {
+  return (s.pendingApprovals || []).length > 0 || s.status === 'waiting_approval';
+}
+
+/** What a session is working ON, preferring the repository over a local path. */
+function sessionRepo(s) {
+  if (s && s.git && s.git.repository) return s.git.repository;
+  if (s && s.squad && s.squad.project) return s.squad.project;
+  return (s && s.cwd) || '';
+}
+
+/** The organisation half of `owner/repo`, or '' when there is no owner. */
+function sessionOrg(s) {
+  const repo = sessionRepo(s);
+  const i = repo.indexOf('/');
+  return i > 0 ? repo.slice(0, i) : '';
+}
+
+/**
+ * Started within the window.
+ *
+ * A session with no start time is KEPT rather than filtered out. A time filter
+ * exists to hide old things, and "we do not know when this started" is not
+ * evidence that it is old -- dropping it would make a live session vanish from
+ * a list because of a missing field.
+ */
+function withinWindow(s, key, now = Date.now()) {
+  const w = TIME_WINDOWS[key || ''];
+  if (!w || w.ms == null) return true;
+  if (!s.startedAt) return true;
+  return (now - s.startedAt) <= w.ms;
+}
+
+/** Case-insensitive substring match, with an empty filter matching everything. */
+function matchesText(value, needle) {
+  if (!needle) return true;
+  return String(value || '').toLowerCase().includes(String(needle).toLowerCase());
+}
+
+/**
+ * Every client-side filter, applied together.
+ *
+ * A session blocked on a person is NEVER filtered out by the time window.
+ * Someone is waiting on an answer; hiding that row because the session started
+ * yesterday turns a filter into a way to lose work, which is the one thing a
+ * dashboard for paused agents must not do.
+ */
+function matchesFilters(s, f = {}, now = Date.now()) {
+  if (!matchesText(sessionRepo(s), f.repo)) return false;
+  if (f.org && sessionOrg(s) !== f.org) return false;
+  if (!needsAttention(s) && !withinWindow(s, f.window, now)) return false;
+  return true;
+}
+
+/** A stable identity for a session across refreshes, for pinning. */
+function sessionKey(s) {
+  return s.key || s.id || '';
+}
+
+/**
+ * Sort, with attention first regardless of the chosen key.
+ *
+ * The sort control orders the list; it does not get to bury a session that
+ * cannot proceed without a person. `Started ↑` would otherwise push a blocked
+ * session to the bottom precisely because it has been blocked a while.
+ */
+function sortSessions(list, key = 'started_desc') {
+  const sort = SORTS[key] || SORTS.started_desc;
+  return [...list].sort((a, b) => {
+    const an = needsAttention(a);
+    const bn = needsAttention(b);
+    if (an !== bn) return an ? -1 : 1;
+    return sort.compare(a, b);
+  });
+}
+
+/** Every organisation present, for the scope dropdown. Sorted, deduplicated. */
+function organizationsIn(groups = []) {
+  const set = new Set();
+  for (const g of groups) for (const s of g.sessions || []) {
+    const org = sessionOrg(s);
+    if (org) set.add(org);
+  }
+  return [...set].sort();
+}
+
+/** Every repository present, for the repository dropdown. */
+function repositoriesIn(groups = []) {
+  const set = new Set();
+  for (const g of groups) for (const s of g.sessions || []) {
+    const repo = sessionRepo(s);
+    if (repo) set.add(repo);
+  }
+  return [...set].sort();
+}
+
+/**
+ * The whole list, as sections ready to render.
+ *
+ * Pinned sessions are lifted into their own section and do NOT appear again
+ * below -- a starred row shown twice makes the list longer, not clearer.
+ * Pinning also outranks the time window: a person pinned it, so it stays until
+ * they unpin it.
+ */
+function buildView({ groups = [], filters = {}, favorites = [], groupBy = 'device', sortBy = 'started_desc', now = Date.now() } = {}) {
+  const pinnedKeys = new Set(favorites);
+  const pinned = [];
+  const rest = [];
+
+  for (const g of groups) {
+    for (const s of g.sessions || []) {
+      const entry = { session: s, device: g.device };
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }
+      if (matchesFilters(s, filters, now)) rest.push(entry);
+    }
+  }
+
+  const sortEntries = (entries) => {
+    const sorted = sortSessions(entries.map((e) => e.session), sortBy);
+    const byKey = new Map(entries.map((e) => [sessionKey(e.session), e]));
+    return sorted.map((s) => byKey.get(sessionKey(s))).filter(Boolean);
+  };
+
+  const sections = [];
+  if (pinned.length) {
+    sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });
+  }
+
+  if (groupBy === 'none') {
+    if (rest.length) sections.push({ key: '__all', label: 'All sessions', entries: sortEntries(rest) });
+    return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+  }
+
+  const keyOf = groupBy === 'repository'
+    ? (e) => sessionRepo(e.session) || 'No repository'
+    : (e) => (e.device && e.device.name) || 'Unknown device';
+
+  const buckets = new Map();
+  for (const e of rest) {
+    const k = keyOf(e);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(e);
+  }
+
+  // A group holding a blocked session floats up, on the same rule as the rows
+  // inside it. Otherwise the list is sorted by name, which is stable across
+  // refreshes -- a list that reshuffles under the cursor is unusable.
+  const names = [...buckets.keys()].sort((a, b) => {
+    const an = buckets.get(a).some((e) => needsAttention(e.session));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    if (an !== bn) return an ? -1 : 1;
+    return a.localeCompare(b);
+  });
+
+  for (const name of names) {
+    const entries = sortEntries(buckets.get(name));
+    sections.push({
+      key: name,
+      label: name,
+      device: groupBy === 'device' ? (entries[0] && entries[0].device) || null : null,
+      entries,
+    });
+  }
+
+  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+}
+
+function sessionRow(s, deviceName, opts = {}) {
+  const pending = needsAttention(s);
+  const pinned = !!opts.pinned;
   const title = (s.prompt || s.id).slice(0, 70);
   const sq = s.squad;
   const sel = s.agentSelection;
@@ -155,6 +364,9 @@ function sessionRow(s, deviceName) {
 
   return `
     <div class="row ${pending ? 'attention' : ''}" data-session="${esc(s.key)}">
+      <button class="star ${pinned ? 'on' : ''}" data-star="${esc(sessionKey(s))}"
+              title="${pinned ? 'Unpin this session' : 'Pin this session'}"
+              aria-label="${pinned ? 'Unpin' : 'Pin'}" aria-pressed="${pinned ? 'true' : 'false'}">${pinned ? '★' : '☆'}</button>
       <div class="row-main">
         <div class="row-title">
           <b>${esc(title)}</b>
@@ -178,22 +390,32 @@ function render() {
   $('bellCount').textContent = bell;
   document.title = bell ? `(${bell}) Squad Hub` : 'Squad Hub';
 
-  // Groups with a waiting session float up.
-  const ordered = [...groups].sort((a, b) => {
-    const an = a.sessions.some((s) => (s.pendingApprovals || []).length || s.status === 'waiting_approval');
-    const bn = b.sessions.some((s) => (s.pendingApprovals || []).length || s.status === 'waiting_approval');
-    if (an !== bn) return an ? -1 : 1;
-    return a.device.name.localeCompare(b.device.name);
+  // Every ordering, grouping and filtering decision is made by buildView, a
+  // pure function proven in Node. This function only turns its answer into
+  // markup, so a rule can never live only inside a DOM callback where nothing
+  // can reach it.
+  const view = buildView({
+    groups,
+    filters: state.filters,
+    favorites: [...state.favorites],
+    groupBy: state.groupBy,
+    sortBy: state.sortBy,
   });
 
-  const html = ordered.filter((g) => g.sessions.length || g.device.presence !== 'offline').map((g) => `
-    <div class="group">
+  const emptyDevices = groups
+    .filter((g) => !g.sessions.length && g.device.presence !== 'offline')
+    .map((g) => ({ key: g.device.name, label: g.device.name, device: g.device, entries: [] }));
+
+  const html = [...view.sections, ...emptyDevices].map((sec) => `
+    <div class="group ${sec.pinned ? 'pinned' : ''}">
       <div class="group-head">
-        <span class="dot ${g.device.presence}"></span>
-        ${esc(g.device.name)}
-        <span class="group-meta">${g.sessions.length} session${g.sessions.length === 1 ? '' : 's'} &middot; ${g.device.platform}</span>
+        ${sec.device ? `<span class="dot ${sec.device.presence}"></span>` : sec.pinned ? '<span class="pin-mark">★</span>' : ''}
+        ${esc(sec.label)}
+        <span class="group-meta">${sec.entries.length} session${sec.entries.length === 1 ? '' : 's'}${sec.device ? ` &middot; ${esc(sec.device.platform)}` : ''}</span>
       </div>
-      ${g.sessions.length ? `<div class="card">${[...g.sessions].sort(sessionSort).map((s) => sessionRow(s, g.device.name)).join('')}</div>` : ''}
+      ${sec.entries.length
+    ? `<div class="card">${sec.entries.map((e) => sessionRow(e.session, e.device ? e.device.name : '', { pinned: !!sec.pinned })).join('')}</div>`
+    : ''}
     </div>`).join('');
 
   $('groups').innerHTML = html;
@@ -234,7 +456,27 @@ function render() {
     + devices.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.name)}</option>`).join('');
   sel.value = keep;
 
+  // The repository and organisation dropdowns are built from what is actually
+  // on screen, so they can never offer a scope that filters everything away.
+  fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
+  fillSelect($('orgFilter'), 'All organisations', organizationsIn(groups), state.filters.org);
+
   maybePromptApproval();
+}
+
+/**
+ * Repopulate a select without losing the current choice.
+ *
+ * A value that is no longer on offer is KEPT as an option rather than silently
+ * dropped: a repository whose last session just ended would otherwise reset
+ * the filter to "all" underneath the person using it.
+ */
+function fillSelect(el, allLabel, values, current) {
+  if (!el) return;
+  const list = current && !values.includes(current) ? [...values, current].sort() : values;
+  el.innerHTML = `<option value="">${esc(allLabel)}</option>`
+    + list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  el.value = current || '';
 }
 
 /**
@@ -509,6 +751,64 @@ async function refresh() {
   render();
 }
 
+const VIEW_KEY = 'squad-hub-view';
+const FAVORITES_KEY = 'squad-hub-favorites';
+
+/**
+ * List controls and pins survive a reload.
+ *
+ * Kept in localStorage rather than on the hub deliberately: this is how ONE
+ * person likes to look at the list, not a property of the sessions. Syncing it
+ * would mean a preference set on a laptop silently rearranging a phone.
+ */
+function loadView() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}');
+    if (saved.repo) state.filters.repo = saved.repo;
+    if (saved.org) state.filters.org = saved.org;
+    if (TIME_WINDOWS[saved.window]) state.filters.window = saved.window;
+    if (GROUPINGS[saved.groupBy]) state.groupBy = saved.groupBy;
+    if (SORTS[saved.sortBy]) state.sortBy = saved.sortBy;
+  } catch { /* a corrupt preference is not worth a broken page */ }
+  try {
+    const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]');
+    if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
+  } catch { /* same */ }
+}
+
+function saveView() {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({
+      repo: state.filters.repo,
+      org: state.filters.org,
+      window: state.filters.window,
+      groupBy: state.groupBy,
+      sortBy: state.sortBy,
+    }));
+  } catch { /* private browsing, quota, whatever -- never fatal */ }
+}
+
+function saveFavorites() {
+  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify([...state.favorites])); }
+  catch { /* never fatal */ }
+}
+
+function toggleFavorite(key) {
+  if (!key) return;
+  if (state.favorites.has(key)) state.favorites.delete(key);
+  else state.favorites.add(key);
+  saveFavorites();
+  render();
+}
+
+/** Fill the controls from the restored state, so the UI matches what it does. */
+function syncControls() {
+  const set = (id, value) => { const el = $(id); if (el) el.value = value; };
+  set('windowFilter', state.filters.window);
+  set('groupBy', state.groupBy);
+  set('sortBy', state.sortBy);
+}
+
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
@@ -517,7 +817,22 @@ function wire() {
   $('statusFilter').onchange = (e) => { state.filters.status = e.target.value; refresh(); };
   $('deviceFilter').onchange = (e) => { state.filters.device = e.target.value; refresh(); };
 
+  // These four are client-side: they reshape what is already loaded, so they
+  // re-render immediately rather than waiting on a round trip.
+  $('repoFilter').onchange = (e) => { state.filters.repo = e.target.value; saveView(); render(); };
+  $('orgFilter').onchange = (e) => { state.filters.org = e.target.value; saveView(); render(); };
+  $('windowFilter').onchange = (e) => { state.filters.window = e.target.value; saveView(); render(); };
+  $('groupBy').onchange = (e) => { state.groupBy = e.target.value; saveView(); render(); };
+  $('sortBy').onchange = (e) => { state.sortBy = e.target.value; saveView(); render(); };
+
   $('groups').onclick = (e) => {
+    // The star sits inside the row, so it must claim the click before the row
+    // does -- otherwise pinning a session also opens it.
+    const star = e.target.closest('[data-star]');
+    if (star) {
+      toggleFavorite(star.dataset.star);
+      return;
+    }
     const row = e.target.closest('[data-session]');
     if (row) openDetail(row.dataset.session);
   };
@@ -880,7 +1195,9 @@ function signInHint(mode) {
 (async function main() {
   state.token = loadToken();
   if (!state.token) return showSignIn();
+  loadView();
   wire();
+  syncControls();
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';
