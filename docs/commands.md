@@ -559,6 +559,34 @@ is truncated and anything credential-shaped is redacted before it leaves the
 process — an approval prompt is exactly where a token pasted onto a command
 line would otherwise show up.
 
+## Installing it as an app
+
+The web UI is a PWA: install it from the account menu, or with your browser's
+own *Install app* / *Add to Home Screen*.
+
+### Offline
+
+A service worker caches the **app shell** — the HTML, CSS, JS and icons. Those
+are identical for every user and contain no session data.
+
+**Nothing under `/api/` is ever cached.** That distinction is the whole point.
+A stale shell is invisible; a stale `/api/overview` is a page reporting that
+nothing needs you while an agent sits blocked waiting for an answer. On a
+shared hub it would also be one person's data outliving another's sign-out.
+
+The worker goes to the **network first** and falls back to the cache only when
+the network cannot answer. Cache-first would be faster and would also mean a
+shipped fix never reaches anyone — tolerable for a blog, not for a page that
+renders approval prompts. The cache is for the aeroplane, not the millisecond.
+
+Opened with no connection, the app says it cannot reach the hub, that you are
+**still signed in**, and that **your sessions are unaffected** — they run on
+your devices, and the hub only watches them. Anything waiting on an approval
+is still waiting. It reloads by itself when connectivity returns.
+
+A service worker needs a secure context, so none is registered on a hub reached
+over plain `http` on a LAN. Everything else works exactly the same there.
+
 ## Device tokens
 
 A credential that can be a device and **nothing else** — it cannot read the
