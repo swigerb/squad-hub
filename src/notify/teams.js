@@ -5,16 +5,22 @@
  * WHAT THIS DOES AND DOES NOT DO, because the difference matters.
  *
  *   Does: build a valid Adaptive Card describing exactly what the agent wants
- *         to run, and post it to a Teams incoming webhook. The card carries a
- *         deep link that opens the approval in Squad Hub.
+ *         to run, and POST it to a Teams webhook URL. The card carries a deep
+ *         link that opens the approval in Squad Hub.
  *
  *   Does NOT: approve or deny from inside the card. `Action.Execute` requires a
  *         registered Teams bot with a messaging endpoint and a tenant app
- *         registration. An incoming webhook cannot receive a response.
+ *         registration. A one-way webhook cannot receive a response.
  *
  * That boundary is a property of Teams, not a shortcut taken here, and the card
  * says so rather than showing buttons that would not work. A button that does
  * nothing is worse than a link that does something.
+ *
+ * WHICH KIND OF WEBHOOK. Office 365 Connectors -- the old "Incoming Webhook"
+ * channel connector -- were retired; rollout completed in May 2026, and one
+ * can no longer be created. The replacement is a Power Automate "Workflows"
+ * webhook, which accepts the same Adaptive Card payload this module already
+ * sends, so nothing here changed. See docs/commands.md for how to create one.
  *
  * PRIVACY. The card shows a command and paths, which are the user's own data
  * arriving in a channel that may have other members. Content is truncated, and
@@ -138,7 +144,7 @@ function approvalCard({ session, device, approval, hubUrl }) {
   };
 }
 
-/** Wrap a card for a Teams incoming webhook. */
+/** Wrap a card for a Teams webhook. */
 function webhookPayload(card) {
   return {
     type: 'message',

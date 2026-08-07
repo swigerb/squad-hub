@@ -1756,6 +1756,18 @@ const MUTATIONS = [
     replace: `const THEMES = ['dark', 'light']; // MUTATION`,
     mustFail: 'the theme toggle cycles system, dark and light, and sticks',
   },
+  {
+    // A setup step that is impossible is worse than one that is missing: it
+    // reads as correct right up until someone spends an afternoon looking for
+    // a menu item that was removed.
+    name: 'the docs go back to describing a retired Office 365 Connector',
+    file: 'docs/commands.md',
+    find: `**Create the webhook with Power Automate, not a channel connector.** Office 365
+Connectors — the old *Incoming Webhook* you added to a channel — were retired,
+with rollout completing in **May 2026**. One can no longer be created.`,
+    replace: `Add an Incoming Webhook to the channel and paste the URL it gives you.`,
+    mustFail: 'the docs never tell you to create a retired Office 365 Connector',
+  },
 ];
 
 /**
