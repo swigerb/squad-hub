@@ -765,6 +765,16 @@ async function suiteControlVerification() {
   runChildSuite(path.join(__dirname, 'control-verification-unit.js'), 'control');
 }
 
+/**
+ * Approval depth and the composer's agent/model selection. Reading a file and
+ * rewriting a directory are not the same decision, and a standing permission
+ * that does not say what it makes standing is a blank cheque.
+ */
+async function suiteApprovalDepth() {
+  console.log('\n[APPROVAL DEPTH] read-only badges, standing rules, agent/model');
+  runChildSuite(path.join(__dirname, 'approval-depth-unit.js'), 'approval-depth');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -806,6 +816,7 @@ async function suiteControlVerification() {
   await suiteListControls();
   await suiteDeviceRoster();
   await suiteControlVerification();
+  await suiteApprovalDepth();
 
   console.log('');
   console.log('='.repeat(60));

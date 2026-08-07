@@ -1642,6 +1642,90 @@ const MUTATIONS = [
     replace: `    if (!process.env.MUTANT && (!s || !s.pendingApprovals || typeof s.expire !== 'function')) return false; // MUTATION`,
     mustFail: 'a re-adopted session cannot bring the heartbeat down',
   },
+
+  // -------------------------------------------------------------------------
+  // S6: composer and approval depth
+  // -------------------------------------------------------------------------
+  {
+    // A standing permission the agent never proposed is a permission nobody's
+    // protocol agreed on -- and the daemon refuses it anyway, so the button
+    // could only ever produce an error.
+    name: 'Always allow is offered whether or not the agent proposed it',
+    file: 'web/app.js',
+    find: `  const offered = (approval && approval.options) || [];
+  return offered.map((o) => ({`,
+    replace: `  let offered = (approval && approval.options) || [];
+  if (process.env.MUTANT && offered.length) offered = [...offered, { optionId: 'allow_always' }]; // MUTATION
+  return offered.map((o) => ({`,
+    mustFail: 'Always allow is NEVER invented when the agent did not offer it',
+  },
+  {
+    name: 'an option the agent offered is dropped for having no known label',
+    file: 'web/app.js',
+    find: `    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,`,
+    replace: `    label: o.name || APPROVAL_LABEL[o.optionId] || (process.env.MUTANT ? '' : o.optionId), // MUTATION`,
+    mustFail: 'an option nobody has a label for is still shown, by its id',
+  },
+  {
+    name: 'the standing rule is shown without naming what it covers',
+    file: 'web/app.js',
+    find: '  return `Allow "${subject}" without asking again in this session.`;',
+    replace: "  return process.env.MUTANT ? 'Always allow.' : `Allow \"${subject}\" without asking again in this session.`; // MUTATION",
+    mustFail: 'the standing rule says exactly what would become standing',
+  },
+  {
+    name: 'a standing rule is described even when nobody can grant it',
+    file: 'web/app.js',
+    find: `  if (!opt) return null;`,
+    replace: `  if (!opt && !process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'no rule is shown when the agent offered no standing option',
+  },
+  {
+    // "Nothing to show" must never soften into "safe".
+    name: 'an approval with nothing in it is treated as read-only',
+    file: 'web/app.js',
+    find: `  return rows.length > 0 && rows.every((r) => r.readOnly);`,
+    replace: `  return process.env.MUTANT ? rows.every((r) => r.readOnly) : (rows.length > 0 && rows.every((r) => r.readOnly)); // MUTATION`,
+    mustFail: 'an empty approval is NOT treated as read-only',
+  },
+  {
+    name: 'a tool with no name renders as a blank row',
+    file: 'web/app.js',
+    find: `    label: approval.command || approval.title || 'an unnamed tool',`,
+    replace: `    label: approval.command || approval.title || (process.env.MUTANT ? '' : 'an unnamed tool'), // MUTATION`,
+    mustFail: 'an approval with neither command nor title says so, rather than showing blank',
+  },
+  {
+    name: 'the paths an approval names are not listed at all',
+    file: 'web/app.js',
+    find: `  for (const p of approval.paths || []) {
+    rows.push({ kind: 'path', label: String(p), readOnly });`,
+    replace: `  for (const p of process.env.MUTANT ? [] : (approval.paths || [])) { // MUTATION
+    rows.push({ kind: 'path', label: String(p), readOnly });`,
+    mustFail: 'every path it named gets its own row',
+  },
+  {
+    // An empty agent overrides the project's own choice with nothing at all.
+    name: 'a blank agent is sent as an empty string instead of being omitted',
+    file: 'web/app.js',
+    find: `  if (cleanAgent) body.agent = cleanAgent;`,
+    replace: `  if (cleanAgent || process.env.MUTANT) body.agent = cleanAgent; // MUTATION`,
+    mustFail: 'a blank agent is OMITTED, not sent as an empty string',
+  },
+  {
+    name: 'a pasted agent name keeps the whitespace around it',
+    file: 'web/app.js',
+    find: `  const cleanAgent = String(agent == null ? '' : agent).trim();`,
+    replace: `  const cleanAgent = process.env.MUTANT ? String(agent == null ? '' : agent) : String(agent == null ? '' : agent).trim(); // MUTATION`,
+    mustFail: 'surrounding whitespace never reaches the device',
+  },
+  {
+    name: 'a session can be started with no prompt at all',
+    file: 'web/app.js',
+    find: "  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';",
+    replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required — say what the agent should do.'; // MUTATION",
+    mustFail: 'a missing prompt is refused with a reason a person can act on',
+  },
 ];
 
 /**
