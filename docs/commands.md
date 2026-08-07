@@ -243,9 +243,9 @@ instead of the human summary.
 ## Login startup (optional)
 
 ```
-squad-hub install-service [--dry-run] [--json]
-squad-hub uninstall-service [--dry-run] [--json]
-squad-hub service-status [--dry-run] [--json]
+squad-hub autostart enable [--dry-run] [--json]
+squad-hub autostart disable [--dry-run] [--json]
+squad-hub autostart status [--dry-run] [--json]
 ```
 
 Registers a login task that runs `squad-hub start` once when you sign in, so
@@ -258,12 +258,24 @@ the daemon comes up without a terminal. Never requires admin or root:
 | macOS | A LaunchAgent in `~/Library/LaunchAgents`. |
 | Anything else | Reported clearly as unsupported — nothing is installed. |
 
+The older spellings still work and always will — they are already in people's
+scripts and login tasks:
+
+| Older | Current |
+|---|---|
+| `squad-hub install-service` | `squad-hub autostart enable` |
+| `squad-hub uninstall-service` | `squad-hub autostart disable` |
+| `squad-hub service-status` | `squad-hub autostart status` |
+
+They are the same command, not a second implementation; each reports itself
+under the name you typed.
+
 Both the Node executable and `bin/squad-hub.js` are located from the running
 process itself, so this works correctly whether Squad Hub was installed with
 `npm link` or run from a full checkout, and even when either path contains
 spaces.
 
-Install and uninstall are **idempotent** — running either twice does not
+Enable and disable are **idempotent** — running either twice does not
 error and does not duplicate the task.
 
 `--dry-run` reports the exact command(s) and file(s) it would use without
@@ -292,14 +304,70 @@ access, the daemon refuses rather than silently using somewhere else.
 | `squad-hub track-all <on\|off>` | Report every session, or only Squad Hub ones. |
 | `squad-hub --version` | Print the version. |
 | `squad-hub config show` | Print the current configuration. |
+| `squad-hub config edit` | Open the configuration in `$VISUAL`, `$EDITOR`, or the platform default. |
 | `squad-hub config server <url>` | Pin a hub service URL. |
 | `squad-hub config unset-server` | Clear it. |
+| `squad-hub config env` | List the named environments `--env` can use. |
+| `squad-hub config env <name> <url>` | Set one. `none` clears it. |
 | `squad-hub config enable-auto-shutdown` | Exit a while after the last session ends. |
 | `squad-hub config disable-auto-shutdown` | Stay running until stopped. |
 | `squad-hub config set-auto-shutdown-grace <seconds>` | How long to wait first. |
 
 Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 `~/.squad-hub`.
+
+`config edit` creates the file first if it does not exist — an editor opened on
+a path that is not there is how someone ends up editing nothing at all — and
+re-parses it afterwards. Invalid JSON is reported as a failure rather than left
+for the next command to silently read as defaults.
+
+## Global options
+
+Accepted **before or after** the subcommand; `squad-hub --env ppe status` and
+`squad-hub status --env ppe` are the same command.
+
+| Option | |
+|---|---|
+| `--env prod\|ppe` | Use a named hub for this invocation. |
+| `--no-config-cache` | Re-read `config.json` on every access instead of reusing it. |
+
+### `--env`
+
+Squad Hub is self-hosted, so there is no vendor `prod` to compile in. A name
+resolves to a URL through, in order:
+
+1. `SQUAD_HUB_PROD_URL` / `SQUAD_HUB_PPE_URL`
+2. What `squad-hub config env <name> <url>` saved
+
+The hub a command actually talks to is chosen as:
+
+```
+--hub <url>          explicit, wins outright
+config server <url>  pinned; --env is IGNORED and says so
+--env <name>         used only when nothing is pinned
+(nothing)            local only
+```
+
+A pin is a persisted, deliberate decision, so an option that silently overrode
+it would make `config server` mean nothing. `--env` alongside a pin prints why
+it was ignored rather than dropping it on the floor.
+
+`--env` does **not** pin what it resolved. It is a per-invocation choice; if it
+wrote the URL to `server`, the next `--env` would be ignored.
+
+A name that resolves to nothing is a usage error (exit 2), never a quiet
+fallback to local-only — someone who typed `--env ppe` wants ppe.
+
+### `--no-config-cache`
+
+`config.json` is normally read once and reused for as long as the value on disk
+is unchanged, which matters most in the daemon: it reads the config on every
+heartbeat and on every session start.
+
+The memo is keyed on the file's modification time and size, not merely on
+"already read once", so a config written by the CLI is picked up by the
+daemon — a different process — on its next read. `--no-config-cache` skips even
+that check and reads the file every time.
 
 ## Device tokens
 
@@ -356,6 +424,8 @@ the UI shows a banner. Scale up, not out.
 |---|---|
 | `SQUAD_HUB_HOME` | Config, state and logs. Default `~/.squad-hub`. |
 | `SQUAD_HUB_URL` | Hub service to attach to. |
+| `SQUAD_HUB_PROD_URL` | Hub URL for `--env prod`. Wins over the saved value. |
+| `SQUAD_HUB_PPE_URL` | Hub URL for `--env ppe`. Wins over the saved value. |
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
