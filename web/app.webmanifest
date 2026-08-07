@@ -3,9 +3,10 @@
   "short_name": "Squad Hub",
   "description": "See and control your Squad sessions across every device.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0b0d12",
-  "theme_color": "#0b0d12",
+  "background_color": "#14161a",
+  "theme_color": "#14161a",
   "orientation": "portrait-primary",
   "icons": [
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }

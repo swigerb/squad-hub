@@ -1813,6 +1813,79 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `  return { status: process.env.MUTANT ? 'none' : 'missing' }; // MUTATION`,
     mustFail: 'a session that has gone is reported, not silently ignored',
   },
+
+  // -------------------------------------------------------------------------
+  // S8: the offline shell
+  //
+  // Unconditional, like the S7 theme pair: these run in a real browser and in
+  // a service worker context, neither of which has `process`.
+  // -------------------------------------------------------------------------
+  {
+    // The distinction the whole worker exists to make. A stale shell is
+    // invisible; a stale /api/overview is a page saying "nothing needs you"
+    // while an agent sits blocked, and on a shared hub it is one user's data
+    // outliving another's sign-out.
+    name: 'the service worker caches API responses too',
+    file: 'web/sw.js',
+    find: `  if (url.pathname.startsWith('/api/')) return false;`,
+    replace: `  // MUTATION: /api/ is no longer excluded`,
+    mustFail: 'an API response is NEVER served from the cache',
+  },
+  {
+    // `/?token=...` is the same shell as `/`. TWO normalisations keep a
+    // credential out of the cache -- the navigation branch keys on `/`, and
+    // shellKey strips the query -- so removing either alone is rescued by the
+    // other, the same shape as the static path-traversal pair. Only removing
+    // both writes a live token to disk.
+    name: 'the cache key keeps the query string, storing tokens on disk',
+    file: 'web/sw.js',
+    find: `    const key = event.request.mode === 'navigate' ? shellKey(new URL('/', url)) : shellKey(url);`,
+    replace: `    const key = new Request(url.href); // MUTATION`,
+    mustFail: 'a token in the URL is never written into the cache',
+  },
+  {
+    // Cache-first is how a shipped fix never reaches anyone.
+    name: 'the worker answers from cache without asking the network',
+    file: 'web/sw.js',
+    find: `    try {
+      const fresh = await fetch(event.request);`,
+    replace: `    try {
+      const hit = await caches.match(key); if (hit) return hit; // MUTATION
+      const fresh = await fetch(event.request);`,
+    mustFail: 'the worker asks the network first, so a fix is never stuck behind a cache',
+  },
+  {
+    // The one line the offline shell actually depends on: when the network
+    // fails, answer from the cache. Targeting either thing that POPULATES the
+    // cache is uncatchable -- `addAll` at install and the runtime put each
+    // rescue the other, which is why that version escaped twice. This is the
+    // mechanism, not one of its two feeds.
+    name: 'nothing is served from cache when the network is gone',
+    file: 'web/sw.js',
+    find: `      const cached = await caches.match(key);
+      if (cached) return cached;`,
+    replace: `      const cached = null; // MUTATION
+      if (cached) return cached;`,
+    mustFail: 'the shell survives the hub going away entirely',
+  },
+  {
+    name: 'an unreachable hub is reported as a credential problem',
+    file: 'web/app.js',
+    find: `    if (e.status === undefined) return showOffline();`,
+    replace: `    // MUTATION: the offline case falls through to "Could not sign in"`,
+    mustFail: 'offline, the app says the network failed — not that you are signed out',
+  },
+  {
+    // The reassurance is the point, not decoration: the natural fear on seeing
+    // a dashboard fail is that the work it was watching has failed too, and
+    // here that is precisely backwards.
+    name: 'the offline page drops the line saying sessions keep running',
+    file: 'web/app.js',
+    find: `      <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
+         Anything waiting on an approval is still waiting.</p>`,
+    replace: `      <!-- MUTATION -->`,
+    mustFail: 'offline, the app says the network failed — not that you are signed out',
+  },
 ];
 
 /**

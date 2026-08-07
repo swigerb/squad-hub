@@ -482,8 +482,144 @@ async function until(fn, what, budgetMs = 15000) {
         'no cloud device is connected, so the button must say so rather than open a dialog that cannot work');
     });
 
-    await check('signing out returns to a usable sign-in page', async () => {
-      await page.goto(origin);
+    // -----------------------------------------------------------------------
+    // S8: the offline shell. Asserted against a REAL service worker in a real
+    // browser -- a worker that registers but caches nothing looks identical in
+    // the source, and only going offline tells the two apart.
+    // -----------------------------------------------------------------------
+    await check('the service worker registers and takes control', async () => {
+      await page.goto(`${origin}/?token=${userToken}`);
+      await page.waitForSelector('.topbar', { timeout: 10000 });
+      const active = await page.evaluate(async () => {
+        const reg = await navigator.serviceWorker.ready;
+        return !!(reg && reg.active);
+      });
+      assert.ok(active, 'no service worker became active');
+    });
+
+    await check('the shell survives the hub going away entirely', async () => {
+      /**
+       * The real test of an offline layer: not "is a worker registered", but
+       * "does the cached application document get served when the server is
+       * gone".
+       *
+       * Asserted on the SERVED response, not on `page.content()`. The DOM
+       * after scripts run is a different question -- the app deliberately
+       * replaces it offline -- and asserting on the words "Squad Hub" is
+       * weaker still, since the fallback page says that too. An earlier
+       * version of this check did both and passed with caching disabled.
+       */
+      await page.goto(`${origin}/?token=${userToken}`);
+      await page.waitForSelector('.topbar', { timeout: 10000 });
+
+      await page.context().setOffline(true);
+      try {
+        const res = await page.goto(`${origin}/`, { waitUntil: 'domcontentloaded' });
+        assert.ok(res, 'the navigation produced no response at all');
+        const served = await res.text();
+        assert.match(served, /id="deviceRail"/,
+          'offline served the fallback page, not the cached application shell');
+        assert.match(served, /id="groups"/);
+        assert.ok(!/Squad Hub is offline/.test(served), 'the shell was cached but not used');
+      } finally {
+        await page.context().setOffline(false);
+      }
+    });
+
+    await check('offline, the app says the network failed — not that you are signed out', async () => {
+      /**
+       * The half that matters more than caching files. Without it the cached
+       * page loads only to announce "Could not sign in — Failed to fetch",
+       * which is confidently wrong: the person IS signed in, and it sends them
+       * hunting for a credential problem that does not exist.
+       *
+       * The reassurance is not padding either. The natural fear on seeing a
+       * dashboard fail is that the work it was watching has failed too, and
+       * here that is precisely backwards.
+       */
+      await page.context().setOffline(true);
+      try {
+        await page.goto(`${origin}/`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('#offlineRetry', { timeout: 10000 });
+        const text = await page.evaluate(() => document.body.innerText);
+        assert.ok(!/could not sign in/i.test(text),
+          'an unreachable hub was reported as a credential problem');
+        assert.match(text, /can.?t reach the hub/i);
+        assert.match(text, /still signed in/i);
+        assert.match(text, /sessions are unaffected/i,
+          'a failing dashboard must say the work it watches is still running');
+      } finally {
+        await page.context().setOffline(false);
+      }
+    });
+
+    await check('an API response is NEVER served from the cache', async () => {
+      /**
+       * The distinction the whole worker exists to make. A stale shell is
+       * invisible; a stale /api/overview is a page saying "nothing needs you"
+       * while an agent sits blocked -- and on a shared hub it would be one
+       * user's data outliving another's sign-out.
+       */
+      await page.goto(`${origin}/?token=${userToken}`);
+      await page.waitForSelector('.topbar', { timeout: 10000 });
+      await page.evaluate(() => fetch('/api/overview', { headers: { Authorization: 'Bearer x' } }).catch(() => null));
+
+      const cachedApi = await page.evaluate(async () => {
+        const names = await caches.keys();
+        const found = [];
+        for (const n of names) {
+          const c = await caches.open(n);
+          for (const req of await c.keys()) if (new URL(req.url).pathname.startsWith('/api/')) found.push(req.url);
+        }
+        return found;
+      });
+      assert.deepStrictEqual(cachedApi, [], `an API response was written to the cache: ${cachedApi.join(', ')}`);
+    });
+
+    await check('a token in the URL is never written into the cache', async () => {
+      // The shell at /?token=... is the same shell as /. Keying on the full URL
+      // would store a live credential on disk for no benefit whatsoever.
+      const keys = await page.evaluate(async () => {
+        const names = await caches.keys();
+        const out = [];
+        for (const n of names) {
+          const c = await caches.open(n);
+          for (const req of await c.keys()) out.push(req.url);
+        }
+        return out;
+      });
+      const leaking = keys.filter((k) => k.includes('token='));
+      assert.deepStrictEqual(leaking, [], `a credential was cached: ${leaking.join(', ')}`);
+      assert.ok(keys.length > 0, 'nothing was cached at all; the worker is not doing its job');
+    });
+
+    await check('the worker asks the network first, so a fix is never stuck behind a cache', async () => {
+      /**
+       * The classic service worker disaster is shipping a fix and having people
+       * keep running last month's code. For a page that renders approval
+       * prompts that is not a cosmetic problem.
+       *
+       * Counted at the SERVER, not with `page.on('request')`. Playwright
+       * reports a request event even when the worker answers it from cache, so
+       * the obvious version of this test passes against a cache-first worker --
+       * it did, until a mutation removing the network call entirely failed to
+       * break it. Only the server can say whether the network was really used.
+       */
+      let hits = 0;
+      const count = (req) => { if (req.url && req.url.split('?')[0] === '/app.js') hits += 1; };
+      svc.server.on('request', count);
+      try {
+        await page.goto(`${origin}/?token=${userToken}`);
+        await page.waitForSelector('.topbar', { timeout: 10000 });
+        // Give the worker's fetch handler a moment to reach the server.
+        await new Promise((r) => setTimeout(r, 500));
+        assert.ok(hits > 0, 'app.js was served from cache without the network ever being asked');
+      } finally {
+        svc.server.off('request', count);
+      }
+    });
+
+    await check('signing out returns to a usable sign-in page', async () => {      await page.goto(origin);
       await page.waitForSelector('#menuBtn', { timeout: 10000 });
       await page.click('#menuBtn');
       await page.click('[data-menu="signout"]');
