@@ -77,8 +77,14 @@ function truncate(s, n) {
 function approvalCard({ session, device, approval, hubUrl }) {
   const command = redact(truncate(approval.command || approval.title || '(no command reported)', 900));
   const paths = (approval.paths || []).slice(0, 8).map((p) => redact(truncate(p, 120)));
+  // The hub keys a session by `deviceId:sessionId` (see service/store.js), and
+  // a session id is only unique WITHIN a device -- two machines can both be
+  // running `s001`. Sending the bare id would open whichever one the browser
+  // happened to match first, which on a bad day is somebody else's session on
+  // another machine. Send the full key.
+  const sessionKey = device.deviceId ? `${device.deviceId}:${session.id}` : session.id;
   const deepLink = hubUrl
-    ? `${String(hubUrl).replace(/\/+$/, '')}/?session=${encodeURIComponent(session.id)}`
+    ? `${String(hubUrl).replace(/\/+$/, '')}/?session=${encodeURIComponent(sessionKey)}`
     : null;
 
   const facts = [
@@ -140,7 +146,7 @@ function approvalCard({ session, device, approval, hubUrl }) {
     $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
     version: '1.4',
     body,
-    actions: deepLink ? [{ type: 'Action.OpenUrl', title: 'Open in Squad Hub', url: deepLink }] : [],
+    actions: deepLink ? [{ type: 'Action.OpenUrl', title: 'View live session', url: deepLink }] : [],
   };
 }
 
