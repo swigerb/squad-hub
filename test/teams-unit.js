@@ -97,7 +97,91 @@ check('Squad context appears when there is any', () => {
 check('a deep link back to the hub is offered', () => {
   assert.strictEqual(card.actions.length, 1);
   assert.strictEqual(card.actions[0].type, 'Action.OpenUrl');
-  assert.ok(card.actions[0].url.startsWith('https://hub.example.com/?session=s001'));
+  assert.ok(card.actions[0].url.startsWith('https://hub.example.com/?session='));
+});
+
+check('the deep link carries the hub key, not the bare session id', () => {
+  /**
+   * The hub keys a session by `deviceId:sessionId` (service/store.js), and a
+   * session id is unique only WITHIN a device -- two machines can both be
+   * running `s001`. A link carrying the bare id would open whichever the
+   * browser matched first, which on a bad day is another machine's session.
+   */
+  const url = new URL(card.actions[0].url);
+  assert.strictEqual(url.searchParams.get('session'), 'd1:s001',
+    'the link must identify the device as well as the session');
+});
+
+check('a card built without a device id still links somewhere usable', () => {
+  const c = approvalCard({ session, device: { name: 'nameless' }, approval, hubUrl: 'https://hub.example.com' });
+  const url = new URL(c.actions[0].url);
+  assert.strictEqual(url.searchParams.get('session'), 's001',
+    'losing the device id must degrade to the old behaviour, not to a broken link');
+});
+
+check('the link is labelled as going to the live session', () => {
+  assert.match(card.actions[0].title, /live session/i,
+    'the card cannot answer in place, so the one thing it CAN do must say what it does');
+});
+
+// ---------------------------------------------------------------------------
+// The OTHER end of the link.
+//
+// Both halves used to be tested independently and the seam between them not at
+// all: this suite proved the card emitted a URL, and nothing proved the app
+// could do anything with it. It could not -- `web/app.js` read only `token`
+// from the query string, so the card's one working affordance opened the
+// default view and lost the session it was about.
+// ---------------------------------------------------------------------------
+const fs = require('fs');
+const path = require('path');
+
+const appSrc = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+const marker = appSrc.indexOf('(async function main()');
+const appMod = { exports: {} };
+new Function('module', 'exports', `${appSrc.slice(0, marker)}
+module.exports = { resolveDeepLink };`)(appMod, appMod.exports);
+const { resolveDeepLink } = appMod.exports;
+
+const groups = [
+  { device: { deviceId: 'd1' }, sessions: [{ id: 's001', key: 'd1:s001' }, { id: 's002', key: 'd1:s002' }] },
+  { device: { deviceId: 'd2' }, sessions: [{ id: 's001', key: 'd2:s001' }] },
+];
+
+check('the app resolves the exact key the card sends', () => {
+  assert.deepStrictEqual(resolveDeepLink('d1:s001', groups), { status: 'found', key: 'd1:s001' });
+  assert.deepStrictEqual(resolveDeepLink('d2:s001', groups), { status: 'found', key: 'd2:s001' });
+});
+
+check('a bare session id from an older card still works when it is unambiguous', () => {
+  // Cards posted before the key was included are sitting in people's channels.
+  assert.deepStrictEqual(resolveDeepLink('s002', groups), { status: 'found', key: 'd1:s002' });
+});
+
+check('an AMBIGUOUS bare id is refused rather than guessed', () => {
+  // Both devices are running an `s001`. Picking one would sometimes open
+  // somebody else's session on another machine.
+  const r = resolveDeepLink('s001', groups);
+  assert.strictEqual(r.status, 'ambiguous');
+  assert.strictEqual(r.count, 2);
+});
+
+check('a session that has gone is reported, not silently ignored', () => {
+  assert.strictEqual(resolveDeepLink('d9:gone', groups).status, 'missing',
+    'a link that does nothing at all reads as a broken page');
+});
+
+check('no session in the link is not an error', () => {
+  assert.strictEqual(resolveDeepLink(null, groups).status, 'none');
+  assert.strictEqual(resolveDeepLink('', groups).status, 'none');
+});
+
+check('the card and the app agree on the key format', () => {
+  // The seam itself: what one emits is what the other resolves.
+  const emitted = new URL(card.actions[0].url).searchParams.get('session');
+  const live = [{ device: { deviceId: 'd1' }, sessions: [{ id: 's001', key: 'd1:s001' }] }];
+  assert.deepStrictEqual(resolveDeepLink(emitted, live), { status: 'found', key: 'd1:s001' },
+    'the card emits a key the app cannot resolve -- the link opens the wrong place');
 });
 
 check('NO Allow/Deny buttons are shown, since a webhook cannot honour them', () => {

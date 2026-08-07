@@ -1159,6 +1159,48 @@ function setConn(s) {
     : '';
 }
 
+/**
+ * A session named in the URL, from a Teams card's "View live session" link.
+ *
+ * Read once and removed from the address bar, like the token above: leaving it
+ * there means a reload re-opens the panel someone just closed, and a bookmark
+ * silently becomes "always open this session".
+ */
+function takeDeepLinkSession() {
+  const params = new URLSearchParams(location.search);
+  const wanted = params.get('session');
+  if (!wanted) return null;
+  params.delete('session');
+  const rest = params.toString();
+  history.replaceState({}, '', rest ? `${location.pathname}?${rest}` : location.pathname);
+  return wanted;
+}
+
+/**
+ * Resolve what a deep link asked for.
+ *
+ * Matches the hub's `deviceId:sessionId` key first. A bare session id is
+ * accepted as a fallback -- cards posted before the key was included are
+ * sitting in people's channels and should keep working -- but ONLY when
+ * exactly one device has a session by that name. A session id is unique within
+ * a device, not across them, so guessing between two would sometimes open
+ * somebody else's session on another machine.
+ */
+function resolveDeepLink(wanted, groups) {
+  if (!wanted) return { status: 'none' };
+  for (const g of groups) {
+    for (const s of g.sessions || []) if (s.key === wanted) return { status: 'found', key: s.key };
+  }
+  const byId = [];
+  for (const g of groups) {
+    for (const s of g.sessions || []) if (s.id === wanted) byId.push(s.key);
+  }
+  if (byId.length === 1) return { status: 'found', key: byId[0] };
+  if (byId.length > 1) return { status: 'ambiguous', count: byId.length };
+  return { status: 'missing' };
+}
+
+
 async function refresh() {
   const params = new URLSearchParams();
   if (state.filters.q) params.set('q', state.filters.q);
@@ -1726,6 +1768,18 @@ function signInHint(mode) {
     return undefined;
   }
   await refresh();
+
+  // A Teams card links here to answer an approval. Opening the hub's default
+  // view instead would make the card's one working affordance a dead end --
+  // the card exists BECAUSE it cannot approve in place.
+  const wanted = takeDeepLinkSession();
+  if (wanted) {
+    const hit = resolveDeepLink(wanted, state.overview.groups);
+    if (hit.status === 'found') openDetail(hit.key);
+    else if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
+    else toast(`That session is no longer here — it may have finished, or its device is offline`);
+  }
+
   connect();
   setInterval(refresh, 15000);
   return undefined;
