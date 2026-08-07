@@ -203,6 +203,17 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
 }
 
+/* ---------- pinning ---------- */
+.star {
+  background: none; border: 0; cursor: pointer; padding: 0 2px;
+  font-size: 15px; line-height: 1; color: var(--faint);
+  align-self: center; flex: 0 0 auto;
+}
+.star:hover { color: var(--dim); }
+.star.on { color: var(--warn); }
+.group.pinned .group-head { color: var(--warn); }
+.pin-mark { color: var(--warn); }
+
 /* ---------- devices panel ---------- */
 .devices .card { padding: 0; }
 .device {
