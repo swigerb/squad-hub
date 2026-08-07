@@ -20,6 +20,7 @@ const state = {
   sortBy: 'started_desc',
   railCollapsed: false,
   composer: { draft: '', control: 'unknown', reason: '' },
+  theme: 'system',
   // Pinned sessions survive a reload; a star that forgets itself is not a
   // favourite, it is a highlight.
   favorites: new Set(),
@@ -764,11 +765,26 @@ function render() {
   newBtn.title = online.length ? 'Start a session' : 'Connect a device first';
   const emptyEl = $('empty');
   if (!emptyEl.hidden) {
+    // Two buttons, because "start a session" has two genuinely different
+    // answers: a cloud device is provisioned on demand, a local one is the
+    // machine already sitting there. One button forces a person to open a
+    // dialog to discover which they can have.
+    const cloud = devices.filter((d) => d.kind === 'cloud' && d.presence !== 'offline');
+    const local = online.filter((d) => d.kind !== 'cloud');
     emptyEl.innerHTML = online.length
-      ? `<h3>No sessions yet</h3><p>Start one on a device with <code>squad-hub run "…"</code>, or use <b>+ New</b> to launch one remotely.</p>`
+      ? `<h3>No sessions yet</h3>
+         <p>Start one on a device with <code>squad-hub run "…"</code>, or start one from here.</p>
+         <p class="empty-actions">
+           <button class="primary" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>New cloud session</button>
+           <button class="ghost" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>
+         </p>`
       : `<h3>No devices connected</h3><p>A device is the machine that actually runs the agent — your laptop, a dev box, or a container.</p><p><button class="primary" id="emptyConnect">Connect a device</button></p>`;
     const ec = document.getElementById('emptyConnect');
     if (ec) ec.onclick = () => openConnect();
+    const cb = document.getElementById('emptyCloud');
+    if (cb) cb.onclick = () => openNew(cloud.length ? cloud[0].deviceId : undefined);
+    const lb = document.getElementById('emptyLocal');
+    if (lb) lb.onclick = () => openNew(local.length ? local[0].deviceId : undefined);
   }
 
   const roster = deviceRoster(devices);
@@ -1176,6 +1192,7 @@ function loadView() {
     if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
   } catch { /* same */ }
   try { state.railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch { /* same */ }
+  state.theme = loadTheme();
 }
 
 function saveView() {
@@ -1210,7 +1227,54 @@ function syncControls() {
   set('groupBy', state.groupBy);
   set('sortBy', state.sortBy);
   setRailCollapsed(state.railCollapsed);
+  applyTheme(state.theme);
 }
+
+const THEME_KEY = 'squad-hub-theme';
+
+/**
+ * Theme, in three states rather than two.
+ *
+ * `system` is a real setting, not the absence of one: it means "keep following
+ * this machine", and it is what someone gets before they have said anything.
+ * Collapsing it into a boolean would freeze whatever the system happened to be
+ * on first load, so a laptop that switches at sunset would stop switching.
+ */
+const THEMES = ['system', 'dark', 'light'];
+
+function loadTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return THEMES.includes(saved) ? saved : 'system';
+  } catch { return 'system'; }
+}
+
+function applyTheme(theme) {
+  state.theme = THEMES.includes(theme) ? theme : 'system';
+  // The attribute is REMOVED for `system`, not set to it. The stylesheet keys
+  // its prefers-color-scheme block on `:root:not([data-theme])`, so an
+  // attribute of any value would override the system choice it exists to
+  // follow.
+  if (state.theme === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', state.theme);
+
+  const btn = $('themeBtn');
+  if (btn) {
+    const label = { system: 'Theme: follow system', dark: 'Theme: dark', light: 'Theme: light' }[state.theme];
+    btn.title = `${label} (click to change)`;
+    btn.setAttribute('aria-label', label);
+    btn.textContent = { system: '◐', dark: '🌙', light: '☀' }[state.theme];
+  }
+  try { localStorage.setItem(THEME_KEY, state.theme); } catch { /* never fatal */ }
+}
+
+/** system -> dark -> light -> system. */
+function nextTheme(theme) {
+  const i = THEMES.indexOf(theme);
+  return THEMES[(i === -1 ? 0 : i + 1) % THEMES.length];
+}
+
+
 
 const RAIL_KEY = 'squad-hub-rail-collapsed';
 
@@ -1263,6 +1327,8 @@ function wire() {
   // thing worth reclaiming, and re-collapsing it on every load would make that
   // a chore rather than a setting.
   $('railToggle').onclick = () => setRailCollapsed(!$('deviceRail').classList.contains('collapsed'));
+
+  $('themeBtn').onclick = () => applyTheme(nextTheme(state.theme));
 
   $('newBtn').onclick = () => openNew();
   $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
