@@ -121,6 +121,42 @@ check('the source scan actually covers the source tree', () => {
   }
 });
 
+check('every mutation still anchors to real source', () => {
+  /**
+   * A mutation whose `find` text no longer appears in the file is a mutation
+   * that silently tests NOTHING. The sweep reports it, but a sweep takes hours
+   * and is run rarely; this catches the same drift in milliseconds, on every
+   * run, which is when it is cheap to fix.
+   *
+   * The drift is invisible by construction: refactoring the code under an
+   * anchor produces no error anywhere, and the catalogue goes on listing a
+   * guarantee nobody is checking. That is the exact failure mode the mutation
+   * harness exists to prevent, applied to the harness itself.
+   */
+  if (process.env.MUTANT) return; // a sweep is mid-flight; the file is edited on purpose
+  const { MUTATIONS } = require('./mutate');
+  assert.ok(MUTATIONS.length >= 50, `only ${MUTATIONS.length} mutations found; the catalogue did not load`);
+
+  const nl = (s) => s.replace(/\r\n/g, '\n');
+  const drifted = [];
+  for (const m of MUTATIONS) {
+    if (m.skip) continue;
+    let body;
+    try { body = read(m.file); } catch { drifted.push(`${m.name} -> ${m.file} does not exist`); continue; }
+    if (!nl(body).includes(nl(m.find))) drifted.push(`${m.name} -> anchor gone from ${m.file}`);
+  }
+  assert.deepStrictEqual(drifted, [],
+    `these mutations would apply nothing and pass silently:\n  ${drifted.join('\n  ')}`);
+});
+
+check('every mutation names a test that could fail', () => {
+  if (process.env.MUTANT) return;
+  const { MUTATIONS } = require('./mutate');
+  const nameless = MUTATIONS.filter((m) => !m.skip && !m.mustFail);
+  assert.deepStrictEqual(nameless.map((m) => m.name), [],
+    'a mutation with no named test is caught by whatever happens to break, which proves nothing');
+});
+
 check('a plausible number of environment variables were found', () => {
   assert.ok(usedVars.length >= 8, `only found ${usedVars.length}; the scan is broken`);
 });
