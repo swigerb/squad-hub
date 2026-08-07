@@ -189,7 +189,19 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .status.active { color: var(--accent); border-color: #1e3563; }
 .status.attention { background: var(--warn); color: #221a00; border-color: var(--warn); font-weight: 700; }
 .status.done { color: var(--ok); border-color: #1d4636; }
+/* Finished work is waiting to be looked at, not filed away -- readable enough
+   to notice in a list, quieter than the amber that means "blocked on you". */
+.status.review { color: var(--ok); border-color: #1d4636; }
 .status.failed { color: var(--bad); border-color: #47262b; }
+
+/* The branch a session's work is landing on. Set apart from the rest of the
+   meta line because two sessions on the same repository but different branches
+   is the case worth telling apart at a glance. */
+.branch {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
 
 /* ---------- devices panel ---------- */
 .devices .card { padding: 0; }

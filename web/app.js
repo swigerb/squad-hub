@@ -69,13 +69,26 @@ async function api(path, opts = {}) {
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+/**
+ * The badge a row carries.
+ *
+ * `Action needed` outranks the status entirely: a session blocked on a person
+ * is the only row that cannot make progress on its own, so it must never be
+ * described as merely `Active`.
+ *
+ * A finished session reads as `Ready for review` rather than `Done`. Nothing
+ * about it is done from the watcher's side -- the work is sitting there
+ * waiting to be looked at, and a badge that says `Done` invites people to
+ * scroll past it.
+ */
 function statusBadge(s) {
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return '<span class="status attention">Action needed</span>';
   const map = {
     active: ['active', 'Active'],
     starting: ['active', 'Starting'],
-    done: ['done', 'Done'],
+    waiting_approval: ['attention', 'Action needed'],
+    done: ['review', 'Ready for review'],
     failed: ['failed', 'Failed'],
     stopped: ['', 'Stopped'],
   };
@@ -83,21 +96,46 @@ function statusBadge(s) {
   return `<span class="status ${cls}">${esc(label)}</span>`;
 }
 
-function sessionRow(s, deviceName) {
+/**
+ * The live activity line.
+ *
+ * A blocked session is described as waiting even if the last update it
+ * received said otherwise, because the row must never look busy while nothing
+ * is happening. Everything else is the agent's own reported activity.
+ */
+function activityLine(s) {
   const pending = (s.pendingApprovals || []).length > 0;
+  if (pending || s.status === 'waiting_approval') return 'Waiting for input';
+  return s.activity || '';
+}
+
+/** Action-needed first, then most recently started. */
+function sessionSort(a, b) {
+  const an = (a.pendingApprovals || []).length > 0 || a.status === 'waiting_approval';
+  const bn = (b.pendingApprovals || []).length > 0 || b.status === 'waiting_approval';
+  if (an !== bn) return an ? -1 : 1;
+  return (b.startedAt || 0) - (a.startedAt || 0);
+}
+
+function sessionRow(s, deviceName) {
+  const pending = (s.pendingApprovals || []).length > 0 || s.status === 'waiting_approval';
   const title = (s.prompt || s.id).slice(0, 70);
   const sq = s.squad;
   const sel = s.agentSelection;
-  // `sel` (session.agentSelection) and `deviceName`/`sq.project`/`s.cwd` all
+  const git = s.git;
+  // `sel` (session.agentSelection), `git` (repository/branch read from the
+  // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all
   // ultimately trace back to attacker-influenceable input: a project's own
-  // `.squad-hub.json` (agent/model), a device's self-reported name, or a
-  // relayed hub's session/device records. None of it is trusted HTML, so
-  // every field landing in this string gets `esc()`'d -- a stored payload
-  // (e.g. an `agent` of `<img src=x onerror=...>`) must render as inert text,
-  // never live markup, however it got here.
+  // `.squad-hub.json` (agent/model), a `.git/config` remote or branch name, a
+  // device's self-reported name, or a relayed hub's session/device records.
+  // None of it is trusted HTML, so every field landing in this string gets
+  // `esc()`'d -- a stored payload (e.g. an `agent` of `<img src=x onerror=...>`,
+  // or a branch literally named `<img src=x onerror=...>`, which git permits)
+  // must render as inert text, never live markup, however it got here.
   const meta = [
     esc(deviceName),
-    esc(sq ? sq.project : s.cwd),
+    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
+    git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
     sel ? `${esc(sel.agent)}${sel.model ? ` (${esc(sel.model)})` : ''} — ${esc(sel.source)}` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? ago(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
@@ -120,7 +158,7 @@ function sessionRow(s, deviceName) {
       <div class="row-main">
         <div class="row-title">
           <b>${esc(title)}</b>
-          <span class="activity">${esc(s.activity || '')}</span>
+          <span class="activity">${esc(activityLine(s))}</span>
         </div>
         <div class="row-meta">${meta}</div>
         ${squadBits}
@@ -142,8 +180,8 @@ function render() {
 
   // Groups with a waiting session float up.
   const ordered = [...groups].sort((a, b) => {
-    const an = a.sessions.some((s) => (s.pendingApprovals || []).length);
-    const bn = b.sessions.some((s) => (s.pendingApprovals || []).length);
+    const an = a.sessions.some((s) => (s.pendingApprovals || []).length || s.status === 'waiting_approval');
+    const bn = b.sessions.some((s) => (s.pendingApprovals || []).length || s.status === 'waiting_approval');
     if (an !== bn) return an ? -1 : 1;
     return a.device.name.localeCompare(b.device.name);
   });
@@ -155,7 +193,7 @@ function render() {
         ${esc(g.device.name)}
         <span class="group-meta">${g.sessions.length} session${g.sessions.length === 1 ? '' : 's'} &middot; ${g.device.platform}</span>
       </div>
-      ${g.sessions.length ? `<div class="card">${g.sessions.map((s) => sessionRow(s, g.device.name)).join('')}</div>` : ''}
+      ${g.sessions.length ? `<div class="card">${[...g.sessions].sort(sessionSort).map((s) => sessionRow(s, g.device.name)).join('')}</div>` : ''}
     </div>`).join('');
 
   $('groups').innerHTML = html;

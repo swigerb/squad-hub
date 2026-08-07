@@ -1106,6 +1106,141 @@ const MUTATIONS = [
     replace: `  const chosen = process.env.MUTANT ? (process.env.EDITOR || process.env.VISUAL) : (process.env.VISUAL || process.env.EDITOR); // MUTATION`,
     mustFail: '$VISUAL is preferred over $EDITOR',
   },
+
+  // -------------------------------------------------------------------------
+  // S2: session metadata
+  // -------------------------------------------------------------------------
+  {
+    // The classic stored-XSS shape, on the newest field to reach the DOM. git
+    // will happily let you name a branch `<img src=x onerror=...>`.
+    name: 'the branch is interpolated into the row without escaping',
+    file: 'web/app.js',
+    find: `    git && git.branch ? \`<span class="branch">\${esc(git.branch)}</span>\` : '',`,
+    replace: `    git && git.branch ? \`<span class="branch">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
+    mustFail: 'a malicious BRANCH name renders as inert escaped text',
+  },
+  {
+    name: 'the repository is interpolated into the row without escaping',
+    file: 'web/app.js',
+    find: `    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),`,
+    replace: `    git && git.repository ? (process.env.MUTANT ? git.repository : esc(git.repository)) : esc(sq ? sq.project : s.cwd), // MUTATION`,
+    mustFail: 'a malicious REPOSITORY name renders as inert escaped text',
+  },
+  {
+    name: 'the activity line is interpolated into the row without escaping',
+    file: 'web/app.js',
+    find: `          <span class="activity">\${esc(activityLine(s))}</span>`,
+    replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s) : esc(activityLine(s))}</span>`,
+    mustFail: 'a malicious ACTIVITY line renders as inert escaped text',
+  },
+  {
+    // A blocked session that looks busy is the one state a watcher must not
+    // miss, and a stale streaming update is exactly how it happens.
+    name: 'a blocked session reports whatever the last update claimed',
+    file: 'web/app.js',
+    find: `  if (pending || s.status === 'waiting_approval') return 'Waiting for input';`,
+    replace: `  if ((pending || s.status === 'waiting_approval') && !process.env.MUTANT) return 'Waiting for input'; // MUTATION`,
+    mustFail: 'a blocked session says it is waiting, whatever the last update claimed',
+  },
+  {
+    name: 'action-needed rows are not pulled to the top of their card',
+    file: 'web/app.js',
+    find: `  if (an !== bn) return an ? -1 : 1;
+  return (b.startedAt || 0) - (a.startedAt || 0);`,
+    replace: `  if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION
+  return (b.startedAt || 0) - (a.startedAt || 0);`,
+    mustFail: 'an action-needed session is pulled to the top of its card',
+  },
+  {
+    name: 'a lapsed approval leaves the raw status showing in the badge',
+    file: 'web/app.js',
+    find: `    waiting_approval: ['attention', 'Action needed'],`,
+    replace: `    ...(process.env.MUTANT ? {} : { waiting_approval: ['attention', 'Action needed'] }), // MUTATION`,
+    mustFail: 'waiting_approval is a badge, not a raw status string',
+  },
+  {
+    name: 'a finished session is filed away as Done rather than offered for review',
+    file: 'web/app.js',
+    find: `    done: ['review', 'Ready for review'],`,
+    replace: `    done: process.env.MUTANT ? ['done', 'Done'] : ['review', 'Ready for review'], // MUTATION`,
+    mustFail: 'a finished session reads as "Ready for review", not "Done"',
+  },
+  {
+    // A worktree gets BOTH halves wrong under a naive reader: `.git` is a file,
+    // and `config` lives in the common directory.
+    name: 'a linked worktree is not recognised as a checkout at all',
+    file: 'src/git-context.js',
+    find: `      if (st.isFile()) {`,
+    replace: `      if (st.isFile() && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'a linked worktree reads its own HEAD and the SHARED config',
+  },
+  {
+    name: 'a worktree looks for config in its own git dir, not the shared one',
+    file: 'src/git-context.js',
+    find: `    const raw = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    if (raw) return path.resolve(gitDir, raw);`,
+    replace: `    const raw = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    if (raw && !process.env.MUTANT) return path.resolve(gitDir, raw); // MUTATION`,
+    mustFail: 'a linked worktree reads its own HEAD and the SHARED config',
+  },
+  {
+    // Only the last two segments are kept, which is what discards the
+    // userinfo. Keeping the whole path would carry a token into the UI.
+    name: 'a credential in a remote URL is carried into the rendered repository name',
+    file: 'src/git-context.js',
+    find: `  return parts.slice(-2).join('/');`,
+    replace: `  return process.env.MUTANT ? String(url).replace(/\\.git$/, '') : parts.slice(-2).join('/'); // MUTATION`,
+    mustFail: 'credentials embedded in a remote URL are never carried into the UI',
+  },
+  {
+    name: 'a branch name is split on the first slash it contains',
+    file: 'src/git-context.js',
+    find: `  const ref = head.match(/^ref:\\s*refs\\/heads\\/(.+)$/);
+  if (ref) return ref[1].trim() || null;`,
+    replace: `  const ref = head.match(/^ref:\\s*refs\\/heads\\/(.+)$/);
+  if (ref) return process.env.MUTANT ? ref[1].trim().split('/')[0] : (ref[1].trim() || null); // MUTATION`,
+    mustFail: 'a branch name containing slashes survives intact',
+  },
+  {
+    name: 'the checkout is only found when the session runs at its root',
+    file: 'src/git-context.js',
+    find: `    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;`,
+    replace: `    const parent = path.dirname(dir);
+    if (parent === dir || process.env.MUTANT) return null; // MUTATION
+    dir = parent;`,
+    mustFail: 'the checkout is found from a SUBDIRECTORY, not just its root',
+  },
+  {
+    name: 'any remote will do when there is no origin',
+    file: 'src/git-context.js',
+    find: `      inOrigin = /^remote\\s+"origin"$/.test(name) || name === 'remote "origin"';`,
+    replace: `      inOrigin = process.env.MUTANT ? /^remote\\s/.test(name) : (/^remote\\s+"origin"$/.test(name) || name === 'remote "origin"'); // MUTATION`,
+    mustFail: 'a config with no origin yields nothing rather than the first remote it sees',
+  },
+  {
+    // Decoration must never take the session list down.
+    name: 'a session outside a checkout loses its location entirely',
+    file: 'web/app.js',
+    find: `    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),`,
+    replace: `    process.env.MUTANT ? esc(git && git.repository) : (git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd)), // MUTATION`,
+    mustFail: 'a session outside a checkout still shows its cwd',
+  },
+  {
+    name: 'the CLI status hides the repository and branch it was given',
+    file: 'src/cli.js',
+    find: `  if (s && s.git && s.git.repository) {`,
+    replace: `  if (s && s.git && s.git.repository && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'squad-hub status names the repository and branch, not a bare path',
+  },
+  {
+    name: 'the CLI status files a finished session away as DONE',
+    file: 'src/cli.js',
+    find: `  if (s.status === 'done') return 'Ready for review';`,
+    replace: `  if (s.status === 'done' && !process.env.MUTANT) return 'Ready for review'; // MUTATION`,
+    mustFail: 'squad-hub status offers a finished session for review',
+  },
 ];
 
 /**
