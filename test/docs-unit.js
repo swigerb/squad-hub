@@ -510,5 +510,40 @@ check('every spike the docs cite exists', () => {
   assert.deepStrictEqual([...new Set(missing)], [], `cited but missing: ${missing.join(', ')}`);
 });
 
+check('the docs never tell you to create a retired Office 365 Connector', () => {
+  /**
+   * The connector this used to describe was retired -- rollout completed in
+   * May 2026 -- so the old instruction ("add an Incoming Webhook to the
+   * channel") cannot be followed at all any more. A setup step that is
+   * impossible is worse than one that is missing: it reads as correct right up
+   * until someone spends an afternoon looking for a menu item that was removed.
+   *
+   * The card payload did not change; only how you obtain the URL did.
+   */
+  const offenders = [];
+  for (const [name, body] of [['docs/commands.md', commands], ['README.md', readme],
+    ['docs/README.md', docsIndex], ['docs/cloud.md', cloud],
+    ['docs/architecture.md', architecture], ['docs/security.md', security]]) {
+    // Scoped to the PARAGRAPH, not to a character window. A window wide enough
+    // to hold the disclaimer is also wide enough to be rescued by an unrelated
+    // neighbouring paragraph -- which is exactly what happened when this was
+    // first written, and it made the guard pass against a doc that had gone
+    // back to the impossible instruction.
+    for (const para of body.split(/\n\s*\n/)) {
+      if (!/incoming webhook/i.test(para)) continue;
+      if (/retire|no longer|replaced|Workflows|Power Automate/i.test(para)) continue;
+      offenders.push(`${name}: "${para.trim().slice(0, 60)}…"`);
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    `the docs still describe a connector that cannot be created:\n  ${offenders.join('\n  ')}`);
+});
+
+check('the Teams webhook variable is explained where it is set', () => {
+  assert.match(commands, /Power Automate/,
+    'telling someone to set a webhook URL without saying how to obtain one is half an instruction');
+  assert.match(commands, /Workflows/);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

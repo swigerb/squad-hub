@@ -532,6 +532,35 @@ tool call is a normal thing for an agent to handle — waiting forever is not.
 It is deliberately long. This is a backstop against a question nobody will
 ever answer, not a deadline for someone who stepped away from their desk.
 
+## Teams notifications
+
+Set `SQUAD_HUB_TEAMS_WEBHOOK` and the hub posts an Adaptive Card to Teams
+whenever an agent asks for permission. The card describes exactly what the
+agent wants to run and deep-links to the approval in Squad Hub.
+
+**Create the webhook with Power Automate, not a channel connector.** Office 365
+Connectors — the old *Incoming Webhook* you added to a channel — were retired,
+with rollout completing in **May 2026**. One can no longer be created.
+
+In Teams: right-click the channel → **Workflows** → *Post to a channel when a
+webhook request is received*. The URL it gives you is what goes in
+`SQUAD_HUB_TEAMS_WEBHOOK`. It accepts the same Adaptive Card payload, so
+nothing on this side changed.
+
+**The card has no Approve or Deny button, on purpose.** Answering from inside a
+card requires `Action.Execute`, which requires a registered Teams bot with a
+messaging endpoint and a tenant app registration — a one-way webhook cannot
+receive a response. That is a property of Teams, not a shortcut taken here, so
+the card says so and links out instead. A button that does nothing is worse
+than a link that does something.
+
+**The card carries your data into a channel other people may be in.** Content
+is truncated and anything credential-shaped is redacted before it leaves the
+process — an approval prompt is exactly where a token pasted onto a command
+line would otherwise show up.
+
+## Device tokens
+
 A credential that can be a device and **nothing else** — it cannot read the
 API, start work on another device, or watch the event stream. Give one to a
 cloud device instead of your own credential.
@@ -570,7 +599,7 @@ See [security.md](security.md#device-tokens).
 | `SQUAD_HUB_GITHUB_CLIENT_SECRET` | OAuth App client secret. Never commit it; set it as an app setting. |
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
-| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams incoming webhook. Notifications are off without it. |
+| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" below — the connector this used to mean no longer exists. |
 | `SQUAD_HUB_BUILD` | Build marker reported by `/healthz`. Set by the deploy script so it can prove the code it pushed is the code now serving. |
 | `SQUAD_HUB_INSTANCE_COUNT` | Overrides the detected instance count. Azure App Service sets `WEBSITE_INSTANCE_COUNT` itself; this is for platforms that do not. |
 
