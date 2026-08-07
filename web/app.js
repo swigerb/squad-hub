@@ -27,6 +27,7 @@ const state = {
   ws: null,
   currentSession: null,
   seenApprovals: new Set(),
+  openApproval: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -115,6 +116,19 @@ function activityLine(s) {
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending || s.status === 'waiting_approval') return 'Waiting for input';
   return s.activity || '';
+}
+
+/**
+ * Approvals that lapsed unanswered, newest first.
+ *
+ * Someone saw a card asking permission; when it expires they are owed an
+ * answer to "what happened to that?". Without this the request simply
+ * disappears and the only trace is a session that carried on without doing
+ * the thing it asked about.
+ */
+function expiredApprovals(s) {
+  const list = (s && s.expiredApprovals) || [];
+  return [...list].sort((a, b) => (b.expiredAt || 0) - (a.expiredAt || 0));
 }
 
 /** Action-needed first, then most recently started. */
@@ -335,6 +349,7 @@ function sessionRow(s, deviceName, opts = {}) {
   const sq = s.squad;
   const sel = s.agentSelection;
   const git = s.git;
+  const expired = expiredApprovals(s);
   // `sel` (session.agentSelection), `git` (repository/branch read from the
   // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all
   // ultimately trace back to attacker-influenceable input: a project's own
@@ -356,8 +371,7 @@ function sessionRow(s, deviceName, opts = {}) {
   // A Squad session is a team working under a charter, not a lone agent. The
   // badge says which, because "6 members, engineer active" is the difference
   // between a session list and a Squad session list.
-  const squadBits = sq ? `
-      <div class="squadline">
+  const squadBits = sq ? `      <div class="squadline">
         <span class="sq-pill" title="Squad workspace">squad</span>
         ${sq.activeMember ? `<span class="sq-role">${esc(sq.activeMember.name)}</span>` : ''}
         <span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members</span>
@@ -376,6 +390,7 @@ function sessionRow(s, deviceName, opts = {}) {
           <span class="activity">${esc(activityLine(s))}</span>
         </div>
         <div class="row-meta">${meta}</div>
+        ${expired.length ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(expired[0].title)} — nobody answered in time</span></div>` : ''}
         ${squadBits}
       </div>
       ${statusBadge(s)}
@@ -832,7 +847,25 @@ function fillSelect(el, allLabel, values, current) {
  * notice it.
  */
 function maybePromptApproval() {
-  if (!$('approvalScrim').hidden) return;
+  // An open card whose approval has since expired is a dialog asking for an
+  // answer nobody can give any more -- and worse, answering it would fail
+  // silently. Close it and say what happened.
+  const open = state.openApproval;
+  if (open && !$('approvalScrim').hidden) {
+    const stillPending = state.overview.groups.some((g) => g.sessions.some(
+      (s) => (s.pendingApprovals || []).some((a) => a.approvalId === open),
+    ));
+    const nowExpired = state.overview.groups.some((g) => g.sessions.some(
+      (s) => (s.expiredApprovals || []).some((a) => a.approvalId === open),
+    ));
+    if (!stillPending && nowExpired) {
+      $('approvalScrim').hidden = true;
+      state.openApproval = null;
+      toast('That request expired before it was answered — the agent was told no');
+      return undefined;
+    }
+  }
+  if (!$('approvalScrim').hidden) return undefined;
   for (const g of state.overview.groups) {
     for (const s of g.sessions) {
       for (const a of s.pendingApprovals || []) {
@@ -846,6 +879,7 @@ function maybePromptApproval() {
 
 function showApproval(device, session, approval) {
   state.seenApprovals.add(approval.approvalId);
+  state.openApproval = approval.approvalId;
   $('apWhere').textContent = `${device.name} · ${session.cwd || ''}`;
   $('apDesc').textContent = approval.title || 'The agent is asking to run a tool.';
   $('apCommand').textContent = approval.command || approval.title || '(no command reported)';
@@ -969,6 +1003,38 @@ async function verifyControl() {
 
   state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
   renderControl();
+}
+
+/**
+ * `Sync session` -- restart the engine, keeping the session id, then re-check.
+ *
+ * Re-verifying alone would be a button that asks the same question twice and
+ * expects a different answer. When the device has said the agent process is
+ * gone, nothing changes until something restarts it.
+ *
+ * The id survives on purpose: it is what the row, the Teams card and anyone's
+ * terminal history all refer to. A "sync" that produced a new session would
+ * quietly orphan every one of those references.
+ */
+async function syncSession() {
+  const current = state.currentSession;
+  if (!current) return;
+  const btn = $('dtSync');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/resync`, {
+      method: 'POST', body: { sessionId: current.session.id },
+    });
+    await refresh();
+  } catch (e) {
+    state.composer = composerReduce(state.composer, { type: 'verify-result', outcome: { error: e.message } });
+    renderControl();
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sync session'; }
+  }
+  // Only now is the question worth asking again.
+  await verifyControl();
 }
 
 function renderControl() {
@@ -1508,7 +1574,7 @@ function wire() {
     state.composer = composerReduce(state.composer, { type: 'type', text: e.target.value });
   };
 
-  $('dtSync').onclick = () => verifyControl();
+  $('dtSync').onclick = () => syncSession();
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;

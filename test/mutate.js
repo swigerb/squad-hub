@@ -1886,6 +1886,68 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `      <!-- MUTATION -->`,
     mustFail: 'offline, the app says the network failed — not that you are signed out',
   },
+
+  // -------------------------------------------------------------------------
+  // S5 completion: Sync restarts the engine, and an expiry leaves a trace
+  // -------------------------------------------------------------------------
+  {
+    // The id is what the row, the Teams card and anyone's terminal history all
+    // refer to. A sync producing a new session orphans every reference while
+    // looking like it worked.
+    name: 'Sync starts a NEW session instead of reusing the id',
+    file: 'src/daemon.js',
+    find: `    const s = new AcpSession({
+      id: sessionId,
+      cwd: old.cwd,`,
+    replace: `    const s = new AcpSession({
+      id: process.env.MUTANT ? \`\${sessionId}-new\` : sessionId, // MUTATION
+      cwd: old.cwd,`,
+    mustFail: 'Sync restarts the engine UNDER THE SAME session id',
+  },
+  {
+    name: 'Sync throws away the transcript with the process that produced it',
+    file: 'src/daemon.js',
+    find: `    s.transcript = old.transcript || [];`,
+    replace: `    s.transcript = process.env.MUTANT ? [] : (old.transcript || []); // MUTATION`,
+    mustFail: 'Sync keeps the transcript, which did not stop being true',
+  },
+  {
+    // Without the record the request simply vanishes, and the only trace is a
+    // session that carried on without doing the thing it asked about.
+    name: 'an expired approval leaves no trace at all',
+    file: 'src/acp-session.js',
+    find: `    this.expiredApprovals.push({`,
+    replace: `    if (!process.env.MUTANT) this.expiredApprovals.push({ // MUTATION`,
+    mustFail: 'an expired approval is recorded so the UI can say what happened',
+  },
+  {
+    name: 'the expired list grows without bound on a long-running session',
+    file: 'src/acp-session.js',
+    find: `    if (this.expiredApprovals.length > 20) this.expiredApprovals.shift();`,
+    replace: `    if (this.expiredApprovals.length > 20 && !process.env.MUTANT) this.expiredApprovals.shift(); // MUTATION`,
+    mustFail: 'the expired list does not grow without bound',
+  },
+  {
+    name: 'the row hides an approval that expired unanswered',
+    file: 'web/app.js',
+    find: `        \${expired.length ? \`<div class="expiredline">`,
+    replace: `        \${(expired.length && !process.env.MUTANT) ? \`<div class="expiredline">`,
+    mustFail: 'an expired approval is shown, not silently dropped',
+  },
+  {
+    name: 'an expired approval title is interpolated without escaping',
+    file: 'web/app.js',
+    find: `<span class="sq-dim">\${esc(expired[0].title)} — nobody answered in time</span>`,
+    replace: `<span class="sq-dim">\${expired[0].title} — nobody answered in time</span>`,
+    mustFail: 'a malicious expired-approval title renders as inert escaped text',
+  },
+  {
+    name: 'the OLDEST expiry is shown rather than the most recent',
+    file: 'web/app.js',
+    find: `  return [...list].sort((a, b) => (b.expiredAt || 0) - (a.expiredAt || 0));`,
+    replace: `  return [...list].sort((a, b) => (a.expiredAt || 0) - (b.expiredAt || 0)); // MUTATION`,
+    mustFail: 'the most recent expiry is the one shown',
+  },
 ];
 
 /**

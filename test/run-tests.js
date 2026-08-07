@@ -775,6 +775,16 @@ async function suiteApprovalDepth() {
   runChildSuite(path.join(__dirname, 'approval-depth-unit.js'), 'approval-depth');
 }
 
+/**
+ * The parity checklist, checked against the code. Catches a capability being
+ * removed or renamed while its tests go with it -- the one way a green suite
+ * can coexist with a lost feature.
+ */
+async function suiteParityAudit() {
+  console.log('\n[PARITY] every item on the checklist is still built, and still tested');
+  runChildSuite(path.join(__dirname, 'parity-audit-unit.js'), 'parity');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -817,6 +827,7 @@ async function suiteApprovalDepth() {
   await suiteDeviceRoster();
   await suiteControlVerification();
   await suiteApprovalDepth();
+  await suiteParityAudit();
 
   console.log('');
   console.log('='.repeat(60));

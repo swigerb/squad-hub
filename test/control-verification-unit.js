@@ -300,6 +300,105 @@ process.env.SQUAD_HUB_HOME = home;
     assert.doesNotThrow(() => d.beat(), 'the heartbeat died on a session shape it did not expect');
   });
 
+  // --- Sync session: restart the engine, keep the identity -----------------
+
+  await checkAsync('Sync restarts the engine UNDER THE SAME session id', async () => {
+    /**
+     * The id is what the row, the Teams card and anyone's terminal history all
+     * refer to. A "sync" that produced a new session would orphan every one of
+     * those references while looking like it worked.
+     */
+    const home2 = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-s5b-'));
+    const d2 = new Daemon({
+      agentCommand: process.execPath,
+      agentArgs: [path.join(__dirname, 'fake-agent.js')],
+    });
+    d2.sessions.clear();
+
+    const first = d2.startSession({ prompt: 'do the thing', localCwd: home2 });
+    const originalId = first.id;
+    const originalPid = first.pid;
+
+    const second = d2.resyncSession(originalId);
+
+    assert.strictEqual(second.id, originalId, 'the session id changed; every reference to it is now dead');
+    assert.notStrictEqual(second.pid, originalPid, 'no new engine was started');
+    assert.strictEqual(d2.sessions.get(originalId), second, 'the daemon still points at the old engine');
+    assert.strictEqual(second.resyncCount, 1, 'the resync was not recorded');
+
+    for (const s of d2.sessions.values()) { try { s.stop(); } catch { /* closing */ } }
+    // Windows holds the directory while the child processes wind down, and a
+    // failed rmSync would fail the test on housekeeping rather than behaviour.
+    try { fs.rmSync(home2, { recursive: true, force: true }); } catch { /* the OS still has it */ }
+  });
+
+  await checkAsync('Sync keeps the transcript, which did not stop being true', async () => {
+    const home3 = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-s5c-'));
+    const d3 = new Daemon({
+      agentCommand: process.execPath,
+      agentArgs: [path.join(__dirname, 'fake-agent.js')],
+    });
+    const s = d3.startSession({ prompt: 'p', localCwd: home3 });
+    s.transcript = [{ seq: 1, at: Date.now(), update: { sessionUpdate: 'tool_call', title: 'a thing that happened' } }];
+
+    const again = d3.resyncSession(s.id);
+    assert.strictEqual(again.transcript.length, 1,
+      'the record of what happened was thrown away with the process that produced it');
+
+    for (const x of d3.sessions.values()) { try { x.stop(); } catch { /* closing */ } }
+    try { fs.rmSync(home3, { recursive: true, force: true }); } catch { /* the OS still has it */ }
+  });
+
+  await checkAsync('Sync on an unknown session is refused, not silently ignored', async () => {
+    assert.throws(() => d.resyncSession('no-such-thing'), /no such session/);
+  });
+
+  // --- Expired approvals are reported, not vanished ------------------------
+
+  await checkAsync('an expired approval is recorded so the UI can say what happened', async () => {
+    /**
+     * Somebody saw a card asking permission. When it lapses they are owed an
+     * answer to "what happened to that?" -- otherwise the request vanishes and
+     * the only trace is a session carrying on without doing the thing.
+     */
+    const { AcpSession } = require('../src/acp-session');
+    const s = Object.create(AcpSession.prototype);
+    s.pendingApprovals = new Map([['a1', {
+      approvalId: 'a1', rpcId: 3, title: 'Delete the build directory', requestedAt: Date.now() - 60000,
+    }]]);
+    s.expiredApprovals = [];
+    s.status = 'waiting_approval';
+    s._respond = () => {};
+    s._setStatus = (next, activity) => { s.status = next; s.activity = activity; };
+    s.emit = () => {};
+
+    assert.strictEqual(s.expire('a1'), true);
+    assert.strictEqual(s.expiredApprovals.length, 1, 'the expiry left no trace at all');
+    assert.strictEqual(s.expiredApprovals[0].approvalId, 'a1');
+    assert.match(s.expiredApprovals[0].title, /Delete the build directory/,
+      'the record must say WHAT expired, or it explains nothing');
+    assert.ok(s.expiredApprovals[0].expiredAt, 'no time was recorded');
+    assert.strictEqual(s.status, 'active', 'the session must resume, not sit in waiting_approval');
+  });
+
+  await checkAsync('the expired list does not grow without bound', async () => {
+    const { AcpSession } = require('../src/acp-session');
+    const s = Object.create(AcpSession.prototype);
+    s.expiredApprovals = [];
+    s.status = 'active';
+    s._respond = () => {};
+    s._setStatus = () => {};
+    s.emit = () => {};
+    for (let i = 0; i < 40; i += 1) {
+      s.pendingApprovals = new Map([[`a${i}`, { approvalId: `a${i}`, rpcId: i, title: `t${i}`, requestedAt: 1 }]]);
+      s.expire(`a${i}`);
+    }
+    assert.ok(s.expiredApprovals.length <= 20,
+      `an unbounded list on a long-running session: ${s.expiredApprovals.length}`);
+    assert.strictEqual(s.expiredApprovals[s.expiredApprovals.length - 1].approvalId, 'a39',
+      'the most recent expiry was dropped, which is the one worth keeping');
+  });
+
   // --- the route ----------------------------------------------------------
 
   await checkAsync('the hub routes control-check to the device', async () => {

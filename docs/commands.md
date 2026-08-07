@@ -547,12 +547,16 @@ webhook request is received*. The URL it gives you is what goes in
 `SQUAD_HUB_TEAMS_WEBHOOK`. It accepts the same Adaptive Card payload, so
 nothing on this side changed.
 
-**The card has no Approve or Deny button, on purpose.** Answering from inside a
-card requires `Action.Execute`, which requires a registered Teams bot with a
-messaging endpoint and a tenant app registration — a one-way webhook cannot
-receive a response. That is a property of Teams, not a shortcut taken here, so
-the card says so and links out instead. A button that does nothing is worse
-than a link that does something.
+**The card has no Approve or Deny button, and will not get one.** Answering from
+inside a card requires `Action.Execute`, which requires a registered Teams bot
+with a *hosted* messaging endpoint and a tenant app registration — a one-way
+webhook cannot receive a response.
+
+Squad Hub is localhost-first: the daemon dials **out**, and nothing listens on
+your laptop. Inline approval would therefore mean standing up and securing a
+public relay purely to save one click. That trade was weighed and declined. The
+card says so and links to the session instead — a button that does nothing is
+worse than a link that does something.
 
 **The card carries your data into a channel other people may be in.** Content
 is truncated and anything credential-shaped is redacted before it leaves the
