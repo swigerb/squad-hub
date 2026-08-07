@@ -57,6 +57,9 @@ class AcpSession extends EventEmitter {
     // Approvals that lapsed unanswered. Kept so the UI can say what became of
     // a card someone saw, rather than letting the request vanish.
     this.expiredApprovals = [];
+    // Approvals that were answered, and by whom. Kept for the same reason, and
+    // because on a shared hub "who decided this" is the useful fact.
+    this.answeredApprovals = [];
     this.activity = 'Starting...';
 
     this._nextId = 1;
@@ -197,15 +200,29 @@ class AcpSession extends EventEmitter {
   }
 
   /** Answer a pending approval. Returns false if the id is unknown. */
-  answer(approvalId, optionId) {
+  answer(approvalId, optionId, answeredBy = null) {
     const a = this.pendingApprovals.get(approvalId);
+    // An answer for a request that is not pending -- a stale card, a double
+    // click, a second surface answering a moment later -- is refused rather
+    // than applied to whatever happens to be waiting now.
     if (!a) return false;
-    this.pendingApprovals.delete(approvalId);
     const known = a.options.some((o) => o.optionId === optionId);
     if (!known) return false;
+    this.pendingApprovals.delete(approvalId);
     this._respond(a.rpcId, { outcome: { outcome: 'selected', optionId } });
+    // Kept so every surface can show that it was resolved, and by whom. On a
+    // hub two people can watch, "resolved" without "by whom" answers a
+    // different question than the one anybody is asking.
+    this.answeredApprovals.push({
+      approvalId,
+      title: a.title || a.command || 'a tool call',
+      optionId,
+      answeredBy: answeredBy || 'someone',
+      answeredAt: Date.now(),
+    });
+    if (this.answeredApprovals.length > 20) this.answeredApprovals.shift();
     this._setStatus(STATUS.ACTIVE, 'Processing...');
-    this.emit('approval-resolved', { approvalId, optionId });
+    this.emit('approval-resolved', { approvalId, optionId, answeredBy });
     return true;
   }
 
@@ -316,6 +333,7 @@ class AcpSession extends EventEmitter {
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
       expiredApprovals: this.expiredApprovals,
+      answeredApprovals: this.answeredApprovals,
       resyncCount: this.resyncCount || 0,
       squad: this.squadContext(),
       git: this.gitContext(),

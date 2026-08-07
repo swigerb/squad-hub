@@ -117,5 +117,110 @@ if (CHECKS.length < 30) {
   console.log('RESULT\tok\tthe parity checklist covers every sprint');
 }
 
+
+// ---------------------------------------------------------------------------
+// The PRD's own acceptance criteria and stated mutations.
+//
+// A separate list from the parity checklist above, because they answer
+// different questions: parity asks "does it match the reference hub", the PRD
+// asks "does it do what this product was specified to do". Both can regress
+// independently, and each is checked by NAME so a renamed-away test is caught.
+// ---------------------------------------------------------------------------
+const namedTests = [];
+for (const f of fs.readdirSync(path.join(ROOT, 'test')).filter((x) => x.endsWith('.js'))) {
+  const body = read(`test/${f}`);
+  for (const m of body.matchAll(/check(?:Async)?\(\s*(['"`])([\s\S]*?)\1\s*,/g)) namedTests.push([m[2], f]);
+}
+const mutants = require('./mutate').MUTATIONS.map((m) => m.name);
+
+function findTest(...frags) {
+  for (const [n, f] of namedTests) {
+    const low = n.toLowerCase();
+    if (frags.every((fr) => low.includes(fr.toLowerCase()))) return `${f}: ${n}`;
+  }
+  return null;
+}
+function findMutant(...frags) {
+  for (const n of mutants) {
+    const low = n.toLowerCase();
+    if (frags.every((fr) => low.includes(fr.toLowerCase()))) return n;
+  }
+  return null;
+}
+const PRD = [
+  ['S0.1', 'a real permission request is observed on the wire', () => findTest('approval') || findTest('permission')],
+  ['S0.2', 'allow -> the tool runs', () => findTest('ACTUALLY runs the tool') || findTest('the tool ran')],
+  ['S0.3', 'deny -> the tool does not run', () => findTest('denied', 'not') || findTest('deny')],
+  ['S0.4', 'no answer -> resolves as expired, never a hang', () => findTest('expired')],
+  ['S0.m1', 'mutant: allow returned for a denial', () => findMutant('deny') || findMutant('denied')],
+  ['S0.m2', 'mutant: never answer', () => findMutant('unanswered approval waits forever')],
+  ['S0.m3', 'an answer for the WRONG request id is rejected', () => findTest('WRONG request id is rejected')],
+
+  ['S1.1', 'a started session appears with a live status', () => findTest('session') && findTest('status')],
+  ['S1.2', 'killing the daemon does not orphan the agent', () => findTest('orphan')],
+  ['S1.3', 'a killed agent is marked failed within a heartbeat', () => findTest('marks the session failed') || findTest('dead agent')],
+  ['S1.4', 'two concurrent sessions do not interleave', () => findTest('side by side') || findTest('interleave')],
+  ['S1.m1', 'mutant: status from last known value', () => findMutant('heartbeat does not notice a dead agent')],
+  ['S1.m3', 'mutant: heartbeat unconditionally', () => findMutant('heartbeat')],
+
+  ['S2.1', 'the daemon connects outbound only', () => findTest('listens on no TCP port')],
+  ['S2.2', 'presence goes stale then offline on missed beats', () => findTest('stale')],
+  ['S2.3', 'two users cannot see each other', () => findTest('own device') || findTest('other user')],
+  ['S2.4', "a token scoped to A is rejected on B's channel", () => findTest('another user') || findTest('cross-user')],
+  ['S2.5', 'an expired token is refused', () => findTest('expired token') || findTest('expires')],
+  ['S2.m1', 'mutant: filter in the UI instead of the query', () => findMutant('store filters by user at read time')],
+  ['S2.m2', 'mutant: trust the claim without validating', () => findMutant('signature') || findMutant('claim')],
+
+  ['S3.1', 'the card shows command, tools and paths', () => findTest('paths') && findTest('command')],
+  ['S3.2', 'allow proceeds, deny does not', () => findTest('approving in the browser')],
+  ['S3.3', 'always-allow is scoped, never global by accident', () => findTest('session A') || findTest('pre-approve')],
+  ['S3.4', 'a resolved approval shows WHO answered, everywhere', () => findTest('who answered')],
+  ['S3.5', 'unanswered requests expire, session stays clean', () => findTest('expired approval') || findTest('expires')],
+  ['S3.6', 'the card never renders repo text as markup', () => findTest('script tag') || findTest('inert escaped')],
+  ['S3.m3', 'answering one of TWO simultaneous prompts resolves the right one', () => findTest('simultaneous')],
+
+  ['S4.1', 'transcript survives a reconnect without loss or duplication', () => findTest('transcript') && findTest('reconnect')],
+  ['S4.2', 'spawn starts a session on the chosen device', () => findTest('really runs on the device') || findTest('spawn')],
+  ['S4.3', 'steering reaches the running agent', () => findTest('steer')],
+  ['S4.4', 'stop is confirmed by process death, not by success', () => findTest('no surviving process') || findTest('agent dies')],
+  ['S4.5', 'file access is off by default', () => findTest('file access is OFF by default')],
+  ['S4.m1', 'mutant: report stop success on dispatch', () => findMutant('remote stop reports success')],
+  ['S4.m3', 'mutant: default file access on', () => findMutant('file access')],
+
+  ['S5.1', 'a cloud session appears with its execution identity', () => findTest('oneshot') || findTest('cloud')],
+  ['S5.3', 'an unreachable hub does not fail the session', () => findTest('hub is an observer') || findTest('unreachable')],
+  ['S5.4', 'no credential reaches the hub', () => findTest('redact')],
+
+  ['S6.1', 'a Squad team shows the active agent and roster', () => findTest('members') || findTest('roster')],
+  ['S6.2', 'decisions appear, attributed', () => findTest('decision')],
+  ['S6.3', 'a repo with no .squad renders cleanly', () => findTest('without') && findTest('squad')],
+  ['S6.4', 'malformed .squad degrades, never breaks the view', () => findTest('malformed')],
+
+  ['S7.1', 'a pending approval produces a Teams card with the same context', () => findTest('card carries')],
+  ['S7.4', 'the card carries no repo text as markup', () => findTest('redacted') || findTest('escaped')],
+];
+
+
+for (const [id, what, prove] of PRD) {
+  const name = `PRD ${id}: ${what}`;
+  if (prove()) {
+    built += 1;
+    console.log(`  ok   ${name}`);
+    console.log(`RESULT\tok\t${name}`);
+  } else {
+    missing += 1;
+    console.log(`  FAIL ${name}\n         nothing in the suite proves this any more`);
+    console.log(`RESULT\tfail\t${name}\tnothing in the suite proves this any more`);
+  }
+}
+
+if (PRD.length < 40) {
+  console.log('  FAIL the PRD checklist is suspiciously short');
+  console.log('RESULT\tfail\tthe PRD checklist covers every sprint\ttoo few rows');
+  missing += 1;
+} else {
+  console.log('  ok   the PRD checklist covers every sprint');
+  console.log('RESULT\tok\tthe PRD checklist covers every sprint');
+}
 console.log(`\n${built} passed, ${missing + untested} failed`);
 process.exit(missing || untested ? 1 : 0);

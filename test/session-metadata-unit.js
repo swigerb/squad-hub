@@ -397,6 +397,44 @@ check('a malicious expired-approval title renders as inert escaped text', () => 
   assert.ok(html.includes(esc(XSS)));
 });
 
+check('a resolved approval shows who answered it', () => {
+  const html = sessionRow({
+    ...base,
+    answeredApprovals: [{ approvalId: 'a1', title: 'Run the tests', optionId: 'allow_once', answeredBy: 'Brian', answeredAt: 5 }],
+  }, 'laptop');
+  assert.match(html, /Allowed/);
+  assert.match(html, /Brian/, '"resolved" without "by whom" answers a different question');
+});
+
+check('a denial reads as denied, not as allowed', () => {
+  const html = sessionRow({
+    ...base,
+    answeredApprovals: [{ approvalId: 'a1', title: 't', optionId: 'reject_once', answeredBy: 'Sam', answeredAt: 5 }],
+  }, 'laptop');
+  assert.match(html, /Denied/);
+  assert.ok(!/>Allowed</.test(html));
+});
+
+check('the most recent outcome wins, whether it was answered or expired', () => {
+  const s = {
+    ...base,
+    expiredApprovals: [{ approvalId: 'old', title: 'THE EXPIRED ONE', expiredAt: 100 }],
+    answeredApprovals: [{ approvalId: 'new', title: 'THE ANSWERED ONE', optionId: 'allow_once', answeredBy: 'Brian', answeredAt: 900 }],
+  };
+  const html = sessionRow(s, 'laptop');
+  assert.match(html, /THE ANSWERED ONE/);
+  assert.ok(!/THE EXPIRED ONE/.test(html), 'two answers to "what happened to that card?" were shown at once');
+});
+
+check('a malicious answerer name renders as inert escaped text', () => {
+  const html = sessionRow({
+    ...base,
+    answeredApprovals: [{ approvalId: 'a1', title: 't', optionId: 'allow_once', answeredBy: XSS, answeredAt: 1 }],
+  }, 'laptop');
+  assert.ok(!html.includes('<img'), 'a display name let a live tag through');
+  assert.ok(html.includes(esc(XSS)));
+});
+
 // ---------------------------------------------------------------------------
 // The CLI says the same thing the web UI does
 // ---------------------------------------------------------------------------
