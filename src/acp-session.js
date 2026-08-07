@@ -155,8 +155,15 @@ class AcpSession extends EventEmitter {
     this._pushTranscript(u);
     if (u.sessionUpdate === 'tool_call') {
       this.toolCallCount += 1;
-      this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
-    } else if (u.sessionUpdate === 'agent_message_chunk') {
+      // A session blocked on an approval is NOT running that tool -- it is
+      // waiting for a person. Letting a streaming update overwrite the
+      // activity line here made a blocked session read as "Running ..." or
+      // "Processing...", which is the one state a watcher most needs to spot,
+      // and the row would sit there looking busy while nothing happened.
+      if (this.status !== STATUS.WAITING_APPROVAL) {
+        this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
+      }
+    } else if (u.sessionUpdate === 'agent_message_chunk' && this.status !== STATUS.WAITING_APPROVAL) {
       this.activity = 'Processing...';
     }
     this.emit('update', u);
@@ -205,6 +212,13 @@ class AcpSession extends EventEmitter {
     if (!a) return false;
     this.pendingApprovals.delete(approvalId);
     this._respond(a.rpcId, { outcome: { outcome: 'cancelled' } });
+    // An expired approval leaves the session running, not waiting. Without
+    // this the status stayed `waiting_approval` with nothing pending, which
+    // no badge maps -- so the row rendered the raw status string, and the
+    // session looked like it still needed an answer nobody could give.
+    if (!this.pendingApprovals.size && this.status === STATUS.WAITING_APPROVAL) {
+      this._setStatus(STATUS.ACTIVE, 'Processing...');
+    }
     this.emit('approval-expired', { approvalId });
     return true;
   }
@@ -288,8 +302,27 @@ class AcpSession extends EventEmitter {
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
       squad: this.squadContext(),
+      git: this.gitContext(),
       stderrTail: this.status === STATUS.FAILED ? this._stderr.slice(-1000) : undefined,
     };
+  }
+
+  /**
+   * Repository and branch for this session's working directory.
+   *
+   * Cached on the same reasoning as `squadContext`: `toJSON` runs on every
+   * heartbeat and every status poll, and a branch changes a handful of times
+   * an hour at most. The window is shorter than the squad one because
+   * switching branches mid-session is a normal thing to do, and a stale branch
+   * is actively misleading in a way a stale decision count is not.
+   */
+  gitContext() {
+    const now = Date.now();
+    if (this._git !== undefined && now - this._gitAt < 10000) return this._git;
+    const { readGitContext } = require('./git-context');
+    this._git = readGitContext(this.cwd);
+    this._gitAt = now;
+    return this._git;
   }
 
   /**

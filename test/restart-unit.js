@@ -100,12 +100,16 @@ async function waitFor(fn, ms = 30000, step = 500) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'restartw-'));
   const marker = path.join(work, 'fake-agent-marker.txt');
 
-  // A FIXED port, so the daemon reconnects to the same address after the
-  // "restart" -- which is what a real service restart looks like to a device.
-  const PORT = 7998;
+  // The port must be STABLE across the restart -- that is what a real service
+  // restart looks like to a device, which reconnects to the address it was
+  // given. It does NOT have to be a well-known number, and hardcoding one
+  // meant two test runs on the same machine collided on EADDRINUSE: a
+  // concurrent mutation sweep could not run alongside an ordinary suite.
+  //
+  // Let the OS choose, then hold that choice for the rest of the run.
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: secret });
   let svc = new HubService({ auth, serveWeb: false });
-  await svc.listen(PORT, '127.0.0.1');
+  const PORT = (await svc.listen(0, '127.0.0.1')).port;
   const token = auth.mintDevToken('local', 'restart', 'Restart');
   log(`service up on ${PORT}`);
 

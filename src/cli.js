@@ -258,6 +258,32 @@ async function cmdStop() {
   return 0;
 }
 
+/**
+ * Where a session's work is landing, for one line of `status` output.
+ *
+ * Repository and branch stand in for the raw cwd when there is one: two
+ * sessions on the same repository but different branches is the case worth
+ * telling apart, and a path cannot do it. Falls back to the cwd, because
+ * losing git context must not leave the line with no location at all.
+ *
+ * Pure and exported so it can be proven without standing up a daemon and a
+ * real agent, the same way `web/app.js`'s row builders are.
+ */
+function sessionWhere(s) {
+  if (s && s.git && s.git.repository) {
+    return `${s.git.repository}${s.git.branch ? ` (${s.git.branch})` : ''}`;
+  }
+  return (s && s.cwd) || '';
+}
+
+/** The badge `status` prints for a session. */
+function sessionBadge(s) {
+  if (s.status === 'waiting_approval') return 'ACTION NEEDED';
+  if (s.status === 'active') return 'Active';
+  if (s.status === 'done') return 'Ready for review';
+  return String(s.status).toUpperCase();
+}
+
 async function cmdStatus(argv) {
   if (!client.daemonAlive()) {
     if (flag(argv, 'json')) out(JSON.stringify({ running: false }, null, 2));
@@ -274,12 +300,9 @@ async function cmdStatus(argv) {
   if (!snap.sessions.length) { out('no sessions'); return 0; }
   out(`${snap.sessions.length} session(s):`);
   for (const s of snap.sessions) {
-    const badge = s.status === 'waiting_approval' ? 'ACTION NEEDED'
-      : s.status === 'active' ? 'Active'
-      : s.status.toUpperCase();
-    out(`  ${s.id}  ${badge}`);
+    out(`  ${s.id}  ${sessionBadge(s)}`);
     out(`    ${s.activity}`);
-    out(`    ${s.cwd}  ${s.agent}  ${s.toolCallCount} tools  pid ${s.pid}`);
+    out(`    ${sessionWhere(s)}  ${s.agent}  ${s.toolCallCount} tools  pid ${s.pid}`);
     if (s.agentSelection) {
       const sel = s.agentSelection;
       out(`    squad agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source})`);
@@ -1195,4 +1218,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, Daemon };
+module.exports = { main, Daemon, sessionWhere, sessionBadge };

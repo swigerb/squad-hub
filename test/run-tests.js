@@ -724,6 +724,17 @@ async function suiteWebXss() {
   runChildSuite(path.join(__dirname, 'web-xss-unit.js'), 'web-xss');
 }
 
+/**
+ * Session metadata: repository and branch read from the checkout, the live
+ * activity line, the badge set, and the ordering that pulls a blocked session
+ * to the top. Every new field reaching the DOM carries its own stored-XSS
+ * case -- a branch name is attacker-influenceable, git permits any bytes.
+ */
+async function suiteSessionMetadata() {
+  console.log('\n[SESSION METADATA] repository, branch, activity, badges, ordering');
+  runChildSuite(path.join(__dirname, 'session-metadata-unit.js'), 'session-metadata');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -761,6 +772,7 @@ async function suiteWebXss() {
   await suiteDocs();
   await suitePackage();
   await suiteWebXss();
+  await suiteSessionMetadata();
 
   console.log('');
   console.log('='.repeat(60));

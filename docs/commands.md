@@ -206,6 +206,39 @@ token in the same step.
 `status` exits **3** when no daemon is running, so a script can tell "stopped"
 from "broken".
 
+## What a session shows
+
+Each session carries the context needed to tell it apart from every other one
+at a glance, in both `squad-hub status` and the web UI.
+
+| Field | Where it comes from |
+|---|---|
+| Repository | The `origin` remote in the session's checkout, as `owner/repo`. Falls back to the repository directory name when there is no remote. |
+| Branch | The checked-out branch, or the short commit when `HEAD` is detached. |
+| Activity | What the agent is doing right now — `Running <tool>`, `Processing…`, or `Waiting for input`. |
+| Badge | `Active`, `Action needed`, `Ready for review`, `Failed`, or `Stopped`. |
+
+Repository and branch are read **directly from `.git`**, never by running
+`git`. A session's state is serialised on every heartbeat, so forking a
+process there would mean a subprocess per session several times a minute — and
+it would find nothing on a device that has a checkout but no git binary.
+Linked worktrees and submodules (where `.git` is a *file*) are handled.
+
+A remote URL's credentials are discarded rather than parsed. Only the last two
+path segments are ever kept, so a token committed into a remote URL cannot
+reach a web page other people can see.
+
+**`Action needed` outranks everything.** A session blocked on a person is the
+only one that cannot make progress by itself, so it is never described as
+merely `Active`, its row is pulled to the top of its device's card, and it
+carries a coloured edge. A finished session reads as `Ready for review` rather
+than `Done` — nothing is done from the watcher's side; the work is sitting
+there waiting to be looked at.
+
+Everything in a session row is escaped before it is rendered. A branch name, a
+repository name, and a tool title are all attacker-influenceable — git accepts
+any bytes in a branch name — so none of it is ever treated as markup.
+
 ## Doctor
 
 ```
