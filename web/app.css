@@ -285,6 +285,31 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   opacity: .5; cursor: not-allowed;
 }
 
+/* ---------- approval depth ---------- */
+/* Reading a file and rewriting a directory are not the same decision, and the
+   card has to say which one is on the table. */
+.ap-row {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 6px; margin: 2px 4px 2px 0;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  max-width: 100%; overflow: hidden;
+}
+.ap-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-badge {
+  font-family: inherit; font-size: 10px; letter-spacing: .03em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px; flex: 0 0 auto;
+}
+.ap-row.ro .ap-badge { color: var(--ok); border: 1px solid #1d4636; }
+.ap-row.rw .ap-badge { color: var(--warn); border: 1px solid var(--warn); }
+/* A standing permission that does not say what it makes standing is a blank
+   cheque, so the rule is spelled out beside the button that grants it. */
+.ap-rule { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+
+.field-row { display: flex; gap: 10px; }
+.field-row .field { flex: 1; min-width: 0; }
+.field-note { display: block; color: var(--faint); font-size: 11px; margin-top: 4px; }
+
 .empty { text-align: center; color: var(--dim); padding: 48px 16px; }
 .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); }
 

@@ -124,9 +124,10 @@
       <pre id="apCommand"></pre>
     </div>
     <div id="apPathsWrap" hidden>
-      <div class="cmdlabel">Paths it touches</div>
+      <div class="cmdlabel">What it touches</div>
       <div class="paths" id="apPaths"></div>
     </div>
+    <p class="ap-rule" id="apRule" hidden></p>
     <div class="modal-actions" id="apActions"></div>
     <button class="link" id="apCancel">Not now</button>
   </div>
@@ -149,6 +150,21 @@
       <span>Prompt</span>
       <textarea id="nsPrompt" rows="4" placeholder="What should the agent do?"></textarea>
     </label>
+    <div class="field-row">
+      <label class="field">
+        <span>Agent</span>
+        <input id="nsAgent" placeholder="whatever the project selects">
+      </label>
+      <label class="field">
+        <span>Model</span>
+        <input id="nsModel" placeholder="the agent's default">
+      </label>
+    </div>
+    <small class="field-note">
+      Leave either blank to let the project decide. In a Squad project that
+      selects the <code>squad</code> agent automatically; anywhere else, Copilot's
+      default. Naming one here overrides both.
+    </small>
     <div class="modal-actions">
       <button class="ghost" id="nsCancel">Cancel</button>
       <button class="primary" id="nsStart">Start</button>

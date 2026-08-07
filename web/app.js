@@ -382,7 +382,116 @@ function sessionRow(s, deviceName, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Control verification.
+// Approval depth.
+//
+// An approval card that says only "the agent wants to run a tool" makes every
+// decision look the same. Reading a file and rewriting a directory are not the
+// same decision, and the card has to say which one is on the table.
+// ---------------------------------------------------------------------------
+
+/**
+ * What an approval actually touches, as rows.
+ *
+ * The tool first, then every path it named. Each row carries whether it is
+ * read-only, because that is the single fact that most changes the answer --
+ * and it comes from the agent's own declared tool kind, not from guessing at
+ * the command string.
+ */
+function approvalRows(approval) {
+  if (!approval) return [];
+  const readOnly = !!approval.readOnly;
+  const rows = [{
+    kind: 'tool',
+    label: approval.command || approval.title || 'an unnamed tool',
+    readOnly,
+  }];
+  for (const p of approval.paths || []) {
+    rows.push({ kind: 'path', label: String(p), readOnly });
+  }
+  return rows;
+}
+
+/**
+ * Is this approval read-only in its entirety?
+ *
+ * Used to soften the card. A mixed approval is treated as NOT read-only: one
+ * writing path in a list of reads is still a write, and the badge has to
+ * reflect the riskiest thing in the request rather than the average.
+ */
+function approvalIsReadOnly(approval) {
+  const rows = approvalRows(approval);
+  return rows.length > 0 && rows.every((r) => r.readOnly);
+}
+
+const APPROVAL_LABEL = {
+  allow_once: 'Allow once',
+  allow_always: 'Always allow',
+  reject_once: 'Deny',
+};
+
+/**
+ * The options to offer, in a deliberate order, never inventing one.
+ *
+ * `allow_always` appears ONLY when the agent offered it. Manufacturing a
+ * standing rule the agent never proposed would create a permission nobody's
+ * protocol agreed on, and the daemon refuses an option the agent did not
+ * offer anyway -- so a button for it could only ever produce an error.
+ */
+function approvalOptions(approval) {
+  const offered = (approval && approval.options) || [];
+  return offered.map((o) => ({
+    optionId: o.optionId,
+    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,
+    danger: o.optionId === 'reject_once',
+    standing: o.optionId === 'allow_always',
+  }));
+}
+
+/**
+ * What "Always allow" would actually commit to.
+ *
+ * A standing permission button that does not say what it makes standing is a
+ * blank cheque. Returns null when the agent did not offer one, so nothing is
+ * shown for a decision nobody can take.
+ */
+function alwaysAllowRule(approval) {
+  const opt = ((approval && approval.options) || []).find((o) => o.optionId === 'allow_always');
+  if (!opt) return null;
+  const subject = (approval.command || approval.title || '').trim();
+  if (!subject) return 'Allow this tool without asking again in this session.';
+  return `Allow "${subject}" without asking again in this session.`;
+}
+
+// ---------------------------------------------------------------------------
+// The new-session composer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a spawn request, dropping anything the person left alone.
+ *
+ * An empty agent field means "whatever this project selects", which is not the
+ * same as the string "". Sending an empty value would override the project's
+ * own choice with nothing at all -- see agent-select.js, where an explicit
+ * flag beats every other source precisely because it was explicit.
+ */
+function spawnRequest({ prompt, cwd, agent, model } = {}) {
+  const body = { prompt: String(prompt == null ? '' : prompt).trim() };
+  const cleanCwd = String(cwd == null ? '' : cwd).trim();
+  const cleanAgent = String(agent == null ? '' : agent).trim();
+  const cleanModel = String(model == null ? '' : model).trim();
+  if (cleanCwd) body.cwd = cleanCwd;
+  if (cleanAgent) body.agent = cleanAgent;
+  if (cleanModel) body.model = cleanModel;
+  return body;
+}
+
+/** A prompt is the one thing a session cannot be started without. */
+function spawnError(body) {
+  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';
+  return null;
+}
+
+
 //
 // A composer that is live before anything has confirmed the far end can
 // actually take input is a promise the UI cannot keep. The hub knowing about
@@ -725,14 +834,25 @@ function showApproval(device, session, approval) {
   $('apDesc').textContent = approval.title || 'The agent is asking to run a tool.';
   $('apCommand').textContent = approval.command || approval.title || '(no command reported)';
 
-  const paths = approval.paths || [];
-  $('apPathsWrap').hidden = paths.length === 0;
-  $('apPaths').innerHTML = paths.map((p) => `<span>${esc(p)}</span>`).join('');
+  // What it actually touches, each row saying whether it is read-only.
+  // Reading a file and rewriting a directory are not the same decision.
+  const rows = approvalRows(approval);
+  $('apPathsWrap').hidden = rows.length === 0;
+  $('apPaths').innerHTML = rows.map((r) => `
+    <span class="ap-row ${r.readOnly ? 'ro' : 'rw'}">
+      <span class="ap-label">${esc(r.label)}</span>
+      <span class="ap-badge">${r.readOnly ? 'read-only' : 'writes'}</span>
+    </span>`).join('');
 
-  const label = { allow_once: 'Allow once', allow_always: 'Always allow', reject_once: 'Deny' };
-  $('apActions').innerHTML = (approval.options || []).map((o) => `
-    <button class="${o.optionId === 'reject_once' ? 'ghost danger' : 'primary'}"
-            data-answer="${esc(o.optionId)}">${esc(o.name || label[o.optionId] || o.optionId)}</button>`).join('');
+  // A standing permission button that does not say what it makes standing is
+  // a blank cheque.
+  const rule = alwaysAllowRule(approval);
+  $('apRule').hidden = !rule;
+  $('apRule').textContent = rule || '';
+
+  $('apActions').innerHTML = approvalOptions(approval).map((o) => `
+    <button class="${o.danger ? 'ghost danger' : o.standing ? 'ghost' : 'primary'}"
+            data-answer="${esc(o.optionId)}">${esc(o.label)}</button>`).join('');
 
   $('apActions').onclick = async (ev) => {
     const btn = ev.target.closest('[data-answer]');
@@ -1176,13 +1296,17 @@ function wire() {
 
   $('nsStart').onclick = async () => {
     const deviceId = $('nsDevice').value;
-    const prompt = $('nsPrompt').value.trim();
-    if (!prompt) { showNewErr('a prompt is required'); return; }
+    const body = spawnRequest({
+      prompt: $('nsPrompt').value,
+      cwd: $('nsCwd').value,
+      agent: $('nsAgent').value,
+      model: $('nsModel').value,
+    });
+    const problem = spawnError(body);
+    if (problem) { showNewErr(problem); return; }
     $('nsStart').disabled = true;
     try {
-      await api(`/api/devices/${encodeURIComponent(deviceId)}/spawn`, {
-        method: 'POST', body: { prompt, cwd: $('nsCwd').value.trim() || undefined },
-      });
+      await api(`/api/devices/${encodeURIComponent(deviceId)}/spawn`, { method: 'POST', body });
       $('newScrim').hidden = true;
       $('nsPrompt').value = '';
       refresh();
