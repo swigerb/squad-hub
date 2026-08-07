@@ -1726,6 +1726,36 @@ const MUTATIONS = [
     replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required — say what the agent should do.'; // MUTATION",
     mustFail: 'a missing prompt is refused with a reason a person can act on',
   },
+
+  // -------------------------------------------------------------------------
+  // S7: look and feel
+  //
+  // These two are UNCONDITIONAL rather than gated on `process.env.MUTANT`.
+  // The tests that catch them run `web/app.js` in a real browser, where
+  // `process` does not exist -- a gated mutation would throw a ReferenceError
+  // and fail the test by crashing the page, which proves nothing about the
+  // behaviour under test. The harness reverts the file either way.
+  // -------------------------------------------------------------------------
+  {
+    // `system` must set NO attribute: the stylesheet's prefers-color-scheme
+    // block is keyed on the attribute's absence, so an attribute of ANY value
+    // overrides the very system preference it exists to follow.
+    name: 'the system theme sets an attribute, overriding the system it follows',
+    file: 'web/app.js',
+    find: `  if (state.theme === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', state.theme);`,
+    replace: `  document.documentElement.setAttribute('data-theme', state.theme); // MUTATION`,
+    mustFail: '"system" follows prefers-color-scheme rather than freezing',
+  },
+  {
+    // Collapsing three states into two freezes whatever the system happened
+    // to be on first load, so a laptop that switches at sunset stops.
+    name: 'the theme cycle drops "system" and toggles between two',
+    file: 'web/app.js',
+    find: `const THEMES = ['system', 'dark', 'light'];`,
+    replace: `const THEMES = ['dark', 'light']; // MUTATION`,
+    mustFail: 'the theme toggle cycles system, dark and light, and sticks',
+  },
 ];
 
 /**

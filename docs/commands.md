@@ -269,6 +269,21 @@ This is how one person likes to look at the list, not a property of the
 sessions; syncing it would mean a preference set on a laptop silently
 rearranging a phone.
 
+### Theme
+
+The theme has **three** states, not two: `system`, `dark`, `light`. The toggle
+in the top bar cycles through them.
+
+`system` is a real setting rather than the absence of one — it means "keep
+following this machine", and it is what you get before you have said anything.
+Collapsing it into a boolean would freeze whatever the system happened to be
+on first load, so a laptop that switches at sunset would stop switching.
+
+Both themes are defined as the **same set of token names** with different
+values, rather than as a second stylesheet. One theme silently drifting from
+the other is what a parallel set of rules produces; a parallel set of *values*
+cannot.
+
 ## Doctor
 
 ```

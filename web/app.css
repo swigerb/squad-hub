@@ -5,25 +5,85 @@
  * that costs anything to miss is the one waiting on a human -- everything else
  * can be read at leisure.
  *
- * Dark by default: this is watched next to a terminal.
+ * TWO THEMES, ONE SET OF TOKENS. Every colour below is a variable, and the
+ * light theme redefines the same names rather than adding a parallel set of
+ * rules. A second stylesheet keyed on a class is how one theme silently drifts
+ * from the other; a second set of VALUES cannot.
+ *
+ * Dark is the default because this is watched next to a terminal, but the
+ * choice honours `prefers-color-scheme` until someone states a preference,
+ * and then remembers what they said.
  */
 
 :root {
-  --bg: #0b0d12;
-  --panel: #12151d;
-  --panel-2: #171b25;
-  --line: #232838;
-  --text: #e6e9f2;
-  --dim: #98a0b5;
-  --faint: #6a7288;
+  color-scheme: dark;
+  /* A lighter neutral dark: less blue, more contrast between the page and the
+     panels sitting on it, so a card reads as a surface rather than as a
+     slightly different shade of background. */
+  --bg: #14161a;
+  --panel: #1b1e24;
+  --panel-2: #22262e;
+  --line: #2f343f;
+  --text: #e8eaef;
+  --dim: #a3aab8;
+  --faint: #757d8d;
   --accent: #4c8dff;
   --accent-dim: #1d3563;
   --warn: #ffc53d;
-  --warn-bg: #2a2210;
+  --warn-bg: #2e2614;
   --ok: #3ecf8e;
   --bad: #ff6b6b;
+
+  /* Spacing, so padding is chosen from a scale rather than per-rule. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
   --radius: 10px;
+  --radius-sm: 6px;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* The light theme restates the same token names. Nothing below this line
+   knows which theme is active, which is the point. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #eff1f5;
+  --line: #d9dee7;
+  --text: #16181d;
+  --dim: #4d5566;
+  --faint: #737c8d;
+  --accent: #1f6feb;
+  --accent-dim: #cfe0ff;
+  --warn: #9a6700;
+  --warn-bg: #fff8dc;
+  --ok: #1a7f4b;
+  --bad: #c93c3c;
+}
+
+/* Before anyone has chosen, follow the system. `data-theme` is only ever set
+   once a person states a preference, so this cannot fight an explicit choice. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #eff1f5;
+    --line: #d9dee7;
+    --text: #16181d;
+    --dim: #4d5566;
+    --faint: #737c8d;
+    --accent: #1f6feb;
+    --accent-dim: #cfe0ff;
+    --warn: #9a6700;
+    --warn-bg: #fff8dc;
+    --ok: #1a7f4b;
+    --bad: #c93c3c;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -37,9 +97,11 @@ body {
 }
 
 /* ---------- top bar ---------- */
+/* Compact: this sits above the only view the app has, so it should take as
+   little vertical space as it can while staying clickable. */
 .topbar {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px;
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   position: sticky; top: 0; z-index: 20;
@@ -118,13 +180,39 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 
 /* ---------- filters ---------- */
 .filterbar {
-  display: flex; gap: 8px; margin: 18px 0 14px; flex-wrap: wrap;
+  display: flex; gap: var(--sp-2); margin: var(--sp-4) 0 var(--sp-2); flex-wrap: wrap;
+  align-items: center;
 }
-.filterbar input, .filterbar select {
+.filterbar input {
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
-  padding: 9px 12px; border-radius: 8px; font: inherit;
+  padding: 8px 12px; border-radius: 8px; font: inherit;
+  flex: 1; min-width: 220px;
 }
-.filterbar input { flex: 1; min-width: 220px; }
+
+/* A secondary row for the controls that reshape the list rather than filter
+   it. Two rows of nine boxed selects is a wall; splitting them by what they
+   DO makes the bar readable at a glance. */
+.toolbar {
+  display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center;
+  margin: 0 0 var(--sp-4); padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+/* An inline label instead of a boxed select. The label says what the value
+   means, so the value itself no longer has to carry a prefix like
+   "Group: Device" -- and the control stops looking like a form field in a page
+   that is not a form. */
+.inline-select {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--faint); font-size: 12px; white-space: nowrap;
+}
+.inline-select select {
+  background: transparent; border: 0; border-bottom: 1px solid var(--line);
+  color: var(--text); font: inherit; font-size: 13px;
+  padding: 3px 2px; cursor: pointer; max-width: 180px;
+}
+.inline-select select:hover { border-bottom-color: var(--accent); }
+.inline-select select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- layout ---------- */
 .layout { display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }
@@ -311,6 +399,8 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .field-note { display: block; color: var(--faint); font-size: 11px; margin-top: 4px; }
 
 .empty { text-align: center; color: var(--dim); padding: 48px 16px; }
+.empty-actions { display: flex; gap: var(--sp-2); justify-content: center; margin-top: var(--sp-4); }
+.empty-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); }
 
 /* ---------- modals ---------- */
