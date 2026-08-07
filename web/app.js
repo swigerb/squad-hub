@@ -15,7 +15,15 @@ const state = {
   token: null,
   me: null,
   overview: { devices: [], groups: [], counts: {} },
-  filters: { q: '', status: '', device: '' },
+  filters: { q: '', status: '', device: '', repo: '', org: '', window: '' },
+  groupBy: 'device',
+  sortBy: 'started_desc',
+  railCollapsed: false,
+  composer: { draft: '', control: 'unknown', reason: '' },
+  theme: 'system',
+  // Pinned sessions survive a reload; a star that forgets itself is not a
+  // favourite, it is a highlight.
+  favorites: new Set(),
   ws: null,
   currentSession: null,
   seenApprovals: new Set(),
@@ -69,13 +77,26 @@ async function api(path, opts = {}) {
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+/**
+ * The badge a row carries.
+ *
+ * `Action needed` outranks the status entirely: a session blocked on a person
+ * is the only row that cannot make progress on its own, so it must never be
+ * described as merely `Active`.
+ *
+ * A finished session reads as `Ready for review` rather than `Done`. Nothing
+ * about it is done from the watcher's side -- the work is sitting there
+ * waiting to be looked at, and a badge that says `Done` invites people to
+ * scroll past it.
+ */
 function statusBadge(s) {
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return '<span class="status attention">Action needed</span>';
   const map = {
     active: ['active', 'Active'],
     starting: ['active', 'Starting'],
-    done: ['done', 'Done'],
+    waiting_approval: ['attention', 'Action needed'],
+    done: ['review', 'Ready for review'],
     failed: ['failed', 'Failed'],
     stopped: ['', 'Stopped'],
   };
@@ -83,21 +104,250 @@ function statusBadge(s) {
   return `<span class="status ${cls}">${esc(label)}</span>`;
 }
 
-function sessionRow(s, deviceName) {
+/**
+ * The live activity line.
+ *
+ * A blocked session is described as waiting even if the last update it
+ * received said otherwise, because the row must never look busy while nothing
+ * is happening. Everything else is the agent's own reported activity.
+ */
+function activityLine(s) {
   const pending = (s.pendingApprovals || []).length > 0;
+  if (pending || s.status === 'waiting_approval') return 'Waiting for input';
+  return s.activity || '';
+}
+
+/** Action-needed first, then most recently started. */
+function sessionSort(a, b) {
+  const an = (a.pendingApprovals || []).length > 0 || a.status === 'waiting_approval';
+  const bn = (b.pendingApprovals || []).length > 0 || b.status === 'waiting_approval';
+  if (an !== bn) return an ? -1 : 1;
+  return (b.startedAt || 0) - (a.startedAt || 0);
+}
+
+// ---------------------------------------------------------------------------
+// List controls.
+//
+// Every function below is PURE: state in, a plain value out, no DOM and no
+// `state` global. That is not tidiness for its own sake -- it is what lets the
+// filtering and sorting rules be proven in Node without a browser, and it is
+// the only reason a mutation can be pointed at them at all.
+// ---------------------------------------------------------------------------
+
+/** Time windows, as milliseconds. `null` means "no limit". */
+const TIME_WINDOWS = {
+  '': { label: 'Any time', ms: null },
+  '24h': { label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
+  '7d': { label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  '30d': { label: 'Last 30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+};
+
+const SORTS = {
+  started_desc: { label: 'Started ↓', compare: (a, b) => (b.startedAt || 0) - (a.startedAt || 0) },
+  started_asc: { label: 'Started ↑', compare: (a, b) => (a.startedAt || 0) - (b.startedAt || 0) },
+  tools_desc: { label: 'Most tool calls', compare: (a, b) => (b.toolCallCount || 0) - (a.toolCallCount || 0) },
+  repository: {
+    label: 'Repository',
+    compare: (a, b) => String(sessionRepo(a) || '').localeCompare(String(sessionRepo(b) || '')),
+  },
+};
+
+const GROUPINGS = { device: 'Device', repository: 'Repository', none: 'No grouping' };
+
+/**
+ * Is this session blocked on a person?
+ *
+ * One definition, used by the badge, the row edge, the ordering and the
+ * filters alike. Three copies of this predicate is three chances for the badge
+ * and the sort to disagree about the same row.
+ */
+function needsAttention(s) {
+  return (s.pendingApprovals || []).length > 0 || s.status === 'waiting_approval';
+}
+
+/** What a session is working ON, preferring the repository over a local path. */
+function sessionRepo(s) {
+  if (s && s.git && s.git.repository) return s.git.repository;
+  if (s && s.squad && s.squad.project) return s.squad.project;
+  return (s && s.cwd) || '';
+}
+
+/** The organisation half of `owner/repo`, or '' when there is no owner. */
+function sessionOrg(s) {
+  const repo = sessionRepo(s);
+  const i = repo.indexOf('/');
+  return i > 0 ? repo.slice(0, i) : '';
+}
+
+/**
+ * Started within the window.
+ *
+ * A session with no start time is KEPT rather than filtered out. A time filter
+ * exists to hide old things, and "we do not know when this started" is not
+ * evidence that it is old -- dropping it would make a live session vanish from
+ * a list because of a missing field.
+ */
+function withinWindow(s, key, now = Date.now()) {
+  const w = TIME_WINDOWS[key || ''];
+  if (!w || w.ms == null) return true;
+  if (!s.startedAt) return true;
+  return (now - s.startedAt) <= w.ms;
+}
+
+/** Case-insensitive substring match, with an empty filter matching everything. */
+function matchesText(value, needle) {
+  if (!needle) return true;
+  return String(value || '').toLowerCase().includes(String(needle).toLowerCase());
+}
+
+/**
+ * Every client-side filter, applied together.
+ *
+ * A session blocked on a person is NEVER filtered out by the time window.
+ * Someone is waiting on an answer; hiding that row because the session started
+ * yesterday turns a filter into a way to lose work, which is the one thing a
+ * dashboard for paused agents must not do.
+ */
+function matchesFilters(s, f = {}, now = Date.now()) {
+  if (!matchesText(sessionRepo(s), f.repo)) return false;
+  if (f.org && sessionOrg(s) !== f.org) return false;
+  if (!needsAttention(s) && !withinWindow(s, f.window, now)) return false;
+  return true;
+}
+
+/** A stable identity for a session across refreshes, for pinning. */
+function sessionKey(s) {
+  return s.key || s.id || '';
+}
+
+/**
+ * Sort, with attention first regardless of the chosen key.
+ *
+ * The sort control orders the list; it does not get to bury a session that
+ * cannot proceed without a person. `Started ↑` would otherwise push a blocked
+ * session to the bottom precisely because it has been blocked a while.
+ */
+function sortSessions(list, key = 'started_desc') {
+  const sort = SORTS[key] || SORTS.started_desc;
+  return [...list].sort((a, b) => {
+    const an = needsAttention(a);
+    const bn = needsAttention(b);
+    if (an !== bn) return an ? -1 : 1;
+    return sort.compare(a, b);
+  });
+}
+
+/** Every organisation present, for the scope dropdown. Sorted, deduplicated. */
+function organizationsIn(groups = []) {
+  const set = new Set();
+  for (const g of groups) for (const s of g.sessions || []) {
+    const org = sessionOrg(s);
+    if (org) set.add(org);
+  }
+  return [...set].sort();
+}
+
+/** Every repository present, for the repository dropdown. */
+function repositoriesIn(groups = []) {
+  const set = new Set();
+  for (const g of groups) for (const s of g.sessions || []) {
+    const repo = sessionRepo(s);
+    if (repo) set.add(repo);
+  }
+  return [...set].sort();
+}
+
+/**
+ * The whole list, as sections ready to render.
+ *
+ * Pinned sessions are lifted into their own section and do NOT appear again
+ * below -- a starred row shown twice makes the list longer, not clearer.
+ * Pinning also outranks the time window: a person pinned it, so it stays until
+ * they unpin it.
+ */
+function buildView({ groups = [], filters = {}, favorites = [], groupBy = 'device', sortBy = 'started_desc', now = Date.now() } = {}) {
+  const pinnedKeys = new Set(favorites);
+  const pinned = [];
+  const rest = [];
+
+  for (const g of groups) {
+    for (const s of g.sessions || []) {
+      const entry = { session: s, device: g.device };
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }
+      if (matchesFilters(s, filters, now)) rest.push(entry);
+    }
+  }
+
+  const sortEntries = (entries) => {
+    const sorted = sortSessions(entries.map((e) => e.session), sortBy);
+    const byKey = new Map(entries.map((e) => [sessionKey(e.session), e]));
+    return sorted.map((s) => byKey.get(sessionKey(s))).filter(Boolean);
+  };
+
+  const sections = [];
+  if (pinned.length) {
+    sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });
+  }
+
+  if (groupBy === 'none') {
+    if (rest.length) sections.push({ key: '__all', label: 'All sessions', entries: sortEntries(rest) });
+    return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+  }
+
+  const keyOf = groupBy === 'repository'
+    ? (e) => sessionRepo(e.session) || 'No repository'
+    : (e) => (e.device && e.device.name) || 'Unknown device';
+
+  const buckets = new Map();
+  for (const e of rest) {
+    const k = keyOf(e);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(e);
+  }
+
+  // A group holding a blocked session floats up, on the same rule as the rows
+  // inside it. Otherwise the list is sorted by name, which is stable across
+  // refreshes -- a list that reshuffles under the cursor is unusable.
+  const names = [...buckets.keys()].sort((a, b) => {
+    const an = buckets.get(a).some((e) => needsAttention(e.session));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    if (an !== bn) return an ? -1 : 1;
+    return a.localeCompare(b);
+  });
+
+  for (const name of names) {
+    const entries = sortEntries(buckets.get(name));
+    sections.push({
+      key: name,
+      label: name,
+      device: groupBy === 'device' ? (entries[0] && entries[0].device) || null : null,
+      entries,
+    });
+  }
+
+  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+}
+
+function sessionRow(s, deviceName, opts = {}) {
+  const pending = needsAttention(s);
+  const pinned = !!opts.pinned;
   const title = (s.prompt || s.id).slice(0, 70);
   const sq = s.squad;
   const sel = s.agentSelection;
-  // `sel` (session.agentSelection) and `deviceName`/`sq.project`/`s.cwd` all
+  const git = s.git;
+  // `sel` (session.agentSelection), `git` (repository/branch read from the
+  // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all
   // ultimately trace back to attacker-influenceable input: a project's own
-  // `.squad-hub.json` (agent/model), a device's self-reported name, or a
-  // relayed hub's session/device records. None of it is trusted HTML, so
-  // every field landing in this string gets `esc()`'d -- a stored payload
-  // (e.g. an `agent` of `<img src=x onerror=...>`) must render as inert text,
-  // never live markup, however it got here.
+  // `.squad-hub.json` (agent/model), a `.git/config` remote or branch name, a
+  // device's self-reported name, or a relayed hub's session/device records.
+  // None of it is trusted HTML, so every field landing in this string gets
+  // `esc()`'d -- a stored payload (e.g. an `agent` of `<img src=x onerror=...>`,
+  // or a branch literally named `<img src=x onerror=...>`, which git permits)
+  // must render as inert text, never live markup, however it got here.
   const meta = [
     esc(deviceName),
-    esc(sq ? sq.project : s.cwd),
+    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
+    git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
     sel ? `${esc(sel.agent)}${sel.model ? ` (${esc(sel.model)})` : ''} — ${esc(sel.source)}` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? ago(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
@@ -117,15 +367,350 @@ function sessionRow(s, deviceName) {
 
   return `
     <div class="row ${pending ? 'attention' : ''}" data-session="${esc(s.key)}">
+      <button class="star ${pinned ? 'on' : ''}" data-star="${esc(sessionKey(s))}"
+              title="${pinned ? 'Unpin this session' : 'Pin this session'}"
+              aria-label="${pinned ? 'Unpin' : 'Pin'}" aria-pressed="${pinned ? 'true' : 'false'}">${pinned ? '★' : '☆'}</button>
       <div class="row-main">
         <div class="row-title">
           <b>${esc(title)}</b>
-          <span class="activity">${esc(s.activity || '')}</span>
+          <span class="activity">${esc(activityLine(s))}</span>
         </div>
         <div class="row-meta">${meta}</div>
         ${squadBits}
       </div>
       ${statusBadge(s)}
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Approval depth.
+//
+// An approval card that says only "the agent wants to run a tool" makes every
+// decision look the same. Reading a file and rewriting a directory are not the
+// same decision, and the card has to say which one is on the table.
+// ---------------------------------------------------------------------------
+
+/**
+ * What an approval actually touches, as rows.
+ *
+ * The tool first, then every path it named. Each row carries whether it is
+ * read-only, because that is the single fact that most changes the answer --
+ * and it comes from the agent's own declared tool kind, not from guessing at
+ * the command string.
+ */
+function approvalRows(approval) {
+  if (!approval) return [];
+  const readOnly = !!approval.readOnly;
+  const rows = [{
+    kind: 'tool',
+    label: approval.command || approval.title || 'an unnamed tool',
+    readOnly,
+  }];
+  for (const p of approval.paths || []) {
+    rows.push({ kind: 'path', label: String(p), readOnly });
+  }
+  return rows;
+}
+
+/**
+ * Is this approval read-only in its entirety?
+ *
+ * Used to soften the card. A mixed approval is treated as NOT read-only: one
+ * writing path in a list of reads is still a write, and the badge has to
+ * reflect the riskiest thing in the request rather than the average.
+ */
+function approvalIsReadOnly(approval) {
+  const rows = approvalRows(approval);
+  return rows.length > 0 && rows.every((r) => r.readOnly);
+}
+
+const APPROVAL_LABEL = {
+  allow_once: 'Allow once',
+  allow_always: 'Always allow',
+  reject_once: 'Deny',
+};
+
+/**
+ * The options to offer, in a deliberate order, never inventing one.
+ *
+ * `allow_always` appears ONLY when the agent offered it. Manufacturing a
+ * standing rule the agent never proposed would create a permission nobody's
+ * protocol agreed on, and the daemon refuses an option the agent did not
+ * offer anyway -- so a button for it could only ever produce an error.
+ */
+function approvalOptions(approval) {
+  const offered = (approval && approval.options) || [];
+  return offered.map((o) => ({
+    optionId: o.optionId,
+    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,
+    danger: o.optionId === 'reject_once',
+    standing: o.optionId === 'allow_always',
+  }));
+}
+
+/**
+ * What "Always allow" would actually commit to.
+ *
+ * A standing permission button that does not say what it makes standing is a
+ * blank cheque. Returns null when the agent did not offer one, so nothing is
+ * shown for a decision nobody can take.
+ */
+function alwaysAllowRule(approval) {
+  const opt = ((approval && approval.options) || []).find((o) => o.optionId === 'allow_always');
+  if (!opt) return null;
+  const subject = (approval.command || approval.title || '').trim();
+  if (!subject) return 'Allow this tool without asking again in this session.';
+  return `Allow "${subject}" without asking again in this session.`;
+}
+
+// ---------------------------------------------------------------------------
+// The new-session composer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a spawn request, dropping anything the person left alone.
+ *
+ * An empty agent field means "whatever this project selects", which is not the
+ * same as the string "". Sending an empty value would override the project's
+ * own choice with nothing at all -- see agent-select.js, where an explicit
+ * flag beats every other source precisely because it was explicit.
+ */
+function spawnRequest({ prompt, cwd, agent, model } = {}) {
+  const body = { prompt: String(prompt == null ? '' : prompt).trim() };
+  const cleanCwd = String(cwd == null ? '' : cwd).trim();
+  const cleanAgent = String(agent == null ? '' : agent).trim();
+  const cleanModel = String(model == null ? '' : model).trim();
+  if (cleanCwd) body.cwd = cleanCwd;
+  if (cleanAgent) body.agent = cleanAgent;
+  if (cleanModel) body.model = cleanModel;
+  return body;
+}
+
+/** A prompt is the one thing a session cannot be started without. */
+function spawnError(body) {
+  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';
+  return null;
+}
+
+
+//
+// A composer that is live before anything has confirmed the far end can
+// actually take input is a promise the UI cannot keep. The hub knowing about
+// a session proves only that a heartbeat once mentioned it -- the hub is a
+// cache. Whether the agent is still alive and still accepting input is a fact
+// only the device holds, so it is asked, and the controls stay disabled until
+// it answers.
+//
+// This is the same class of bug as reporting "connected" on an HTTP 101 before
+// the hub had registered the device, which HubLink already had to be fixed for.
+// ---------------------------------------------------------------------------
+
+const CONTROL = Object.freeze({
+  UNKNOWN: 'unknown',       // nothing asked yet
+  VERIFYING: 'verifying',   // asked, waiting
+  SYNCED: 'synced',         // the device says yes
+  NOT_SYNCED: 'not_synced', // the device says no, and why
+  UNVERIFIED: 'unverified', // nobody answered in time
+});
+
+const CONTROL_TEXT = Object.freeze({
+  [CONTROL.UNKNOWN]: 'Checking control…',
+  [CONTROL.VERIFYING]: 'Checking control…',
+  [CONTROL.SYNCED]: 'Synced',
+  [CONTROL.NOT_SYNCED]: 'Not synced',
+  [CONTROL.UNVERIFIED]: "Control couldn't be verified",
+});
+
+/**
+ * Controls are live in exactly one state.
+ *
+ * Written as an allow-list rather than a deny-list on purpose: a state added
+ * later defaults to DISABLED, which is the safe direction. A deny-list would
+ * silently enable the composer for any state nobody remembered to add.
+ */
+function controlsEnabled(controlState) {
+  return controlState === CONTROL.SYNCED;
+}
+
+/** Can the person do anything about it? Only when the answer was "no". */
+function canSync(controlState) {
+  return controlState === CONTROL.NOT_SYNCED || controlState === CONTROL.UNVERIFIED;
+}
+
+/**
+ * Turn a control-check outcome into a state.
+ *
+ * A transport failure and a definite "no" are deliberately different: one is
+ * worth retrying and the other is not, and telling a person "not synced" when
+ * the request never arrived sends them looking in the wrong place.
+ */
+function controlStateFrom(outcome) {
+  if (!outcome) return CONTROL.UNKNOWN;
+  if (outcome.pending) return CONTROL.VERIFYING;
+  if (outcome.timedOut) return CONTROL.UNVERIFIED;
+  if (outcome.error) return CONTROL.UNVERIFIED;
+  return outcome.controllable ? CONTROL.SYNCED : CONTROL.NOT_SYNCED;
+}
+
+/**
+ * What the person is told, and what they can do about it.
+ *
+ * The reason from the device is passed through when there is one -- "the agent
+ * process is gone" and "the session is done" call for very different next
+ * steps, and "Not synced" alone tells nobody which they are looking at.
+ */
+function controlBanner(controlState, reason) {
+  return {
+    state: controlState,
+    label: CONTROL_TEXT[controlState] || CONTROL_TEXT[CONTROL.UNKNOWN],
+    reason: canSync(controlState) ? (reason || '') : '',
+    enabled: controlsEnabled(controlState),
+    canSync: canSync(controlState),
+  };
+}
+
+/**
+ * The composer, as a reducer.
+ *
+ * The one property worth stating outright: THE DRAFT SURVIVES EVERYTHING
+ * except a successful send. Someone typed that. Clearing it because a
+ * verification timed out would throw away work in order to report a transport
+ * problem, which is the wrong trade in every case -- and it is exactly what a
+ * naive "reset the panel on failure" does.
+ */
+function composerReduce(prev, event) {
+  const s = { draft: '', control: CONTROL.UNKNOWN, reason: '', ...(prev || {}) };
+  switch (event && event.type) {
+    case 'type':
+      return { ...s, draft: String(event.text == null ? '' : event.text) };
+    case 'verify-start':
+      return { ...s, control: CONTROL.VERIFYING, reason: '' };
+    case 'verify-result': {
+      const control = controlStateFrom(event.outcome);
+      const reason = (event.outcome && event.outcome.reason)
+        || (event.outcome && event.outcome.error)
+        || (control === CONTROL.UNVERIFIED ? 'the device did not answer in time' : '');
+      return { ...s, control, reason: canSync(control) ? reason : '' };
+    }
+    case 'sent':
+      // The ONLY event that clears the draft, and only because it landed.
+      return { ...s, draft: '' };
+    case 'send-failed':
+      return { ...s, reason: (event.error && String(event.error)) || 'the message was not delivered' };
+    default:
+      return s;
+  }
+}
+
+
+//
+// Pure, for the same reason the list controls are: ordering and presence
+// wording are rules, and a rule that only exists inside a DOM callback cannot
+// be proven.
+// ---------------------------------------------------------------------------
+
+const PLATFORM_LABEL = { win32: 'Windows', darwin: 'macOS', linux: 'Linux', freebsd: 'FreeBSD', aix: 'AIX', sunos: 'SunOS' };
+
+/** A platform a person recognises, rather than the Node identifier. */
+function platformLabel(p) {
+  return PLATFORM_LABEL[p] || (p ? String(p) : 'Unknown');
+}
+
+/**
+ * Presence as words, with the last-seen time when it matters.
+ *
+ * An offline device without a last-seen time reads as "Offline" alone rather
+ * than "Offline, seen never" -- the second says less and looks broken.
+ */
+function presenceLabel(d) {
+  if (!d) return '';
+  if (d.presence === 'online') return 'Online';
+  const label = d.presence === 'stale' ? 'Stale' : 'Offline';
+  const seen = d.lastSeen ? ago(d.lastSeen) : '';
+  return seen ? `${label} · seen ${seen}` : label;
+}
+
+/**
+ * The roster, ordered.
+ *
+ * Cloud devices come first and stay first. A cloud device is on-demand and
+ * always available -- it is the one place work can always be sent, whatever
+ * laptops happen to be asleep -- so burying it below three offline machines
+ * would hide the only useful answer to "where can I run this?".
+ *
+ * Within a kind: online before stale before offline, then by name. A roster
+ * that reorders itself as machines drift between presences is one nobody can
+ * click accurately.
+ */
+const PRESENCE_RANK = { online: 0, stale: 1, offline: 2 };
+
+function deviceRoster(devices = []) {
+  return [...devices].sort((a, b) => {
+    const ak = a.kind === 'cloud' ? 0 : 1;
+    const bk = b.kind === 'cloud' ? 0 : 1;
+    if (ak !== bk) return ak - bk;
+    const ap = PRESENCE_RANK[a.presence] ?? 3;
+    const bp = PRESENCE_RANK[b.presence] ?? 3;
+    if (ap !== bp) return ap - bp;
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
+}
+
+/** How many devices can actually take work right now. */
+function availableCount(devices = []) {
+  return devices.filter((d) => d.presence !== 'offline').length;
+}
+
+/** Bytes as something a person reads, for the RAM meter. */
+function humanBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * One meter, or nothing at all.
+ *
+ * A device that does not report telemetry renders NO meter, rather than an
+ * empty bar at zero. "Not reporting" and "idle" look identical on a bar at
+ * zero, and they are entirely different facts.
+ */
+function meter(label, fraction, detail = '') {
+  if (fraction == null || !Number.isFinite(fraction)) return '';
+  const pct = Math.round(clamp01(fraction) * 100);
+  const level = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : '';
+  return `
+    <div class="meter ${level}" title="${esc(label)} ${pct}%${detail ? ` (${esc(detail)})` : ''}">
+      <span class="meter-label">${esc(label)}</span>
+      <span class="meter-track"><span class="meter-fill" style="width:${pct}%"></span></span>
+      <span class="meter-value">${pct}%</span>
+    </div>`;
+}
+
+function clamp01(n) {
+  if (!Number.isFinite(n)) return 0;
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+function deviceCard(d) {
+  const t = d.telemetrySample || null;
+  const meters = t
+    ? `<div class="meters">${meter('CPU', t.cpu)}${meter('RAM', t.mem, `${humanBytes(t.memUsedBytes)} of ${humanBytes(t.memTotalBytes)}`)}</div>`
+    : '';
+  return `
+    <div class="device ${d.kind === 'cloud' ? 'cloud' : ''}">
+      <span class="dot ${esc(d.presence)}"></span>
+      <div class="device-main">
+        <div class="device-name">${esc(d.name)}${d.kind === 'cloud' ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-meta">
+          ${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}
+        </div>
+        ${meters}
+      </div>
+      <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
     </div>`;
 }
 
@@ -140,22 +725,32 @@ function render() {
   $('bellCount').textContent = bell;
   document.title = bell ? `(${bell}) Squad Hub` : 'Squad Hub';
 
-  // Groups with a waiting session float up.
-  const ordered = [...groups].sort((a, b) => {
-    const an = a.sessions.some((s) => (s.pendingApprovals || []).length);
-    const bn = b.sessions.some((s) => (s.pendingApprovals || []).length);
-    if (an !== bn) return an ? -1 : 1;
-    return a.device.name.localeCompare(b.device.name);
+  // Every ordering, grouping and filtering decision is made by buildView, a
+  // pure function proven in Node. This function only turns its answer into
+  // markup, so a rule can never live only inside a DOM callback where nothing
+  // can reach it.
+  const view = buildView({
+    groups,
+    filters: state.filters,
+    favorites: [...state.favorites],
+    groupBy: state.groupBy,
+    sortBy: state.sortBy,
   });
 
-  const html = ordered.filter((g) => g.sessions.length || g.device.presence !== 'offline').map((g) => `
-    <div class="group">
+  const emptyDevices = groups
+    .filter((g) => !g.sessions.length && g.device.presence !== 'offline')
+    .map((g) => ({ key: g.device.name, label: g.device.name, device: g.device, entries: [] }));
+
+  const html = [...view.sections, ...emptyDevices].map((sec) => `
+    <div class="group ${sec.pinned ? 'pinned' : ''}">
       <div class="group-head">
-        <span class="dot ${g.device.presence}"></span>
-        ${esc(g.device.name)}
-        <span class="group-meta">${g.sessions.length} session${g.sessions.length === 1 ? '' : 's'} &middot; ${g.device.platform}</span>
+        ${sec.device ? `<span class="dot ${sec.device.presence}"></span>` : sec.pinned ? '<span class="pin-mark">★</span>' : ''}
+        ${esc(sec.label)}
+        <span class="group-meta">${sec.entries.length} session${sec.entries.length === 1 ? '' : 's'}${sec.device ? ` &middot; ${esc(sec.device.platform)}` : ''}</span>
       </div>
-      ${g.sessions.length ? `<div class="card">${g.sessions.map((s) => sessionRow(s, g.device.name)).join('')}</div>` : ''}
+      ${sec.entries.length
+    ? `<div class="card">${sec.entries.map((e) => sessionRow(e.session, e.device ? e.device.name : '', { pinned: !!sec.pinned })).join('')}</div>`
+    : ''}
     </div>`).join('');
 
   $('groups').innerHTML = html;
@@ -170,25 +765,37 @@ function render() {
   newBtn.title = online.length ? 'Start a session' : 'Connect a device first';
   const emptyEl = $('empty');
   if (!emptyEl.hidden) {
+    // Two buttons, because "start a session" has two genuinely different
+    // answers: a cloud device is provisioned on demand, a local one is the
+    // machine already sitting there. One button forces a person to open a
+    // dialog to discover which they can have.
+    const cloud = devices.filter((d) => d.kind === 'cloud' && d.presence !== 'offline');
+    const local = online.filter((d) => d.kind !== 'cloud');
     emptyEl.innerHTML = online.length
-      ? `<h3>No sessions yet</h3><p>Start one on a device with <code>squad-hub run "…"</code>, or use <b>+ New</b> to launch one remotely.</p>`
+      ? `<h3>No sessions yet</h3>
+         <p>Start one on a device with <code>squad-hub run "…"</code>, or start one from here.</p>
+         <p class="empty-actions">
+           <button class="primary" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>New cloud session</button>
+           <button class="ghost" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>
+         </p>`
       : `<h3>No devices connected</h3><p>A device is the machine that actually runs the agent — your laptop, a dev box, or a container.</p><p><button class="primary" id="emptyConnect">Connect a device</button></p>`;
     const ec = document.getElementById('emptyConnect');
     if (ec) ec.onclick = () => openConnect();
+    const cb = document.getElementById('emptyCloud');
+    if (cb) cb.onclick = () => openNew(cloud.length ? cloud[0].deviceId : undefined);
+    const lb = document.getElementById('emptyLocal');
+    if (lb) lb.onclick = () => openNew(local.length ? local[0].deviceId : undefined);
   }
 
-  $('deviceList').innerHTML = `<div class="card">${devices.map((d) => `
-    <div class="device">
-      <span class="dot ${d.presence}"></span>
-      <div class="device-main">
-        <div class="device-name">${esc(d.name)}</div>
-        <div class="device-meta">
-          ${esc(d.platform)} &middot; ${d.presence === 'online' ? 'Online' : `${d.presence} &middot; seen ${ago(d.lastSeen)}`}
-          &middot; files: ${esc(d.fileAccess)}
-        </div>
-      </div>
-      <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
-    </div>`).join('') || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
+  const roster = deviceRoster(devices);
+  $('deviceList').innerHTML = `<div class="card">${roster.map(deviceCard).join('')
+    || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
+  const availPill = $('deviceAvailable');
+  if (availPill) {
+    const avail = availableCount(devices);
+    availPill.textContent = `${avail} available`;
+    availPill.classList.toggle('none', avail === 0);
+  }
 
   const sel = $('deviceFilter');
   const keep = sel.value;
@@ -196,7 +803,27 @@ function render() {
     + devices.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.name)}</option>`).join('');
   sel.value = keep;
 
+  // The repository and organisation dropdowns are built from what is actually
+  // on screen, so they can never offer a scope that filters everything away.
+  fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
+  fillSelect($('orgFilter'), 'All organisations', organizationsIn(groups), state.filters.org);
+
   maybePromptApproval();
+}
+
+/**
+ * Repopulate a select without losing the current choice.
+ *
+ * A value that is no longer on offer is KEPT as an option rather than silently
+ * dropped: a repository whose last session just ended would otherwise reset
+ * the filter to "all" underneath the person using it.
+ */
+function fillSelect(el, allLabel, values, current) {
+  if (!el) return;
+  const list = current && !values.includes(current) ? [...values, current].sort() : values;
+  el.innerHTML = `<option value="">${esc(allLabel)}</option>`
+    + list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  el.value = current || '';
 }
 
 /**
@@ -223,14 +850,25 @@ function showApproval(device, session, approval) {
   $('apDesc').textContent = approval.title || 'The agent is asking to run a tool.';
   $('apCommand').textContent = approval.command || approval.title || '(no command reported)';
 
-  const paths = approval.paths || [];
-  $('apPathsWrap').hidden = paths.length === 0;
-  $('apPaths').innerHTML = paths.map((p) => `<span>${esc(p)}</span>`).join('');
+  // What it actually touches, each row saying whether it is read-only.
+  // Reading a file and rewriting a directory are not the same decision.
+  const rows = approvalRows(approval);
+  $('apPathsWrap').hidden = rows.length === 0;
+  $('apPaths').innerHTML = rows.map((r) => `
+    <span class="ap-row ${r.readOnly ? 'ro' : 'rw'}">
+      <span class="ap-label">${esc(r.label)}</span>
+      <span class="ap-badge">${r.readOnly ? 'read-only' : 'writes'}</span>
+    </span>`).join('');
 
-  const label = { allow_once: 'Allow once', allow_always: 'Always allow', reject_once: 'Deny' };
-  $('apActions').innerHTML = (approval.options || []).map((o) => `
-    <button class="${o.optionId === 'reject_once' ? 'ghost danger' : 'primary'}"
-            data-answer="${esc(o.optionId)}">${esc(o.name || label[o.optionId] || o.optionId)}</button>`).join('');
+  // A standing permission button that does not say what it makes standing is
+  // a blank cheque.
+  const rule = alwaysAllowRule(approval);
+  $('apRule').hidden = !rule;
+  $('apRule').textContent = rule || '';
+
+  $('apActions').innerHTML = approvalOptions(approval).map((o) => `
+    <button class="${o.danger ? 'ghost danger' : o.standing ? 'ghost' : 'primary'}"
+            data-answer="${esc(o.optionId)}">${esc(o.label)}</button>`).join('');
 
   $('apActions').onclick = async (ev) => {
     const btn = ev.target.closest('[data-answer]');
@@ -278,6 +916,14 @@ async function openDetail(key) {
   renderSquadPanel(found.session.squad);
   $('dtTranscript').innerHTML = '<div class="t-entry t-kind">loading…</div>';
   $('detailScrim').hidden = false;
+
+  // The composer starts DISABLED and stays that way until the device itself
+  // says it can take input. The draft is restored rather than reset -- someone
+  // may have typed it, failed to send, and come back.
+  state.composer = composerReduce(state.composer, { type: 'verify-start' });
+  $('dtInput').value = state.composer.draft || '';
+  renderControl();
+
   try {
     const r = await api(`/api/devices/${encodeURIComponent(found.device.deviceId)}/transcript`, {
       method: 'POST', body: { sessionId: found.session.id, limit: 200 },
@@ -286,6 +932,57 @@ async function openDetail(key) {
   } catch (e) {
     $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
   }
+
+  // Deliberately AFTER the transcript: a session that cannot be controlled is
+  // still worth reading, and blocking the transcript on a control check would
+  // make an unreachable device hide the very history explaining why.
+  verifyControl();
+}
+
+/** How long to wait for the device to answer before saying so. */
+const CONTROL_TIMEOUT_MS = 8000;
+
+/**
+ * Ask the device whether it can take a control command for this session.
+ *
+ * The answer comes from the machine running the agent, not from the hub. The
+ * hub is a cache: it knowing about a session proves only that a heartbeat once
+ * mentioned it.
+ */
+async function verifyControl() {
+  const current = state.currentSession;
+  if (!current) return;
+  state.composer = composerReduce(state.composer, { type: 'verify-start' });
+  renderControl();
+
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), CONTROL_TIMEOUT_MS));
+  const ask = api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/control-check`, {
+    method: 'POST', body: { sessionId: current.session.id },
+  }).catch((e) => ({ error: e.message }));
+
+  const outcome = await Promise.race([ask, timeout]);
+
+  // The detail panel may have been closed, or moved to another session, while
+  // this was in flight. Applying a stale answer would enable the composer for
+  // a session nobody verified.
+  if (state.currentSession !== current) return;
+
+  state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
+  renderControl();
+}
+
+function renderControl() {
+  const b = controlBanner(state.composer.control, state.composer.reason);
+  const banner = $('dtControl');
+  if (banner) banner.dataset.state = b.state;
+  $('dtControlLabel').textContent = b.label;
+  $('dtControlWhy').textContent = b.reason;
+  $('dtSync').hidden = !b.canSync;
+  $('dtInput').disabled = !b.enabled;
+  $('dtSend').disabled = !b.enabled;
+  $('dtInput').placeholder = b.enabled
+    ? 'Send follow-up input to the running agent'
+    : 'Controls are disabled until this session is verified';
 }
 
 /**
@@ -471,6 +1168,128 @@ async function refresh() {
   render();
 }
 
+const VIEW_KEY = 'squad-hub-view';
+const FAVORITES_KEY = 'squad-hub-favorites';
+
+/**
+ * List controls and pins survive a reload.
+ *
+ * Kept in localStorage rather than on the hub deliberately: this is how ONE
+ * person likes to look at the list, not a property of the sessions. Syncing it
+ * would mean a preference set on a laptop silently rearranging a phone.
+ */
+function loadView() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}');
+    if (saved.repo) state.filters.repo = saved.repo;
+    if (saved.org) state.filters.org = saved.org;
+    if (TIME_WINDOWS[saved.window]) state.filters.window = saved.window;
+    if (GROUPINGS[saved.groupBy]) state.groupBy = saved.groupBy;
+    if (SORTS[saved.sortBy]) state.sortBy = saved.sortBy;
+  } catch { /* a corrupt preference is not worth a broken page */ }
+  try {
+    const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]');
+    if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
+  } catch { /* same */ }
+  try { state.railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch { /* same */ }
+  state.theme = loadTheme();
+}
+
+function saveView() {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({
+      repo: state.filters.repo,
+      org: state.filters.org,
+      window: state.filters.window,
+      groupBy: state.groupBy,
+      sortBy: state.sortBy,
+    }));
+  } catch { /* private browsing, quota, whatever -- never fatal */ }
+}
+
+function saveFavorites() {
+  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify([...state.favorites])); }
+  catch { /* never fatal */ }
+}
+
+function toggleFavorite(key) {
+  if (!key) return;
+  if (state.favorites.has(key)) state.favorites.delete(key);
+  else state.favorites.add(key);
+  saveFavorites();
+  render();
+}
+
+/** Fill the controls from the restored state, so the UI matches what it does. */
+function syncControls() {
+  const set = (id, value) => { const el = $(id); if (el) el.value = value; };
+  set('windowFilter', state.filters.window);
+  set('groupBy', state.groupBy);
+  set('sortBy', state.sortBy);
+  setRailCollapsed(state.railCollapsed);
+  applyTheme(state.theme);
+}
+
+const THEME_KEY = 'squad-hub-theme';
+
+/**
+ * Theme, in three states rather than two.
+ *
+ * `system` is a real setting, not the absence of one: it means "keep following
+ * this machine", and it is what someone gets before they have said anything.
+ * Collapsing it into a boolean would freeze whatever the system happened to be
+ * on first load, so a laptop that switches at sunset would stop switching.
+ */
+const THEMES = ['system', 'dark', 'light'];
+
+function loadTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return THEMES.includes(saved) ? saved : 'system';
+  } catch { return 'system'; }
+}
+
+function applyTheme(theme) {
+  state.theme = THEMES.includes(theme) ? theme : 'system';
+  // The attribute is REMOVED for `system`, not set to it. The stylesheet keys
+  // its prefers-color-scheme block on `:root:not([data-theme])`, so an
+  // attribute of any value would override the system choice it exists to
+  // follow.
+  if (state.theme === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', state.theme);
+
+  const btn = $('themeBtn');
+  if (btn) {
+    const label = { system: 'Theme: follow system', dark: 'Theme: dark', light: 'Theme: light' }[state.theme];
+    btn.title = `${label} (click to change)`;
+    btn.setAttribute('aria-label', label);
+    btn.textContent = { system: '◐', dark: '🌙', light: '☀' }[state.theme];
+  }
+  try { localStorage.setItem(THEME_KEY, state.theme); } catch { /* never fatal */ }
+}
+
+/** system -> dark -> light -> system. */
+function nextTheme(theme) {
+  const i = THEMES.indexOf(theme);
+  return THEMES[(i === -1 ? 0 : i + 1) % THEMES.length];
+}
+
+
+
+const RAIL_KEY = 'squad-hub-rail-collapsed';
+
+function setRailCollapsed(collapsed) {
+  state.railCollapsed = !!collapsed;
+  const rail = $('deviceRail');
+  const toggle = $('railToggle');
+  if (rail) rail.classList.toggle('collapsed', state.railCollapsed);
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', state.railCollapsed ? 'false' : 'true');
+    toggle.title = state.railCollapsed ? 'Show the device list' : 'Collapse the device list';
+  }
+  try { localStorage.setItem(RAIL_KEY, state.railCollapsed ? '1' : '0'); } catch { /* never fatal */ }
+}
+
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
@@ -479,7 +1298,22 @@ function wire() {
   $('statusFilter').onchange = (e) => { state.filters.status = e.target.value; refresh(); };
   $('deviceFilter').onchange = (e) => { state.filters.device = e.target.value; refresh(); };
 
+  // These four are client-side: they reshape what is already loaded, so they
+  // re-render immediately rather than waiting on a round trip.
+  $('repoFilter').onchange = (e) => { state.filters.repo = e.target.value; saveView(); render(); };
+  $('orgFilter').onchange = (e) => { state.filters.org = e.target.value; saveView(); render(); };
+  $('windowFilter').onchange = (e) => { state.filters.window = e.target.value; saveView(); render(); };
+  $('groupBy').onchange = (e) => { state.groupBy = e.target.value; saveView(); render(); };
+  $('sortBy').onchange = (e) => { state.sortBy = e.target.value; saveView(); render(); };
+
   $('groups').onclick = (e) => {
+    // The star sits inside the row, so it must claim the click before the row
+    // does -- otherwise pinning a session also opens it.
+    const star = e.target.closest('[data-star]');
+    if (star) {
+      toggleFavorite(star.dataset.star);
+      return;
+    }
     const row = e.target.closest('[data-session]');
     if (row) openDetail(row.dataset.session);
   };
@@ -488,6 +1322,13 @@ function wire() {
     const b = e.target.closest('[data-spawn]');
     if (b) openNew(b.dataset.spawn);
   };
+
+  // The rail collapses, and remembers. On a narrow window it is the first
+  // thing worth reclaiming, and re-collapsing it on every load would make that
+  // a chore rather than a setting.
+  $('railToggle').onclick = () => setRailCollapsed(!$('deviceRail').classList.contains('collapsed'));
+
+  $('themeBtn').onclick = () => applyTheme(nextTheme(state.theme));
 
   $('newBtn').onclick = () => openNew();
   $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
@@ -521,13 +1362,17 @@ function wire() {
 
   $('nsStart').onclick = async () => {
     const deviceId = $('nsDevice').value;
-    const prompt = $('nsPrompt').value.trim();
-    if (!prompt) { showNewErr('a prompt is required'); return; }
+    const body = spawnRequest({
+      prompt: $('nsPrompt').value,
+      cwd: $('nsCwd').value,
+      agent: $('nsAgent').value,
+      model: $('nsModel').value,
+    });
+    const problem = spawnError(body);
+    if (problem) { showNewErr(problem); return; }
     $('nsStart').disabled = true;
     try {
-      await api(`/api/devices/${encodeURIComponent(deviceId)}/spawn`, {
-        method: 'POST', body: { prompt, cwd: $('nsCwd').value.trim() || undefined },
-      });
+      await api(`/api/devices/${encodeURIComponent(deviceId)}/spawn`, { method: 'POST', body });
       $('newScrim').hidden = true;
       $('nsPrompt').value = '';
       refresh();
@@ -549,16 +1394,30 @@ function wire() {
 
   $('dtSend').onclick = async () => {
     if (!state.currentSession) return;
+    if (!controlsEnabled(state.composer.control)) return;
     const text = $('dtInput').value.trim();
     if (!text) return;
     const { device, session } = state.currentSession;
-    $('dtInput').value = '';
     try {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, {
         method: 'POST', body: { sessionId: session.id, text },
       });
-    } catch (e) { alert(`Could not send: ${e.message}`); }
+      // Cleared only once it LANDED. Clearing first meant a failed send threw
+      // away what the person had written in order to report the failure.
+      state.composer = composerReduce(state.composer, { type: 'sent' });
+      $('dtInput').value = '';
+    } catch (e) {
+      state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });
+      renderControl();
+      alert(`Could not send: ${e.message}`);
+    }
   };
+
+  $('dtInput').oninput = (e) => {
+    state.composer = composerReduce(state.composer, { type: 'type', text: e.target.value });
+  };
+
+  $('dtSync').onclick = () => verifyControl();
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -842,7 +1701,9 @@ function signInHint(mode) {
 (async function main() {
   state.token = loadToken();
   if (!state.token) return showSignIn();
+  loadView();
   wire();
+  syncControls();
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';

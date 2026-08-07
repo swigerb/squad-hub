@@ -14,6 +14,7 @@
 <header class="topbar">
   <div class="brand"><img class="mark" src="/logo.jpg" alt=""> Squad Hub</div>
   <div class="spacer"></div>
+  <button class="icon-btn" id="themeBtn" aria-label="Switch theme" title="Switch theme">◐</button>
   <button class="icon-btn bell" id="bellBtn" aria-label="Notifications">
     🔔<span class="badge" id="bellCount" hidden>0</span>
   </button>
@@ -57,15 +58,58 @@
 
   <div class="filterbar">
     <input id="q" type="search" placeholder="Filter by keyword" aria-label="Filter by keyword">
-    <select id="statusFilter" aria-label="Status">
-      <option value="">All statuses</option>
-      <option value="waiting_approval">Action needed</option>
-      <option value="active">Active</option>
-      <option value="done">Done</option>
-      <option value="failed">Failed</option>
-      <option value="stopped">Stopped</option>
-    </select>
-    <select id="deviceFilter" aria-label="Device"><option value="">All devices</option></select>
+    <label class="inline-select">
+      <span>Status</span>
+      <select id="statusFilter" aria-label="Status">
+        <option value="">All</option>
+        <option value="waiting_approval">Action needed</option>
+        <option value="active">Active</option>
+        <option value="done">Ready for review</option>
+        <option value="failed">Failed</option>
+        <option value="stopped">Stopped</option>
+      </select>
+    </label>
+    <label class="inline-select">
+      <span>Device</span>
+      <select id="deviceFilter" aria-label="Device"><option value="">All</option></select>
+    </label>
+    <label class="inline-select">
+      <span>Repository</span>
+      <select id="repoFilter" aria-label="Repository"><option value="">All</option></select>
+    </label>
+    <label class="inline-select">
+      <span>Organisation</span>
+      <select id="orgFilter" aria-label="Organisation"><option value="">All</option></select>
+    </label>
+  </div>
+
+  <div class="toolbar">
+    <label class="inline-select">
+      <span>When</span>
+      <select id="windowFilter" aria-label="Time window">
+        <option value="">Any time</option>
+        <option value="24h">Last 24 hours</option>
+        <option value="7d">Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+      </select>
+    </label>
+    <label class="inline-select">
+      <span>Group</span>
+      <select id="groupBy" aria-label="Group by">
+        <option value="device">Device</option>
+        <option value="repository">Repository</option>
+        <option value="none">None</option>
+      </select>
+    </label>
+    <label class="inline-select">
+      <span>Sort</span>
+      <select id="sortBy" aria-label="Sort by">
+        <option value="started_desc">Started &#8595;</option>
+        <option value="started_asc">Started &#8593;</option>
+        <option value="tools_desc">Most tool calls</option>
+        <option value="repository">Repository</option>
+      </select>
+    </label>
   </div>
 
   <div class="layout">
@@ -82,9 +126,12 @@
       </div>
     </section>
 
-    <aside class="devices">
+    <aside class="devices" id="deviceRail">
       <div class="listhead">
-        <span>Connected devices <b id="deviceCount">0</b></span>
+        <button class="rail-toggle" id="railToggle" aria-expanded="true" aria-controls="deviceList"
+                title="Collapse the device list">Devices</button>
+        <span class="pill" id="deviceAvailable">0 available</span>
+        <span class="listhead-count">of <b id="deviceCount">0</b></span>
       </div>
       <div id="deviceList"></div>
     </aside>
@@ -102,9 +149,10 @@
       <pre id="apCommand"></pre>
     </div>
     <div id="apPathsWrap" hidden>
-      <div class="cmdlabel">Paths it touches</div>
+      <div class="cmdlabel">What it touches</div>
       <div class="paths" id="apPaths"></div>
     </div>
+    <p class="ap-rule" id="apRule" hidden></p>
     <div class="modal-actions" id="apActions"></div>
     <button class="link" id="apCancel">Not now</button>
   </div>
@@ -127,6 +175,21 @@
       <span>Prompt</span>
       <textarea id="nsPrompt" rows="4" placeholder="What should the agent do?"></textarea>
     </label>
+    <div class="field-row">
+      <label class="field">
+        <span>Agent</span>
+        <input id="nsAgent" placeholder="whatever the project selects">
+      </label>
+      <label class="field">
+        <span>Model</span>
+        <input id="nsModel" placeholder="the agent's default">
+      </label>
+    </div>
+    <small class="field-note">
+      Leave either blank to let the project decide. In a Squad project that
+      selects the <code>squad</code> agent automatically; anywhere else, Copilot's
+      default. Naming one here overrides both.
+    </small>
     <div class="modal-actions">
       <button class="ghost" id="nsCancel">Cancel</button>
       <button class="primary" id="nsStart">Start</button>
@@ -151,8 +214,15 @@
     <div class="transcript" id="dtTranscript"></div>
     <div class="squadpanel" id="dtSquad" hidden></div>
     <div class="composer">
-      <input id="dtInput" placeholder="Send follow-up input to the running agent">
-      <button class="primary" id="dtSend">Send</button>
+      <div class="control-banner" id="dtControl">
+        <span class="control-state" id="dtControlLabel">Checking control…</span>
+        <span class="control-why" id="dtControlWhy"></span>
+        <button class="ghost" id="dtSync" hidden>Sync session</button>
+      </div>
+      <div class="composer-row">
+        <input id="dtInput" placeholder="Send follow-up input to the running agent" disabled>
+        <button class="primary" id="dtSend" disabled>Send</button>
+      </div>
     </div>
   </div>
 </div>

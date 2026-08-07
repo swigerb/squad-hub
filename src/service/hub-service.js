@@ -406,7 +406,7 @@ class HubService {
     }
 
     // Control operations, all routed to a device the caller owns.
-    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript)$/);
+    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript|control-check)$/);
     if (m && req.method === 'POST') {
       const [, deviceId, op] = m;
       const body = await readJson(req);
@@ -458,16 +458,19 @@ class HubService {
   _static(url, send) {
     let rel = url.pathname === '/' ? '/index.html' : url.pathname;
     // Decode before resolving, so a file with a space or an encoded character
-    // serves correctly. That decoding is also what makes the containment check
-    // below load-bearing: without it, `%2e%2e` never becomes `..` and the guard
-    // is unreachable dead code.
+    // serves correctly.
     try { rel = decodeURIComponent(rel); } catch { return send(400, { error: 'bad path' }); }
+    // NORMALIZE IS LOAD-BEARING, not tidiness. `new URL()` collapses a literal
+    // `..` segment at parse time, but it leaves `%2f` encoded -- so `/..%2fetc`
+    // arrives here intact, becomes `/../etc` on the line above, and is
+    // collapsed by THIS call. Verified: /../ , /%2e%2e/ , /a/../../ and
+    // /%2e%2e%2f are handled by URL parsing; /..%2f , /..%2f..%2f , /....// and
+    // /..%5c are handled only here. Removing this is a path traversal.
     rel = path.normalize(rel).replace(/^([/\\])+/, '');
     const file = path.join(WEB_ROOT, rel);
-    // Defence in depth. `new URL()` has already collapsed any `..`, so this is
-    // currently unreachable -- verified for /../ , /%2e%2e/ , /a/../../ and
-    // /..%2f , all of which resolve inside web/. It stays because it becomes
-    // load-bearing the moment this handler stops going through URL parsing.
+    // Defence in depth, and reachable the moment the line above stops
+    // collapsing `..` -- which is exactly what the mutation harness proves by
+    // removing it and requiring this to return 403 rather than the file.
     if (!file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) {
       return send(403, { error: 'nope' });
     }

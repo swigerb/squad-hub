@@ -60,6 +60,10 @@ config.update({
   deviceName,
   server: HUB,
   token: TOKEN,
+  // A cloud device is on-demand and always available, and the roster lists it
+  // first for exactly that reason -- it is the one place work can always be
+  // sent, whatever laptops happen to be asleep.
+  deviceKind: 'cloud',
   // The working directory is the container's own; there is no user filesystem
   // to protect, and a cloud device with no file access cannot be given work.
   allowFiles: true,

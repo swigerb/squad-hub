@@ -694,6 +694,25 @@ async function suiteDocs() {
 }
 
 /**
+ * The shipped artefact, not the working tree. A green suite proves the code
+ * works where the tests run; it says nothing about what a consumer installs.
+ */
+async function suitePackage() {
+  console.log('\n[PACKAGE] what actually ships is what the server needs');
+  runChildSuite(path.join(__dirname, 'package-unit.js'), 'package');
+}
+
+/**
+ * The command surface itself: the verbs and global options a person types.
+ * `autostart` had to arrive without breaking the three older spellings, and a
+ * global option has to mean the same thing on either side of the subcommand.
+ */
+async function suiteCliParity() {
+  console.log('\n[CLI PARITY] autostart, config edit/env, --env, --no-config-cache');
+  runChildSuite(path.join(__dirname, 'cli-parity-unit.js'), 'cli-parity');
+}
+
+/**
  * Stored XSS (Opus review, HIGH): `.squad-hub.json` agent/model ->
  * `agentSelection` -> the hub -> `web/app.js`'s `sessionRow`. Proven directly
  * against the file's pure, DOM-free prefix -- no jsdom, per the zero-runtime-
@@ -703,6 +722,57 @@ async function suiteDocs() {
 async function suiteWebXss() {
   console.log('\n[WEB XSS] agentSelection fields render as text, never live markup');
   runChildSuite(path.join(__dirname, 'web-xss-unit.js'), 'web-xss');
+}
+
+/**
+ * Session metadata: repository and branch read from the checkout, the live
+ * activity line, the badge set, and the ordering that pulls a blocked session
+ * to the top. Every new field reaching the DOM carries its own stored-XSS
+ * case -- a branch name is attacker-influenceable, git permits any bytes.
+ */
+async function suiteSessionMetadata() {
+  console.log('\n[SESSION METADATA] repository, branch, activity, badges, ordering');
+  runChildSuite(path.join(__dirname, 'session-metadata-unit.js'), 'session-metadata');
+}
+
+/**
+ * The list controls -- time window, grouping, sort, repository/organisation
+ * scope and pinning. All pure functions, proven in Node without a browser,
+ * because a rule that lives inside a DOM callback cannot be proven at all.
+ */
+async function suiteListControls() {
+  console.log('\n[LIST CONTROLS] window, grouping, sort, scope, pinning');
+  runChildSuite(path.join(__dirname, 'list-controls-unit.js'), 'list-controls');
+}
+
+/**
+ * The device roster: ordering, presence wording, load meters, and the
+ * telemetry that feeds them -- which is off by default, like every other thing
+ * the daemon could report about the machine it runs on.
+ */
+async function suiteDeviceRoster() {
+  console.log('\n[DEVICE ROSTER] cloud first, presence, meters, telemetry');
+  runChildSuite(path.join(__dirname, 'device-roster-unit.js'), 'device-roster');
+}
+
+/**
+ * Control verification. The composer stays disabled until the DEVICE confirms
+ * it can take input -- the hub knowing about a session proves only that a
+ * heartbeat once mentioned it. Same shape as the HTTP-101 handshake race.
+ */
+async function suiteControlVerification() {
+  console.log('\n[CONTROL] disabled until the device itself says otherwise');
+  runChildSuite(path.join(__dirname, 'control-verification-unit.js'), 'control');
+}
+
+/**
+ * Approval depth and the composer's agent/model selection. Reading a file and
+ * rewriting a directory are not the same decision, and a standing permission
+ * that does not say what it makes standing is a blank cheque.
+ */
+async function suiteApprovalDepth() {
+  console.log('\n[APPROVAL DEPTH] read-only badges, standing rules, agent/model');
+  runChildSuite(path.join(__dirname, 'approval-depth-unit.js'), 'approval-depth');
 }
 
 // ===========================================================================
@@ -738,8 +808,15 @@ async function suiteWebXss() {
   await suiteFreshWorkflow();
   await suiteDaemonFixes();
   await suiteHubWarning();
+  await suiteCliParity();
   await suiteDocs();
+  await suitePackage();
   await suiteWebXss();
+  await suiteSessionMetadata();
+  await suiteListControls();
+  await suiteDeviceRoster();
+  await suiteControlVerification();
+  await suiteApprovalDepth();
 
   console.log('');
   console.log('='.repeat(60));

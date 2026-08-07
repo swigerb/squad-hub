@@ -195,6 +195,7 @@ running from a nested subdirectory of the project still picks it up.
 | `--allow-files` | Allow a working directory, scoped to the launch directory. |
 | `--allow-files-all` | Allow any working directory. |
 | `--track-all` | Report every session on this device. |
+| `--telemetry` | Report CPU and memory load. Off by default. |
 
 `connect` accepts the same `--allow-files`/`--allow-files-all`/`--track-all`
 flags and is the recommended way to set them, since it also saves the hub and
@@ -205,6 +206,83 @@ token in the same step.
 
 `status` exits **3** when no daemon is running, so a script can tell "stopped"
 from "broken".
+
+## What a session shows
+
+Each session carries the context needed to tell it apart from every other one
+at a glance, in both `squad-hub status` and the web UI.
+
+| Field | Where it comes from |
+|---|---|
+| Repository | The `origin` remote in the session's checkout, as `owner/repo`. Falls back to the repository directory name when there is no remote. |
+| Branch | The checked-out branch, or the short commit when `HEAD` is detached. |
+| Activity | What the agent is doing right now — `Running <tool>`, `Processing…`, or `Waiting for input`. |
+| Badge | `Active`, `Action needed`, `Ready for review`, `Failed`, or `Stopped`. |
+
+Repository and branch are read **directly from `.git`**, never by running
+`git`. A session's state is serialised on every heartbeat, so forking a
+process there would mean a subprocess per session several times a minute — and
+it would find nothing on a device that has a checkout but no git binary.
+Linked worktrees and submodules (where `.git` is a *file*) are handled.
+
+A remote URL's credentials are discarded rather than parsed. Only the last two
+path segments are ever kept, so a token committed into a remote URL cannot
+reach a web page other people can see.
+
+**`Action needed` outranks everything.** A session blocked on a person is the
+only one that cannot make progress by itself, so it is never described as
+merely `Active`, its row is pulled to the top of its device's card, and it
+carries a coloured edge. A finished session reads as `Ready for review` rather
+than `Done` — nothing is done from the watcher's side; the work is sitting
+there waiting to be looked at.
+
+Everything in a session row is escaped before it is rendered. A branch name, a
+repository name, and a tool title are all attacker-influenceable — git accepts
+any bytes in a branch name — so none of it is ever treated as markup.
+
+## The session list
+
+The web UI's list controls reshape what is already loaded, so they apply
+instantly rather than on a round trip.
+
+| Control | |
+|---|---|
+| Keyword, status, device | Applied by the hub. |
+| Repository, organisation | Built from the sessions actually on screen, so a scope can never filter everything away. |
+| Time window | `Any time`, `Last 24 hours`, `Last 7 days`, `Last 30 days`. |
+| Group by | `Device`, `Repository`, or none. |
+| Sort by | `Started ↓`, `Started ↑`, `Most tool calls`, `Repository`. |
+| Pin | A star per row. Pinned sessions lift into their own section at the top. |
+
+Two rules override everything else:
+
+**A session blocked on a person is never hidden and never buried.** The time
+window skips it, the sort cannot push it down, and the group holding it floats
+to the top. Someone is waiting on an answer — hiding that row because the
+session started yesterday turns a filter into a way to lose work.
+
+**A pin outranks every filter.** A person pinned it, so it stays until they
+unpin it, and it is not shown twice.
+
+Controls and pins are kept in the browser's local storage, not on the hub.
+This is how one person likes to look at the list, not a property of the
+sessions; syncing it would mean a preference set on a laptop silently
+rearranging a phone.
+
+### Theme
+
+The theme has **three** states, not two: `system`, `dark`, `light`. The toggle
+in the top bar cycles through them.
+
+`system` is a real setting rather than the absence of one — it means "keep
+following this machine", and it is what you get before you have said anything.
+Collapsing it into a boolean would freeze whatever the system happened to be
+on first load, so a laptop that switches at sunset would stop switching.
+
+Both themes are defined as the **same set of token names** with different
+values, rather than as a second stylesheet. One theme silently drifting from
+the other is what a parallel set of rules produces; a parallel set of *values*
+cannot.
 
 ## Doctor
 
@@ -243,9 +321,9 @@ instead of the human summary.
 ## Login startup (optional)
 
 ```
-squad-hub install-service [--dry-run] [--json]
-squad-hub uninstall-service [--dry-run] [--json]
-squad-hub service-status [--dry-run] [--json]
+squad-hub autostart enable [--dry-run] [--json]
+squad-hub autostart disable [--dry-run] [--json]
+squad-hub autostart status [--dry-run] [--json]
 ```
 
 Registers a login task that runs `squad-hub start` once when you sign in, so
@@ -258,12 +336,24 @@ the daemon comes up without a terminal. Never requires admin or root:
 | macOS | A LaunchAgent in `~/Library/LaunchAgents`. |
 | Anything else | Reported clearly as unsupported — nothing is installed. |
 
+The older spellings still work and always will — they are already in people's
+scripts and login tasks:
+
+| Older | Current |
+|---|---|
+| `squad-hub install-service` | `squad-hub autostart enable` |
+| `squad-hub uninstall-service` | `squad-hub autostart disable` |
+| `squad-hub service-status` | `squad-hub autostart status` |
+
+They are the same command, not a second implementation; each reports itself
+under the name you typed.
+
 Both the Node executable and `bin/squad-hub.js` are located from the running
 process itself, so this works correctly whether Squad Hub was installed with
 `npm link` or run from a full checkout, and even when either path contains
 spaces.
 
-Install and uninstall are **idempotent** — running either twice does not
+Enable and disable are **idempotent** — running either twice does not
 error and does not duplicate the task.
 
 `--dry-run` reports the exact command(s) and file(s) it would use without
@@ -292,14 +382,182 @@ access, the daemon refuses rather than silently using somewhere else.
 | `squad-hub track-all <on\|off>` | Report every session, or only Squad Hub ones. |
 | `squad-hub --version` | Print the version. |
 | `squad-hub config show` | Print the current configuration. |
+| `squad-hub config edit` | Open the configuration in `$VISUAL`, `$EDITOR`, or the platform default. |
 | `squad-hub config server <url>` | Pin a hub service URL. |
 | `squad-hub config unset-server` | Clear it. |
+| `squad-hub config env` | List the named environments `--env` can use. |
+| `squad-hub config env <name> <url>` | Set one. `none` clears it. |
 | `squad-hub config enable-auto-shutdown` | Exit a while after the last session ends. |
 | `squad-hub config disable-auto-shutdown` | Stay running until stopped. |
 | `squad-hub config set-auto-shutdown-grace <seconds>` | How long to wait first. |
+| `squad-hub config enable-telemetry` | Report CPU and memory load. Off by default. |
+| `squad-hub config disable-telemetry` | Stop reporting it. |
 
 Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 `~/.squad-hub`.
+
+`config edit` creates the file first if it does not exist — an editor opened on
+a path that is not there is how someone ends up editing nothing at all — and
+re-parses it afterwards. Invalid JSON is reported as a failure rather than left
+for the next command to silently read as defaults.
+
+## Global options
+
+Accepted **before or after** the subcommand; `squad-hub --env ppe status` and
+`squad-hub status --env ppe` are the same command.
+
+| Option | |
+|---|---|
+| `--env prod\|ppe` | Use a named hub for this invocation. |
+| `--no-config-cache` | Re-read `config.json` on every access instead of reusing it. |
+
+### `--env`
+
+Squad Hub is self-hosted, so there is no vendor `prod` to compile in. A name
+resolves to a URL through, in order:
+
+1. `SQUAD_HUB_PROD_URL` / `SQUAD_HUB_PPE_URL`
+2. What `squad-hub config env <name> <url>` saved
+
+The hub a command actually talks to is chosen as:
+
+```
+--hub <url>          explicit, wins outright
+config server <url>  pinned; --env is IGNORED and says so
+--env <name>         used only when nothing is pinned
+(nothing)            local only
+```
+
+A pin is a persisted, deliberate decision, so an option that silently overrode
+it would make `config server` mean nothing. `--env` alongside a pin prints why
+it was ignored rather than dropping it on the floor.
+
+`--env` does **not** pin what it resolved. It is a per-invocation choice; if it
+wrote the URL to `server`, the next `--env` would be ignored.
+
+A name that resolves to nothing is a usage error (exit 2), never a quiet
+fallback to local-only — someone who typed `--env ppe` wants ppe.
+
+### `--no-config-cache`
+
+`config.json` is normally read once and reused for as long as the value on disk
+is unchanged, which matters most in the daemon: it reads the config on every
+heartbeat and on every session start.
+
+The memo is keyed on the file's modification time and size, not merely on
+"already read once", so a config written by the CLI is picked up by the
+daemon — a different process — on its next read. `--no-config-cache` skips even
+that check and reads the file every time.
+
+## The device roster
+
+| Column | |
+|---|---|
+| Kind | `cloud` devices are listed **first** and stay first. A cloud device is on-demand and always available — it is the one place work can always be sent, whatever laptops happen to be asleep. |
+| Platform | `Windows`, `macOS`, `Linux`. An unrecognised platform is shown as reported rather than discarded. |
+| Presence | `Online`, `Stale · seen 2m ago`, `Offline · seen 3h ago`. Stale means "we have not heard recently"; offline means "we have given up". |
+| Load | CPU and RAM meters, **only for devices that report telemetry**. |
+
+Within a kind, devices sort online → stale → offline, then by name. A roster
+that reorders itself as machines drift between presences is one nobody can
+click accurately.
+
+Each device carries a `+` to start a session on it, and the rail collapses to
+reclaim width — the header keeps a count of how many devices can currently
+take work.
+
+### Telemetry
+**Off by default**, like every other thing the daemon could report about the
+machine it runs on.
+
+```
+squad-hub config enable-telemetry
+squad-hub config disable-telemetry
+squad-hub start --telemetry        (or `connect --telemetry`)
+```
+
+What is sent is deliberately narrow: a CPU percentage, a memory percentage,
+the machine's total memory, and its core count. **No process list, no per-core
+detail, and nothing about what is running.**
+
+CPU is a **delta between two heartbeats**, not an instantaneous reading — a
+single cumulative sample reports the average since boot, which is never what
+anyone means by "CPU". The first sample after startup therefore has no CPU
+figure, and says so rather than inventing a zero.
+
+A device that does not report telemetry shows **no meter at all**, rather than
+an empty bar. "Not reporting" and "idle" look identical at zero, and they are
+entirely different facts.
+
+## Control verification
+
+The web UI's composer is **disabled until the device itself confirms** it can
+take input for that session.
+
+The hub knowing about a session proves only that a heartbeat once mentioned
+it — the hub is a cache, the device is the record. Whether the agent process
+is still alive and still accepting input is a fact only the machine running it
+holds, so it is asked directly, over the same control path a real command
+would take.
+
+| State | Composer | Shown |
+|---|---|---|
+| Checking | Disabled | `Checking control…` |
+| Verified | **Enabled** | `Synced` |
+| Device says no | Disabled | `Not synced`, with the device's reason, and a `Sync session` action |
+| No answer in time | Disabled | `Control couldn't be verified`, and a `Sync session` action |
+
+The transcript is always readable, whatever the control state — a session that
+cannot be controlled is still worth reading, and blocking the transcript on a
+control check would hide the very history that explains why.
+
+A definite "no" and a request that never arrived are deliberately different
+states. Telling someone `Not synced` when the request never left the building
+sends them looking in the wrong place.
+
+**The draft survives everything except a successful send.** Someone typed it;
+clearing it in order to report a transport problem is the wrong trade in every
+case.
+
+### Approval expiry
+
+An approval nobody answers is cancelled after **30 minutes**
+(`SQUAD_HUB_APPROVAL_TTL_MS`), and the session resumes.
+
+An approval gate with no approver is a hang: the agent is blocked on a
+question, the person it was asked of has gone home, and the session holds a
+process and a slot in everyone's list for as long as it is left. A cancelled
+tool call is a normal thing for an agent to handle — waiting forever is not.
+
+It is deliberately long. This is a backstop against a question nobody will
+ever answer, not a deadline for someone who stepped away from their desk.
+
+## Teams notifications
+
+Set `SQUAD_HUB_TEAMS_WEBHOOK` and the hub posts an Adaptive Card to Teams
+whenever an agent asks for permission. The card describes exactly what the
+agent wants to run and deep-links to the approval in Squad Hub.
+
+**Create the webhook with Power Automate, not a channel connector.** Office 365
+Connectors — the old *Incoming Webhook* you added to a channel — were retired,
+with rollout completing in **May 2026**. One can no longer be created.
+
+In Teams: right-click the channel → **Workflows** → *Post to a channel when a
+webhook request is received*. The URL it gives you is what goes in
+`SQUAD_HUB_TEAMS_WEBHOOK`. It accepts the same Adaptive Card payload, so
+nothing on this side changed.
+
+**The card has no Approve or Deny button, on purpose.** Answering from inside a
+card requires `Action.Execute`, which requires a registered Teams bot with a
+messaging endpoint and a tenant app registration — a one-way webhook cannot
+receive a response. That is a property of Teams, not a shortcut taken here, so
+the card says so and links out instead. A button that does nothing is worse
+than a link that does something.
+
+**The card carries your data into a channel other people may be in.** Content
+is truncated and anything credential-shaped is redacted before it leaves the
+process — an approval prompt is exactly where a token pasted onto a command
+line would otherwise show up.
 
 ## Device tokens
 
@@ -341,7 +599,7 @@ See [security.md](security.md#device-tokens).
 | `SQUAD_HUB_GITHUB_CLIENT_SECRET` | OAuth App client secret. Never commit it; set it as an app setting. |
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
-| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams incoming webhook. Notifications are off without it. |
+| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" below — the connector this used to mean no longer exists. |
 | `SQUAD_HUB_BUILD` | Build marker reported by `/healthz`. Set by the deploy script so it can prove the code it pushed is the code now serving. |
 | `SQUAD_HUB_INSTANCE_COUNT` | Overrides the detected instance count. Azure App Service sets `WEBSITE_INSTANCE_COUNT` itself; this is for platforms that do not. |
 
@@ -356,6 +614,8 @@ the UI shows a banner. Scale up, not out.
 |---|---|
 | `SQUAD_HUB_HOME` | Config, state and logs. Default `~/.squad-hub`. |
 | `SQUAD_HUB_URL` | Hub service to attach to. |
+| `SQUAD_HUB_PROD_URL` | Hub URL for `--env prod`. Wins over the saved value. |
+| `SQUAD_HUB_PPE_URL` | Hub URL for `--env ppe`. Wins over the saved value. |
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
@@ -364,6 +624,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_AGENT_ARGS` | Agent arguments. Default `--acp`. |
 | `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
 | `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
+| `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
 
 **The two tokens are separate on purpose.** The hub token says which device this
 is; the agent token spends a Copilot entitlement. Conflating them would let

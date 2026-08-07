@@ -121,6 +121,42 @@ check('the source scan actually covers the source tree', () => {
   }
 });
 
+check('every mutation still anchors to real source', () => {
+  /**
+   * A mutation whose `find` text no longer appears in the file is a mutation
+   * that silently tests NOTHING. The sweep reports it, but a sweep takes hours
+   * and is run rarely; this catches the same drift in milliseconds, on every
+   * run, which is when it is cheap to fix.
+   *
+   * The drift is invisible by construction: refactoring the code under an
+   * anchor produces no error anywhere, and the catalogue goes on listing a
+   * guarantee nobody is checking. That is the exact failure mode the mutation
+   * harness exists to prevent, applied to the harness itself.
+   */
+  if (process.env.MUTANT) return; // a sweep is mid-flight; the file is edited on purpose
+  const { MUTATIONS } = require('./mutate');
+  assert.ok(MUTATIONS.length >= 50, `only ${MUTATIONS.length} mutations found; the catalogue did not load`);
+
+  const nl = (s) => s.replace(/\r\n/g, '\n');
+  const drifted = [];
+  for (const m of MUTATIONS) {
+    if (m.skip) continue;
+    let body;
+    try { body = read(m.file); } catch { drifted.push(`${m.name} -> ${m.file} does not exist`); continue; }
+    if (!nl(body).includes(nl(m.find))) drifted.push(`${m.name} -> anchor gone from ${m.file}`);
+  }
+  assert.deepStrictEqual(drifted, [],
+    `these mutations would apply nothing and pass silently:\n  ${drifted.join('\n  ')}`);
+});
+
+check('every mutation names a test that could fail', () => {
+  if (process.env.MUTANT) return;
+  const { MUTATIONS } = require('./mutate');
+  const nameless = MUTATIONS.filter((m) => !m.skip && !m.mustFail);
+  assert.deepStrictEqual(nameless.map((m) => m.name), [],
+    'a mutation with no named test is caught by whatever happens to break, which proves nothing');
+});
+
 check('a plausible number of environment variables were found', () => {
   assert.ok(usedVars.length >= 8, `only found ${usedVars.length}; the scan is broken`);
 });
@@ -375,6 +411,65 @@ check('no real email addresses appear anywhere in the repo', () => {
   assert.deepStrictEqual(hits, [], `a real address leaked into the repo:\n  ${hits.join('\n  ')}`);
 });
 
+/**
+ * Internal-only codenames, and the internal documentation host, must never
+ * reach a public repository. This is a one-way door: once pushed, the term is
+ * in clones, forks, caches and the GitHub API, and deleting it later does not
+ * un-publish it.
+ *
+ * The forbidden terms are assembled from character codes rather than written
+ * out, because a guard that spells the secret it protects is itself the leak
+ * -- and would match itself, making the check permanently red.
+ */
+check('no internal codename or internal doc host appears anywhere in the repo', () => {
+  const term = (...codes) => String.fromCharCode(...codes);
+  const forbidden = [
+    { what: 'an internal codename', re: new RegExp(term(97, 103, 101, 110, 99, 121), 'gi') },
+    { what: 'the internal doc host', re: new RegExp(term(101, 110, 103) + '\\.' + term(109, 115), 'gi') },
+  ];
+
+  // Every tracked file, not just documentation: a codename in a comment, a
+  // fixture or a test name is just as public as one in the README.
+  const files = repoFiles(/./);
+  assert.ok(files.length >= 20, `only ${files.length} files scanned; the scan is broken`);
+
+  // Prove the detector detects. A guard that scans everything and matches
+  // nothing is indistinguishable from a guard whose pattern never matches
+  // anything at all -- both are silently, permanently green.
+  for (const { what, re } of forbidden) {
+    const canary = what.includes('host')
+      ? `see ${String.fromCharCode(101, 110, 103)}.${String.fromCharCode(109, 115)}/docs`
+      : `parity with ${String.fromCharCode(97, 103, 101, 110, 99, 121)} hub`;
+    re.lastIndex = 0;
+    assert.ok(re.test(canary), `the detector for ${what} does not detect it`);
+    re.lastIndex = 0;
+  }
+
+  const hits = [];
+  for (const f of files) {
+    let body;
+    try { body = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    if (body.includes('\0')) continue; // binary
+    for (const { what, re } of forbidden) {
+      const found = body.match(re);
+      if (found) hits.push(`${path.relative(ROOT, f)}: ${what} (${found.length}x)`);
+    }
+  }
+  assert.deepStrictEqual(hits, [], `internal-only terms leaked into a public repo:\n  ${hits.join('\n  ')}`);
+});
+
+check('no internal codename appears in the commit history', () => {
+  // Rewriting published history is disruptive and incomplete, so the only
+  // real defence is never committing the term. Catch it while it is still
+  // local and a rebase is cheap.
+  const term = String.fromCharCode(97, 103, 101, 110, 99, 121);
+  const log = spawnSync('git', ['log', '--all', '-i', `--grep=${term}`, '--oneline'],
+    { cwd: ROOT, encoding: 'utf8' });
+  if (log.status !== 0) return; // no git; the file scan above still applies
+  const hits = log.stdout.trim().split('\n').filter(Boolean);
+  assert.deepStrictEqual(hits, [], `an internal codename is in a commit message:\n  ${hits.join('\n  ')}`);
+});
+
 check('the docs do not carry sprint-by-sprint history', () => {
   // Reference documentation, not a changelog. Someone arriving to USE this
   // should not have to read how it was built.
@@ -449,6 +544,41 @@ check('every spike the docs cite exists', () => {
     if (!fs.existsSync(path.join(ROOT, m[1]))) missing.push(m[1]);
   }
   assert.deepStrictEqual([...new Set(missing)], [], `cited but missing: ${missing.join(', ')}`);
+});
+
+check('the docs never tell you to create a retired Office 365 Connector', () => {
+  /**
+   * The connector this used to describe was retired -- rollout completed in
+   * May 2026 -- so the old instruction ("add an Incoming Webhook to the
+   * channel") cannot be followed at all any more. A setup step that is
+   * impossible is worse than one that is missing: it reads as correct right up
+   * until someone spends an afternoon looking for a menu item that was removed.
+   *
+   * The card payload did not change; only how you obtain the URL did.
+   */
+  const offenders = [];
+  for (const [name, body] of [['docs/commands.md', commands], ['README.md', readme],
+    ['docs/README.md', docsIndex], ['docs/cloud.md', cloud],
+    ['docs/architecture.md', architecture], ['docs/security.md', security]]) {
+    // Scoped to the PARAGRAPH, not to a character window. A window wide enough
+    // to hold the disclaimer is also wide enough to be rescued by an unrelated
+    // neighbouring paragraph -- which is exactly what happened when this was
+    // first written, and it made the guard pass against a doc that had gone
+    // back to the impossible instruction.
+    for (const para of body.split(/\n\s*\n/)) {
+      if (!/incoming webhook/i.test(para)) continue;
+      if (/retire|no longer|replaced|Workflows|Power Automate/i.test(para)) continue;
+      offenders.push(`${name}: "${para.trim().slice(0, 60)}…"`);
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    `the docs still describe a connector that cannot be created:\n  ${offenders.join('\n  ')}`);
+});
+
+check('the Teams webhook variable is explained where it is set', () => {
+  assert.match(commands, /Power Automate/,
+    'telling someone to set a webhook URL without saying how to obtain one is half an instruction');
+  assert.match(commands, /Workflows/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

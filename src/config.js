@@ -25,21 +25,79 @@ const DEFAULTS = Object.freeze({
   heartbeatSeconds: 15,
   staleAfterMissedBeats: 2,  // online -> stale
   offlineAfterMissedBeats: 4, // stale -> offline
+  environments: Object.freeze({}), // named hub URLs for --env; NOT a pinned server
+  reportTelemetry: false,    // CPU/RAM load; off by default, like file access
+  deviceKind: 'local',       // 'local' or 'cloud'; decides roster placement
 });
 
-function read() {
+/**
+ * A validated memo for `read()`.
+ *
+ * The daemon reads the config on every heartbeat and on every session start,
+ * so the uncached path re-parses the same JSON from disk many times over the
+ * life of a long-running process.
+ *
+ * The memo is keyed on the file's mtime and size, NOT merely on "we have read
+ * it once". A blind process-lifetime cache would be wrong here: the CLI writes
+ * the config from a DIFFERENT process to the daemon that reads it, so a daemon
+ * holding a blind cache would keep serving settings the user had already
+ * changed. Re-stat'ing costs a syscall and skips the read+parse, which is the
+ * part worth avoiding.
+ *
+ * `--no-config-cache` bypasses even the stat, for a caller that wants the file
+ * to be authoritative on every single read.
+ */
+let cache = null;      // { key, value }
+let cacheEnabled = true;
+
+function setCacheEnabled(on) {
+  cacheEnabled = !!on;
+  if (!cacheEnabled) cache = null;
+  return cacheEnabled;
+}
+
+function invalidate() { cache = null; }
+
+/**
+ * An identity for the config file's current contents. `absent` is a real
+ * state, not an error -- a machine that has never been configured reads the
+ * defaults, and that answer is just as cacheable as any other.
+ */
+function stamp() {
+  try {
+    const st = fs.statSync(paths.config());
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return 'absent';
+  }
+}
+
+function readFromDisk() {
   try {
     const raw = JSON.parse(fs.readFileSync(paths.config(), 'utf8'));
-    return { ...DEFAULTS, ...raw };
+    return { ...DEFAULTS, ...raw, environments: { ...DEFAULTS.environments, ...(raw.environments || {}) } };
   } catch {
-    return { ...DEFAULTS };
+    return { ...DEFAULTS, environments: { ...DEFAULTS.environments } };
   }
+}
+
+function read() {
+  if (!cacheEnabled) return readFromDisk();
+  const key = stamp();
+  if (!cache || cache.key !== key) cache = { key, value: readFromDisk() };
+  // Hand out a copy: a caller that mutates what it was given must never be
+  // able to edit the memo -- or every later reader inherits that mutation
+  // without anything having been written to disk.
+  return { ...cache.value, environments: { ...cache.value.environments } };
 }
 
 function write(cfg) {
   paths.ensureHome();
-  const merged = { ...DEFAULTS, ...cfg };
+  const merged = { ...DEFAULTS, ...cfg, environments: { ...DEFAULTS.environments, ...(cfg.environments || {}) } };
   fs.writeFileSync(paths.config(), JSON.stringify(merged, null, 2));
+  // The file just moved underneath us; re-stamp rather than assume, so the very
+  // next read cannot be served a memo keyed on the PREVIOUS file.
+  cache = cacheEnabled ? { key: stamp(), value: merged } : null;
   return merged;
 }
 
@@ -77,7 +135,62 @@ function publicView(cfg = read()) {
   return {
     trackAll: cfg.trackAll,
     fileAccess: cfg.allowFiles ? (cfg.allowFilesAll ? 'all' : 'scoped') : 'off',
+    telemetry: !!cfg.reportTelemetry,
   };
 }
 
-module.exports = { DEFAULTS, read, write, update, reset, publicView };
+/** The environment names `--env` accepts. */
+const ENVIRONMENTS = Object.freeze(['prod', 'ppe']);
+
+/**
+ * The variable that overrides each environment.
+ *
+ * Spelled out rather than built from the name at runtime: a computed
+ * `process.env[...]` is invisible to anything that greps the source, including
+ * the docs test that proves every variable the code reads is documented.
+ */
+const ENVIRONMENT_VARS = Object.freeze({
+  prod: 'SQUAD_HUB_PROD_URL',
+  ppe: 'SQUAD_HUB_PPE_URL',
+});
+
+function environmentOverride(name) {
+  if (name === 'prod') return process.env.SQUAD_HUB_PROD_URL || null;
+  if (name === 'ppe') return process.env.SQUAD_HUB_PPE_URL || null;
+  return null;
+}
+
+/**
+ * Resolve a named environment to a hub URL.
+ *
+ * Squad Hub is self-hosted, so there is no vendor "prod" to hardcode -- and
+ * baking one in would be both wrong and a private hostname in a public repo.
+ * A name resolves through the environment first (so CI can point a run at a
+ * hub without writing to the user's config) and then the persisted map.
+ *
+ * Returns null when the name is not configured. Callers treat that as a usage
+ * error rather than silently falling back to local-only: someone who typed
+ * `--env ppe` wants ppe, and quietly ignoring it is how work lands in prod.
+ */
+function resolveEnvironment(name, cfg = read()) {
+  if (!ENVIRONMENTS.includes(name)) return null;
+  const fromEnv = environmentOverride(name);
+  if (fromEnv) return fromEnv;
+  const envs = cfg.environments || {};
+  return envs[name] || null;
+}
+
+module.exports = {
+  DEFAULTS,
+  ENVIRONMENTS,
+  ENVIRONMENT_VARS,
+  read,
+  write,
+  update,
+  reset,
+  publicView,
+  resolveEnvironment,
+  environmentOverride,
+  setCacheEnabled,
+  invalidate,
+};
