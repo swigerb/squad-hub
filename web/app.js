@@ -119,19 +119,6 @@ function activityLine(s) {
 }
 
 /**
- * Approvals that lapsed unanswered, newest first.
- *
- * Someone saw a card asking permission; when it expires they are owed an
- * answer to "what happened to that?". Without this the request simply
- * disappears and the only trace is a session that carried on without doing
- * the thing it asked about.
- */
-function expiredApprovals(s) {
-  const list = (s && s.expiredApprovals) || [];
-  return [...list].sort((a, b) => (b.expiredAt || 0) - (a.expiredAt || 0));
-}
-
-/**
  * The most recent resolution of a request someone was asked to approve.
  *
  * Answered and expired are folded into one line because they answer the same
@@ -365,7 +352,6 @@ function sessionRow(s, deviceName, opts = {}) {
   const sq = s.squad;
   const sel = s.agentSelection;
   const git = s.git;
-  const expired = expiredApprovals(s);
   const outcome = lastApprovalOutcome(s);
   // `sel` (session.agentSelection), `git` (repository/branch read from the
   // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all

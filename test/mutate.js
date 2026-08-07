@@ -1942,10 +1942,12 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
   },
   {
-    name: 'the OLDEST expiry is shown rather than the most recent',
+    name: 'the OLDEST outcome is shown rather than the most recent',
     file: 'web/app.js',
-    find: `  return [...list].sort((a, b) => (b.expiredAt || 0) - (a.expiredAt || 0));`,
-    replace: `  return [...list].sort((a, b) => (a.expiredAt || 0) - (b.expiredAt || 0)); // MUTATION`,
+    find: `  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
+  return all[0] || null;`,
+    replace: `  const all = [...answered, ...expired].sort((a, b) => process.env.MUTANT ? (a.at || 0) - (b.at || 0) : (b.at || 0) - (a.at || 0)); // MUTATION
+  return all[0] || null;`,
     mustFail: 'the most recent expiry is the one shown',
   },
 
