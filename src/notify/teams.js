@@ -8,9 +8,13 @@
  *         to run, and POST it to a Teams webhook URL. The card carries a deep
  *         link that opens the approval in Squad Hub.
  *
- *   Does NOT: approve or deny from inside the card. `Action.Execute` requires a
- *         registered Teams bot with a messaging endpoint and a tenant app
- *         registration. A one-way webhook cannot receive a response.
+ *   Does NOT: approve or deny from inside the card, and will not. `Action.Execute`
+ *         requires a registered Teams bot with a hosted messaging endpoint and
+ *         a tenant app registration; a one-way webhook cannot receive a
+ *         response. Squad Hub is localhost-first -- the daemon dials OUT and
+ *         nothing listens on a laptop -- so inline approval would mean running
+ *         a public relay purely to shorten one click. That trade was weighed
+ *         and declined. The card links to the session instead.
  *
  * That boundary is a property of Teams, not a shortcut taken here, and the card
  * says so rather than showing buttons that would not work. A button that does

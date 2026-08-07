@@ -280,6 +280,62 @@ class Daemon extends EventEmitter {
   }
 
   /**
+   * Restart a session's agent UNDER THE SAME SESSION ID.
+   *
+   * What `Sync session` is for. A session whose agent has died or wedged is
+   * not recoverable by asking it nicely -- the process on the other end of the
+   * pipe is gone. But throwing the session away and starting a new one loses
+   * the id, and with it every reference to it: the row someone is watching,
+   * the link in a Teams card, the id in somebody's terminal history.
+   *
+   * So the ENGINE is replaced and the identity is kept. The transcript is
+   * carried across too, because it is the record of what happened and none of
+   * it stopped being true when the process died.
+   *
+   * The original prompt is replayed, since an ACP session begins with one and
+   * there is nothing else to resume from. That is a real limitation and is
+   * stated rather than hidden: this restarts the work, it does not rewind the
+   * agent to where it was.
+   */
+  resyncSession(sessionId) {
+    const old = this.sessions.get(sessionId);
+    if (!old) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
+
+    // Anything still pending is answered before the process goes, so the old
+    // agent is never left blocked on a question nobody will now answer.
+    for (const a of [...old.pendingApprovals.values()]) {
+      try { old.expire(a.approvalId); } catch { /* the pipe may already be gone */ }
+    }
+    try { old.stop(); } catch { /* already gone */ }
+    this._untrackChild(old.pid);
+
+    const args = buildAgentArgs(this.agentArgs, old.agentSelection || {});
+    const s = new AcpSession({
+      id: sessionId,
+      cwd: old.cwd,
+      prompt: old.prompt,
+      agentCommand: this.agentCommand,
+      agentArgs: args,
+    });
+    s.agentSelection = old.agentSelection;
+    // The record of what happened survives the process that produced it.
+    s.transcript = old.transcript || [];
+    s.resyncedAt = Date.now();
+    s.resyncCount = (old.resyncCount || 0) + 1;
+
+    this.sessions.set(sessionId, s);
+    this._trackChild(s.pid, sessionId);
+    s.on('status', (e) => { this.emit('session-status', { id: sessionId, ...e }); this._persistSessions(); });
+    s.on('approval', (a) => { this.emit('approval', a); this._persistSessions(); });
+    s.run().catch((e) => {
+      if (s.status !== STATUS.FAILED && s.status !== STATUS.STOPPED) s._fail(e.message);
+    }).finally(() => { this._untrackChild(s.pid); this._persistSessions(); });
+
+    this._persistSessions();
+    return s;
+  }
+
+  /**
    * File access is off by default, and when it is scoped the daemon -- not the
    * service -- enforces the boundary. A caller may not escape the root by
    * asking nicely, or by asking with '..'.
@@ -474,6 +530,9 @@ class Daemon extends EventEmitter {
         case 'control-check':
           result = await this.handle({ op: 'control-check', sessionId: m.sessionId });
           break;
+        case 'resync':
+          result = await this.handle({ op: 'resync', sessionId: m.sessionId });
+          break;
         default:
           throw new Error(`unknown command: ${m.op}`);
       }
@@ -545,6 +604,10 @@ class Daemon extends EventEmitter {
           return { controllable: false, sessionId: s.id, status: s.status, reason: `the session is ${s.status}` };
         }
         return { controllable: true, sessionId: s.id, status: s.status, pid: s.pid };
+      }
+      case 'resync': {
+        const s = this.resyncSession(req.sessionId);
+        return { id: s.id, pid: s.pid, cwd: s.cwd, resyncCount: s.resyncCount };
       }
       case 'beat':
         return { transitions: this.beat(), beats: this.beats };
