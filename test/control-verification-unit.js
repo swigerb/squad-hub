@@ -381,8 +381,127 @@ process.env.SQUAD_HUB_HOME = home;
     assert.strictEqual(s.status, 'active', 'the session must resume, not sit in waiting_approval');
   });
 
-  await checkAsync('the expired list does not grow without bound', async () => {
+  // --- Answering: the right request, by a named person ---------------------
+
+  function gated(opts = {}) {
     const { AcpSession } = require('../src/acp-session');
+    const s = Object.create(AcpSession.prototype);
+    s.pendingApprovals = new Map(Object.entries(opts.pending || {
+      a1: {
+        approvalId: 'a1', rpcId: 3, title: 'Run the tests', requestedAt: Date.now(),
+        options: [{ optionId: 'allow_once' }, { optionId: 'reject_once' }],
+      },
+    }));
+    s.expiredApprovals = [];
+    s.answeredApprovals = [];
+    s.status = 'waiting_approval';
+    s.responded = [];
+    s._respond = (rpcId, payload) => s.responded.push({ rpcId, payload });
+    s._setStatus = (next, activity) => { s.status = next; s.activity = activity; };
+    s.emit = () => {};
+    return s;
+  }
+
+  await checkAsync('an answer for the WRONG request id is rejected', async () => {
+    const s = gated();
+    assert.strictEqual(s.answer('not-the-one', 'allow_once'), false);
+    assert.strictEqual(s.responded.length, 0, 'the agent was answered for a request it did not ask');
+    assert.strictEqual(s.pendingApprovals.size, 1, 'the real request was disturbed');
+  });
+
+  await checkAsync('a forged option id leaves the real request still answerable', async () => {
+    /**
+     * This deleted the approval BEFORE checking the option, then returned
+     * false. The caller saw a refusal, the agent stayed blocked, and nothing
+     * was pending any more -- so no surface could offer the question again and
+     * the session hung until the expiry backstop. The existing forged-option
+     * test only asserted a nonzero exit and that the tool had not run, so it
+     * passed throughout.
+     */
+    const s = gated();
+    assert.strictEqual(s.answer('a1', 'allow_everything_forever'), false);
+    assert.strictEqual(s.pendingApprovals.size, 1,
+      'a refused answer destroyed the request it refused');
+    assert.strictEqual(s.answer('a1', 'allow_once'), true,
+      'the request could no longer be answered properly');
+  });
+
+  await checkAsync('answering one of TWO simultaneous prompts resolves the right one', async () => {
+    const s = gated({
+      pending: {
+        a1: { approvalId: 'a1', rpcId: 11, title: 'first', requestedAt: 1, options: [{ optionId: 'allow_once' }] },
+        a2: { approvalId: 'a2', rpcId: 22, title: 'second', requestedAt: 2, options: [{ optionId: 'allow_once' }] },
+      },
+    });
+    assert.strictEqual(s.answer('a2', 'allow_once'), true);
+    assert.deepStrictEqual(s.responded.map((r) => r.rpcId), [22],
+      'the wrong agent request was answered -- resolution is by index, not by id');
+    assert.ok(s.pendingApprovals.has('a1'), 'the other request was resolved too');
+  });
+
+  await checkAsync('a resolved approval records WHO answered it', async () => {
+    const s = gated();
+    s.answer('a1', 'allow_once', 'Brian');
+    assert.strictEqual(s.answeredApprovals.length, 1);
+    assert.strictEqual(s.answeredApprovals[0].answeredBy, 'Brian',
+      'on a hub two people can watch, "resolved" without "by whom" answers a different question');
+    assert.strictEqual(s.answeredApprovals[0].optionId, 'allow_once');
+    assert.match(s.answeredApprovals[0].title, /Run the tests/);
+  });
+
+  await checkAsync('an unattributed answer still says something, rather than nothing', async () => {
+    const s = gated();
+    s.answer('a1', 'allow_once');
+    assert.ok(s.answeredApprovals[0].answeredBy, 'a blank name renders as a rendering bug');
+  });
+
+  await checkAsync('the answered list does not grow without bound', async () => {
+    const s = gated();
+    for (let i = 0; i < 40; i += 1) {
+      s.pendingApprovals.set(`x${i}`, { approvalId: `x${i}`, rpcId: i, title: `t${i}`, requestedAt: 1, options: [{ optionId: 'allow_once' }] });
+      s.answer(`x${i}`, 'allow_once', 'someone');
+    }
+    assert.ok(s.answeredApprovals.length <= 20, `unbounded: ${s.answeredApprovals.length}`);
+  });
+
+  await checkAsync('the hub attaches the caller identity to an approve, from the validated token', async () => {
+    // Never from the request body -- otherwise anyone could claim to be anyone.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'service', 'hub-service.js'), 'utf8');
+    assert.match(src, /answeredBy: me\.name \|\| me\.key/,
+      'the identity must come from the validated caller, not from what was posted');
+  });
+
+  // --- Outbound only -------------------------------------------------------
+
+  await checkAsync('the daemon listens on no TCP port at all', async () => {
+    /**
+     * The architectural promise the whole design rests on: a device dials OUT,
+     * so nothing has to be opened on a laptop or reachable inside an ACA job.
+     * Asserted against the running process rather than against a comment,
+     * because a comment cannot notice someone adding a listener.
+     */
+    const home4 = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-out-'));
+    const prior = process.env.SQUAD_HUB_HOME;
+    process.env.SQUAD_HUB_HOME = home4;
+    const d4 = new Daemon();
+    try {
+      await d4.listen();
+      const handles = (process._getActiveHandles ? process._getActiveHandles() : [])
+        .filter((h) => h && h.constructor && h.constructor.name === 'Server')
+        .map((h) => { try { return h.address(); } catch { return null; } })
+        .filter(Boolean);
+      const tcp = handles.filter((a) => typeof a === 'object' && a.port);
+      assert.deepStrictEqual(tcp, [],
+        `the daemon opened a TCP port: ${JSON.stringify(tcp)} -- devices must dial out only`);
+    } finally {
+      try { await d4.close(); } catch { /* closing */ }
+      if (prior === undefined) delete process.env.SQUAD_HUB_HOME;
+      else process.env.SQUAD_HUB_HOME = prior;
+      try { fs.rmSync(home4, { recursive: true, force: true }); } catch { /* held */ }
+    }
+  });
+
+  await checkAsync('the expired list does not grow without bound', async () => {    const { AcpSession } = require('../src/acp-session');
     const s = Object.create(AcpSession.prototype);
     s.expiredApprovals = [];
     s.status = 'active';

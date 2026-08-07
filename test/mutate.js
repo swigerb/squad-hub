@@ -206,11 +206,11 @@ const MUTATIONS = [
     name: 'a remote approve is acknowledged but never answered',
     file: 'src/daemon.js',
     find: `        case 'approve':
-          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId });
+          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId, answeredBy: m.answeredBy });
           break;`,
     replace: `        case 'approve':
           if (process.env.MUTANT) { result = { answered: true }; break; } // MUTATION
-          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId });
+          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId, answeredBy: m.answeredBy });
           break;`,
     mustFail: 'REMOTE APPROVAL RAN THE TOOL - proven by the file on disk',
   },
@@ -1930,15 +1930,15 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'the row hides an approval that expired unanswered',
     file: 'web/app.js',
-    find: `        \${expired.length ? \`<div class="expiredline">`,
-    replace: `        \${(expired.length && !process.env.MUTANT) ? \`<div class="expiredline">`,
+    find: `        \${outcome ? (outcome.kind === 'expired'`,
+    replace: `        \${(outcome && !process.env.MUTANT) ? (outcome.kind === 'expired'`,
     mustFail: 'an expired approval is shown, not silently dropped',
   },
   {
     name: 'an expired approval title is interpolated without escaping',
     file: 'web/app.js',
-    find: `<span class="sq-dim">\${esc(expired[0].title)} — nobody answered in time</span>`,
-    replace: `<span class="sq-dim">\${expired[0].title} — nobody answered in time</span>`,
+    find: `\${esc(outcome.title)} — nobody answered in time`,
+    replace: `\${outcome.title} — nobody answered in time`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
   },
   {
@@ -1947,6 +1947,74 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     find: `  return [...list].sort((a, b) => (b.expiredAt || 0) - (a.expiredAt || 0));`,
     replace: `  return [...list].sort((a, b) => (a.expiredAt || 0) - (b.expiredAt || 0)); // MUTATION`,
     mustFail: 'the most recent expiry is the one shown',
+  },
+
+  // -------------------------------------------------------------------------
+  // PRD gaps: the right request, by a named person, and outbound only
+  // -------------------------------------------------------------------------
+  {
+    // The original order deleted the approval and THEN refused the option, so
+    // a forged option id destroyed the request it refused: the agent stayed
+    // blocked with nothing pending, and no surface could ask again.
+    name: 'a refused option destroys the request it refused',
+    file: 'src/acp-session.js',
+    find: `    if (!a) return false;
+    const known = a.options.some((o) => o.optionId === optionId);
+    if (!known) return false;
+    this.pendingApprovals.delete(approvalId);`,
+    replace: `    if (!a) return false;
+    this.pendingApprovals.delete(approvalId); // MUTATION
+    const known = a.options.some((o) => o.optionId === optionId);
+    if (!known) return false;`,
+    mustFail: 'a forged option id leaves the real request still answerable',
+  },
+  {
+    name: 'an answer is applied to whatever request happens to be waiting',
+    file: 'src/acp-session.js',
+    find: `  answer(approvalId, optionId, answeredBy = null) {
+    const a = this.pendingApprovals.get(approvalId);`,
+    replace: `  answer(approvalId, optionId, answeredBy = null) {
+    const a = process.env.MUTANT ? [...this.pendingApprovals.values()][0] : this.pendingApprovals.get(approvalId); // MUTATION
+    if (a && process.env.MUTANT) approvalId = a.approvalId;`,
+    mustFail: 'an answer for the WRONG request id is rejected',
+  },
+  {
+    name: 'a resolved approval does not record who answered it',
+    file: 'src/acp-session.js',
+    find: `    this.answeredApprovals.push({`,
+    replace: `    if (!process.env.MUTANT) this.answeredApprovals.push({ // MUTATION`,
+    mustFail: 'a resolved approval records WHO answered it',
+  },
+  {
+    // Taking it from the body would let anyone claim to be anyone.
+    name: 'the answerer identity is taken from the request body',
+    file: 'src/service/hub-service.js',
+    find: `        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key } : body;`,
+    replace: `        const withActor = body; // MUTATION`,
+    mustFail: 'the hub attaches the caller identity to an approve, from the validated token',
+  },
+  {
+    name: 'a denial is rendered as an approval',
+    file: 'web/app.js',
+    find: `const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Denied' };`,
+    replace: `const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Allowed' }; // MUTATION`,
+    mustFail: 'a denial reads as denied, not as allowed',
+  },
+  {
+    name: 'the answerer name is interpolated without escaping',
+    file: 'web/app.js',
+    find: `— by \${esc(outcome.answeredBy)}</span>`,
+    replace: `— by \${outcome.answeredBy}</span>`,
+    mustFail: 'a malicious answerer name renders as inert escaped text',
+  },
+  {
+    name: 'both an answered and an expired outcome are shown at once',
+    file: 'web/app.js',
+    find: `  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
+  return all[0] || null;`,
+    replace: `  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
+  return process.env.MUTANT ? (expired[0] || all[0] || null) : (all[0] || null); // MUTATION`,
+    mustFail: 'the most recent outcome wins, whether it was answered or expired',
   },
 ];
 

@@ -131,6 +131,22 @@ function expiredApprovals(s) {
   return [...list].sort((a, b) => (b.expiredAt || 0) - (a.expiredAt || 0));
 }
 
+/**
+ * The most recent resolution of a request someone was asked to approve.
+ *
+ * Answered and expired are folded into one line because they answer the same
+ * question -- "what happened to that card?" -- and showing both at once would
+ * be two answers to it. The newest wins.
+ */
+function lastApprovalOutcome(s) {
+  const answered = ((s && s.answeredApprovals) || []).map((a) => ({ ...a, kind: 'answered', at: a.answeredAt }));
+  const expired = ((s && s.expiredApprovals) || []).map((a) => ({ ...a, kind: 'expired', at: a.expiredAt }));
+  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
+  return all[0] || null;
+}
+
+const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Denied' };
+
 /** Action-needed first, then most recently started. */
 function sessionSort(a, b) {
   const an = (a.pendingApprovals || []).length > 0 || a.status === 'waiting_approval';
@@ -350,6 +366,7 @@ function sessionRow(s, deviceName, opts = {}) {
   const sel = s.agentSelection;
   const git = s.git;
   const expired = expiredApprovals(s);
+  const outcome = lastApprovalOutcome(s);
   // `sel` (session.agentSelection), `git` (repository/branch read from the
   // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all
   // ultimately trace back to attacker-influenceable input: a project's own
@@ -390,7 +407,9 @@ function sessionRow(s, deviceName, opts = {}) {
           <span class="activity">${esc(activityLine(s))}</span>
         </div>
         <div class="row-meta">${meta}</div>
-        ${expired.length ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(expired[0].title)} — nobody answered in time</span></div>` : ''}
+        ${outcome ? (outcome.kind === 'expired'
+    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)} — nobody answered in time</span></div>`
+    : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)} — by ${esc(outcome.answeredBy)}</span></div>`) : ''}
         ${squadBits}
       </div>
       ${statusBadge(s)}
@@ -858,6 +877,23 @@ function maybePromptApproval() {
     const nowExpired = state.overview.groups.some((g) => g.sessions.some(
       (s) => (s.expiredApprovals || []).some((a) => a.approvalId === open),
     ));
+    // Answered somewhere else -- another browser, a phone, the CLI. The card
+    // has to close and say who, or two people both think it is theirs to
+    // decide and the second one's click fails for reasons they cannot see.
+    let answeredElsewhere = null;
+    for (const g of state.overview.groups) {
+      for (const s of g.sessions) {
+        const hit = (s.answeredApprovals || []).find((a) => a.approvalId === open);
+        if (hit) answeredElsewhere = hit;
+      }
+    }
+    if (!stillPending && answeredElsewhere) {
+      $('approvalScrim').hidden = true;
+      state.openApproval = null;
+      const verb = (ANSWER_VERB[answeredElsewhere.optionId] || 'Answered').toLowerCase();
+      toast(`Already ${verb} by ${answeredElsewhere.answeredBy}`);
+      return undefined;
+    }
     if (!stillPending && nowExpired) {
       $('approvalScrim').hidden = true;
       state.openApproval = null;

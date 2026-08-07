@@ -416,7 +416,13 @@ class HubService {
       if (!device) return send(404, { error: 'no such device' });
       if (device.presence === PRESENCE.OFFLINE) return send(409, { error: 'device is offline' });
       try {
-        const result = await this.command(me.key, deviceId, op, body);
+        // Who is doing this travels with the command. An approval answered on
+        // one surface has to show as answered on every other, and "resolved"
+        // without "by whom" is the answer to a different question -- on a hub
+        // two people can watch, the useful fact is which of them decided.
+        // Taken from the validated identity, never from the request body.
+        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key } : body;
+        const result = await this.command(me.key, deviceId, op, withActor);
         return send(200, result);
       } catch (e) {
         return send(e.status || 502, { error: e.message });
