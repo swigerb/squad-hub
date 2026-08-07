@@ -18,6 +18,7 @@ const state = {
   filters: { q: '', status: '', device: '', repo: '', org: '', window: '' },
   groupBy: 'device',
   sortBy: 'started_desc',
+  railCollapsed: false,
   // Pinned sessions survive a reload; a star that forgets itself is not a
   // favourite, it is a highlight.
   favorites: new Set(),
@@ -379,6 +380,119 @@ function sessionRow(s, deviceName, opts = {}) {
     </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// The device roster.
+//
+// Pure, for the same reason the list controls are: ordering and presence
+// wording are rules, and a rule that only exists inside a DOM callback cannot
+// be proven.
+// ---------------------------------------------------------------------------
+
+const PLATFORM_LABEL = { win32: 'Windows', darwin: 'macOS', linux: 'Linux', freebsd: 'FreeBSD', aix: 'AIX', sunos: 'SunOS' };
+
+/** A platform a person recognises, rather than the Node identifier. */
+function platformLabel(p) {
+  return PLATFORM_LABEL[p] || (p ? String(p) : 'Unknown');
+}
+
+/**
+ * Presence as words, with the last-seen time when it matters.
+ *
+ * An offline device without a last-seen time reads as "Offline" alone rather
+ * than "Offline, seen never" -- the second says less and looks broken.
+ */
+function presenceLabel(d) {
+  if (!d) return '';
+  if (d.presence === 'online') return 'Online';
+  const label = d.presence === 'stale' ? 'Stale' : 'Offline';
+  const seen = d.lastSeen ? ago(d.lastSeen) : '';
+  return seen ? `${label} · seen ${seen}` : label;
+}
+
+/**
+ * The roster, ordered.
+ *
+ * Cloud devices come first and stay first. A cloud device is on-demand and
+ * always available -- it is the one place work can always be sent, whatever
+ * laptops happen to be asleep -- so burying it below three offline machines
+ * would hide the only useful answer to "where can I run this?".
+ *
+ * Within a kind: online before stale before offline, then by name. A roster
+ * that reorders itself as machines drift between presences is one nobody can
+ * click accurately.
+ */
+const PRESENCE_RANK = { online: 0, stale: 1, offline: 2 };
+
+function deviceRoster(devices = []) {
+  return [...devices].sort((a, b) => {
+    const ak = a.kind === 'cloud' ? 0 : 1;
+    const bk = b.kind === 'cloud' ? 0 : 1;
+    if (ak !== bk) return ak - bk;
+    const ap = PRESENCE_RANK[a.presence] ?? 3;
+    const bp = PRESENCE_RANK[b.presence] ?? 3;
+    if (ap !== bp) return ap - bp;
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
+}
+
+/** How many devices can actually take work right now. */
+function availableCount(devices = []) {
+  return devices.filter((d) => d.presence !== 'offline').length;
+}
+
+/** Bytes as something a person reads, for the RAM meter. */
+function humanBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * One meter, or nothing at all.
+ *
+ * A device that does not report telemetry renders NO meter, rather than an
+ * empty bar at zero. "Not reporting" and "idle" look identical on a bar at
+ * zero, and they are entirely different facts.
+ */
+function meter(label, fraction, detail = '') {
+  if (fraction == null || !Number.isFinite(fraction)) return '';
+  const pct = Math.round(clamp01(fraction) * 100);
+  const level = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : '';
+  return `
+    <div class="meter ${level}" title="${esc(label)} ${pct}%${detail ? ` (${esc(detail)})` : ''}">
+      <span class="meter-label">${esc(label)}</span>
+      <span class="meter-track"><span class="meter-fill" style="width:${pct}%"></span></span>
+      <span class="meter-value">${pct}%</span>
+    </div>`;
+}
+
+function clamp01(n) {
+  if (!Number.isFinite(n)) return 0;
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+function deviceCard(d) {
+  const t = d.telemetrySample || null;
+  const meters = t
+    ? `<div class="meters">${meter('CPU', t.cpu)}${meter('RAM', t.mem, `${humanBytes(t.memUsedBytes)} of ${humanBytes(t.memTotalBytes)}`)}</div>`
+    : '';
+  return `
+    <div class="device ${d.kind === 'cloud' ? 'cloud' : ''}">
+      <span class="dot ${esc(d.presence)}"></span>
+      <div class="device-main">
+        <div class="device-name">${esc(d.name)}${d.kind === 'cloud' ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-meta">
+          ${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}
+        </div>
+        ${meters}
+      </div>
+      <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
+    </div>`;
+}
+
 function render() {
   const { groups, devices, counts } = state.overview;
 
@@ -437,18 +551,15 @@ function render() {
     if (ec) ec.onclick = () => openConnect();
   }
 
-  $('deviceList').innerHTML = `<div class="card">${devices.map((d) => `
-    <div class="device">
-      <span class="dot ${d.presence}"></span>
-      <div class="device-main">
-        <div class="device-name">${esc(d.name)}</div>
-        <div class="device-meta">
-          ${esc(d.platform)} &middot; ${d.presence === 'online' ? 'Online' : `${d.presence} &middot; seen ${ago(d.lastSeen)}`}
-          &middot; files: ${esc(d.fileAccess)}
-        </div>
-      </div>
-      <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
-    </div>`).join('') || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
+  const roster = deviceRoster(devices);
+  $('deviceList').innerHTML = `<div class="card">${roster.map(deviceCard).join('')
+    || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
+  const availPill = $('deviceAvailable');
+  if (availPill) {
+    const avail = availableCount(devices);
+    availPill.textContent = `${avail} available`;
+    availPill.classList.toggle('none', avail === 0);
+  }
 
   const sel = $('deviceFilter');
   const keep = sel.value;
@@ -774,6 +885,7 @@ function loadView() {
     const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]');
     if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
   } catch { /* same */ }
+  try { state.railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch { /* same */ }
 }
 
 function saveView() {
@@ -807,6 +919,21 @@ function syncControls() {
   set('windowFilter', state.filters.window);
   set('groupBy', state.groupBy);
   set('sortBy', state.sortBy);
+  setRailCollapsed(state.railCollapsed);
+}
+
+const RAIL_KEY = 'squad-hub-rail-collapsed';
+
+function setRailCollapsed(collapsed) {
+  state.railCollapsed = !!collapsed;
+  const rail = $('deviceRail');
+  const toggle = $('railToggle');
+  if (rail) rail.classList.toggle('collapsed', state.railCollapsed);
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', state.railCollapsed ? 'false' : 'true');
+    toggle.title = state.railCollapsed ? 'Show the device list' : 'Collapse the device list';
+  }
+  try { localStorage.setItem(RAIL_KEY, state.railCollapsed ? '1' : '0'); } catch { /* never fatal */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +968,11 @@ function wire() {
     const b = e.target.closest('[data-spawn]');
     if (b) openNew(b.dataset.spawn);
   };
+
+  // The rail collapses, and remembers. On a narrow window it is the first
+  // thing worth reclaiming, and re-collapsing it on every load would make that
+  // a chore rather than a setting.
+  $('railToggle').onclick = () => setRailCollapsed(!$('deviceRail').classList.contains('collapsed'));
 
   $('newBtn').onclick = () => openNew();
   $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };

@@ -228,6 +228,44 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   border-radius: 8px; width: 28px; height: 28px; cursor: pointer; }
 .add:hover { color: var(--text); background: var(--panel-2); }
 
+/* A cloud device is on-demand and always available, so it is marked as such
+   and sorted first -- it is the one place work can always be sent. */
+.device.cloud { background: linear-gradient(90deg, var(--panel-2), transparent 60%); }
+.kind-pill {
+  margin-left: 6px; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+
+/* Load meters. Rendered ONLY for devices that report telemetry -- an empty bar
+   at zero would make "not reporting" and "idle" look identical. */
+.meters { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.meter { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+.meter-label { width: 26px; flex: 0 0 auto; }
+.meter-track {
+  flex: 1; height: 5px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); overflow: hidden;
+}
+.meter-fill { display: block; height: 100%; background: var(--accent); }
+.meter.warm .meter-fill { background: var(--warn); }
+.meter.hot .meter-fill { background: var(--bad); }
+.meter-value { width: 30px; text-align: right; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* The rail collapses to reclaim width, and remembers that it did. */
+.rail-toggle {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: inherit; font: inherit; font-weight: 600;
+}
+.rail-toggle::before { content: '\25BE'; display: inline-block; margin-right: 6px; transition: transform .12s; }
+.devices.collapsed .rail-toggle::before { transform: rotate(-90deg); }
+.devices.collapsed #deviceList { display: none; }
+.listhead .pill {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+.listhead .pill.none { color: var(--faint); }
+.listhead-count { color: var(--faint); font-size: 12px; }
+
 .empty { text-align: center; color: var(--dim); padding: 48px 16px; }
 .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); }
 

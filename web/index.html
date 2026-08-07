@@ -101,9 +101,12 @@
       </div>
     </section>
 
-    <aside class="devices">
+    <aside class="devices" id="deviceRail">
       <div class="listhead">
-        <span>Connected devices <b id="deviceCount">0</b></span>
+        <button class="rail-toggle" id="railToggle" aria-expanded="true" aria-controls="deviceList"
+                title="Collapse the device list">Devices</button>
+        <span class="pill" id="deviceAvailable">0 available</span>
+        <span class="listhead-count">of <b id="deviceCount">0</b></span>
       </div>
       <div id="deviceList"></div>
     </aside>

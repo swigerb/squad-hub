@@ -335,13 +335,33 @@ class Daemon extends EventEmitter {
       device: {
         name: this.deviceName,
         platform: process.platform,
+        kind: cfg.deviceKind || 'local',
         pid: process.pid,
         startedAt: this.startedAt,
         beats: this.beats,
         ...config.publicView(cfg),
+        // Absent, not zeroed, when telemetry is off. A roster can then tell
+        // "this device does not report load" from "this device is idle" --
+        // which are very different things to show on a meter.
+        telemetrySample: cfg.reportTelemetry ? this._telemetry().sample() : null,
       },
       sessions: [...this.sessions.values()].map((s) => s.toJSON()),
     };
+  }
+
+  /**
+   * The CPU sampler, created on first use.
+   *
+   * It has to be long-lived: CPU usage is a delta between two readings, so a
+   * fresh sampler on every snapshot would have no previous reading and could
+   * never report anything.
+   */
+  _telemetry() {
+    if (!this._telemetrySampler) {
+      const { Telemetry } = require('./telemetry');
+      this._telemetrySampler = new Telemetry();
+    }
+    return this._telemetrySampler;
   }
 
   /**

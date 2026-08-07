@@ -195,6 +195,7 @@ running from a nested subdirectory of the project still picks it up.
 | `--allow-files` | Allow a working directory, scoped to the launch directory. |
 | `--allow-files-all` | Allow any working directory. |
 | `--track-all` | Report every session on this device. |
+| `--telemetry` | Report CPU and memory load. Off by default. |
 
 `connect` accepts the same `--allow-files`/`--allow-files-all`/`--track-all`
 flags and is the recommended way to set them, since it also saves the hub and
@@ -374,6 +375,8 @@ access, the daemon refuses rather than silently using somewhere else.
 | `squad-hub config enable-auto-shutdown` | Exit a while after the last session ends. |
 | `squad-hub config disable-auto-shutdown` | Stay running until stopped. |
 | `squad-hub config set-auto-shutdown-grace <seconds>` | How long to wait first. |
+| `squad-hub config enable-telemetry` | Report CPU and memory load. Off by default. |
+| `squad-hub config disable-telemetry` | Stop reporting it. |
 
 Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 `~/.squad-hub`.
@@ -431,7 +434,46 @@ The memo is keyed on the file's modification time and size, not merely on
 daemon — a different process — on its next read. `--no-config-cache` skips even
 that check and reads the file every time.
 
-## Device tokens
+## The device roster
+
+| Column | |
+|---|---|
+| Kind | `cloud` devices are listed **first** and stay first. A cloud device is on-demand and always available — it is the one place work can always be sent, whatever laptops happen to be asleep. |
+| Platform | `Windows`, `macOS`, `Linux`. An unrecognised platform is shown as reported rather than discarded. |
+| Presence | `Online`, `Stale · seen 2m ago`, `Offline · seen 3h ago`. Stale means "we have not heard recently"; offline means "we have given up". |
+| Load | CPU and RAM meters, **only for devices that report telemetry**. |
+
+Within a kind, devices sort online → stale → offline, then by name. A roster
+that reorders itself as machines drift between presences is one nobody can
+click accurately.
+
+Each device carries a `+` to start a session on it, and the rail collapses to
+reclaim width — the header keeps a count of how many devices can currently
+take work.
+
+### Telemetry
+
+**Off by default**, like every other thing the daemon could report about the
+machine it runs on.
+
+```
+squad-hub config enable-telemetry
+squad-hub config disable-telemetry
+squad-hub start --telemetry        (or `connect --telemetry`)
+```
+
+What is sent is deliberately narrow: a CPU percentage, a memory percentage,
+the machine's total memory, and its core count. **No process list, no per-core
+detail, and nothing about what is running.**
+
+CPU is a **delta between two heartbeats**, not an instantaneous reading — a
+single cumulative sample reports the average since boot, which is never what
+anyone means by "CPU". The first sample after startup therefore has no CPU
+figure, and says so rather than inventing a zero.
+
+A device that does not report telemetry shows **no meter at all**, rather than
+an empty bar. "Not reporting" and "idle" look identical at zero, and they are
+entirely different facts.
 
 A credential that can be a device and **nothing else** — it cannot read the
 API, start work on another device, or watch the event stream. Give one to a
