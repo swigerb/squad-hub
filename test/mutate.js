@@ -1789,6 +1789,30 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `Add an Incoming Webhook to the channel and paste the URL it gives you.`,
     mustFail: 'the docs never tell you to create a retired Office 365 Connector',
   },
+  {
+    // The seam. Both halves were tested independently and the join not at all:
+    // the card emitted a URL nothing could resolve, so its one working
+    // affordance opened the default view and lost the session it was about.
+    name: 'the Teams deep link carries a session id no device can be told from',
+    file: 'src/notify/teams.js',
+    find: `  const sessionKey = device.deviceId ? \`\${device.deviceId}:\${session.id}\` : session.id;`,
+    replace: `  const sessionKey = (device.deviceId && !process.env.MUTANT) ? \`\${device.deviceId}:\${session.id}\` : session.id; // MUTATION`,
+    mustFail: 'the deep link carries the hub key, not the bare session id',
+  },
+  {
+    name: 'an ambiguous deep link opens whichever session matched first',
+    file: 'web/app.js',
+    find: `  if (byId.length === 1) return { status: 'found', key: byId[0] };`,
+    replace: `  if (byId.length === 1 || process.env.MUTANT) return { status: 'found', key: byId[0] }; // MUTATION`,
+    mustFail: 'an AMBIGUOUS bare id is refused rather than guessed',
+  },
+  {
+    name: 'a deep link to a session that has gone does nothing at all',
+    file: 'web/app.js',
+    find: `  return { status: 'missing' };`,
+    replace: `  return { status: process.env.MUTANT ? 'none' : 'missing' }; // MUTATION`,
+    mustFail: 'a session that has gone is reported, not silently ignored',
+  },
 ];
 
 /**
