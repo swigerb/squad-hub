@@ -347,10 +347,20 @@ function api(port, p, token, opts = {}) {
     }
   });
   await checkAsync('static serving cannot escape the web root', async () => {
-    // Several encodings, because `new URL()` collapses a literal `..` before
-    // the handler ever sees it -- so a plain /../ probe proves nothing. The
-    // encoded forms survive parsing and are what a real attempt looks like.
-    const attempts = ['/../package.json', '/%2e%2e/package.json', '/..%2fpackage.json', '/%2e%2e%2fpackage.json'];
+    // `new URL()` collapses a LITERAL `..` before the handler ever sees it, so
+    // a plain /../ probe proves nothing. The encoded forms below survive URL
+    // parsing intact and are what a real attempt looks like -- /..%2f in
+    // particular reaches the handler unchanged and is stopped only by the
+    // normalize() call, not by the parser.
+    const attempts = [
+      '/../package.json',
+      '/%2e%2e/package.json',
+      '/..%2fpackage.json',
+      '/%2e%2e%2fpackage.json',
+      '/..%2f..%2fpackage.json',
+      '/....//package.json',
+      '/..%5cpackage.json',
+    ];
     for (const a of attempts) {
       const r = await api(port, a, null);
       assert.notStrictEqual(r.status, 200, `traversal served a file outside web/: ${a}`);

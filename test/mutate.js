@@ -215,26 +215,28 @@ const MUTATIONS = [
     mustFail: 'a session can be stopped remotely, and its agent dies',
   },
   {
+    /**
+     * TWO redundant defences, so this removes BOTH.
+     *
+     * Removing either alone is uncatchable, and that is a property of the
+     * code rather than a gap in the tests: `path.normalize` collapses the
+     * traversal, and the containment check would catch it if normalize were
+     * gone. A mutation removing one is silently rescued by the other, which is
+     * exactly what redundant defence is for.
+     *
+     * The question worth asking is therefore whether the PAIR is load-bearing,
+     * and this answers it: `/..%2f` survives URL parsing intact, so with both
+     * gone the request reaches the repository root and `package.json` is
+     * served. That is what the named test catches.
+     */
     name: 'static serving allows path traversal out of web/',
     file: 'src/service/hub-service.js',
-    find: `    if (!file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) {
-      return send(403, { error: 'nope' });
-    }`,
-    replace: `    if (!process.env.MUTANT && !file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) { // MUTATION
-      return send(403, { error: 'nope' });
-    }`,
+    find: `    rel = path.normalize(rel).replace(/^([/\\\\])+/, '');
+    const file = path.join(WEB_ROOT, rel);`,
+    replace: `    rel = process.env.MUTANT ? rel.replace(/^([/\\\\])+/, '') : path.normalize(rel).replace(/^([/\\\\])+/, ''); // MUTATION
+    const file = path.join(WEB_ROOT, rel);
+    if (process.env.MUTANT) return fs.readFile(file, (e, b) => (e ? this._notFound(send, url) : send(200, b))); // MUTATION`,
     mustFail: 'static serving cannot escape the web root',
-    // ESCAPES BY DESIGN, and recorded rather than hidden. `new URL()` collapses
-    // `..` at parse time -- including a percent-encoded `%2e%2e` -- so the
-    // resolved path is already inside web/ before the check runs. Verified for
-    // /../ , /%2e%2e/ , /a/../../ and /..%2f : every one resolves to web/.
-    //
-    // The containment check is therefore unreachable defence in depth, in the
-    // same way the daemon's explicit kill is on Windows. It stays, because it
-    // becomes load-bearing the moment this handler stops going through URL
-    // parsing. Skipped so it does not sit in the report as an untested
-    // mechanism, which would be the wrong lesson.
-    skip: true,
   },
   {
     name: 'the daemon reports a hub connection it does not have',
