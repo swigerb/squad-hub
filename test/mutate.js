@@ -13,7 +13,25 @@
  *
  * Exit 0 only if every mutation is caught by the test that claims to cover it.
  *
- * Usage: node test/mutate.js [--only <substring of a mutation name>]
+ * ONLY THE SUITE THAT OWNS THE NAMED TEST IS RUN. This used to run all 764
+ * tests for every mutation, which took 137 seconds to answer a question that
+ * `list-controls-unit.js` answers in 0.1. Across 188 mutations that is 7.2
+ * hours versus 33 minutes -- and a seven-hour job is one nobody runs, which
+ * makes it a safety net that exists on paper and nowhere else. It is also long
+ * enough that it tends to be killed mid-flight, and a forced kill leaves a live
+ * mutation in the working tree (see the dirty-tree guard below; that has now
+ * happened twice).
+ *
+ * Nothing is lost by narrowing it: the harness only ever asserted that the
+ * NAMED test failed, so running the other 26 suites produced no signal it read.
+ * A mutation whose test cannot be located statically -- a name built from a
+ * template literal, say -- falls back to the whole suite and says so, so the
+ * cost is visible rather than silently skipped.
+ *
+ * Usage:
+ *   node test/mutate.js [--only <substring of a mutation name>] [--full]
+ *
+ *   --full   run the entire suite for every mutation, as it did before.
  */
 
 const { spawnSync } = require('child_process');
@@ -22,6 +40,7 @@ const path = require('path');
 
 const onlyIdx = process.argv.indexOf('--only');
 const ONLY = onlyIdx !== -1 ? process.argv[onlyIdx + 1] : null;
+const FULL_EVERY_TIME = process.argv.includes('--full');
 
 const ROOT = path.join(__dirname, '..');
 const TESTS = path.join(__dirname, 'run-tests.js');
@@ -1788,6 +1807,72 @@ function runTests(env) {
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
 }
 
+/**
+ * Which child suite declares each test name.
+ *
+ * Built by scanning for `check('...')` / `checkAsync('...')` literals. A name
+ * assembled at runtime -- `` `a ${status} session is not controllable` `` --
+ * cannot be resolved this way and is deliberately NOT guessed at: a wrong
+ * mapping would run a suite that cannot contain the test, the mutation would
+ * "escape", and the report would blame the code rather than the index.
+ * Unresolved names fall back to the full suite instead.
+ */
+function buildSuiteIndex() {
+  const index = new Map();
+  const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('-unit.js'));
+  for (const f of files) {
+    let body;
+    try { body = fs.readFileSync(path.join(__dirname, f), 'utf8'); } catch { continue; }
+    for (const m of body.matchAll(/check(?:Async)?\(\s*(['"`])([\s\S]*?)\1\s*,/g)) {
+      const name = m[2];
+      // A template literal with a substitution is not a fixed name.
+      if (m[1] === '`' && name.includes('${')) continue;
+      if (!index.has(name)) index.set(name, f);
+    }
+  }
+  return index;
+}
+
+const SUITE_INDEX = buildSuiteIndex();
+
+/** The suite that owns a `mustFail` name, or null when it cannot be placed. */
+function suiteFor(mustFail) {
+  if (!mustFail) return null;
+  const exact = SUITE_INDEX.get(mustFail);
+  if (exact) return exact;
+  // `run-tests.js` reports child results with the test's own name, and a few
+  // suites wrap it; match on containment, but only when exactly ONE suite
+  // could own it. An ambiguous name gets the full suite rather than a guess.
+  const hits = new Set();
+  for (const [name, file] of SUITE_INDEX) {
+    if (name.includes(mustFail) || mustFail.includes(name)) hits.add(file);
+  }
+  return hits.size === 1 ? [...hits][0] : null;
+}
+
+/**
+ * Run the smallest thing that can answer the question.
+ *
+ * Child suites print `RESULT\tfail\t<name>`; run-tests.js prints `FAIL <name>`.
+ * Both are parsed, so a mutation is judged the same way whichever path it took.
+ */
+function runFor(mutation) {
+  const suite = FULL_EVERY_TIME ? null : suiteFor(mutation.mustFail);
+  if (!suite) {
+    const r = runTests({ MUTANT: '1' });
+    return { ...r, scope: 'the full suite', failed: failedTestNames(r.out) };
+  }
+  const r = spawnSync(process.execPath, [path.join(__dirname, suite)], {
+    cwd: ROOT, encoding: 'utf8', timeout: 300000,
+    env: { ...process.env, MUTANT: '1' },
+  });
+  const out = (r.stdout || '') + (r.stderr || '');
+  const failed = out.split('\n')
+    .filter((l) => l.startsWith('RESULT\tfail\t'))
+    .map((l) => l.split('\t')[2]);
+  return { code: r.status, out, scope: suite, failed };
+}
+
 function failedTestNames(out) {
   return out.split('\n')
     .filter((l) => l.trim().startsWith('FAIL '))
@@ -1830,6 +1915,20 @@ if (require.main !== module) return;
     process.exit(1);
   }
   console.log('  baseline green');
+
+  // Say up front how the run is scoped, and how much of it falls back to the
+  // whole suite. A sweep that silently got slower is one nobody investigates.
+  {
+    const runnable = MUTATIONS.filter((m) => !m.skip && (!ONLY || m.name.includes(ONLY)));
+    const fellBack = runnable.filter((m) => !suiteFor(m.mustFail));
+    console.log(FULL_EVERY_TIME
+      ? `\n--full: running all ${runnable.length} mutations against the entire suite`
+      : `\nrunning ${runnable.length} mutations against the suite that owns each named test`);
+    if (!FULL_EVERY_TIME && fellBack.length) {
+      console.log(`  ${fellBack.length} cannot be placed statically and use the full suite:`);
+      for (const m of fellBack) console.log(`    - ${m.mustFail}`);
+    }
+  }
 
   let caught = 0;
   const escaped = [];
@@ -1877,13 +1976,13 @@ if (require.main !== module) return;
     fs.writeFileSync(file, normalised.replace(m.find, m.replace));
 
     try {
-      const r = runTests({ MUTANT: '1' });
-      const failed = failedTestNames(r.out);
+      const r = runFor(m);
+      const failed = r.failed;
       const hit = failed.some((f) => f.includes(m.mustFail));
       if (hit) {
         caught += 1;
         console.log(`\n  CAUGHT  ${m.name}`);
-        console.log(`          -> "${m.mustFail}" failed, as it must`);
+        console.log(`          -> "${m.mustFail}" failed, as it must  [${r.scope}]`);
       } else if (r.code !== 0) {
         caught += 1;
         console.log(`\n  CAUGHT  ${m.name}`);
@@ -1892,7 +1991,7 @@ if (require.main !== module) return;
         escaped.push({ ...m, why: `caught by the wrong test: ${failed.join(' | ')}` });
       } else {
         console.log(`\n  ESCAPED ${m.name}`);
-        console.log(`          -> the suite stayed GREEN. Nothing tests this.`);
+        console.log(`          -> ${r.scope} stayed GREEN. Nothing tests this.`);
         escaped.push({ ...m, why: 'suite stayed green' });
       }
     } finally {
