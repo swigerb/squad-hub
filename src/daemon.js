@@ -516,7 +516,7 @@ class Daemon extends EventEmitter {
           break;
         }
         case 'approve':
-          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId });
+          result = await this.handle({ op: 'approve', sessionId: m.sessionId, approvalId: m.approvalId, optionId: m.optionId, answeredBy: m.answeredBy });
           break;
         case 'stop':
           result = await this.handle({ op: 'stop-session', sessionId: m.sessionId });
@@ -621,7 +621,7 @@ class Daemon extends EventEmitter {
       case 'approve': {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
-        const ok = s.answer(req.approvalId, req.optionId);
+        const ok = s.answer(req.approvalId, req.optionId, req.answeredBy);
         if (!ok) throw Object.assign(new Error('no such pending approval, or unsupported option'), { code: 'NO_APPROVAL' });
         return { answered: true };
       }
