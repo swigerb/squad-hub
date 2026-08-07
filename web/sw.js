@@ -39,7 +39,7 @@ const CACHE = 'squad-hub-shell-v1';
  * `/` rather than `/index.html`: that is what `start_url` in the manifest
  * resolves to, and what a navigation request asks for.
  */
-const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/icon.svg', '/logo.jpg'];
+const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg'];
 
 self.addEventListener('install', (event) => {
   // `addAll` rejects the whole install if ANY asset 404s, which is the correct

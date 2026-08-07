@@ -619,6 +619,60 @@ async function until(fn, what, budgetMs = 15000) {
       }
     });
 
+    await check('the tab icon is a vector that actually decodes', async () => {
+      /**
+       * Two failures this catches, both of which look fine in the source.
+       *
+       * The favicon was a 1813x1701 JPEG. A browser reducing that to a 16px
+       * tab icon produces mush, and nothing in a test suite notices an icon
+       * being ugly.
+       *
+       * And an SVG whose comment contains a double hyphen is malformed XML --
+       * illegal in an XML comment -- so it renders as a broken-image icon and
+       * nothing notices that either. The first draft of favicon.svg did
+       * exactly this. `naturalWidth` is 0 for an image that failed to decode,
+       * so this asserts the file is genuinely renderable rather than merely
+       * present and non-empty.
+       */
+      await page.goto(`${origin}/?token=${userToken}`);
+      await page.waitForSelector('.topbar', { timeout: 10000 });
+
+      const link = await page.evaluate(() => {
+        const l = document.querySelector('link[rel="icon"]');
+        return l && { href: l.getAttribute('href'), type: l.getAttribute('type') };
+      });
+      assert.ok(link, 'the page declares no favicon at all');
+      assert.match(link.href, /\.svg$/, 'the tab icon must be a vector, not a photograph');
+      assert.strictEqual(link.type, 'image/svg+xml');
+
+      const decoded = await page.evaluate((href) => new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => resolve({ w: 0, h: 0 });
+        img.src = href;
+      }), link.href);
+      assert.ok(decoded.w > 0 && decoded.h > 0,
+        'the favicon did not decode -- malformed SVG renders as a broken-image icon');
+
+      const res = await page.request.get(`${origin}${link.href}`);
+      assert.strictEqual(res.status(), 200);
+      assert.match(res.headers()['content-type'], /svg/);
+      const bytes = (await res.body()).length;
+      assert.ok(bytes < 8000, `the tab icon is ${bytes} bytes; a mark this size is a photograph again`);
+    });
+
+    await check('the header mark decodes too, and is the same file as the tab icon', async () => {
+      const mark = await page.evaluate(() => {
+        const i = document.querySelector('.mark');
+        return i && { src: i.getAttribute('src'), w: i.naturalWidth };
+      });
+      assert.ok(mark, 'the header has no mark');
+      assert.ok(mark.w > 0, 'the header mark did not decode');
+      const link = await page.evaluate(() => document.querySelector('link[rel="icon"]').getAttribute('href'));
+      assert.strictEqual(mark.src, link,
+        'a product whose header mark and tab icon are different drawings is one you learn twice');
+    });
+
     await check('signing out returns to a usable sign-in page', async () => {      await page.goto(origin);
       await page.waitForSelector('#menuBtn', { timeout: 10000 });
       await page.click('#menuBtn');

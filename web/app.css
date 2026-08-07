@@ -109,8 +109,10 @@ body {
 }
 .brand { font-weight: 600; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; }
 .mark {
-  width: 20px; height: 20px; border-radius: 5px;
-  display: inline-block; object-fit: cover; vertical-align: -4px;
+  /* The mark is a transparent vector now, not a cropped photograph, so it
+     needs neither the rounded corner nor the object-fit that the JPEG did. */
+  width: 20px; height: 20px;
+  display: inline-block; vertical-align: -4px;
 }
 .spacer { flex: 1; }
 .icon-btn {
