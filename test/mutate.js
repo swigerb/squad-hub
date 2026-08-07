@@ -1704,6 +1704,22 @@ const MUTATIONS = [
     mustFail: 'an empty approval is NOT treated as read-only',
   },
   {
+    // A wrong "read-only" costs a repository; a missed one costs a second look.
+    // The classifier only earns its place by failing in that direction.
+    name: 'a command the classifier does not recognise is called read-only',
+    file: 'src/acp-session.js',
+    find: `  return READ_ONLY_COMMANDS.has(head);`,
+    replace: `  return process.env.MUTANT ? true : READ_ONLY_COMMANDS.has(head); // MUTATION`,
+    mustFail: 'a command it does not recognise is treated as writing',
+  },
+  {
+    name: 'a redirect or a chained rm sneaks past the read-only classifier',
+    file: 'src/acp-session.js',
+    find: `  if (/[|&;<>\`$(){}\\n\\r]/.test(text)) return false;`,
+    replace: `  if (!process.env.MUTANT && /[|&;<>\`$(){}\\n\\r]/.test(text)) return false; // MUTATION`,
+    mustFail: 'redirection and chaining defeat the classifier rather than sneaking past it',
+  },
+  {
     name: 'a tool with no name renders as a blank row',
     file: 'web/app.js',
     find: `    label: approval.command || approval.title || 'an unnamed tool',`,

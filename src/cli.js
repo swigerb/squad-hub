@@ -428,9 +428,12 @@ async function cmdConnect(argv) {
 
   // An offline, no-network check: a token with the wrong shape is never going
   // to be accepted, and failing on it instantly is kinder than a 10s timeout.
-  const { DeviceTokens } = require('./service/device-token');
+  // PREFIX is a module export, not a static on the class: reading it off
+  // `DeviceTokens` produced the literal string "undefined." in the one message
+  // whose whole job is to say what the token should have looked like.
+  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
   if (!DeviceTokens.looksLikeDeviceToken(token)) {
-    err(`that does not look like a device token (expected the "${DeviceTokens.PREFIX}." prefix).`);
+    err(`that does not look like a device token (expected the "${DEVICE_TOKEN_PREFIX}." prefix).`);
     err('A device token is minted FOR a device; your own sign-in token will not work here.');
     err('Mint one: account menu -> Connect a device, or `squad-hub device-token --hub <url> --token <your token>`.');
     return 2;

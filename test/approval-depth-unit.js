@@ -240,5 +240,89 @@ check('a malicious tool name or path renders as inert escaped text', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Where the read-only flag comes from
+//
+// Every shell call arrives as tool kind `execute`, so the kind alone cannot
+// tell `git status` from `rm -rf build`. Judging the command is what stops the
+// badge crying wolf -- and the classifier has to stay timid, because a missed
+// "read-only" costs a second look and a wrong one costs a repository.
+// ---------------------------------------------------------------------------
+
+const { isReadOnlyCommand, isReadOnlyRequest } = require('../src/acp-session');
+
+check('a plainly reading shell command is NOT badged as writing', () => {
+  assert.strictEqual(isReadOnlyCommand('git status --short'), true,
+    'a "writes" badge on a command that writes nothing trains people to ignore the badge');
+});
+
+check('the reading commands people actually run are recognised', () => {
+  for (const c of ['git log -5', 'git diff HEAD', 'git branch --show-current', 'ls -la',
+    'cat package.json', 'rg TODO src', 'Get-ChildItem C:\\src', 'node_modules/.bin/../../../bin/git rev-parse HEAD']) {
+    assert.strictEqual(isReadOnlyCommand(c), true, `should read as read-only: ${c}`);
+  }
+});
+
+check('a writing command is never softened into read-only', () => {
+  for (const c of ['rm -rf build', 'git commit -m x', 'git push', 'git checkout -b feature',
+    'npm install', 'Remove-Item foo', 'sed -i s/a/b/ f.txt']) {
+    assert.strictEqual(isReadOnlyCommand(c), false, `must stay "writes": ${c}`);
+  }
+});
+
+check('a reading command that DELETES a branch is not read-only', () => {
+  assert.strictEqual(isReadOnlyCommand('git branch -d feature'), false);
+  assert.strictEqual(isReadOnlyCommand('git branch newthing'), false,
+    'a bare name after `git branch` creates one');
+});
+
+check('redirection and chaining defeat the classifier rather than sneaking past it', () => {
+  assert.strictEqual(isReadOnlyCommand('cat secrets > /tmp/out'), false);
+  assert.strictEqual(isReadOnlyCommand('ls && rm -rf build'), false);
+  assert.strictEqual(isReadOnlyCommand('echo $(rm -rf build)'), false);
+  assert.strictEqual(isReadOnlyCommand('git log | tee log.txt'), false);
+});
+
+check('a command it does not recognise is treated as writing', () => {
+  assert.strictEqual(isReadOnlyCommand('some-unknown-tool --go'), false,
+    '"I do not know" must never round down to "safe"');
+  assert.strictEqual(isReadOnlyCommand(''), false);
+  assert.strictEqual(isReadOnlyCommand(null), false);
+});
+
+check('an --output flag makes an otherwise-reading command write', () => {
+  assert.strictEqual(isReadOnlyCommand('git diff --output=patch.txt'), false);
+});
+
+check('the declared tool kind still wins for file tools', () => {
+  assert.strictEqual(isReadOnlyRequest({ kind: 'read' }, {}), true);
+  assert.strictEqual(isReadOnlyRequest({ kind: 'search' }, {}), true);
+  assert.strictEqual(isReadOnlyRequest({ kind: 'edit' }, { command: 'git status' }), false,
+    'an edit tool carrying a command-shaped field must never talk its way down');
+});
+
+check('every command in a multi-command request has to read, not just the first', () => {
+  assert.strictEqual(isReadOnlyRequest({ kind: 'execute' }, { commands: ['git status', 'git log'] }), true);
+  assert.strictEqual(isReadOnlyRequest({ kind: 'execute' }, { commands: ['git status', 'rm -rf build'] }), false,
+    'the badge has to reflect the riskiest thing in the request');
+  assert.strictEqual(isReadOnlyRequest({ kind: 'execute' }, {}), false);
+});
+
+// ---------------------------------------------------------------------------
+// The dropdowns the badge sits beside
+//
+// A native select's OPEN list is painted by the browser from the control's own
+// background, and the inline selects are deliberately transparent -- which
+// resolves to white, and made the dark theme's dropdowns unreadable.
+// ---------------------------------------------------------------------------
+
+check('the dropdown popup names its own colours, in theme tokens', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.css'), 'utf8');
+  const rule = css.match(/select option[^{]*\{[^}]*\}/);
+  assert.ok(rule, 'without an explicit option colour the popup falls back to the browser default');
+  assert.match(rule[0], /var\(--/, 'a hard-coded colour here is how one theme drifts from the other');
+  assert.match(rule[0], /color:\s*var\(--text\)/);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

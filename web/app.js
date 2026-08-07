@@ -448,9 +448,10 @@ function sessionRow(s, deviceName, opts = {}) {
  * What an approval actually touches, as rows.
  *
  * The tool first, then every path it named. Each row carries whether it is
- * read-only, because that is the single fact that most changes the answer --
- * and it comes from the agent's own declared tool kind, not from guessing at
- * the command string.
+ * read-only, because that is the single fact that most changes the answer.
+ * The flag is decided on the device, from the agent's declared tool kind and,
+ * for a shell call, from the command itself -- every shell call arrives as one
+ * kind, so the kind alone cannot tell `git status` from `rm -rf`.
  */
 function approvalRows(approval) {
   if (!approval) return [];

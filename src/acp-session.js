@@ -139,7 +139,7 @@ class AcpSession extends EventEmitter {
       command: raw.command || (Array.isArray(raw.commands) ? raw.commands.join(' && ') : null),
       commands: Array.isArray(raw.commands) ? raw.commands : (raw.command ? [raw.command] : []),
       paths: extractPaths(raw),
-      readOnly: tc.kind === 'read' || tc.kind === 'search',
+      readOnly: isReadOnlyRequest(tc, raw),
       options: (p.options || []).map((o) => ({ optionId: o.optionId, kind: o.kind, name: o.name })),
       requestedAt: Date.now(),
       rawInput: raw,
@@ -463,6 +463,98 @@ class AcpSession extends EventEmitter {
   }
 }
 
+/**
+ * Is this permission request read-only?
+ *
+ * The agent's declared tool kind answers it for file tools. It does NOT answer
+ * it for a shell command: every shell call arrives as kind `execute`, so
+ * `git status --short` and `rm -rf build` were shown with the same "writes"
+ * badge. A badge that says "writes" about a command that plainly reads nothing
+ * is not merely cosmetic -- it trains people to ignore the badge, and the badge
+ * only earns its place on the card by being right about the one case it exists
+ * to flag.
+ *
+ * The classifier below is deliberately timid. It downgrades a command to
+ * read-only ONLY when it recognises the whole line, and treats everything else
+ * as writing. That asymmetry is the point: a missed "read-only" costs a
+ * needless second look, a wrong "read-only" costs a repository.
+ */
+function isReadOnlyRequest(tc, raw) {
+  if (tc.kind === 'read' || tc.kind === 'search') return true;
+  // Only a shell tool is judged by its command. An `edit` or `delete` tool that
+  // happens to carry a command-shaped field must never talk its way down.
+  if (tc.kind && tc.kind !== 'execute') return false;
+  const cmds = Array.isArray(raw.commands) ? raw.commands : (raw.command ? [raw.command] : []);
+  if (!cmds.length) return false;
+  return cmds.every(isReadOnlyCommand);
+}
+
+/* Commands that report and do not change. Anything absent is treated as
+   writing, so this list being incomplete is safe by construction. */
+const READ_ONLY_COMMANDS = new Set([
+  // POSIX-ish
+  'cat', 'head', 'tail', 'ls', 'pwd', 'wc', 'stat', 'file', 'basename', 'dirname',
+  'realpath', 'readlink', 'which', 'whoami', 'hostname', 'uname', 'date', 'id',
+  'printenv', 'tree', 'du', 'df', 'diff', 'sort', 'uniq', 'grep', 'egrep', 'fgrep',
+  'rg', 'ripgrep', 'fd', 'echo', 'printf', 'cut', 'nl', 'md5sum', 'sha256sum', 'ps',
+  // Windows shell
+  'dir', 'type', 'findstr', 'where', 'ver',
+  // PowerShell, the read half of the verb set
+  'get-content', 'get-childitem', 'get-location', 'get-item', 'get-itemproperty',
+  'get-command', 'get-process', 'get-date', 'get-help', 'get-member',
+  'select-string', 'select-object', 'measure-object', 'test-path', 'where-object',
+  'sort-object', 'format-table', 'format-list', 'out-string', 'resolve-path',
+  'compare-object', 'write-output', 'write-host',
+]);
+
+/* `git` is a whole toolbox behind one name, so it is judged by subcommand. */
+const READ_ONLY_GIT = new Set([
+  'status', 'log', 'diff', 'show', 'describe', 'blame', 'shortlog', 'whatchanged',
+  'ls-files', 'ls-tree', 'ls-remote', 'rev-parse', 'rev-list', 'cat-file',
+  'name-rev', 'count-objects', 'grep', 'version',
+]);
+
+/* `git branch` LISTS with these and CREATES or DELETES with anything else, so it
+   is allowed only when every remaining token is one of them. */
+const READ_ONLY_GIT_BRANCH_FLAGS = new Set([
+  '--show-current', '--list', '-l', '-a', '--all', '-r', '--remotes', '-v', '-vv',
+  '--verbose', '--merged', '--no-merged', '--contains', '--sort', '--format',
+]);
+
+/* Flags that make an otherwise-reading command write. `-i` is sed's in-place,
+   `-o`/`--output` redirect to a file by another name. */
+const WRITING_FLAGS = new Set(['-i', '--in-place', '-o', '--output', '--output-file', '-w', '--write', '--fix']);
+
+/**
+ * Does this single shell command only look at things?
+ *
+ * Anything that can chain, redirect, or substitute is refused outright rather
+ * than parsed: this understands ONE command, and a line it cannot see the whole
+ * of is a line it cannot vouch for.
+ */
+function isReadOnlyCommand(command) {
+  const text = String(command == null ? '' : command).trim();
+  if (!text) return false;
+  if (/[|&;<>`$(){}\n\r]/.test(text)) return false;
+  const tokens = text.split(/\s+/);
+  for (const t of tokens.slice(1)) {
+    const flag = t.split('=')[0].toLowerCase();
+    if (WRITING_FLAGS.has(flag)) return false;
+  }
+  const head = tokens[0].replace(/\\/g, '/').split('/').pop().replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+  if (head === 'git') {
+    const args = tokens.slice(1).filter((t) => !t.startsWith('-'));
+    const sub = (args[0] || '').toLowerCase();
+    if (sub === 'branch') {
+      // Bare `git branch` lists; `git branch <name>` creates one.
+      const rest = tokens.slice(tokens.indexOf(args[0]) + 1);
+      return rest.every((t) => READ_ONLY_GIT_BRANCH_FLAGS.has(t.split('=')[0].toLowerCase()));
+    }
+    return READ_ONLY_GIT.has(sub);
+  }
+  return READ_ONLY_COMMANDS.has(head);
+}
+
 /** Best-effort path extraction from a tool's raw input. */
 function extractPaths(raw) {
   const out = new Set();
@@ -480,4 +572,6 @@ function extractPaths(raw) {
   return [...out];
 }
 
-module.exports = { AcpSession, STATUS, extractPaths };
+module.exports = {
+  AcpSession, STATUS, extractPaths, isReadOnlyCommand, isReadOnlyRequest,
+};
