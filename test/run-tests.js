@@ -776,6 +776,18 @@ async function suiteApprovalDepth() {
 }
 
 /**
+ * The channel a caller uses to impose a TOOL POLICY on the agent. Squad on ACA
+ * resolves permissions in one reviewable place and passes them as argv, and
+ * its deny patterns contain spaces -- so the channel has to preserve an
+ * argument exactly, and must never drop the protocol flag or silently ignore
+ * a policy it was handed.
+ */
+async function suiteAgentArgs() {
+  console.log('\n[AGENT ARGS] a tool policy survives transport, or nothing starts');
+  runChildSuite(path.join(__dirname, 'agent-args-unit.js'), 'agent-args');
+}
+
+/**
  * Removing the record of ended sessions. A tidy-up button that can reach live
  * work is a remote kill with a friendly label, so most of what is proven here
  * is what `forget` REFUSES -- above all, never deleting the record of a
@@ -850,6 +862,7 @@ async function suiteAgentApply() {
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteForget();
+  await suiteAgentArgs();
   await suiteParityAudit();
   await suiteAgentApply();
 
