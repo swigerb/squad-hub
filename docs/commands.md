@@ -396,6 +396,7 @@ test suite verifies this behaviour without ever installing a real login task.
 | `squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]` | Start a session. Starts the daemon automatically if needed. |
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
+| `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
 | `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
 | `squad-hub forget --all` | Remove the record of every session that has ended. |
 
@@ -700,7 +701,29 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
 | `SQUAD_HUB_DEVICE_ID` | Stable identity. Set it per replica if you scale past one. |
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
-| `SQUAD_HUB_AGENT_ARGS` | Agent arguments. Default `--acp`. |
+| `SQUAD_HUB_AGENT_ARGS` | The agent's argv, replaced wholesale. Default `--acp`. |
+| `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` | Extra arguments **appended** to the above, as a JSON array of strings. |
+
+`--acp` is the protocol the daemon speaks to the agent, so the default argv is
+just that. `SQUAD_HUB_AGENT_ARGS` replaces it rather than adding to it, because
+a caller may not be launching Copilot at all.
+
+Use `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` to pass a **tool policy**. Permission
+patterns legitimately contain spaces — `--deny-tool "shell(git config)"` — so a
+space-separated string cannot carry them:
+
+```bash
+SQUAD_HUB_AGENT_EXTRA_ARGS_JSON='["--deny-tool","shell(git push)","--deny-tool","shell(git config)"]'
+```
+
+Split on spaces, that pattern becomes `shell(git` and `config)`, and the Copilot
+CLI refuses to start (`Invalid rule format: shell(git`). A mangled deny rule
+therefore fails closed rather than becoming a weak one — but the session still
+never runs, which is why the JSON channel exists.
+
+Malformed JSON **refuses to start**. Ignoring it would launch an agent with no
+tool policy at all for a caller who was trying to impose one, which is the most
+dangerous possible reading of a typo.
 | `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
 | `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
 | `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |

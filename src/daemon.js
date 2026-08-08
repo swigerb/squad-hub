@@ -43,6 +43,57 @@ const { selectAgent, buildAgentArgs } = require('./agent-select');
  */
 const TERMINAL_STATUS = new Set([STATUS.DONE, STATUS.FAILED, STATUS.STOPPED]);
 
+/**
+ * The arguments the agent process is launched with.
+ *
+ * TWO CHANNELS, because there are two genuinely different needs and conflating
+ * them broke the test harness the first time this was written.
+ *
+ * BASE (`SQUAD_HUB_AGENT_ARGS`) replaces the whole argv. It defaults to
+ * `--acp`, the protocol this daemon speaks, and it is replaced rather than
+ * appended to because a caller may not be launching Copilot at all -- the test
+ * suite points `SQUAD_HUB_AGENT` at node and uses this to name a fake agent
+ * script. Prepending `--acp` to that would hand node a flag it does not have.
+ *
+ * EXTRA (`SQUAD_HUB_AGENT_EXTRA_ARGS_JSON`) is APPENDED, and is where a TOOL
+ * POLICY travels. This exists for Squad on ACA, which resolves permissions in
+ * one reviewable place and passes them as argv. Its deny patterns legitimately
+ * contain spaces:
+ *
+ *     --deny-tool shell(git config)
+ *
+ * so the channel is a JSON array rather than a space-separated string. Splitting
+ * that on spaces tears it into `shell(git` and `config)`; measured against
+ * Copilot CLI 1.0.78 the CLI then refuses to start -- `Invalid rule format:
+ * shell(git` -- so a mangled deny rule fails CLOSED rather than silently
+ * becoming a weaker one. That is the right failure, and it is still a failure:
+ * the session never runs.
+ *
+ * MALFORMED JSON THROWS. The tempting fallback -- ignore it and launch with the
+ * defaults -- would start an agent with NO tool policy at all for a caller who
+ * was trying to impose one, which is the most dangerous possible reading of a
+ * typo. Refusing to start is the only safe answer.
+ */
+function resolveAgentArgs() {
+  const spaced = process.env.SQUAD_HUB_AGENT_ARGS;
+  const base = spaced && spaced.trim() ? spaced.trim().split(/\s+/) : ['--acp'];
+
+  const json = process.env.SQUAD_HUB_AGENT_EXTRA_ARGS_JSON;
+  if (!json || !json.trim()) return base;
+
+  let extra;
+  try { extra = JSON.parse(json); } catch (e) {
+    throw new Error(`SQUAD_HUB_AGENT_EXTRA_ARGS_JSON is not valid JSON (${e.message}). `
+      + 'Refusing to start: launching without the arguments you asked for could run an agent '
+      + 'with no tool policy at all.');
+  }
+  if (!Array.isArray(extra) || extra.some((a) => typeof a !== 'string')) {
+    throw new Error('SQUAD_HUB_AGENT_EXTRA_ARGS_JSON must be a JSON array of strings, '
+      + 'so that a tool policy pattern containing a space survives intact.');
+  }
+  return [...base, ...extra];
+}
+
 class Daemon extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -51,9 +102,7 @@ class Daemon extends EventEmitter {
     this.startedAt = Date.now();
     this.deviceName = this.cfg.deviceName || os.hostname();
     this.agentCommand = opts.agentCommand || process.env.SQUAD_HUB_AGENT || 'copilot';
-    this.agentArgs = opts.agentArgs || (process.env.SQUAD_HUB_AGENT_ARGS
-      ? process.env.SQUAD_HUB_AGENT_ARGS.split(' ')
-      : ['--acp']);
+    this.agentArgs = opts.agentArgs || resolveAgentArgs();
     this.heartbeatMs = (opts.heartbeatSeconds || this.cfg.heartbeatSeconds) * 1000;
     // How long an unanswered approval waits before it is cancelled. Long by
     // design: a backstop against a question nobody will ever answer, not a
@@ -753,4 +802,4 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
-module.exports = { Daemon, alive };
+module.exports = { Daemon, alive, resolveAgentArgs };
