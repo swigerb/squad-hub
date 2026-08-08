@@ -77,7 +77,7 @@ const CHECKS = [
 
   ['S7', 'palette + spacing tokens', () => /--sp-3/.test(css), 'tokens that are actually applied'],
   ['S7', 'top bar: theme, bell, avatar', () => /themeBtn/.test(html) && /bellBtn/.test(html), 'theme toggle, the bell'],
-  ['S7', 'inline filter labels', () => /inline-select/.test(html), 'inline label'],
+  ['S7', 'labelled filter controls', () => /selectpill/.test(html) && /aria-label/.test(html), 'every list control is labelled'],
   ['S7', 'secondary toolbar row', () => /class="toolbar"/.test(html), 'separate rows'],
   ['S7', 'two-button empty state', () => /emptyCloud/.test(app) && /emptyLocal/.test(app), 'cloud AND a local'],
   ['S7', 'theme honours prefers-color-scheme', () => /prefers-color-scheme/.test(css), 'prefers-color-scheme'],

@@ -776,6 +776,17 @@ async function suiteApprovalDepth() {
 }
 
 /**
+ * Removing the record of ended sessions. A tidy-up button that can reach live
+ * work is a remote kill with a friendly label, so most of what is proven here
+ * is what `forget` REFUSES -- above all, never deleting the record of a
+ * session whose agent process is still alive.
+ */
+async function suiteForget() {
+  console.log('\n[FORGET] ended sessions only, never a live one, never an orphan');
+  runChildSuite(path.join(__dirname, 'forget-unit.js'), 'forget');
+}
+
+/**
  * The parity checklist, checked against the code. Catches a capability being
  * removed or renamed while its tests go with it -- the one way a green suite
  * can coexist with a lost feature.
@@ -783,6 +794,17 @@ async function suiteApprovalDepth() {
 async function suiteParityAudit() {
   console.log('\n[PARITY] every item on the checklist is still built, and still tested');
   runChildSuite(path.join(__dirname, 'parity-audit-unit.js'), 'parity');
+}
+
+/**
+ * The agent and model a session actually gets. `copilot --acp` accepts
+ * `--agent` and `--model` and silently ignores both, so the selection has to
+ * be made over the protocol -- and what was granted has to be reported, not
+ * assumed from what was asked.
+ */
+async function suiteAgentApply() {
+  console.log('\n[AGENT] the selection is applied over the protocol, and reported honestly');
+  runChildSuite(path.join(__dirname, 'agent-apply-unit.js'), 'agent-apply');
 }
 
 // ===========================================================================
@@ -827,7 +849,9 @@ async function suiteParityAudit() {
   await suiteDeviceRoster();
   await suiteControlVerification();
   await suiteApprovalDepth();
+  await suiteForget();
   await suiteParityAudit();
+  await suiteAgentApply();
 
   console.log('');
   console.log('='.repeat(60));

@@ -27,6 +27,10 @@ const state = {
   ws: null,
   currentSession: null,
   seenApprovals: new Set(),
+  // Approvals a desktop notification has already been raised for. Without
+  // this, every poll and every reconnect would notify again about the same
+  // question.
+  notified: new Set(),
   openApproval: null,
 };
 
@@ -133,6 +137,39 @@ function lastApprovalOutcome(s) {
 }
 
 const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Denied' };
+
+/**
+ * What agent and model this session is ACTUALLY running, and whether that is
+ * what was asked for.
+ *
+ * The row used to print the request and call it the answer. That was true for
+ * as long as nothing could refuse a request, and nothing could refuse a
+ * request only because the request was never being made: `--agent` on the
+ * command line is silently ignored by `copilot --acp`. Every session reported
+ * the agent it wanted while running the default one.
+ *
+ * So: `applied` is what the agent process granted. When it disagrees with the
+ * request, the row says so, because a session quietly running a different
+ * agent to the one named on it is worse than one that admits it.
+ */
+function agentLabel(s) {
+  const want = s.agentSelection;
+  const got = s.applied;
+  if (!want) return { text: s.agent || 'Copilot CLI', mismatch: false };
+
+  const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}`;
+  // No `applied` at all means an older device that predates the fix. Report the
+  // request without dressing it up as confirmation.
+  if (!got) return { text: `${asked} — ${want.source}`, mismatch: false };
+
+  const wantedAgent = want.agent && want.agent !== 'default';
+  const agentOk = !wantedAgent || (got.agent && String(got.agent).toLowerCase() === String(want.agent).toLowerCase());
+  const modelOk = !want.model || (got.model && String(got.model).toLowerCase() === String(want.model).toLowerCase());
+  if (agentOk && modelOk) return { text: `${asked} — ${want.source}`, mismatch: false };
+
+  const running = [got.agent || 'default agent', got.model].filter(Boolean).join(' ');
+  return { text: `running ${running}, not ${asked}`, mismatch: true };
+}
 
 /** Action-needed first, then most recently started. */
 function sessionSort(a, b) {
@@ -353,6 +390,7 @@ function sessionRow(s, deviceName, opts = {}) {
   const sel = s.agentSelection;
   const git = s.git;
   const outcome = lastApprovalOutcome(s);
+  const agentInfo = agentLabel(s);
   // `sel` (session.agentSelection), `git` (repository/branch read from the
   // session's own checkout) and `deviceName`/`sq.project`/`s.cwd` all
   // ultimately trace back to attacker-influenceable input: a project's own
@@ -366,7 +404,7 @@ function sessionRow(s, deviceName, opts = {}) {
     esc(deviceName),
     git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
     git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
-    sel ? `${esc(sel.agent)}${sel.model ? ` (${esc(sel.model)})` : ''} — ${esc(sel.source)}` : esc(s.agent || 'Copilot CLI'),
+    sel ? `<span class="${agentInfo.mismatch ? 'agent-mismatch' : ''}">${esc(agentInfo.text)}</span>` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? ago(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
   ].filter(Boolean).join(' &middot; ');
@@ -414,9 +452,10 @@ function sessionRow(s, deviceName, opts = {}) {
  * What an approval actually touches, as rows.
  *
  * The tool first, then every path it named. Each row carries whether it is
- * read-only, because that is the single fact that most changes the answer --
- * and it comes from the agent's own declared tool kind, not from guessing at
- * the command string.
+ * read-only, because that is the single fact that most changes the answer.
+ * The flag is decided on the device, from the agent's declared tool kind and,
+ * for a shell call, from the command itself -- every shell call arrives as one
+ * kind, so the kind alone cannot tell `git status` from `rm -rf`.
  */
 function approvalRows(approval) {
   if (!approval) return [];
@@ -442,6 +481,271 @@ function approvalRows(approval) {
 function approvalIsReadOnly(approval) {
   const rows = approvalRows(approval);
   return rows.length > 0 && rows.every((r) => r.readOnly);
+}
+
+// ---------------------------------------------------------------------------
+// Readable dropdowns
+//
+// A native <select>'s OPEN LIST is drawn by the operating system, not by this
+// stylesheet. `option { background }` is honoured by some engines, ignored by
+// others, and on Windows the popup comes back white with white separators
+// whatever the page asks for -- which is why the dark theme's dropdowns were
+// unreadable no matter how the options were styled.
+//
+// So the popup is replaced, and ONLY the popup. The native <select> stays in
+// the DOM as the value, the change event and the form control: every existing
+// caller still reads `sel.value`, still writes `sel.innerHTML`, and still
+// listens for `change`. The list below is built FROM the select each time it
+// opens, so options added later need no re-registration, and every choice is
+// written back through the select so nothing downstream can tell the
+// difference.
+// ---------------------------------------------------------------------------
+
+/** The label a select currently shows. */
+function selectedText(select) {
+  const o = select.options[select.selectedIndex];
+  return o ? o.text : '';
+}
+
+function enhanceSelect(select) {
+  const pill = select.closest('.selectpill');
+  if (!pill || pill.dataset.enhanced) return;
+  pill.dataset.enhanced = '1';
+
+  const value = document.createElement('span');
+  value.className = 'sp-value';
+  pill.insertBefore(value, select);
+
+  // The native control keeps the value but stops taking focus, so there is one
+  // tab stop rather than two for one control.
+  select.setAttribute('tabindex', '-1');
+  select.setAttribute('aria-hidden', 'true');
+
+  pill.setAttribute('role', 'combobox');
+  pill.setAttribute('aria-haspopup', 'listbox');
+  pill.setAttribute('aria-expanded', 'false');
+  pill.setAttribute('tabindex', '0');
+  if (select.getAttribute('aria-label')) pill.setAttribute('aria-label', select.getAttribute('aria-label'));
+
+  const list = document.createElement('div');
+  list.className = 'sp-list';
+  list.setAttribute('role', 'listbox');
+  list.hidden = true;
+  pill.appendChild(list);
+
+  const sync = () => { value.textContent = selectedText(select); };
+  sync();
+  select.addEventListener('change', sync);
+
+  function build() {
+    list.innerHTML = '';
+    [...select.options].forEach((o, i) => {
+      const row = document.createElement('div');
+      row.className = 'sp-opt';
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', String(i === select.selectedIndex));
+      row.dataset.index = String(i);
+      row.textContent = o.text;
+      list.appendChild(row);
+    });
+  }
+
+  function open(on) {
+    if (on) {
+      build();
+      closeAllSelectPills(pill);
+    }
+    list.hidden = !on;
+    pill.setAttribute('aria-expanded', String(on));
+    pill.classList.toggle('open', on);
+    if (on) {
+      const sel = list.querySelector('[aria-selected="true"]');
+      if (sel) sel.classList.add('active');
+    }
+  }
+
+  function choose(index) {
+    if (index < 0 || index >= select.options.length) return;
+    if (index !== select.selectedIndex) {
+      select.selectedIndex = index;
+      // Dispatched so every existing `onchange` handler runs exactly as it did
+      // when the native popup was doing the choosing.
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    sync();
+    open(false);
+    pill.focus();
+  }
+
+  pill.addEventListener('click', (e) => {
+    const opt = e.target.closest('.sp-opt');
+    if (opt) { choose(Number(opt.dataset.index)); return; }
+    open(list.hidden);
+  });
+
+  // The keyboard's highlight and the pointer's must be the SAME highlight.
+  // Without this, opening the list marks the current value and then hovering
+  // another row lights up a second one, so two rows claim to be the choice.
+  list.addEventListener('mousemove', (e) => {
+    const opt = e.target.closest('.sp-opt');
+    if (!opt || opt.classList.contains('active')) return;
+    for (const o of list.querySelectorAll('.sp-opt.active')) o.classList.remove('active');
+    opt.classList.add('active');
+  });
+
+  pill.addEventListener('keydown', (e) => {
+    const opts = [...list.querySelectorAll('.sp-opt')];
+    const active = list.querySelector('.sp-opt.active');
+    const at = active ? opts.indexOf(active) : select.selectedIndex;
+    if (e.key === 'Escape') { if (!list.hidden) { open(false); e.preventDefault(); } return; }
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (list.hidden) open(true); else choose(at);
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (list.hidden) { open(true); return; }
+      const next = Math.min(opts.length - 1, Math.max(0, at + (e.key === 'ArrowDown' ? 1 : -1)));
+      opts.forEach((o) => o.classList.remove('active'));
+      if (opts[next]) { opts[next].classList.add('active'); opts[next].scrollIntoView({ block: 'nearest' }); }
+      return;
+    }
+    if (e.key === 'Home' || e.key === 'End') {
+      if (list.hidden) return;
+      e.preventDefault();
+      opts.forEach((o) => o.classList.remove('active'));
+      const t = e.key === 'Home' ? opts[0] : opts[opts.length - 1];
+      if (t) { t.classList.add('active'); t.scrollIntoView({ block: 'nearest' }); }
+      return;
+    }
+    // Type-ahead, because a list you can only arrow through is slower than the
+    // control it replaced.
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (list.hidden) open(true);
+      const ch = e.key.toLowerCase();
+      const from = at + 1;
+      const all = [...list.querySelectorAll('.sp-opt')];
+      const order = [...all.slice(from), ...all.slice(0, from)];
+      const hit = order.find((o) => o.textContent.trim().toLowerCase().startsWith(ch));
+      if (hit) {
+        all.forEach((o) => o.classList.remove('active'));
+        hit.classList.add('active');
+        hit.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  });
+
+  pill._closeSelect = () => open(false);
+}
+
+/** Only one list may be open; two at once is a state nobody intends. */
+function closeAllSelectPills(except) {
+  for (const p of document.querySelectorAll('.selectpill[data-enhanced]')) {
+    if (p !== except && p._closeSelect) p._closeSelect();
+  }
+}
+
+function enhanceAllSelects() {
+  for (const s of document.querySelectorAll('.selectpill select')) enhanceSelect(s);
+}
+
+/**
+ * Repaint every pill's visible label from its select.
+ *
+ * Needed because replacing a select's options does not fire `change`: the
+ * value can move underneath the label (a device disconnects, its option
+ * vanishes, the selection falls back to "All devices") with nothing to tell
+ * the visible text about it.
+ */
+function syncSelectPills() {
+  for (const p of document.querySelectorAll('.selectpill[data-enhanced]')) {
+    const s = p.querySelector('select');
+    const v = p.querySelector('.sp-value');
+    if (s && v) v.textContent = selectedText(s);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Removing ended sessions
+//
+// The device is the source of truth: the hub replaces a device's session list
+// wholesale from whatever that device reports, so anything removed only at the
+// hub returns on the next heartbeat. Every removal therefore goes TO A DEVICE,
+// and a device that cannot be asked is reported as skipped rather than quietly
+// counted as done.
+// ---------------------------------------------------------------------------
+
+/** How long "older than N days" is, in milliseconds. `all` has no window. */
+function forgetWindowMs(scope) {
+  if (scope === 'all') return undefined;
+  const days = Number(scope);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  return days * 24 * 3600 * 1000;
+}
+
+/**
+ * Which devices a removal can actually reach.
+ *
+ * An offline device is not commanded -- the hub refuses that anyway (409) --
+ * so it is separated out here to be REPORTED rather than silently dropped. A
+ * count that quietly excluded them would be the same lie as a progress bar
+ * that reaches 100% by ignoring what failed.
+ */
+function forgetTargets(devices) {
+  const all = devices || [];
+  return {
+    reachable: all.filter((d) => d.presence !== 'offline'),
+    skipped: all.filter((d) => d.presence === 'offline'),
+  };
+}
+
+/**
+ * What to tell someone after a sweep.
+ *
+ * Written from the RESULTS, never from the request, so a device that refused
+ * cannot be counted as a device that complied.
+ */
+function forgetSummary({ removed, failed, skipped }) {
+  const parts = [];
+  parts.push(removed === 0
+    ? 'Nothing to remove'
+    : `Removed ${removed} ended session${removed === 1 ? '' : 's'}`);
+  if (skipped) parts.push(`${skipped} device${skipped === 1 ? '' : 's'} offline, skipped`);
+  if (failed) parts.push(`${failed} device${failed === 1 ? '' : 's'} refused`);
+  return parts.join(' · ');
+}
+
+/**
+ * What the Create menu can offer, given the devices that exist.
+ *
+ * A session needs a device to run on, and the two kinds are not
+ * interchangeable: a cloud device is on-demand, a local one is a machine
+ * already sitting there. Squad Hub cannot CONJURE either -- it observes
+ * devices that dial in, and holds no cloud credentials by design -- so an
+ * always-live "Cloud session" would be an offer it could not keep. Each
+ * unavailable kind is therefore refused WITH THE REASON and what to do about
+ * it, which is the honest version of the same help.
+ */
+function newMenuState(devices) {
+  const usable = (devices || []).filter((d) => d.presence !== 'offline');
+  const cloud = usable.filter((d) => d.kind === 'cloud');
+  const local = usable.filter((d) => d.kind !== 'cloud');
+  let note = null;
+  if (!usable.length) {
+    note = 'No device is connected. A session runs on a device — run squad-hub connect on a machine, or start a cloud one.';
+  } else if (!cloud.length) {
+    note = 'No cloud device is connected. A cloud device dials in on its own — see docs/aca.md for running one on Container Apps.';
+  } else if (!local.length) {
+    note = 'No local device is connected. Run squad-hub connect on a machine to add one.';
+  }
+  return {
+    localEnabled: local.length > 0,
+    cloudEnabled: cloud.length > 0,
+    note,
+    localDeviceId: local.length ? local[0].deviceId : null,
+    cloudDeviceId: cloud.length ? cloud[0].deviceId : null,
+  };
 }
 
 const APPROVAL_LABEL = {
@@ -812,9 +1116,20 @@ function render() {
     || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
   const availPill = $('deviceAvailable');
   if (availPill) {
+    // The count badge beside "Connected devices" already says how many there
+    // are. This pill repeated that number whenever every device was online,
+    // which is most of the time -- and a badge that usually agrees with the
+    // one next to it is a badge nobody reads on the day it disagrees.
+    //
+    // So it now reports only the EXCEPTION: how many are unreachable. When
+    // everything is online there is nothing to say, and it says nothing.
+    const total = devices.length;
     const avail = availableCount(devices);
-    availPill.textContent = `${avail} available`;
-    availPill.classList.toggle('none', avail === 0);
+    const down = total - avail;
+    availPill.hidden = down === 0;
+    availPill.textContent = `${down} offline`;
+    availPill.classList.toggle('none', down > 0);
+    availPill.title = down ? 'An offline device cannot be sent work or asked to tidy up' : '';
   }
 
   const sel = $('deviceFilter');
@@ -827,6 +1142,10 @@ function render() {
   // on screen, so they can never offer a scope that filters everything away.
   fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
   fillSelect($('orgFilter'), 'All organisations', organizationsIn(groups), state.filters.org);
+
+  // Rebuilding a select's options does NOT fire `change`, so the visible label
+  // beside it would go on showing a device that has since gone away.
+  syncSelectPills();
 
   maybePromptApproval();
 }
@@ -851,6 +1170,88 @@ function fillSelect(el, allLabel, values, current) {
  * product is that a paused agent finds you, rather than waiting for you to
  * notice it.
  */
+// ---------------------------------------------------------------------------
+// Desktop notifications
+//
+// The whole point of this hub is that a session can ask a human wherever that
+// human is. A page you have to be LOOKING AT to notice a blocked session is
+// only half of that -- so an approval raises a real notification, and the
+// agent goes on waiting either way.
+//
+// Permission is requested ON A CLICK, never on load. A prompt that appears
+// before anyone has asked for anything is the one people dismiss for good, and
+// a permanently denied permission cannot be asked for again.
+// ---------------------------------------------------------------------------
+
+/** Whether this browser can notify at all, and what it has been told. */
+function notifyState() {
+  if (typeof Notification === 'undefined') return 'unsupported';
+  return Notification.permission;      // 'granted' | 'denied' | 'default'
+}
+
+/**
+ * Ask for permission, and say what happened.
+ *
+ * Returns the resulting state rather than a bare boolean, because "denied"
+ * and "unsupported" need different things said to a person: one is a setting
+ * they can change, the other is not.
+ */
+async function requestNotifyPermission() {
+  if (typeof Notification === 'undefined') return 'unsupported';
+  if (Notification.permission !== 'default') return Notification.permission;
+  try { return await Notification.requestPermission(); }
+  catch { return Notification.permission; }
+}
+
+/**
+ * Raise a notification for an approval, once.
+ *
+ * Keyed on the approval id so a re-render, a reconnect or a second poll cannot
+ * produce a second notification for the same question. `renotify` is set so a
+ * replacement for the same tag still alerts, rather than silently swapping.
+ */
+function notifyApproval(device, session, approval) {
+  if (notifyState() !== 'granted') return false;
+  if (state.notified.has(approval.approvalId)) return false;
+  state.notified.add(approval.approvalId);
+  try {
+    const n = new Notification('Permission needed', {
+      body: `${approval.title || 'A tool is waiting'}\n${device.name} · ${session.cwd || ''}`,
+      tag: `approval-${approval.approvalId}`,
+      renotify: true,
+      icon: '/icon.svg',
+    });
+    // Clicking it should bring you to the thing it was about.
+    n.onclick = () => {
+      window.focus();
+      showApproval(device, session, approval);
+      n.close();
+    };
+    return true;
+  } catch {
+    // A browser that refuses to construct one (some mobile engines require a
+    // service worker) must not take the render down with it.
+    return false;
+  }
+}
+
+/**
+ * Say what the bell will actually do, in its tooltip.
+ *
+ * A bell that behaves differently depending on a permission the page never
+ * mentions is a control people learn to distrust.
+ */
+function syncBell() {
+  const b = document.getElementById('bellBtn');
+  if (!b) return;
+  const s = notifyState();
+  b.dataset.permission = s;
+  b.title = s === 'granted' ? 'Notifications are on'
+    : s === 'denied' ? 'Notifications are blocked for this site'
+      : s === 'unsupported' ? 'This browser cannot show notifications'
+        : 'Turn on notifications';
+}
+
 function maybePromptApproval() {
   // An open card whose approval has since expired is a dialog asking for an
   // answer nobody can give any more -- and worse, answering it would fail
@@ -891,6 +1292,10 @@ function maybePromptApproval() {
   for (const g of state.overview.groups) {
     for (const s of g.sessions) {
       for (const a of s.pendingApprovals || []) {
+        // Raised whether or not this tab is the one being looked at: the
+        // whole point is that a blocked session can reach a person who is
+        // somewhere else.
+        notifyApproval(g.device, s, a);
         if (state.seenApprovals.has(a.approvalId)) continue;
         return showApproval(g.device, s, a);
       }
@@ -1238,13 +1643,38 @@ const CONN_LABEL = {
   offline: 'hub unreachable',
 };
 
+/**
+ * What each state means, in a sentence.
+ *
+ * The live dot has no text, so without this it would be a coloured mark with
+ * no explanation anywhere -- and the failures deserve to say that the DEVICES
+ * are fine even when this page cannot hear them, because the obvious fear on
+ * seeing a red badge is that the work has stopped.
+ */
+const CONN_TITLE = {
+  live: 'Live: this page is receiving updates as they happen',
+  connecting: 'Connecting to the live feed',
+  retrying: 'The live feed dropped and is reconnecting. Your sessions keep running.',
+  offline: 'The hub is not answering. This page keeps retrying; your devices are unaffected.',
+};
+
 function setConn(s) {
   const el = $('conn');
   el.dataset.state = s;
-  el.textContent = CONN_LABEL[s] || s;
-  el.title = s === 'offline'
-    ? 'The hub is not answering. This page keeps retrying; your devices are unaffected.'
-    : '';
+  // A DOT when the feed is healthy, WORDS when it is not.
+  //
+  // "live" is true almost all of the time, so spelling it out is a permanent
+  // label saying "working" -- and a label that is always there is one nobody
+  // reads on the day it changes. As a dot it costs nothing and still answers
+  // the question a person actually asks after ten quiet minutes: is this page
+  // still being told things, or has it been showing me a corpse?
+  //
+  // The failures keep their words, because "reconnecting" and "hub
+  // unreachable" are different situations that need different reactions, and
+  // a coloured dot cannot say which is which.
+  el.textContent = s === 'live' ? '' : (CONN_LABEL[s] || s);
+  el.title = CONN_TITLE[s] || '';
+  el.setAttribute('aria-label', `Live feed: ${CONN_LABEL[s] || s}`);
 }
 
 /**
@@ -1422,6 +1852,19 @@ const THEME_KEY = 'squad-hub-theme';
  */
 const THEMES = ['system', 'dark', 'light'];
 
+/**
+ * The three theme icons, as Fluent SVG (Microsoft, MIT).
+ *
+ * `system` gets the half-filled circle it always had, because "follow this
+ * machine" is genuinely neither sun nor moon; the other two say plainly which
+ * one is in force.
+ */
+const THEME_ICON = {
+  system: '<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1C11.866 1 15 4.13401 15 8C15 11.866 11.866 15 8 15C4.13401 15 1 11.866 1 8C1 4.13401 4.13401 1 8 1ZM8 2V14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2Z"/></svg>',
+  dark: '<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8.00291 1C11.8684 1.00057 15.002 4.13436 15.002 8C15.002 11.866 11.8679 15 8.00193 15C5.08888 14.9999 2.59229 13.2205 1.53805 10.6914C1.4578 10.4987 1.50656 10.2763 1.65914 10.1338C1.75673 10.0427 1.88381 9.99611 2.01168 9.99902C5.32091 9.99375 8.00193 7.31045 8.00193 4C8.00193 3.18152 7.83715 2.40245 7.54099 1.69238C7.47678 1.53815 7.49426 1.3617 7.58689 1.22266C7.67959 1.08361 7.83581 1.00006 8.00291 1ZM8.72166 2.04395C8.90245 2.66516 9.00194 3.32111 9.00194 4C9.00194 7.60283 6.27984 10.5678 2.78024 10.9551C3.81152 12.7735 5.7636 13.9999 8.00193 14C11.3157 14 14.002 11.3137 14.002 8C14.002 4.92991 11.696 2.39958 8.72166 2.04395Z"/></svg>',
+  light: '<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1C8.27614 1 8.5 1.22386 8.5 1.5V2.5C8.5 2.77614 8.27614 3 8 3C7.72386 3 7.5 2.77614 7.5 2.5V1.5C7.5 1.22386 7.72386 1 8 1ZM8 11C9.65685 11 11 9.65685 11 8C11 6.34315 9.65685 5 8 5C6.34315 5 5 6.34315 5 8C5 9.65685 6.34315 11 8 11ZM8 10C6.89543 10 6 9.10457 6 8C6 6.89543 6.89543 6 8 6C9.10457 6 10 6.89543 10 8C10 9.10457 9.10457 10 8 10ZM14.5 8.5C14.7761 8.5 15 8.27614 15 8C15 7.72386 14.7761 7.5 14.5 7.5H13.5C13.2239 7.5 13 7.72386 13 8C13 8.27614 13.2239 8.5 13.5 8.5H14.5ZM8 13C8.27614 13 8.5 13.2239 8.5 13.5V14.5C8.5 14.7761 8.27614 15 8 15C7.72386 15 7.5 14.7761 7.5 14.5V13.5C7.5 13.2239 7.72386 13 8 13ZM2.5 8.5C2.77614 8.5 3 8.27614 3 8C3 7.72386 2.77614 7.5 2.5 7.5H1.5C1.22386 7.5 1 7.72386 1 8C1 8.27614 1.22386 8.5 1.5 8.5H2.5ZM3.14645 3.14649C3.34171 2.95123 3.65829 2.95123 3.85355 3.14649L4.85355 4.14649C5.04882 4.34175 5.04882 4.65834 4.85355 4.8536C4.65829 5.04886 4.34171 5.04886 4.14645 4.8536L3.14645 3.8536C2.95118 3.65834 2.95118 3.34175 3.14645 3.14649ZM3.85355 12.8536C3.65829 13.0489 3.34171 13.0489 3.14645 12.8536C2.95118 12.6584 2.95118 12.3418 3.14645 12.1465L4.14645 11.1465C4.34171 10.9513 4.65829 10.9513 4.85355 11.1465C5.04882 11.3418 5.04882 11.6584 4.85355 11.8536L3.85355 12.8536ZM12.8536 3.14649C12.6583 2.95123 12.3417 2.95123 12.1464 3.14649L11.1464 4.14649C10.9512 4.34175 10.9512 4.65834 11.1464 4.8536C11.3417 5.04886 11.6583 5.04886 11.8536 4.8536L12.8536 3.8536C13.0488 3.65834 13.0488 3.34175 12.8536 3.14649ZM12.1464 12.8536C12.3417 13.0489 12.6583 13.0489 12.8536 12.8536C13.0488 12.6584 13.0488 12.3418 12.8536 12.1465L11.8536 11.1465C11.6583 10.9513 11.3417 10.9513 11.1464 11.1465C10.9512 11.3418 10.9512 11.6584 11.1464 11.8536L12.1464 12.8536Z"/></svg>',
+};
+
 function loadTheme() {
   try {
     const saved = localStorage.getItem(THEME_KEY);
@@ -1443,7 +1886,12 @@ function applyTheme(theme) {
     const label = { system: 'Theme: follow system', dark: 'Theme: dark', light: 'Theme: light' }[state.theme];
     btn.title = `${label} (click to change)`;
     btn.setAttribute('aria-label', label);
-    btn.textContent = { system: '◐', dark: '🌙', light: '☀' }[state.theme];
+    // SVG, not emoji. An emoji glyph is drawn by whatever font the platform
+    // picks -- often in colour, at its own weight, and differently on every
+    // machine -- so the one control next to the account menu never matched the
+    // icons around it. These are the same Fluent set as everywhere else and
+    // inherit `currentColor`.
+    btn.innerHTML = THEME_ICON[state.theme] || THEME_ICON.system;
   }
   try { localStorage.setItem(THEME_KEY, state.theme); } catch { /* never fatal */ }
 }
@@ -1474,6 +1922,7 @@ function setRailCollapsed(collapsed) {
 // Wiring
 // ---------------------------------------------------------------------------
 function wire() {
+  enhanceAllSelects();
   $('q').oninput = (e) => { state.filters.q = e.target.value; refresh(); };
   $('statusFilter').onchange = (e) => { state.filters.status = e.target.value; refresh(); };
   $('deviceFilter').onchange = (e) => { state.filters.device = e.target.value; refresh(); };
@@ -1511,6 +1960,24 @@ function wire() {
   $('themeBtn').onclick = () => applyTheme(nextTheme(state.theme));
 
   $('newBtn').onclick = () => openNew();
+
+  // The split half and the kebab. Both stopPropagation so the document-level
+  // close handler below does not see the same click that opened them.
+  $('newMoreBtn').onclick = (e) => { e.stopPropagation(); togglePopup('newMenu', 'newMoreBtn'); };
+  $('tidyBtn').onclick = (e) => { e.stopPropagation(); togglePopup('tidyMenu', 'tidyBtn'); };
+  $('newMenu').onclick = (e) => {
+    const b = e.target.closest('[data-new]');
+    if (!b || b.disabled) return;
+    togglePopup('newMenu', 'newMoreBtn', false);
+    const s = newMenuState((state.overview && state.overview.devices) || []);
+    openNew(b.dataset.new === 'cloud' ? s.cloudDeviceId : s.localDeviceId);
+  };
+  $('tidyMenu').onclick = (e) => {
+    const b = e.target.closest('[data-forget]');
+    if (!b) return;
+    togglePopup('tidyMenu', 'tidyBtn', false);
+    forgetEnded(b.dataset.forget);
+  };
   $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
   $('cnCreate').onclick = () => createDeviceToken();
   $('cnCopy').onclick = async () => {
@@ -1520,10 +1987,25 @@ function wire() {
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
   $('dtClose').onclick = () => { $('detailScrim').hidden = true; state.currentSession = null; };
 
-  $('bellBtn').onclick = () => {
+  $('bellBtn').onclick = async () => {
+    // The click is what asks for permission. Requesting it on load would spend
+    // the one prompt a browser ever shows before anyone had reason to say yes,
+    // and a denial cannot be asked for again.
+    const before = notifyState();
+    const after = await requestNotifyPermission();
+    if (after === 'granted' && before !== 'granted') {
+      toast('Notifications on — you will be told when a session needs you');
+    } else if (after === 'denied') {
+      toast('Notifications are blocked for this site; allow them in your browser settings');
+    } else if (after === 'unsupported') {
+      toast('This browser cannot show notifications');
+    }
+    // Whatever the answer, the bell still does what it always did: bring back
+    // the cards that were dismissed without being answered.
     state.seenApprovals.clear();
     maybePromptApproval();
   };
+  syncBell();
 
   $('menuBtn').onclick = (e) => { e.stopPropagation(); toggleMenu(); };
   $('bannerClose').onclick = () => { $('banner').hidden = true; };  $('menu').onclick = (e) => {
@@ -1532,6 +2014,9 @@ function wire() {
   };
   document.addEventListener('click', (e) => {
     if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
+    if (!$('newMenu').hidden && !e.target.closest('#newSplit')) togglePopup('newMenu', 'newMoreBtn', false);
+    if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
+    if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
   });
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
@@ -1601,6 +2086,8 @@ function wire() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     toggleMenu(false);
+    togglePopup('newMenu', 'newMoreBtn', false);
+    togglePopup('tidyMenu', 'tidyBtn', false);
     for (const id of ['approvalScrim', 'newScrim', 'detailScrim']) $(id).hidden = true;
   });
 }
@@ -1636,6 +2123,85 @@ function toggleMenu(force) {
     ${online} of ${d.length} device${d.length === 1 ? '' : 's'} online<br>
     ${state.overview.counts.sessions || 0} sessions ·
     ${state.overview.counts.actionNeeded || 0} needing attention`;
+}
+
+/**
+ * A small popup anchored to the control that opened it.
+ *
+ * Opening one closes the other. Two menus open at once is a state nobody
+ * intends and every stray click produces.
+ */
+function togglePopup(menuId, btnId, force) {
+  const m = $(menuId);
+  if (!m) return;
+  const open = force === undefined ? m.hidden : force;
+  if (open) for (const other of ['newMenu', 'tidyMenu']) if (other !== menuId) togglePopup(other, other === 'newMenu' ? 'newMoreBtn' : 'tidyBtn', false);
+  m.hidden = !open;
+  const b = $(btnId);
+  if (b) b.setAttribute('aria-expanded', String(open));
+  if (open && menuId === 'newMenu') renderNewMenu();
+}
+
+/**
+ * The Create menu.
+ *
+ * "Cloud session" is offered when a cloud device is connected and REFUSED
+ * WITH A REASON when it is not. Squad Hub cannot provision a cloud device --
+ * it is an observer of devices that dial in, not a control plane with cloud
+ * credentials -- so an always-live button would be an offer it could not keep.
+ * Saying how to start one is the honest version of the same help.
+ */
+function renderNewMenu() {
+  const s = newMenuState((state.overview && state.overview.devices) || []);
+  // Selected by what they DO rather than by id: these are delegated to the
+  // menu's own click handler, the same way the account menu works, so an id
+  // here would be a control that looks individually wired and is not.
+  const menu = $('newMenu');
+  menu.querySelector('[data-new="local"]').disabled = !s.localEnabled;
+  menu.querySelector('[data-new="cloud"]').disabled = !s.cloudEnabled;
+  const note = $('newMenuNote');
+  note.hidden = !s.note;
+  if (s.note) note.textContent = s.note;
+}
+
+/**
+ * Remove the record of sessions that have already ended.
+ *
+ * Sent to every reachable device, because the device is the source of truth
+ * and a hub-side removal would be undone by the next heartbeat. The result is
+ * assembled from what each device actually reported.
+ */
+async function forgetEnded(scope) {
+  const olderThanMs = forgetWindowMs(scope);
+  if (olderThanMs === null) return;
+
+  const { reachable, skipped } = forgetTargets((state.overview && state.overview.devices) || []);
+  if (!reachable.length) {
+    toast('No device is online to remove sessions from');
+    return;
+  }
+  if (scope === 'all' && !window.confirm(
+    'Remove every ended session from the list?\n\n'
+    + 'This clears the record of finished work on each connected device. '
+    + 'Sessions that are still running are not affected.')) return;
+
+  let removed = 0;
+  let failed = 0;
+  for (const d of reachable) {
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
+        method: 'POST',
+        body: { olderThanMs },
+      });
+      removed += (r && r.count) || 0;
+    } catch {
+      // Counted, never swallowed: a device that refused must not be
+      // indistinguishable from one that had nothing to remove.
+      failed += 1;
+    }
+  }
+  toast(forgetSummary({ removed, failed, skipped: skipped.length }));
+  await refresh();
 }
 
 let toastTimer = null;
@@ -1889,6 +2455,11 @@ function signInHint(mode) {
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';
+    // The button says whose account it is, for anything that cannot see the
+    // avatar. Without this a screen reader announces "Account, button" and
+    // leaves out the only fact that matters on a shared machine.
+    $('menuBtn').setAttribute('aria-label', `Account: ${state.me.name || 'signed in'}`);
+    $('menuBtn').title = state.me.name || 'Account';
     // The user's own avatar where the provider supplies one, an initial
     // otherwise. The image is set up to fall back on its own if it fails to
     // load, so a blocked or broken avatar shows the initial rather than a

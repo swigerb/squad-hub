@@ -33,6 +33,16 @@ const config = require('./config');
 const { AcpSession, STATUS } = require('./acp-session');
 const { selectAgent, buildAgentArgs } = require('./agent-select');
 
+/**
+ * The statuses a session never comes back from.
+ *
+ * Named here as well as in the hub's store because the two make the same
+ * judgement about the same word from opposite ends of the wire, and a session
+ * the device thinks is finished while the hub thinks it is running is the kind
+ * of disagreement that ends with someone tidying away live work.
+ */
+const TERMINAL_STATUS = new Set([STATUS.DONE, STATUS.FAILED, STATUS.STOPPED]);
+
 class Daemon extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -423,6 +433,83 @@ class Daemon extends EventEmitter {
     return { transcript: list, nextSince, gap };
   }
 
+  /**
+   * Forget the RECORD of sessions that have already ended.
+   *
+   * This is record-keeping, not control. It removes rows from the session
+   * list; it does not stop, kill, signal, or touch anything on disk beyond
+   * rewriting the same sessions file the heartbeat already rewrites. It must
+   * never grow into `stop`: the two live next to each other in the same
+   * switch, and the day this one learns to end a session is the day a tidy-up
+   * menu becomes a remote kill.
+   *
+   * WHY IT LIVES ON THE DEVICE. The hub replaces a device's session list
+   * wholesale from what the device reports (Store.syncSessions), so a hub-side
+   * deletion would come back on the very next heartbeat. Forgetting here means
+   * the removal propagates through the mechanism that already exists, rather
+   * than needing a second one that fights it.
+   *
+   * THE GUARD THAT MATTERS is the liveness check, not the status check. A
+   * session record is the only handle anything has on its agent process:
+   * `_killAllChildren` walks `this.sessions`, and so does the shutdown path.
+   * Delete a record whose process is still breathing and that process becomes
+   * an orphan holding a repo checkout, invisible to every surface -- which is
+   * the precise failure this daemon's reaper, its children file and a good
+   * part of its test suite exist to prevent. So a session is forgotten only if
+   * it is terminal, HAS an end time, and its pid is provably gone.
+   *
+   * @param {object}  opts
+   * @param {number}  [opts.olderThanMs]  only forget sessions that ended at
+   *                                      least this long ago. Omitted means
+   *                                      every ended session.
+   * @param {string}  [opts.forgottenBy]  who asked, for the log.
+   * @returns {{forgotten: string[], kept: number, count: number}}
+   */
+  forgetSessions({ olderThanMs, forgottenBy } = {}) {
+    const now = Date.now();
+    // A negative or non-finite window would silently become "everything".
+    // Refusing is better than guessing at what someone meant.
+    const window = olderThanMs == null ? null : Number(olderThanMs);
+    if (window !== null && (!Number.isFinite(window) || window < 0)) {
+      throw Object.assign(new Error('olderThanMs must be a non-negative number of milliseconds'), { code: 'BAD_WINDOW' });
+    }
+    const cutoff = window === null ? null : now - window;
+
+    const forgotten = [];
+    let kept = 0;
+    for (const [id, s] of this.sessions) {
+      if (!TERMINAL_STATUS.has(s.status)) { kept += 1; continue; }
+      // A terminal status with no end time has not finished being written
+      // down. Waiting one heartbeat costs nothing.
+      if (!s.endedAt) { kept += 1; continue; }
+      if (cutoff !== null && s.endedAt > cutoff) { kept += 1; continue; }
+      // The orphan guard. Belt and braces: a terminal session should already
+      // have been untracked, so this should never fire -- and the day it does
+      // is exactly the day it earns its place.
+      if (s.pid && alive(s.pid)) {
+        this.log(`forget: refusing to forget session ${id}; its agent (pid ${s.pid}) is still alive`);
+        kept += 1;
+        continue;
+      }
+      this.sessions.delete(id);
+      this._untrackChild(s.pid);
+      forgotten.push(id);
+    }
+
+    if (forgotten.length) {
+      this._persistSessions();
+      // Republish immediately rather than waiting for the next beat, so the
+      // hub's copy is corrected by the same wholesale sync it always uses.
+      if (this.link && this.link.connected) {
+        try { this.link.send({ type: 'sessions', sessions: this.snapshot().sessions }); }
+        catch { /* the next heartbeat carries it */ }
+      }
+      const who = forgottenBy ? ` at the request of ${forgottenBy}` : '';
+      this.log(`forget: removed ${forgotten.length} ended session(s)${who}`);
+    }
+    return { forgotten, kept, count: forgotten.length };
+  }
+
   snapshot() {
     const cfg = config.read();
     return {
@@ -532,6 +619,12 @@ class Daemon extends EventEmitter {
           break;
         case 'resync':
           result = await this.handle({ op: 'resync', sessionId: m.sessionId });
+          break;
+        case 'forget':
+          // Record-keeping, not control: it removes rows for sessions that
+          // have already ended. Who asked travels with it, from the hub's
+          // validated identity, so the device's own log can say who tidied up.
+          result = await this.handle({ op: 'forget', olderThanMs: m.olderThanMs, forgottenBy: m.forgottenBy });
           break;
         default:
           throw new Error(`unknown command: ${m.op}`);
@@ -647,6 +740,8 @@ class Daemon extends EventEmitter {
       case 'shutdown':
         setTimeout(() => this.shutdown(0), 20);
         return { stopping: true };
+      case 'forget':
+        return this.forgetSessions({ olderThanMs: req.olderThanMs, forgottenBy: req.forgottenBy });
       default:
         throw Object.assign(new Error(`unknown op: ${req.op}`), { code: 'UNKNOWN_OP' });
     }
