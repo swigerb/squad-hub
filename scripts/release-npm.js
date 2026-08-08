@@ -190,33 +190,50 @@ function classifyAttempt(status, output, version) {
  * read `--version` as its own flag, which makes a healthy package look broken
  * and, worse, could make a broken one look healthy.
  *
+ * IT RUNS FROM A TEMPORARY DIRECTORY, NEVER FROM THE CHECKOUT. This directory
+ * holds a package.json named `squad-hub`, and npx asked for a command matching
+ * the name of the project it is standing in resolves that project first. There
+ * is no `node_modules/.bin/squad-hub` in a checkout, so it reports
+ * "'squad-hub' is not recognized" -- a healthy package, condemned by where the
+ * test was run. That is not hypothetical: it failed exactly this way on the
+ * 0.2.0 release, while the SCOPED name, whose name cannot collide, passed from
+ * the identical tarball. Two names, one tarball, opposite verdicts is what
+ * gave it away.
+ *
  * A newly published version is not resolvable immediately, so a miss is
  * retried with a growing wait rather than treated as a verdict.
  */
 function verifyPublished(name, version, bin = PRIMARY, waits = [5, 10, 20, 30, 60]) {
   let last = '';
-  for (let i = 0; i <= waits.length; i += 1) {
-    const r = run('npx', ['--yes', '--package', `${name}@${version}`, '--', bin, '--version'],
-      { timeout: 300000 });
-    last = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  // Outside the repo, and outside any parent of it, so nothing on the path up
+  // to the root can shadow what the registry serves.
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-verify-'));
+  try {
+    for (let i = 0; i <= waits.length; i += 1) {
+      const r = run('npx', ['--yes', '--package', `${name}@${version}`, '--', bin, '--version'],
+        { timeout: 300000, cwd: sandbox });
+      last = `${r.stdout || ''}${r.stderr || ''}`.trim();
 
-    const verdict = classifyAttempt(r.status, last, version);
-    if (verdict === 'ok') return { ok: true, output: last };
+      const verdict = classifyAttempt(r.status, last, version);
+      if (verdict === 'ok') return { ok: true, output: last };
 
-    // Only "not there yet" is worth waiting on. A package that resolves and
-    // installs no command is a verdict, not a delay.
-    if (verdict === 'installs-no-command') {
-      return { ok: false, reason: 'installs-no-command', output: last };
+      // Only "not there yet" is worth waiting on. A package that resolves and
+      // installs no command is a verdict, not a delay.
+      if (verdict === 'installs-no-command') {
+        return { ok: false, reason: 'installs-no-command', output: last };
+      }
+
+      if (i < waits.length) {
+        const s = waits[i];
+        console.log(`    ${verdict === 'not-published-yet' ? 'not on the registry yet' : 'no answer yet'}`
+          + `; retrying in ${s}s (${i + 1}/${waits.length})`);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s * 1000);
+      }
     }
-
-    if (i < waits.length) {
-      const s = waits[i];
-      console.log(`    ${verdict === 'not-published-yet' ? 'not on the registry yet' : 'no answer yet'}`
-        + `; retrying in ${s}s (${i + 1}/${waits.length})`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s * 1000);
-    }
+    return { ok: false, reason: 'unresolved', output: last };
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
   }
-  return { ok: false, reason: 'unresolved', output: last };
 }
 
 /** Report a verification result in full, since a bad one cannot be undone. */

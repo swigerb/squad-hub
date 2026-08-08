@@ -434,6 +434,30 @@ check('a model that was refused is flagged too', () => {
   assert.match(html, /agent-mismatch/);
 });
 
+check('a session that selected NOTHING names the agent, not "default — default"', () => {
+  // The default agent, no model, chosen because no rule applied. Printing the
+  // selection there says nothing twice; the agent's own name and version is a
+  // fact somebody might want.
+  const html = sessionRow({
+    ...base,
+    agent: 'Copilot CLI 1.0.77',
+    agentSelection: { agent: 'default', model: null, source: 'default' },
+  }, 'laptop');
+  assert.match(html, /Copilot CLI 1\.0\.77/);
+  assert.ok(!/default — default/.test(html), 'the row spends a column saying nothing, twice');
+});
+
+check('an EXPLICIT default is still reported, because someone chose it', () => {
+  // Same agent, different meaning: a person asked for the default rather than
+  // simply not asking. That is a decision, and the row should show it.
+  const html = sessionRow({
+    ...base,
+    agentSelection: { agent: 'default', model: 'gpt-5.3-codex', source: 'explicit' },
+  }, 'laptop');
+  assert.match(html, /explicit/);
+  assert.match(html, /gpt-5\.3-codex/);
+});
+
 check('a device too old to report what it applied is not accused of a mismatch', () => {
   // `applied` is absent on a daemon that predates the fix. Reporting the
   // request plainly is right there; inventing a mismatch would not be.
