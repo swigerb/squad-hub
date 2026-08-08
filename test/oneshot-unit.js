@@ -26,6 +26,7 @@ const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 
 const CLOUD = path.join(__dirname, '..', 'src', 'cloud-device.js');
+const BIN = path.join(__dirname, '..', 'bin', 'squad-hub.js');
 const FAKE = path.join(__dirname, 'fake-agent.js');
 
 let pass = 0; let fail = 0;
@@ -49,9 +50,31 @@ async function check(name, fn) {
  * hanging the suite.
  */
 function runOneShot(env, budgetMs = 45000) {
+  return runEntry([CLOUD], env, budgetMs);
+}
+
+/**
+ * The same run, but through the SHIPPED CLI VERB rather than the module.
+ *
+ * Everything above drives `node src/cloud-device.js` directly, which is the
+ * right unit -- and it is also how a whole class of defect stayed invisible.
+ * `squad-hub oneshot` is what a job platform actually calls, and it was
+ * returning to bin/squad-hub.js, which called process.exit(code || 0) while
+ * cloud-device.js was still on its first `await`. The verb exited 0 in 61ms
+ * having started nothing, a real ACA job logged "Supervised session completed"
+ * and reported Succeeded, and every test here passed throughout.
+ *
+ * So the verb gets exercised too. Testing the module is not testing the
+ * command, and the command is the contract.
+ */
+function runOneShotViaCli(env, budgetMs = 45000) {
+  return runEntry([BIN, 'oneshot'], env, budgetMs);
+}
+
+function runEntry(args, env, budgetMs) {
   return new Promise((resolve) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-'));
-    const child = spawn(process.execPath, [CLOUD], {
+    const child = spawn(process.execPath, args, {
       env: {
         ...process.env,
         SQUAD_HUB_HOME: home,
@@ -205,6 +228,79 @@ function runOneShot(env, budgetMs = 45000) {
     // something that exits after one session.
     const r = await runOneShot({ ...base, SQUAD_HUB_ONESHOT: '', SQUAD_HUB_PROMPT: '' }, 8000);
     assert.strictEqual(r.exited, false, 'a long-lived device exited on its own');
+  });
+
+  // -------------------------------------------------------------------------
+  // The SHIPPED VERB, not just the module underneath it
+  // -------------------------------------------------------------------------
+
+  await check('`squad-hub oneshot` actually RUNS the session, rather than exiting 0 having done nothing', async () => {
+    // The defect this exists for: cmdOneshot returned, bin/squad-hub.js called
+    // process.exit(code || 0), and the process died on cloud-device's first
+    // await. Exit 0 in 61ms, no session, no output -- and a supervised ACA job
+    // that reported Succeeded.
+    //
+    // Asserted on a SIDE EFFECT ON DISK. An exit code cannot tell "it worked"
+    // from "it never started", which is exactly the confusion that shipped, and
+    // the agent writing its own argv proves the process really launched.
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-cli-'));
+    const r = await runOneShotViaCli({
+      ...base,
+      SQUAD_HUB_PROMPT: 'write the marker',
+      SQUAD_HUB_CWD: work,
+      FAKE_AGENT_ARGV_FILE: 'argv.json',
+      FAKE_AGENT_MODE: 'no-permission',
+    });
+    assert.strictEqual(r.exited, true, `the verb never exited (${r.ms} ms). ${r.out.slice(-300)}`);
+    const argvFile = path.join(work, 'argv.json');
+    assert.ok(fs.existsSync(argvFile),
+      `the verb exited ${r.code} after ${r.ms} ms without the agent ever launching. ${r.out.slice(-400)}`);
+    assert.match(r.out, /session .* done/, `no session completion reported: ${r.out.slice(-300)}`);
+  });
+
+  await check('the policy passed to the verb reaches the agent whole, spaces and all', async () => {
+    // The other half of the ACA contract: SQUAD_HUB_AGENT_EXTRA_ARGS_JSON
+    // exists so `shell(git config)` arrives as ONE argument. Asserting it
+    // through the verb, on the argv the agent actually received, is the only
+    // place that is proven end to end rather than unit-tested in isolation.
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-cli-policy-'));
+    const r = await runOneShotViaCli({
+      ...base,
+      SQUAD_HUB_PROMPT: 'policy',
+      SQUAD_HUB_CWD: work,
+      FAKE_AGENT_ARGV_FILE: 'argv.json',
+      FAKE_AGENT_MODE: 'no-permission',
+      SQUAD_HUB_AGENT_EXTRA_ARGS_JSON: JSON.stringify(['--deny-tool', 'shell(git config)']),
+    });
+    assert.strictEqual(r.exited, true, `the verb never exited. ${r.out.slice(-300)}`);
+    const argv = JSON.parse(fs.readFileSync(path.join(work, 'argv.json'), 'utf8'));
+    assert.ok(argv.includes('shell(git config)'),
+      `the multi-word deny pattern did not survive to the agent: ${JSON.stringify(argv)}`);
+  });
+
+  await check('the verb reports the session outcome, not merely that the CLI parsed', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-cli-ok-'));
+    const r = await runOneShotViaCli({ ...base, SQUAD_HUB_PROMPT: 'fine', SQUAD_HUB_CWD: work });
+    assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-300)}`);
+    // Anything under a second means it cannot have talked to a hub and run an
+    // agent; that timing was the tell when this was broken.
+    assert.ok(r.ms > 200, `exited in ${r.ms} ms, which is too fast to have run a session`);
+  });
+
+  await check('the verb refuses a bad credential instead of reporting success', async () => {
+    // The worst possible reading of a broken entry point: a job platform is
+    // told everything is fine. 77 is "the hub refused this device".
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-cli-bad-'));
+    const r = await runOneShotViaCli({
+      ...base, SQUAD_HUB_TOKEN: 'sqhd1.not-a-real-token', SQUAD_HUB_PROMPT: 'x', SQUAD_HUB_CWD: work,
+    }, 20000);
+    assert.strictEqual(r.exited, true, 'the verb never exited');
+    assert.notStrictEqual(r.code, 0, `a refused device reported success (exit ${r.code}). ${r.out.slice(-300)}`);
+  });
+
+  await check('the verb keeps the no-prompt exit code, so the contract survives the CLI', async () => {
+    const r = await runOneShotViaCli({ ...base, SQUAD_HUB_PROMPT: '' }, 20000);
+    assert.strictEqual(r.code, 64, `expected 64 (nothing to run), got ${r.code}. ${r.out.slice(-300)}`);
   });
 
   await svc.close();
