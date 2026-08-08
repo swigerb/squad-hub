@@ -1206,6 +1206,12 @@ function usage() {
   squad-hub kill <sessionId>
   squad-hub forget --older-than <days> | --all
 
+  ONE-SHOT (for a job platform: ACA, Kubernetes, CI)
+  squad-hub oneshot     run ONE session from the environment, then exit
+                        SQUAD_HUB_URL / _TOKEN / _PROMPT / _CWD
+                        exits 0 done, 1 failed, 64 no prompt,
+                              75 nobody could approve, 77 hub refused the device
+
   LOGIN STARTUP (optional; never needs admin/root)
   squad-hub autostart enable [--dry-run] [--json]
   squad-hub autostart disable [--dry-run] [--json]
@@ -1248,6 +1254,32 @@ the command from; --allow-files-all lifts that limit. The confinement path stays
 on this device and is never sent to the hub service.`);
 }
 
+/**
+ * Run ONE session and exit, as a job rather than a server.
+ *
+ * The public entry point for an orchestrator -- an ACA job, a Kubernetes Job,
+ * a CI step -- that wants a supervised session with a human able to answer its
+ * approvals. Everything is configured by environment, because that is what a
+ * job platform can set:
+ *
+ *   SQUAD_HUB_URL     the hub
+ *   SQUAD_HUB_TOKEN   a DEVICE token, never a personal credential
+ *   SQUAD_HUB_PROMPT  what to run
+ *   SQUAD_HUB_CWD     where to run it
+ *
+ * It exists so a caller does not have to reach into `src/` and depend on this
+ * package's internal file layout. The exit codes are the contract: 0 done,
+ * 1 failed, 64 no prompt, 75 an approval nobody could give, 77 the hub refused
+ * the device.
+ */
+function cmdOneshot() {
+  process.env.SQUAD_HUB_ONESHOT = process.env.SQUAD_HUB_ONESHOT || '1';
+  // The module runs on require and calls process.exit itself, so nothing here
+  // returns. Deliberate: a job's exit code is its whole result.
+  require('./cloud-device');
+  return null;
+}
+
 async function main(argv) {
   const globals = takeGlobalOptions(argv);
   if (!globals) return 2;
@@ -1275,6 +1307,7 @@ async function main(argv) {
     case 'approve': return cmdApprove(rest);
     case 'kill': return cmdStopSession(rest);
     case 'forget': return cmdForget(rest);
+    case 'oneshot': return cmdOneshot(rest);
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);
