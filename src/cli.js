@@ -1274,10 +1274,25 @@ on this device and is never sent to the hub service.`);
  */
 function cmdOneshot() {
   process.env.SQUAD_HUB_ONESHOT = process.env.SQUAD_HUB_ONESHOT || '1';
-  // The module runs on require and calls process.exit itself, so nothing here
-  // returns. Deliberate: a job's exit code is its whole result.
   require('./cloud-device');
-  return null;
+  /**
+   * Never resolve, on purpose.
+   *
+   * cloud-device.js does its work in an async IIFE and ends the process itself
+   * -- 0 done, 1 failed, 64 no prompt, 75 nobody could approve, 77 refused.
+   * `require` returns as soon as that IIFE hits its first `await`, so RETURNING
+   * here hands a value to bin/squad-hub.js, which calls process.exit(code || 0)
+   * and tears the process down mid-await.
+   *
+   * That is not a hang, it is worse: the verb exited 0 in 61ms having started
+   * nothing, and a supervised ACA job logged "Supervised session completed" and
+   * reported Succeeded with no session ever created. A silent false success is
+   * the one outcome this whole integration exists to prevent.
+   *
+   * So the module owns the exit, and this promise exists only to stop the CLI
+   * from racing it.
+   */
+  return new Promise(() => {});
 }
 
 async function main(argv) {
