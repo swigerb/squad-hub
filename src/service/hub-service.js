@@ -406,7 +406,14 @@ class HubService {
     }
 
     // Control operations, all routed to a device the caller owns.
-    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript|control-check|resync)$/);
+    //
+    // The op list is an ALLOW-LIST in the pattern itself, so a new verb reaches
+    // a daemon only by being named here. That is deliberate: the daemon's own
+    // switch has ops the hub must never be able to call -- `start-session`,
+    // which trusts a caller-supplied working directory, and `shutdown` -- and
+    // the only thing keeping them out of reach is that they are not written on
+    // this line.
+    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript|control-check|resync|forget)$/);
     if (m && req.method === 'POST') {
       const [, deviceId, op] = m;
       const body = await readJson(req);
@@ -421,7 +428,13 @@ class HubService {
         // without "by whom" is the answer to a different question -- on a hub
         // two people can watch, the useful fact is which of them decided.
         // Taken from the validated identity, never from the request body.
-        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key } : body;
+        //
+        // `forget` is rebuilt field by field rather than spread, so no request
+        // body can smuggle its own actor past this line and write a name of
+        // its choosing into somebody else's device log.
+        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
+          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }
+            : body;
         const result = await this.command(me.key, deviceId, op, withActor);
         return send(200, result);
       } catch (e) {

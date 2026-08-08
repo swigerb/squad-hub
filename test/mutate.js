@@ -260,8 +260,16 @@ const MUTATIONS = [
   {
     name: 'the daemon reports a hub connection it does not have',
     file: 'src/daemon.js',
-    find: `          connected: !!(this.link && this.link.connected),`,
-    replace: `          connected: process.env.MUTANT ? false : !!(this.link && this.link.connected), // MUTATION`,
+    // Pinned to the STATE FILE, which is what the CLI reads. The same two
+    // lines appear again in the `hub-status` IPC op, and an anchor that
+    // matched both would rewrite whichever came first rather than the one
+    // this claims to test.
+    find: `        hub: {
+          configured: !!(this.link && this.link.url),
+          connected: !!(this.link && this.link.connected),`,
+    replace: `        hub: {
+          configured: !!(this.link && this.link.url),
+          connected: process.env.MUTANT ? false : !!(this.link && this.link.connected), // MUTATION`,
     mustFail: 'the daemon starts and reports a hub connection',
   },
   {
@@ -2092,9 +2100,50 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // Taking it from the body would let anyone claim to be anyone.
     name: 'the answerer identity is taken from the request body',
     file: 'src/service/hub-service.js',
-    find: `        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key } : body;`,
-    replace: `        const withActor = body; // MUTATION`,
+    find: `        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }`,
+    replace: `        const withActor = op === 'approve' ? { ...body } // MUTATION`,
     mustFail: 'the hub attaches the caller identity to an approve, from the validated token',
+  },
+  {
+    // A body that could name the actor would let one person write another's
+    // name into a device log.
+    name: 'forget takes its actor from the request body',
+    file: 'src/service/hub-service.js',
+    find: `          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }`,
+    replace: `          : op === 'forget' ? { ...body, forgottenBy: (body && body.forgottenBy) || me.name || me.key } // MUTATION`,
+    mustFail: 'a forged actor in the body does not reach the device',
+  },
+  {
+    // A tidy-up that reached a device the caller does not own would let one
+    // person erase another's record of what ran.
+    name: 'forget skips the device-ownership check',
+    file: 'src/service/hub-service.js',
+    find: `      if (!device) return send(404, { error: 'no such device' });`,
+    replace: `      if (!device && !(process.env.MUTANT && op === 'forget')) return send(404, { error: 'no such device' }); // MUTATION`,
+    mustFail: "forgetting sessions on another user's device is refused",
+  },
+  {
+    // The whole safety story: a record deleted while its process lives is an
+    // orphan nothing can see.
+    name: 'forget removes a session whose agent is still running',
+    file: 'src/daemon.js',
+    // Anchored on the comment as well as the code: `if (s.pid && alive(s.pid))`
+    // on its own ALSO matches `_killAllChildren`, and String.replace takes the
+    // first hit -- so the short version silently mutated the orphan killer
+    // instead of the guard this claims to test.
+    find: `      // The orphan guard. Belt and braces: a terminal session should already
+      // have been untracked, so this should never fire -- and the day it does
+      // is exactly the day it earns its place.
+      if (s.pid && alive(s.pid)) {`,
+    replace: `      if (s.pid && alive(s.pid) && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'A SESSION WHOSE AGENT IS STILL ALIVE IS NEVER REMOVED, whatever its status says',
+  },
+  {
+    name: 'forget reaches sessions that have not ended',
+    file: 'src/daemon.js',
+    find: `      if (!TERMINAL_STATUS.has(s.status)) { kept += 1; continue; }`,
+    replace: `      if (!TERMINAL_STATUS.has(s.status) && !process.env.MUTANT) { kept += 1; continue; } // MUTATION`,
+    mustFail: 'A RUNNING SESSION IS NEVER REMOVED',
   },
   {
     name: 'a denial is rendered as an approval',

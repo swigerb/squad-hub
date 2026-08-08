@@ -396,6 +396,24 @@ test suite verifies this behaviour without ever installing a real login task.
 | `squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]` | Start a session. Starts the daemon automatically if needed. |
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
+| `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
+| `squad-hub forget --all` | Remove the record of every session that has ended. |
+
+`forget` is record-keeping, not control. It removes rows from the session list
+for work that has **already finished**; it cannot stop, kill or signal
+anything, and a session that is still running is never touched. Neither is one
+whose agent process is somehow still alive — the record is the only handle the
+daemon has on that process, so deleting it would leave an agent running with
+nothing supervising it.
+
+One of `--older-than` or `--all` has to be said out loud. A sweep whose scope
+was guessed is a sweep that eventually guesses wrong.
+
+The same thing is available in the web UI under the **⋮** menu beside **+ New**,
+where it is sent to every device that is online. An offline device cannot be
+asked, so it is reported as skipped rather than silently counted as done — the
+hub replaces a device's session list from whatever that device reports, so
+anything "removed" only at the hub would come back on the next heartbeat.
 
 `<option>` is one of `allow_once`, `allow_always`, `reject_once` — whichever the
 agent offered. An option it did not offer is refused.

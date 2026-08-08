@@ -776,6 +776,17 @@ async function suiteApprovalDepth() {
 }
 
 /**
+ * Removing the record of ended sessions. A tidy-up button that can reach live
+ * work is a remote kill with a friendly label, so most of what is proven here
+ * is what `forget` REFUSES -- above all, never deleting the record of a
+ * session whose agent process is still alive.
+ */
+async function suiteForget() {
+  console.log('\n[FORGET] ended sessions only, never a live one, never an orphan');
+  runChildSuite(path.join(__dirname, 'forget-unit.js'), 'forget');
+}
+
+/**
  * The parity checklist, checked against the code. Catches a capability being
  * removed or renamed while its tests go with it -- the one way a green suite
  * can coexist with a lost feature.
@@ -838,6 +849,7 @@ async function suiteAgentApply() {
   await suiteDeviceRoster();
   await suiteControlVerification();
   await suiteApprovalDepth();
+  await suiteForget();
   await suiteParityAudit();
   await suiteAgentApply();
 

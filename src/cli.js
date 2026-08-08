@@ -672,6 +672,48 @@ async function cmdStopSession(argv) {
 }
 
 /**
+ * Forget the record of sessions that have already ended.
+ *
+ * Record-keeping, never control: it removes rows for work that has already
+ * finished, and cannot touch a session that is still running. Refuses to
+ * default to "everything" -- one of --older-than or --all must be said out
+ * loud, because a tidy-up whose scope was guessed is a tidy-up that eventually
+ * guesses wrong.
+ */
+async function cmdForget(argv) {
+  const days = value(argv, 'older-than', null);
+  const all = flag(argv, 'all');
+  if (!all && days === null) {
+    err('usage: squad-hub forget --older-than <days> | --all');
+    err('');
+    err('Removes the RECORD of sessions that have already ended. A running');
+    err('session is never touched. Say which you mean: an unscoped sweep is');
+    err('not something to arrive at by accident.');
+    return 2;
+  }
+  if (all && days !== null) {
+    err('--older-than and --all contradict each other; pick one.');
+    return 2;
+  }
+  let olderThanMs;
+  if (!all) {
+    const n = Number(days);
+    if (!Number.isFinite(n) || n < 0) {
+      err(`--older-than takes a number of days, got: ${days}`);
+      return 2;
+    }
+    olderThanMs = n * 24 * 3600 * 1000;
+  }
+  const r = await client.call('forget', { olderThanMs });
+  if (!r.count) {
+    out(all ? 'no ended sessions to remove' : `no sessions ended more than ${days} day(s) ago`);
+    return 0;
+  }
+  out(`removed ${r.count} ended session${r.count === 1 ? '' : 's'}; ${r.kept} kept`);
+  return 0;
+}
+
+/**
  * Run the hub service. In dev mode it prints a ready-to-open URL carrying a
  * token, because a control plane you cannot reach in one step will not get
  * used.
@@ -1162,6 +1204,7 @@ function usage() {
   SESSIONS
   squad-hub approve <sessionId> <approvalId> <optionId>
   squad-hub kill <sessionId>
+  squad-hub forget --older-than <days> | --all
 
   LOGIN STARTUP (optional; never needs admin/root)
   squad-hub autostart enable [--dry-run] [--json]
@@ -1231,6 +1274,7 @@ async function main(argv) {
     case 'squad': return cmdSquad(rest);
     case 'approve': return cmdApprove(rest);
     case 'kill': return cmdStopSession(rest);
+    case 'forget': return cmdForget(rest);
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);

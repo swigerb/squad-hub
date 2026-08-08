@@ -432,14 +432,28 @@ async function until(fn, what, budgetMs = 15000) {
         'the toolbar is meant to be a SECOND row, not folded into the first');
     });
 
-    await check('every list control carries an inline label, not a boxed select', async () => {
-      const labelled = await page.evaluate(() => ['statusFilter', 'deviceFilter', 'repoFilter',
+    await check('every list control is labelled, and none is a bare boxed select', async () => {
+      // The mechanism changed -- an inline <label> beside each select became a
+      // pill wrapping it -- but the RULE did not: a dropdown whose meaning is
+      // only knowable by opening it is a puzzle. What matters is that every
+      // control says what it is without being opened, and that the label
+      // reaches a screen reader too.
+      const bad = await page.evaluate(() => ['statusFilter', 'deviceFilter', 'repoFilter',
         'orgFilter', 'windowFilter', 'groupBy', 'sortBy']
         .filter((id) => {
           const el = document.getElementById(id);
-          return el && el.closest('label.inline-select');
+          if (!el) return true;
+          const pill = el.closest('.selectpill');
+          if (!pill) return true;
+          // Visible: the current value is painted beside the control, or the
+          // control paints it itself.
+          const shown = pill.querySelector('.sp-value');
+          const visible = shown ? shown.textContent.trim().length > 0 : true;
+          // Announced: an accessible name on the control or on its pill.
+          const named = !!(el.getAttribute('aria-label') || pill.getAttribute('aria-label'));
+          return !(visible && named);
         }));
-      assert.strictEqual(labelled.length, 7, `only ${labelled.length} of 7 controls have an inline label`);
+      assert.deepStrictEqual(bad, [], `these controls are unlabelled: ${bad.join(', ')}`);
     });
 
     await check('a labelled control no longer repeats its label in every option', async () => {
@@ -480,6 +494,365 @@ async function until(fn, what, budgetMs = 15000) {
       assert.match(empty.local.text, /local/i);
       assert.strictEqual(empty.cloud.disabled, true,
         'no cloud device is connected, so the button must say so rather than open a dialog that cannot work');
+    });
+
+    // -----------------------------------------------------------------------
+    // THE CONTROLS, DRIVEN.
+    //
+    // Everything below clicks the thing a person clicks and asserts what
+    // CHANGED, rather than what the markup contains. The custom dropdown is
+    // the reason this section exists: replacing a native <select>'s popup
+    // means re-implementing keyboard handling, type-ahead and the accessible
+    // name the browser used to provide for free, and every one of those is a
+    // thing that can silently stop working.
+    // -----------------------------------------------------------------------
+    await page.goto(`${origin}/?token=${userToken}`);
+    await page.waitForSelector('.selectpill', { timeout: 10000 });
+
+    await check('a dropdown opens on click and lists exactly the options its select holds', async () => {
+      await page.click('#statusFilter >> xpath=..');
+      const seen = await page.evaluate(() => {
+        const pill = document.getElementById('statusFilter').closest('.selectpill');
+        const sel = document.getElementById('statusFilter');
+        return {
+          open: pill.getAttribute('aria-expanded'),
+          rows: [...pill.querySelectorAll('.sp-opt')].map((o) => o.textContent),
+          options: [...sel.options].map((o) => o.text),
+        };
+      });
+      assert.strictEqual(seen.open, 'true', 'clicking the pill did not open its list');
+      assert.deepStrictEqual(seen.rows, seen.options,
+        'the visible list and the real control disagree about what can be chosen');
+    });
+
+    await check('choosing an option drives the underlying select AND the app state', async () => {
+      await page.click('.sp-opt >> text=Ready for review');
+      const after = await until(async () => {
+        // `state` is a script-scope const, so it is a bare binding rather than
+        // a property of window. Reading it as `window.state` returns undefined
+        // and would make this pass for the wrong reason.
+        const r = await page.evaluate(() => ({
+          value: document.getElementById('statusFilter').value,
+          label: document.querySelector('#statusFilter').closest('.selectpill').querySelector('.sp-value').textContent,
+          filter: state.filters.status,
+          open: document.getElementById('statusFilter').closest('.selectpill').getAttribute('aria-expanded'),
+        }));
+        return r.value === 'done' ? r : null;
+      }, 'the status filter to take the chosen value');
+      assert.strictEqual(after.label, 'Ready for review', 'the pill still shows the old value');
+      assert.strictEqual(after.filter, 'done', 'the choice never reached the app state');
+      assert.strictEqual(after.open, 'false', 'the list stayed open after a choice');
+    });
+
+    await check('a filter actually filters, rather than only recording itself', async () => {
+      // The one that matters: a control that stores a value and changes
+      // nothing is indistinguishable from a broken one until someone relies
+      // on it.
+      //
+      // Scoped to the row's OWN badge -- `.status` is also worn by the
+      // "Allowed"/"Expired" mark on a resolved approval, which says nothing
+      // about whether the session is finished.
+      const badges = await page.evaluate(() => [...document.querySelectorAll('#groups .row > .status')]
+        .map((b) => b.textContent.trim()));
+      assert.ok(badges.length > 0, 'nothing was left to check, so this proves nothing');
+      for (const b of badges) {
+        assert.ok(/review/i.test(b), `a row showing "${b}" survived a filter for finished sessions`);
+      }
+    });
+
+    await check('Escape closes the list without choosing', async () => {
+      const before = await page.evaluate(() => document.getElementById('statusFilter').value);
+      await page.click('#statusFilter >> xpath=..');
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('Escape');
+      const after = await page.evaluate(() => ({
+        value: document.getElementById('statusFilter').value,
+        open: document.getElementById('statusFilter').closest('.selectpill').getAttribute('aria-expanded'),
+      }));
+      assert.strictEqual(after.open, 'false', 'Escape left the list open');
+      assert.strictEqual(after.value, before, 'Escape changed the value; it must abandon, not commit');
+    });
+
+    await check('the keyboard opens, moves and chooses without a mouse', async () => {
+      await page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        sel.value = '';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        sel.closest('.selectpill').focus();
+      });
+      await page.keyboard.press('Enter');            // open
+      await page.keyboard.press('ArrowDown');        // move off the current row
+      await page.keyboard.press('Enter');            // choose
+      const chosen = await until(async () => {
+        const v = await page.evaluate(() => document.getElementById('statusFilter').value);
+        return v || null;
+      }, 'a keyboard choice to reach the select');
+      assert.ok(chosen, 'the keyboard could not choose anything');
+      // Put it back, so later checks see the whole list.
+      await page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        sel.value = '';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    });
+
+    await check('only one dropdown is open at a time', async () => {
+      // Opened bottom-up on purpose: an open list overlays the row beneath it,
+      // so clicking the LOWER control first leaves the upper one clear. That is
+      // correct dropdown behaviour, not a defect -- but it does mean the order
+      // of these two clicks is load-bearing.
+      await page.click('#groupBy >> xpath=..');
+      await page.click('#statusFilter >> xpath=..');
+      const open = await page.evaluate(() => [...document.querySelectorAll('.selectpill')]
+        .filter((p) => p.getAttribute('aria-expanded') === 'true').length);
+      assert.strictEqual(open, 1, `${open} dropdowns were open at once`);
+      await page.keyboard.press('Escape');
+    });
+
+    await check('clicking away closes an open dropdown', async () => {
+      await page.click('#groupBy >> xpath=..');
+      await page.click('h1');
+      const open = await page.evaluate(() => document.getElementById('groupBy').closest('.selectpill').getAttribute('aria-expanded'));
+      assert.strictEqual(open, 'false', 'the list stayed open after a click elsewhere');
+    });
+
+    await check('grouping reshapes the list it claims to', async () => {
+      // Asserted on the HEADING TEXT, not on a count: with one device attached
+      // "group by device" and "no grouping" both produce a single heading, and
+      // a count would pass whatever the control did.
+      const byDevice = await page.evaluate(() => [...document.querySelectorAll('#groups .group-head')]
+        .map((h) => h.textContent.trim()));
+      assert.ok(byDevice.length > 0, 'nothing was grouped, so this proves nothing');
+      assert.ok(!byDevice.some((h) => /^All sessions/.test(h)),
+        'grouping by device produced the ungrouped heading');
+
+      await page.evaluate(() => {
+        const g = document.getElementById('groupBy');
+        g.value = 'none';
+        g.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await until(async () => {
+        const heads = await page.evaluate(() => [...document.querySelectorAll('#groups .group-head')]
+          .map((h) => h.textContent.trim()));
+        return heads.length === 1 && /^All sessions/.test(heads[0]) ? true : null;
+      }, 'grouping to collapse into one "All sessions" list');
+
+      await page.evaluate(() => {
+        const g = document.getElementById('groupBy');
+        g.value = 'device';
+        g.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await until(async () => {
+        const heads = await page.evaluate(() => [...document.querySelectorAll('#groups .group-head')]
+          .map((h) => h.textContent.trim()));
+        return heads.length === byDevice.length && !/^All sessions/.test(heads[0]) ? true : null;
+      }, 'grouping by device to come back');
+    });
+
+    await check('the New split button offers both kinds, and refuses the one it cannot start', async () => {
+      await page.click('#newMoreBtn');
+      const menu = await page.evaluate(() => {
+        const m = document.getElementById('newMenu');
+        const note = document.getElementById('newMenuNote');
+        return {
+          open: !m.hidden,
+          items: [...m.querySelectorAll('[data-new]')].map((b) => ({ kind: b.dataset.new, disabled: b.disabled })),
+          note: note.hidden ? null : note.textContent.trim(),
+        };
+      });
+      assert.ok(menu.open, 'the caret did not open the Create menu');
+      assert.deepStrictEqual(menu.items.map((i) => i.kind), ['local', 'cloud']);
+      const cloud = menu.items.find((i) => i.kind === 'cloud');
+      assert.strictEqual(cloud.disabled, true, 'no cloud device is attached, so the option must be refused');
+      assert.ok(menu.note && /cloud/i.test(menu.note),
+        'a disabled option with no reason beside it is a dead end');
+      await page.keyboard.press('Escape');
+    });
+
+    await check('the local half of the New menu opens the composer on a local device', async () => {
+      await page.click('#newMoreBtn');
+      await page.click('[data-new="local"]');
+      const dlg = await page.evaluate(() => ({
+        open: !document.getElementById('newScrim').hidden,
+        device: document.getElementById('nsDevice').value,
+      }));
+      assert.ok(dlg.open, 'choosing Local session opened nothing');
+      assert.ok(dlg.device, 'the composer opened with no device selected');
+      await page.click('#nsCancel');
+    });
+
+    await check('the tidy menu offers three scopes and says what it will not touch', async () => {
+      await page.click('#tidyBtn');
+      const menu = await page.evaluate(() => ({
+        open: !document.getElementById('tidyMenu').hidden,
+        scopes: [...document.querySelectorAll('[data-forget]')].map((b) => b.dataset.forget),
+        note: document.getElementById('tidyNote').textContent,
+      }));
+      assert.ok(menu.open);
+      assert.deepStrictEqual(menu.scopes, ['7', '30', 'all']);
+      assert.match(menu.note, /already ended/i);
+      assert.match(menu.note, /never touched/i,
+        'a removal menu that does not say what is safe is one people will not use');
+      await page.keyboard.press('Escape');
+    });
+
+    await check('REMOVING ENDED SESSIONS REACHES THE DEVICE AND LEAVES LIVE WORK ALONE', async () => {
+      // The behaviour the whole feature exists for, asserted end to end: a
+      // click in the browser reaches the daemon, and nothing still running is
+      // removed by it.
+      const liveBefore = [...daemon.sessions.values()]
+        .filter((s) => !['done', 'failed', 'stopped'].includes(s.status)).map((s) => s.id);
+      page.once('dialog', (d) => d.accept());
+      await page.click('#tidyBtn');
+      await page.click('[data-forget="all"]');
+      const said = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return t && /Removed|Nothing to remove|offline|refused/.test(t) ? t : null;
+      }, 'the sweep to report what it did');
+      assert.ok(said.length > 0, 'the sweep said nothing at all');
+      for (const id of liveBefore) {
+        assert.ok(daemon.sessions.has(id), `a RUNNING session (${id}) was removed by a tidy-up`);
+      }
+      for (const s of daemon.sessions.values()) {
+        const terminal = ['done', 'failed', 'stopped'].includes(s.status);
+        assert.ok(!terminal || !s.endedAt || (s.pid && require('../src/daemon').alive(s.pid)),
+          'an ended session survived a sweep that reported success');
+      }
+    });
+
+    await check('the theme toggle cycles, applies and remembers', async () => {
+      const seen = [];
+      for (let i = 0; i < 3; i += 1) {
+        await page.click('#themeBtn');
+        seen.push(await page.evaluate(() => ({
+          theme: state.theme,
+          attr: document.documentElement.getAttribute('data-theme'),
+          saved: localStorage.getItem('squad-hub-theme'),
+          icons: document.querySelectorAll('#themeBtn svg').length,
+        })));
+      }
+      assert.strictEqual(new Set(seen.map((s) => s.theme)).size, 3, 'the toggle did not cycle three states');
+      for (const s of seen) {
+        assert.strictEqual(s.saved, s.theme, 'the theme was applied but not remembered');
+        assert.strictEqual(s.icons, 1, 'the theme button lost its icon');
+        if (s.theme === 'system') assert.strictEqual(s.attr, null, 'system must REMOVE the attribute, not set it');
+        else assert.strictEqual(s.attr, s.theme);
+      }
+    });
+
+    await check('the bell asks for permission when it has not been decided', async () => {
+      // The whole Notification object is replaced, permission included: the
+      // test browser reports 'granted', and asking again when the answer is
+      // already known is exactly what the code correctly refuses to do. What
+      // is under test is the UNDECIDED case.
+      const asked = await page.evaluate(async () => {
+        const real = window.Notification;
+        let called = false;
+        function Fake() { return { close() {}, set onclick(v) {} }; }
+        Fake.permission = 'default';
+        Fake.requestPermission = () => { called = true; return Promise.resolve('granted'); };
+        window.Notification = Fake;
+        document.getElementById('bellBtn').click();
+        await new Promise((r) => setTimeout(r, 300));
+        window.Notification = real;
+        return called;
+      });
+      assert.ok(asked, 'the bell never asked for permission, so notifications could never be turned on');
+    });
+
+    await check('a permission already decided is not asked for again', async () => {
+      const asked = await page.evaluate(async () => {
+        const real = window.Notification;
+        let called = false;
+        function Fake() { return { close() {}, set onclick(v) {} }; }
+        Fake.permission = 'denied';
+        Fake.requestPermission = () => { called = true; return Promise.resolve('denied'); };
+        window.Notification = Fake;
+        document.getElementById('bellBtn').click();
+        await new Promise((r) => setTimeout(r, 300));
+        window.Notification = real;
+        return called;
+      });
+      assert.strictEqual(asked, false,
+        're-asking for a denied permission does nothing, and a browser only ever shows that prompt once');
+    });
+
+    await check('the account menu opens and offers sign out', async () => {
+      await page.click('#menuBtn');
+      const menu = await page.evaluate(() => ({
+        open: !document.getElementById('menu').hidden,
+        actions: [...document.querySelectorAll('#menu [data-menu]')].map((b) => b.dataset.menu),
+        meta: document.getElementById('menuMeta').textContent,
+      }));
+      assert.ok(menu.open, 'the avatar opened nothing');
+      assert.ok(menu.actions.includes('signout'), 'no way to sign out');
+      assert.ok(menu.actions.includes('connect'), 'no way to connect a device');
+      assert.match(menu.meta, /test person/,
+        'the name left the top bar, so the menu it opens has to carry it');
+      await page.keyboard.press('Escape');
+    });
+
+    await check('the device rail collapses, and comes back', async () => {
+      await page.click('#railToggle');
+      const collapsed = await page.evaluate(() => ({
+        collapsed: document.getElementById('deviceRail').classList.contains('collapsed'),
+        listVisible: document.getElementById('deviceList').offsetParent !== null,
+      }));
+      assert.ok(collapsed.collapsed, 'the rail did not collapse');
+      assert.ok(!collapsed.listVisible, 'the rail says collapsed but the list is still on screen');
+      await page.click('#railToggle');
+      const back = await page.evaluate(() => document.getElementById('deviceRail').classList.contains('collapsed'));
+      assert.ok(!back, 'the rail would not come back');
+    });
+
+    await check('the keyword box filters, and clearing it restores', async () => {
+      const total = await page.evaluate(() => document.querySelectorAll('#groups .row').length);
+      await page.fill('#q', 'zzz-nothing-matches-this');
+      await until(async () => {
+        const n = await page.evaluate(() => document.querySelectorAll('#groups .row').length);
+        return n === 0 ? true : null;
+      }, 'the keyword filter to empty the list');
+      await page.fill('#q', '');
+      await until(async () => {
+        const n = await page.evaluate(() => document.querySelectorAll('#groups .row').length);
+        return n === total ? true : null;
+      }, 'clearing the keyword to restore the list');
+    });
+
+    await check('the live indicator is a dot when connected and words when not', async () => {
+      const live = await page.evaluate(() => {
+        const c = document.getElementById('conn');
+        return { state: c.dataset.state, text: c.textContent.trim(), title: c.title, aria: c.getAttribute('aria-label') };
+      });
+      if (live.state === 'live') {
+        assert.strictEqual(live.text, '', 'a permanent "live" label is one nobody reads on the day it changes');
+        assert.match(live.aria, /live/i, 'a screen reader gets no colour, so the dot must say the word');
+        assert.ok(live.title.length > 0, 'a coloured dot with no explanation is a mark, not a signal');
+      }
+      const off = await page.evaluate(() => {
+        setConn('offline');
+        const c = document.getElementById('conn');
+        return { text: c.textContent.trim(), title: c.title };
+      });
+      assert.match(off.text, /unreachable/i, 'a broken feed must say so in words');
+      assert.match(off.title, /unaffected|keep running/i,
+        'the obvious fear on seeing a red badge is that the work stopped');
+      await page.evaluate(() => setConn('live'));
+    });
+
+    await check('no list control is left opening the operating system popup', async () => {
+      // The bug this replaced: a native popup is painted by the OS and comes
+      // back white on Windows whatever the stylesheet says.
+      const bare = await page.evaluate(() => [...document.querySelectorAll('.toolbar select, .filterbar select')]
+        .filter((s) => !s.closest('.selectpill')).map((s) => s.id));
+      assert.deepStrictEqual(bare, [], `these selects still open the OS popup: ${bare.join(', ')}`);
+    });
+
+    await check('every list control can be reached by keyboard', async () => {
+      const unreachable = await page.evaluate(() => [...document.querySelectorAll('.selectpill')]
+        .filter((p) => p.getAttribute('tabindex') === null)
+        .map((p) => (p.querySelector('select') || {}).id));
+      assert.deepStrictEqual(unreachable, [], `these controls cannot be tabbed to: ${unreachable.join(', ')}`);
     });
 
     // -----------------------------------------------------------------------
