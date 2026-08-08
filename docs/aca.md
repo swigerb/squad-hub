@@ -88,16 +88,61 @@ GitHub issue / CLI ──> ACA job execution
 One-shot mode makes a job execution behave like a job rather than a server:
 
 ```
-SQUAD_HUB_URL      the hub
-SQUAD_HUB_TOKEN    a DEVICE TOKEN, not your own credential
-SQUAD_HUB_ONESHOT  1
-SQUAD_HUB_PROMPT   what to run
-SQUAD_HUB_CWD      where to run it
+SQUAD_HUB_URL        the hub
+SQUAD_HUB_TOKEN      a DEVICE TOKEN, not your own credential
+SQUAD_HUB_ONESHOT    1
+SQUAD_HUB_PROMPT     what to run
+SQUAD_HUB_CWD        where to run it
+SQUAD_HUB_DEVICE_ID  what to register as -- see below
 ```
 
 It runs one session and exits, with a code the platform can read: **0** done,
 **1** failed, **64** no prompt, **75** an approval nobody could give, **77** the
 hub refused the device.
+
+### The device id has to match the token
+
+This is the one that will bite you, so it is worth being explicit.
+
+A device token minted with `--prefix aca-` may only register device ids that
+**begin** with `aca-`, and the hub enforces that at registration. The default id
+is a hash of the app name — hex, and therefore never starting with `aca-`. Mint
+with a prefix but leave the id alone and **every session is refused with exit
+77**, with a message about the token rather than about the id it was compared
+against.
+
+So set it, and make it unique per execution — two attachments sharing one id
+fight over the same device slot:
+
+```bash
+SQUAD_HUB_DEVICE_ID="aca-${CONTAINER_APP_JOB_EXECUTION_NAME}"
+```
+
+squad-on-aca does this for you (`SQUAD_HUB_DEVICE_ID_PREFIX`, default `aca-`).
+
+## Verified end to end
+
+Not a design sketch. Run on Azure Container Apps against a hub on App Service,
+2026-08-08:
+
+```
+connected
+[squad-hub] Registering as device aca-caj-squad-aca-session-3pa9v5f.
+session s001-mskz80ca started        →  status: waiting_approval
+```
+
+The card the hub served, with the literal command on it:
+
+| Field | Value |
+|---|---|
+| title | Check git working tree status |
+| command | `git status --short` |
+| readOnly | `true` |
+| options | Allow once · Always allow · Deny |
+
+Answered `allow_once` from the hub → the session ran the tool, reached `done`
+with `toolCallCount: 1`, and the job execution reported **Succeeded**. The
+agent resolved as **Squad**, so this was a Squad session and not plain Copilot.
 
 ## Credentials
 
@@ -165,7 +210,7 @@ so a week of jobs cannot bury the machines you use.
 
 ## Scope
 
-Both halves are now implemented.
+Both halves are implemented and proven.
 
 | | |
 |---|---|
@@ -174,5 +219,33 @@ Both halves are now implemented.
 
 [aca-doc]: https://github.com/swigerb/squad-on-aca/blob/main/docs/squad-hub.md
 
+**The integration is optional on both sides.** A squad-on-aca worker with no
+hub configured behaves exactly as it did before any of this existed, and its
+image can be built with no squad-hub in it at all. Supervision is a choice an
+operator makes per deployment, not a dependency either project imposes.
+
 The contract runs one way: **Squad Hub owns the device protocol and documents it
 here; squad-on-aca depends on it.** Never the reverse.
+
+## What running it actually taught us
+
+Three defects survived a green test suite, a successful build and a successful
+deploy, and were found only by running the thing. They are recorded because each
+one is a class of mistake, not a typo.
+
+**A verb that exited 0 having done nothing.** `squad-hub oneshot` returned to
+the CLI while the module underneath it was still on its first `await`; the
+process exited 0 in 61 milliseconds with no session at all, and a supervised job
+reported **Succeeded**. The tests drove the module directly and never the
+shipped command, so all of them passed throughout. *Testing the module is not
+testing the command, and the command is the contract.*
+
+**A device id that could never match its token.** Covered above. The docs said
+to mint with `--prefix aca-` and nothing set the id, so the advice this project
+gave would have refused every session.
+
+**A log that overstated what would run.** squad-on-aca announced the full flag
+list — `--allow-all-tools` included — one line above "MINUS
+`--allow-all-tools`". Wrong in the *safe* direction is still wrong: two
+contradicting lines leave an operator no way to know which to believe.
+

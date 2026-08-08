@@ -699,10 +699,13 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
-| `SQUAD_HUB_DEVICE_ID` | Stable identity. Set it per replica if you scale past one. |
+| `SQUAD_HUB_DEVICE_ID` | This device's identity. Default is a hash of the app name — stable, so a restart re-attaches as itself. **Set it explicitly** when the token is bound to a device-id prefix, or when more than one process attaches: two attachments sharing an id fight over the same slot. |
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
 | `SQUAD_HUB_AGENT_ARGS` | The agent's argv, replaced wholesale. Default `--acp`. |
 | `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` | Extra arguments **appended** to the above, as a JSON array of strings. |
+| `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
+| `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
+| `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
 
 `--acp` is the protocol the daemon speaks to the agent, so the default argv is
 just that. `SQUAD_HUB_AGENT_ARGS` replaces it rather than adding to it, because
@@ -724,9 +727,22 @@ never runs, which is why the JSON channel exists.
 Malformed JSON **refuses to start**. Ignoring it would launch an agent with no
 tool policy at all for a caller who was trying to impose one, which is the most
 dangerous possible reading of a typo.
-| `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
-| `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
-| `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
+
+#### Device ids and prefix-bound tokens
+
+`squad-hub device-token --prefix aca-` binds a token to device ids beginning
+`aca-`, so a credential shipped to a cloud job cannot claim to be your laptop.
+**The hub enforces that binding at registration**, which means the id the device
+registers under has to match — the default hash is hex and can never start with
+`aca-`, so a bound token with the default id is refused with exit **77**.
+
+Set both halves, or neither:
+
+```bash
+squad-hub device-token --hub <url> --token <your token> --prefix aca-   # minting
+SQUAD_HUB_DEVICE_ID=aca-$JOB_EXECUTION_NAME                             # attaching
+```
+
 
 **The two tokens are separate on purpose.** The hub token says which device this
 is; the agent token spends a Copilot entitlement. Conflating them would let
