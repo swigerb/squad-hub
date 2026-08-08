@@ -34,6 +34,48 @@ anywhere, including a phone.
 So the point is not a nicer view of ACA runs. It is that **an ACA session could
 ask a human, and today it cannot.**
 
+## It is a tightening, not a relaxation
+
+The obvious worry is that attaching a hub is a way to get MORE permission. It
+is the opposite, and the reason is worth stating precisely.
+
+A supervised session runs with **`--allow-all-tools` dropped** and squad-on-aca's
+deny list **unchanged**. Measured against Copilot CLI 1.0.78 over ACP:
+
+| | |
+|---|---|
+| A tool on the **deny list** | raises **no permission request at all**. It is refused outright — "denied by policy". |
+| A tool that is merely **ungated** | raises a request carrying the **literal command**, and waits for a person. |
+
+A human at the hub is therefore never even *offered* the chance to approve
+something the reviewed policy forbids. **The deny list stays a hard floor that
+no surface can lift.** What changes is that the operations which previously ran
+with nobody watching now need an answer — so the set of things that execute
+without human review SHRINKS.
+
+## Carrying the policy without tearing it
+
+squad-on-aca resolves tool permissions in one reviewable place and passes them
+as argv. Its deny patterns legitimately contain spaces:
+
+```
+--deny-tool shell(git config)
+```
+
+Splitting that on whitespace produces `shell(git` and `config)`, and Copilot
+then refuses to start — `Invalid rule format: shell(git`. A mangled deny rule
+fails CLOSED rather than silently becoming a weak one, which is the right
+failure and still a failure: the session never runs.
+
+So the policy travels as a JSON array:
+
+```bash
+SQUAD_HUB_AGENT_EXTRA_ARGS_JSON='["--deny-tool","shell(git config)"]'
+```
+
+Malformed JSON refuses to start, rather than launching an agent with no tool
+policy at all for a caller who was trying to impose one.
+
 ## The shape
 
 ```
@@ -123,9 +165,14 @@ so a week of jobs cannot bury the machines you use.
 
 ## Scope
 
-The pieces above are implemented and tested here. Wiring them into
-squad-on-aca's `entrypoint.sh` — starting the daemon and running the agent under
-it instead of `copilot -p` — is a change to **that** repository.
+Both halves are now implemented.
+
+| | |
+|---|---|
+| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, and `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy. |
+| **In squad-on-aca** | `worker/lib/squad-hub.sh`, the `hub-argv-json` policy variant, and the `-SquadHubUrl` / `-SquadHubToken` deploy parameters. See its [docs/squad-hub.md][aca-doc]. |
+
+[aca-doc]: https://github.com/swigerb/squad-on-aca/blob/main/docs/squad-hub.md
 
 The contract runs one way: **Squad Hub owns the device protocol and documents it
 here; squad-on-aca depends on it.** Never the reverse.

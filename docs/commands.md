@@ -396,6 +396,7 @@ test suite verifies this behaviour without ever installing a real login task.
 | `squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]` | Start a session. Starts the daemon automatically if needed. |
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
+| `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
 | `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
 | `squad-hub forget --all` | Remove the record of every session that has ended. |
 
