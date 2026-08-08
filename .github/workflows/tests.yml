@@ -1,0 +1,86 @@
+name: Tests
+
+# The suite is the only gate this repository has: no linter, no build step, no
+# type checker. So it runs on every push to a shared branch and every pull
+# request into one, and nothing else is treated as a substitute for it.
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+# A second push to the same branch makes the first run's answer irrelevant.
+# Cancelling it frees the runner and stops a stale red (or stale green) sitting
+# on a commit that no longer exists.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # One version failing should not hide the other's result. The whole point
+      # of the matrix is to learn WHICH engines work.
+      fail-fast: false
+      matrix:
+        # package.json declares "engines": { "node": ">=18" }. That claim is
+        # either tested or it is marketing -- 18 is the floor we promise and 24
+        # is what a person installing today actually gets.
+        node: ['18', '24']
+
+    name: node ${{ matrix.node }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # There is no `npm ci` step because there is nothing to install: Squad Hub
+      # has no runtime dependencies. That claim is already enforced by
+      # test/package-unit.js ("the package still has no runtime dependencies"),
+      # so it is deliberately NOT re-checked here -- a second copy of a rule is
+      # a second thing to forget to update.
+
+      # test/browser-e2e-unit.js drives a real browser against a real hub with a
+      # real daemon attached. It is the ONLY coverage of the web app, and it
+      # skips politely when Playwright is missing. On a CI runner that skip
+      # would mean the part everyone actually touches went unchecked while the
+      # badge stayed green, so Playwright is installed explicitly and the step
+      # below turns a skip into a failure.
+      - name: Install Playwright (so the browser suite cannot skip)
+        run: |
+          npm install --no-save --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Run the test suite
+        run: |
+          set -o pipefail
+          rc=0
+          npm test 2>&1 | tee test.out || rc=$?
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::The test suite failed (exit ${rc})."
+            exit "$rc"
+          fi
+          # run-tests.js prints a SKIPPED count only when something was not
+          # checked at all, and names each one underneath. Every declared
+          # dependency is present on this runner, so a skip means the
+          # environment regressed and the run proved less than it claims.
+          # A skip is not a pass.
+          if grep -q 'SKIPPED' test.out; then
+            echo "::error::A suite was SKIPPED on CI. Every dependency is installed above, so a skip means the run proved less than it claims -- and a skip is not a pass."
+            grep -A 20 'SKIPPED (not checked at all)' test.out || true
+            exit 1
+          fi
+          # Belt and braces: assert the summary line really says zero failures,
+          # so a future change to the runner's exit code cannot quietly turn a
+          # red suite green.
+          if ! grep -qE '[0-9]+ passed, 0 failed' test.out; then
+            echo "::error::Could not find a '<n> passed, 0 failed' summary line. The runner's output format changed, and this gate can no longer read it."
+            tail -20 test.out
+            exit 1
+          fi
+          rm -f test.out

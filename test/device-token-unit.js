@@ -60,6 +60,10 @@ function api(port, path, token, opts = {}) {
   return new Promise((resolve, reject) => {
     const body = opts.body ? JSON.stringify(opts.body) : null;
     const req = http.request({
+      // The stand-in listens on 127.0.0.1. Omitting `host` makes Node default
+      // to `localhost`, which can resolve to ::1 -- and Happy Eyeballs (Node
+      // 20+) quietly retries over IPv4 while Node 18 just gets ECONNREFUSED.
+      host: '127.0.0.1',
       port, path, method: opts.method || 'GET',
       headers: {
         ...(token ? { Authorization: 'Bearer ' + token } : {}),
@@ -86,6 +90,7 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
     const key = crypto.randomBytes(16).toString('base64');
     const path = `/ws?access_token=${encodeURIComponent(token)}&role=${role}&deviceId=${encodeURIComponent(deviceId)}`;
     const req = http.request({
+      host: '127.0.0.1',
       port, path, headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13' },
     });
     let settled = false;
