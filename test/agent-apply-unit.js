@@ -183,12 +183,37 @@ const sent = (s, method) => s.calls.filter((c) => c.method === method);
   // -------------------------------------------------------------------------
   const { availableAgents } = require('../src/doctor');
 
-  await check('the agent probe reads the list out of Copilot\'s own refusal', async () => {
+  /**
+   * Write a fake Copilot that prints `text` on stderr and exits 1.
+   *
+   * It has to be a REAL EXECUTABLE, not `"node" "script.js"` crammed into
+   * SQUAD_HUB_AGENT. `availableAgents` passes `shell: true` only on Windows,
+   * so a command string with arguments is parsed by cmd.exe there and taken
+   * literally as a filename everywhere else -- this passed on Windows and
+   * could never have passed on Linux. Every other suite in this repository
+   * already keeps the two apart (SQUAD_HUB_AGENT is the program,
+   * SQUAD_HUB_AGENT_ARGS are its arguments); this is the one that did not.
+   *
+   * A .cmd on Windows and a shebang script elsewhere is spawnable on both,
+   * with or without a shell.
+   */
+  function fakeCopilot(text) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-agents-'));
-    const fake = path.join(dir, 'fake-copilot.js');
-    fs.writeFileSync(fake, "process.stderr.write('No such agent: __squad_hub_probe__, available: Squad, Reviewer.\\n');process.exit(1);\n");
+    if (process.platform === 'win32') {
+      const cmd = path.join(dir, 'fake-copilot.cmd');
+      fs.writeFileSync(cmd, `@echo off\r\n>&2 echo ${text}\r\nexit /b 1\r\n`);
+      return { dir, command: cmd };
+    }
+    const sh = path.join(dir, 'fake-copilot.sh');
+    fs.writeFileSync(sh, `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(text)} >&2\nexit 1\n`);
+    fs.chmodSync(sh, 0o755);
+    return { dir, command: sh };
+  }
+
+  await check('the agent probe reads the list out of Copilot\'s own refusal', async () => {
+    const { dir, command } = fakeCopilot('No such agent: __squad_hub_probe__, available: Squad, Reviewer.');
     const prior = process.env.SQUAD_HUB_AGENT;
-    process.env.SQUAD_HUB_AGENT = `${JSON.stringify(process.execPath)} ${JSON.stringify(fake)}`;
+    process.env.SQUAD_HUB_AGENT = command;
     try {
       const r = availableAgents();
       assert.strictEqual(r.ok, true, `probe failed: ${r.reason}`);
@@ -203,11 +228,9 @@ const sent = (s, method) => s.calls.filter((c) => c.method === method);
   await check('an unreadable reply says so, rather than claiming there are no agents', async () => {
     // Parsing an error message is brittle by nature. It has to fail soft: "I
     // could not tell" and "there are none" call for opposite reactions.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-agents2-'));
-    const fake = path.join(dir, 'fake-copilot.js');
-    fs.writeFileSync(fake, "process.stderr.write('something entirely different\\n');process.exit(1);\n");
+    const { dir, command } = fakeCopilot('something entirely different');
     const prior = process.env.SQUAD_HUB_AGENT;
-    process.env.SQUAD_HUB_AGENT = `${JSON.stringify(process.execPath)} ${JSON.stringify(fake)}`;
+    process.env.SQUAD_HUB_AGENT = command;
     try {
       const r = availableAgents();
       assert.strictEqual(r.ok, false);

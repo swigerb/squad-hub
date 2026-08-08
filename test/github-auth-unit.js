@@ -68,6 +68,10 @@ function fakeGitHub(users) {
 function withFakeGitHub(auth, port) {
   auth._verifyGitHubFetch = (token) => new Promise((resolve, reject) => {
     const req = http.request({
+      // The stand-in listens on 127.0.0.1. Omitting `host` defaults to
+      // `localhost`, which can resolve to ::1; Node 20+ papers over that with
+      // Happy Eyeballs, Node 18 fails with ECONNREFUSED.
+      host: '127.0.0.1',
       port, path: '/user', headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'squad-hub' },
     }, (res) => {
       let b = '';

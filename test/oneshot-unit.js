@@ -90,10 +90,19 @@ function runOneShot(env, budgetMs = 45000) {
 
   // A device token, because that is what a job would actually be given.
   const userTok = auth.mintDevToken('t1', 'u1', 'operator');
-  const me = await new Promise((resolve) => {
-    require('http').get({ port: addr.port, path: '/api/me', headers: { Authorization: 'Bearer ' + userTok } }, (r) => {
-      let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => resolve(JSON.parse(b)));
+  const me = await new Promise((resolve, reject) => {
+    // host, because the hub is bound to 127.0.0.1 and the default is the NAME
+    // `localhost`, which can resolve to ::1. Node 20+ retries over IPv4 via
+    // Happy Eyeballs; Node 18 just gets ECONNREFUSED.
+    const r = require('http').get({
+      host: '127.0.0.1', port: addr.port, path: '/api/me', headers: { Authorization: 'Bearer ' + userTok },
+    }, (res) => {
+      let b = ''; res.on('data', (d) => { b += d; }); res.on('end', () => resolve(JSON.parse(b)));
     });
+    // Without this an unreachable hub rejects nothing, the await never
+    // settles, and the suite dies with no output and no parseable result --
+    // which is exactly how this failed.
+    r.on('error', reject);
   });
   const devTok = auth.mintDeviceToken({ key: me.subject, label: 'jobs', didPrefix: 'job-' });
 

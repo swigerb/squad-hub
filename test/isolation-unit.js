@@ -56,6 +56,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function api(port, path, token, opts = {}) {
   return new Promise((resolve) => {
     const req = http.request({
+      // The hub listens on 127.0.0.1. Omitting `host` defaults to `localhost`,
+      // which can resolve to ::1; Node 20+ papers over that with Happy
+      // Eyeballs, Node 18 fails with ECONNREFUSED.
+      host: '127.0.0.1',
       port, path, method: opts.method || 'GET',
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
