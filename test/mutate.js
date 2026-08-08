@@ -260,8 +260,16 @@ const MUTATIONS = [
   {
     name: 'the daemon reports a hub connection it does not have',
     file: 'src/daemon.js',
-    find: `          connected: !!(this.link && this.link.connected),`,
-    replace: `          connected: process.env.MUTANT ? false : !!(this.link && this.link.connected), // MUTATION`,
+    // Pinned to the STATE FILE, which is what the CLI reads. The same two
+    // lines appear again in the `hub-status` IPC op, and an anchor that
+    // matched both would rewrite whichever came first rather than the one
+    // this claims to test.
+    find: `        hub: {
+          configured: !!(this.link && this.link.url),
+          connected: !!(this.link && this.link.connected),`,
+    replace: `        hub: {
+          configured: !!(this.link && this.link.url),
+          connected: process.env.MUTANT ? false : !!(this.link && this.link.connected), // MUTATION`,
     mustFail: 'the daemon starts and reports a hub connection',
   },
   {
@@ -806,25 +814,19 @@ const MUTATIONS = [
     mustFail: 'Squad detection never leaks past a nested repo\'s own .git boundary into an unrelated ancestor project',
   },
   {
+    /**
+     * The agent, model and source were escaped at three separate interpolation
+     * points and had a mutation each. They now pass through agentLabel() into
+     * one string with a single esc() around it, so three mutations pointing at
+     * the same escape would be three copies of one question. The other two
+     * named tests still exist and still pass; they are covered by this escape
+     * rather than by mutations of their own.
+     */
     name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
     file: 'web/app.js',
-    find: `esc(sel.agent)`,
-    replace: `(process.env.MUTANT ? sel.agent : esc(sel.agent))`,
+    find: `esc(agentInfo.text)`,
+    replace: `(process.env.MUTANT ? agentInfo.text : esc(agentInfo.text))`,
     mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
-  },
-  {
-    name: 'sessionRow renders agentSelection.model unescaped (stored XSS)',
-    file: 'web/app.js',
-    find: `esc(sel.model)`,
-    replace: `(process.env.MUTANT ? sel.model : esc(sel.model))`,
-    mustFail: 'a malicious agentSelection.model renders as inert escaped text',
-  },
-  {
-    name: 'sessionRow renders agentSelection.source unescaped (stored XSS)',
-    file: 'web/app.js',
-    find: `esc(sel.source)`,
-    replace: `(process.env.MUTANT ? sel.source : esc(sel.source))`,
-    mustFail: 'a malicious agentSelection.source renders as inert escaped text',
   },
   {
     name: 'agent-select stops validating agent/model names, letting an HTML-shaped .squad-hub.json value through',
@@ -1710,6 +1712,22 @@ const MUTATIONS = [
     mustFail: 'an empty approval is NOT treated as read-only',
   },
   {
+    // A wrong "read-only" costs a repository; a missed one costs a second look.
+    // The classifier only earns its place by failing in that direction.
+    name: 'a command the classifier does not recognise is called read-only',
+    file: 'src/acp-session.js',
+    find: `  return READ_ONLY_COMMANDS.has(head);`,
+    replace: `  return process.env.MUTANT ? true : READ_ONLY_COMMANDS.has(head); // MUTATION`,
+    mustFail: 'a command it does not recognise is treated as writing',
+  },
+  {
+    name: 'a redirect or a chained rm sneaks past the read-only classifier',
+    file: 'src/acp-session.js',
+    find: `  if (/[|&;<>\`$(){}\\n\\r]/.test(text)) return false;`,
+    replace: `  if (!process.env.MUTANT && /[|&;<>\`$(){}\\n\\r]/.test(text)) return false; // MUTATION`,
+    mustFail: 'redirection and chaining defeat the classifier rather than sneaking past it',
+  },
+  {
     name: 'a tool with no name renders as a blank row',
     file: 'web/app.js',
     find: `    label: approval.command || approval.title || 'an unnamed tool',`,
@@ -1952,6 +1970,97 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
 
   // -------------------------------------------------------------------------
+  // The agent and model a session actually gets
+  // -------------------------------------------------------------------------
+  {
+    // The bug itself: trusting a flag that `copilot --acp` silently ignores.
+    name: 'the agent is left to the command-line flag, which ACP ignores',
+    file: 'src/acp-session.js',
+    find: `    await this._applySelection(s);`,
+    replace: `    if (!process.env.MUTANT) await this._applySelection(s); // MUTATION`,
+    mustFail: 'run() applies the selection BETWEEN session/new and the prompt',
+  },
+  {
+    // Copilot registers Squad's agent as "Squad"; this codebase spells it
+    // "squad". An exact match silently never applies.
+    name: 'the agent name is matched exactly, so case alone defeats it',
+    file: 'src/acp-session.js',
+    find: `      const hit = choices.find((o) => String(o.value).toLowerCase() === String(want.agent).toLowerCase())
+        || choices.find((o) => String(o.name || '').toLowerCase() === String(want.agent).toLowerCase());`,
+    replace: `      const hit = process.env.MUTANT ? choices.find((o) => o.value === want.agent) // MUTATION
+        : (choices.find((o) => String(o.value).toLowerCase() === String(want.agent).toLowerCase())
+        || choices.find((o) => String(o.name || '').toLowerCase() === String(want.agent).toLowerCase()));`,
+    mustFail: 'the agent name is matched case-insensitively',
+  },
+  {
+    name: 'an uninstalled agent is swapped for the default without a word',
+    file: 'src/acp-session.js',
+    find: `        this.applied.warnings.push(
+          \`the agent "\${want.agent}" is not installed for this Copilot; running the default agent instead\``,
+    replace: `        if (!process.env.MUTANT) this.applied.warnings.push( // MUTATION
+          \`the agent "\${want.agent}" is not installed for this Copilot; running the default agent instead\``,
+    mustFail: 'an agent that is not installed is REPORTED, not silently swapped',
+  },
+  {
+    name: 'an unavailable model is accepted in silence',
+    file: 'src/acp-session.js',
+    find: `        this.applied.warnings.push(
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    replace: `        if (!process.env.MUTANT) this.applied.warnings.push( // MUTATION
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    mustFail: 'a model the account cannot use is reported, and names the ones it can',
+  },
+  {
+    // A session that cannot have its agent set is still a working session.
+    name: 'a peer refusing the selection takes the whole session down',
+    file: 'src/acp-session.js',
+    find: `        } catch (e) {
+          this.applied.warnings.push(\`could not select the agent "\${want.agent}": \${e.message}\`);
+        }`,
+    replace: `        } catch (e) {
+          if (process.env.MUTANT) throw e; // MUTATION
+          this.applied.warnings.push(\`could not select the agent "\${want.agent}": \${e.message}\`);
+        }`,
+    mustFail: 'a peer that refuses the selection degrades, and never takes the session down',
+  },
+  {
+    name: 'the session never publishes what it actually got',
+    file: 'src/acp-session.js',
+    find: `      applied: this.applied || null,`,
+    replace: `      applied: process.env.MUTANT ? null : (this.applied || null), // MUTATION`,
+    mustFail: 'what was granted is published, so a surface can tell it from what was asked',
+  },
+  {
+    name: 'the row goes back to printing the request as though it were the answer',
+    file: 'web/app.js',
+    find: `  if (agentOk && modelOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
+    replace: `  if (agentOk || modelOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
+    mustFail: 'a session running a DIFFERENT agent to the one named on it says so',
+  },
+  {
+    name: 'a device too old to report what it applied is accused of a mismatch',
+    file: 'web/app.js',
+    find: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
+    replace: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: true }; // MUTATION`,
+    mustFail: 'a device too old to report what it applied is not accused of a mismatch',
+  },
+  {
+    // "Could not tell" and "there are none" call for opposite reactions.
+    name: 'an unreadable agent probe claims there are no agents',
+    file: 'src/doctor.js',
+    find: `  if (!m) return { ok: false, reason: 'the agent list could not be read from Copilot', agents: [] };`,
+    replace: `  if (!m) return { ok: process.env.MUTANT ? true : false, reason: 'the agent list could not be read from Copilot', agents: [] }; // MUTATION`,
+    mustFail: 'an unreadable reply says so, rather than claiming there are no agents',
+  },
+  {
+    name: 'the probed agent names keep their punctuation and spacing',
+    file: 'src/doctor.js',
+    find: `  const agents = m[1].split(',').map((s) => s.trim().replace(/[.\\s]+$/, '')).filter(Boolean);`,
+    replace: `  const agents = process.env.MUTANT ? m[1].split(',') : m[1].split(',').map((s) => s.trim().replace(/[.\\s]+$/, '')).filter(Boolean); // MUTATION`,
+    mustFail: 'the agent probe reads the list out of Copilot\'s own refusal',
+  },
+
+  // -------------------------------------------------------------------------
   // PRD gaps: the right request, by a named person, and outbound only
   // -------------------------------------------------------------------------
   {
@@ -1991,9 +2100,50 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // Taking it from the body would let anyone claim to be anyone.
     name: 'the answerer identity is taken from the request body',
     file: 'src/service/hub-service.js',
-    find: `        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key } : body;`,
-    replace: `        const withActor = body; // MUTATION`,
+    find: `        const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }`,
+    replace: `        const withActor = op === 'approve' ? { ...body } // MUTATION`,
     mustFail: 'the hub attaches the caller identity to an approve, from the validated token',
+  },
+  {
+    // A body that could name the actor would let one person write another's
+    // name into a device log.
+    name: 'forget takes its actor from the request body',
+    file: 'src/service/hub-service.js',
+    find: `          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }`,
+    replace: `          : op === 'forget' ? { ...body, forgottenBy: (body && body.forgottenBy) || me.name || me.key } // MUTATION`,
+    mustFail: 'a forged actor in the body does not reach the device',
+  },
+  {
+    // A tidy-up that reached a device the caller does not own would let one
+    // person erase another's record of what ran.
+    name: 'forget skips the device-ownership check',
+    file: 'src/service/hub-service.js',
+    find: `      if (!device) return send(404, { error: 'no such device' });`,
+    replace: `      if (!device && !(process.env.MUTANT && op === 'forget')) return send(404, { error: 'no such device' }); // MUTATION`,
+    mustFail: "forgetting sessions on another user's device is refused",
+  },
+  {
+    // The whole safety story: a record deleted while its process lives is an
+    // orphan nothing can see.
+    name: 'forget removes a session whose agent is still running',
+    file: 'src/daemon.js',
+    // Anchored on the comment as well as the code: `if (s.pid && alive(s.pid))`
+    // on its own ALSO matches `_killAllChildren`, and String.replace takes the
+    // first hit -- so the short version silently mutated the orphan killer
+    // instead of the guard this claims to test.
+    find: `      // The orphan guard. Belt and braces: a terminal session should already
+      // have been untracked, so this should never fire -- and the day it does
+      // is exactly the day it earns its place.
+      if (s.pid && alive(s.pid)) {`,
+    replace: `      if (s.pid && alive(s.pid) && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'A SESSION WHOSE AGENT IS STILL ALIVE IS NEVER REMOVED, whatever its status says',
+  },
+  {
+    name: 'forget reaches sessions that have not ended',
+    file: 'src/daemon.js',
+    find: `      if (!TERMINAL_STATUS.has(s.status)) { kept += 1; continue; }`,
+    replace: `      if (!TERMINAL_STATUS.has(s.status) && !process.env.MUTANT) { kept += 1; continue; } // MUTATION`,
+    mustFail: 'A RUNNING SESSION IS NEVER REMOVED',
   },
   {
     name: 'a denial is rendered as an approval',

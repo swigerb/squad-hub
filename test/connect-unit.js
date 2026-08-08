@@ -154,6 +154,12 @@ async function freePort() {
       assert.match(r.stderr, /does not look like a device token/);
       assert.strictEqual(daemonPid(home), null, 'a daemon should never have been started for a malformed token');
     });
+    check('the refusal names the prefix it wanted, rather than saying "undefined."', () => {
+      const r = cliSync(env, ['connect', '--hub', 'http://127.0.0.1:1', '--token', 'not-a-device-token']);
+      assert.match(r.stderr, /"sqhd1\." prefix/,
+        'the whole job of this message is to say what the token should have looked like');
+      assert.ok(!/undefined/.test(r.stderr), 'a message that reads "undefined." teaches nothing');
+    });
   } finally { cleanup(home); }
 }
 

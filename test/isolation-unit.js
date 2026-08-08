@@ -182,6 +182,49 @@ function api(port, path, token, opts = {}) {
     assert.strictEqual(bobReceived.length, 1, 'the owner\'s command did not arrive');
   });
 
+  // -- forgetting ended sessions on another user's device --------------------
+  // The tidy-up verb is the newest thing that reaches a device, so it is the
+  // most likely to have been wired up without the ownership check the older
+  // ops inherit. Proven the same way: the command must never ARRIVE.
+  bobReceived = [];
+  const crossForget = await api(port, '/api/devices/bob-devbox/forget', aliceToken, {
+    method: 'POST', body: { olderThanMs: 0 },
+  });
+  await sleep(300);
+  check("forgetting sessions on another user's device is refused", () => {
+    assert.strictEqual(crossForget.status, 404,
+      `expected 404 (indistinguishable from absent), got ${crossForget.status}`);
+    assert.strictEqual(bobReceived.length, 0,
+      `THE FORGET STILL ARRIVED at bob's device: ${JSON.stringify(bobReceived)}`);
+  });
+
+  bobReceived = [];
+  const ownForget = await api(port, '/api/devices/bob-devbox/forget', bobToken, {
+    method: 'POST', body: { olderThanMs: 0 },
+  });
+  await sleep(300);
+  check('the owner can forget on their own device', () => {
+    assert.strictEqual(ownForget.status, 200, `the owner was refused: ${JSON.stringify(ownForget)}`);
+    assert.strictEqual(bobReceived.length, 1, 'the owner\'s forget did not arrive');
+  });
+  check('who forgot is taken from the signed-in identity, never the request body', () => {
+    assert.ok(bobReceived[0], 'nothing arrived to inspect');
+    assert.ok(bobReceived[0].forgottenBy, 'the device was told to forget by nobody in particular');
+    assert.ok(!String(bobReceived[0].forgottenBy).includes('impersonated'),
+      'a request body could name whoever it liked in someone else\'s device log');
+  });
+
+  bobReceived = [];
+  await api(port, '/api/devices/bob-devbox/forget', bobToken, {
+    method: 'POST', body: { olderThanMs: 0, forgottenBy: 'impersonated' },
+  });
+  await sleep(300);
+  check('a forged actor in the body does not reach the device', () => {
+    assert.ok(bobReceived[0], 'nothing arrived to inspect');
+    assert.notStrictEqual(bobReceived[0].forgottenBy, 'impersonated',
+      'the body chose the name written into a device log');
+  });
+
   // -- token attacks --------------------------------------------------------
   const noToken = await api(port, '/api/overview', null);
   check('no token is rejected', () => assert.strictEqual(noToken.status, 401));

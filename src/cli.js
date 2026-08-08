@@ -307,6 +307,10 @@ async function cmdStatus(argv) {
     if (s.agentSelection) {
       const sel = s.agentSelection;
       out(`    squad agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source})`);
+      // What was granted, when it differs from what was asked. Printing only
+      // the request was how a session claiming the squad agent could run the
+      // default one for months without anybody noticing.
+      for (const w of (s.applied && s.applied.warnings) || []) out(`    ! ${w}`);
     }
     if (s.error) out(`    error: ${s.error}`);
     for (const a of s.pendingApprovals) {
@@ -424,9 +428,12 @@ async function cmdConnect(argv) {
 
   // An offline, no-network check: a token with the wrong shape is never going
   // to be accepted, and failing on it instantly is kinder than a 10s timeout.
-  const { DeviceTokens } = require('./service/device-token');
+  // PREFIX is a module export, not a static on the class: reading it off
+  // `DeviceTokens` produced the literal string "undefined." in the one message
+  // whose whole job is to say what the token should have looked like.
+  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
   if (!DeviceTokens.looksLikeDeviceToken(token)) {
-    err(`that does not look like a device token (expected the "${DeviceTokens.PREFIX}." prefix).`);
+    err(`that does not look like a device token (expected the "${DEVICE_TOKEN_PREFIX}." prefix).`);
     err('A device token is minted FOR a device; your own sign-in token will not work here.');
     err('Mint one: account menu -> Connect a device, or `squad-hub device-token --hub <url> --token <your token>`.');
     return 2;
@@ -661,6 +668,48 @@ async function cmdStopSession(argv) {
   if (!sessionId) { err('usage: squad-hub kill <sessionId>'); return 2; }
   await client.call('stop-session', { sessionId });
   out(`session ${sessionId} stopped`);
+  return 0;
+}
+
+/**
+ * Forget the record of sessions that have already ended.
+ *
+ * Record-keeping, never control: it removes rows for work that has already
+ * finished, and cannot touch a session that is still running. Refuses to
+ * default to "everything" -- one of --older-than or --all must be said out
+ * loud, because a tidy-up whose scope was guessed is a tidy-up that eventually
+ * guesses wrong.
+ */
+async function cmdForget(argv) {
+  const days = value(argv, 'older-than', null);
+  const all = flag(argv, 'all');
+  if (!all && days === null) {
+    err('usage: squad-hub forget --older-than <days> | --all');
+    err('');
+    err('Removes the RECORD of sessions that have already ended. A running');
+    err('session is never touched. Say which you mean: an unscoped sweep is');
+    err('not something to arrive at by accident.');
+    return 2;
+  }
+  if (all && days !== null) {
+    err('--older-than and --all contradict each other; pick one.');
+    return 2;
+  }
+  let olderThanMs;
+  if (!all) {
+    const n = Number(days);
+    if (!Number.isFinite(n) || n < 0) {
+      err(`--older-than takes a number of days, got: ${days}`);
+      return 2;
+    }
+    olderThanMs = n * 24 * 3600 * 1000;
+  }
+  const r = await client.call('forget', { olderThanMs });
+  if (!r.count) {
+    out(all ? 'no ended sessions to remove' : `no sessions ended more than ${days} day(s) ago`);
+    return 0;
+  }
+  out(`removed ${r.count} ended session${r.count === 1 ? '' : 's'}; ${r.kept} kept`);
   return 0;
 }
 
@@ -1155,6 +1204,7 @@ function usage() {
   SESSIONS
   squad-hub approve <sessionId> <approvalId> <optionId>
   squad-hub kill <sessionId>
+  squad-hub forget --older-than <days> | --all
 
   LOGIN STARTUP (optional; never needs admin/root)
   squad-hub autostart enable [--dry-run] [--json]
@@ -1187,6 +1237,12 @@ In a Squad project (a ".squad" directory, or ".github/agents/squad.agent.md"),
 use Copilot's default agent. --agent/--model on the command line always wins;
 see docs/commands.md for the full precedence order.
 
+The agent and model are applied over the ACP protocol after the session is
+created, against the list that session advertises: "copilot --acp" accepts
+--agent/--model and silently ignores both, so a flag alone is not enough. When
+the agent or model asked for is unavailable, the session runs with the default
+and SAYS SO, rather than quietly substituting.
+
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. The confinement path stays
 on this device and is never sent to the hub service.`);
@@ -1218,6 +1274,7 @@ async function main(argv) {
     case 'squad': return cmdSquad(rest);
     case 'approve': return cmdApprove(rest);
     case 'kill': return cmdStopSession(rest);
+    case 'forget': return cmdForget(rest);
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);

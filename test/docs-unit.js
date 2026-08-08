@@ -149,6 +149,37 @@ check('every mutation still anchors to real source', () => {
     `these mutations would apply nothing and pass silently:\n  ${drifted.join('\n  ')}`);
 });
 
+check('every mutation anchor matches EXACTLY ONE place in its file', () => {
+  /**
+   * `String.replace` with a string pattern rewrites the FIRST match and no
+   * other. So an anchor that appears twice does not fail, does not warn, and
+   * does not test what it claims -- it quietly mutates whichever copy comes
+   * first in the file.
+   *
+   * This is not hypothetical. `if (s.pid && alive(s.pid)) {` appears in BOTH
+   * the forget guard and `_killAllChildren`, so a mutation written to prove
+   * the forget guard was instead disabling the orphan killer, and the sweep
+   * reported it as caught -- by an unrelated test, for an unrelated reason.
+   * An anchor that lands somewhere else is worse than one that lands nowhere:
+   * a missing anchor is reported, a misplaced one reads as a pass.
+   */
+  if (process.env.MUTANT) return;
+  const { MUTATIONS } = require('./mutate');
+  const nl = (s) => s.replace(/\r\n/g, '\n');
+  const ambiguous = [];
+  for (const m of MUTATIONS) {
+    if (m.skip) continue;
+    let body;
+    try { body = nl(read(m.file)); } catch { continue; }
+    const find = nl(m.find);
+    if (!body.includes(find)) continue;   // absence is the other test's job
+    const hits = body.split(find).length - 1;
+    if (hits > 1) ambiguous.push(`${m.name} -> ${hits} matches in ${m.file}`);
+  }
+  assert.deepStrictEqual(ambiguous, [],
+    `these anchors mutate the first match, which may not be the code under test:\n  ${ambiguous.join('\n  ')}`);
+});
+
 check('every mutation names a test that could fail', () => {
   if (process.env.MUTANT) return;
   const { MUTATIONS } = require('./mutate');

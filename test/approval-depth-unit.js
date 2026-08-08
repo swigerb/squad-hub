@@ -40,10 +40,10 @@ if (idx < 0) {
 const mod = { exports: {} };
 new Function('module', 'exports', `${src.slice(0, idx)}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
-  spawnRequest, spawnError };`)(mod, mod.exports);
+  spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
-  spawnRequest, spawnError,
+  spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -238,6 +238,315 @@ check('a malicious tool name or path renders as inert escaped text', () => {
   for (const r of rows) {
     assert.ok(!esc(r.label).includes('<img'), 'a tool name or path could reach the DOM as live markup');
   }
+});
+
+// ---------------------------------------------------------------------------
+// Where the read-only flag comes from
+//
+// Every shell call arrives as tool kind `execute`, so the kind alone cannot
+// tell `git status` from `rm -rf build`. Judging the command is what stops the
+// badge crying wolf -- and the classifier has to stay timid, because a missed
+// "read-only" costs a second look and a wrong one costs a repository.
+// ---------------------------------------------------------------------------
+
+const { isReadOnlyCommand, isReadOnlyRequest } = require('../src/acp-session');
+
+check('a plainly reading shell command is NOT badged as writing', () => {
+  assert.strictEqual(isReadOnlyCommand('git status --short'), true,
+    'a "writes" badge on a command that writes nothing trains people to ignore the badge');
+});
+
+check('the reading commands people actually run are recognised', () => {
+  for (const c of ['git log -5', 'git diff HEAD', 'git branch --show-current', 'ls -la',
+    'cat package.json', 'rg TODO src', 'Get-ChildItem C:\\src', 'node_modules/.bin/../../../bin/git rev-parse HEAD']) {
+    assert.strictEqual(isReadOnlyCommand(c), true, `should read as read-only: ${c}`);
+  }
+});
+
+check('a writing command is never softened into read-only', () => {
+  for (const c of ['rm -rf build', 'git commit -m x', 'git push', 'git checkout -b feature',
+    'npm install', 'Remove-Item foo', 'sed -i s/a/b/ f.txt']) {
+    assert.strictEqual(isReadOnlyCommand(c), false, `must stay "writes": ${c}`);
+  }
+});
+
+check('a reading command that DELETES a branch is not read-only', () => {
+  assert.strictEqual(isReadOnlyCommand('git branch -d feature'), false);
+  assert.strictEqual(isReadOnlyCommand('git branch newthing'), false,
+    'a bare name after `git branch` creates one');
+});
+
+check('redirection and chaining defeat the classifier rather than sneaking past it', () => {
+  assert.strictEqual(isReadOnlyCommand('cat secrets > /tmp/out'), false);
+  assert.strictEqual(isReadOnlyCommand('ls && rm -rf build'), false);
+  assert.strictEqual(isReadOnlyCommand('echo $(rm -rf build)'), false);
+  assert.strictEqual(isReadOnlyCommand('git log | tee log.txt'), false);
+});
+
+check('a command it does not recognise is treated as writing', () => {
+  assert.strictEqual(isReadOnlyCommand('some-unknown-tool --go'), false,
+    '"I do not know" must never round down to "safe"');
+  assert.strictEqual(isReadOnlyCommand(''), false);
+  assert.strictEqual(isReadOnlyCommand(null), false);
+});
+
+check('an --output flag makes an otherwise-reading command write', () => {
+  assert.strictEqual(isReadOnlyCommand('git diff --output=patch.txt'), false);
+});
+
+check('the declared tool kind still wins for file tools', () => {
+  assert.strictEqual(isReadOnlyRequest({ kind: 'read' }, {}), true);
+  assert.strictEqual(isReadOnlyRequest({ kind: 'search' }, {}), true);
+  assert.strictEqual(isReadOnlyRequest({ kind: 'edit' }, { command: 'git status' }), false,
+    'an edit tool carrying a command-shaped field must never talk its way down');
+});
+
+check('every command in a multi-command request has to read, not just the first', () => {
+  assert.strictEqual(isReadOnlyRequest({ kind: 'execute' }, { commands: ['git status', 'git log'] }), true);
+  assert.strictEqual(isReadOnlyRequest({ kind: 'execute' }, { commands: ['git status', 'rm -rf build'] }), false,
+    'the badge has to reflect the riskiest thing in the request');
+  assert.strictEqual(isReadOnlyRequest({ kind: 'execute' }, {}), false);
+});
+
+// ---------------------------------------------------------------------------
+// The dropdowns the badge sits beside
+//
+// A native select's OPEN list is painted by the browser from the control's own
+// background, and the inline selects are deliberately transparent -- which
+// resolves to white, and made the dark theme's dropdowns unreadable.
+// ---------------------------------------------------------------------------
+
+check('the dropdown popup names its own colours, in theme tokens', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.css'), 'utf8');
+  const rule = css.match(/select option[^{]*\{[^}]*\}/);
+  assert.ok(rule, 'without an explicit option colour the popup falls back to the browser default');
+  assert.match(rule[0], /var\(--/, 'a hard-coded colour here is how one theme drifts from the other');
+  assert.match(rule[0], /color:\s*var\(--text\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Removing ended sessions, from the browser's side
+//
+// The device is the source of truth, so every removal goes TO a device and a
+// device that could not be asked has to be reported rather than quietly
+// counted as done.
+// ---------------------------------------------------------------------------
+
+check('a day count becomes a window', () => {
+  assert.strictEqual(forgetWindowMs(7), 7 * 24 * 3600 * 1000);
+  assert.strictEqual(forgetWindowMs('30'), 30 * 24 * 3600 * 1000);
+});
+
+check('"all" has no window at all, rather than a window of zero', () => {
+  assert.strictEqual(forgetWindowMs('all'), undefined,
+    'the daemon reads a missing window as "every ended session"; sending 0 would rely on that meaning the same');
+});
+
+check('a nonsense scope produces no sweep', () => {
+  for (const bad of ['', 'soon', -1, 0, null]) {
+    assert.strictEqual(forgetWindowMs(bad), null, `should refuse: ${bad}`);
+  }
+});
+
+check('an offline device is separated out rather than counted', () => {
+  const t = forgetTargets([
+    { deviceId: 'a', presence: 'online' },
+    { deviceId: 'b', presence: 'stale' },
+    { deviceId: 'c', presence: 'offline' },
+  ]);
+  assert.deepStrictEqual(t.reachable.map((d) => d.deviceId), ['a', 'b']);
+  assert.deepStrictEqual(t.skipped.map((d) => d.deviceId), ['c'],
+    'a device that cannot be asked has not been tidied, and saying otherwise is a lie the next page load exposes');
+});
+
+check('no devices at all does not throw', () => {
+  assert.deepStrictEqual(forgetTargets(undefined), { reachable: [], skipped: [] });
+});
+
+check('the summary counts what happened, including what did not', () => {
+  assert.match(forgetSummary({ removed: 3, failed: 0, skipped: 0 }), /Removed 3 ended sessions/);
+  assert.match(forgetSummary({ removed: 1, failed: 0, skipped: 0 }), /Removed 1 ended session\b/);
+  assert.match(forgetSummary({ removed: 0, failed: 0, skipped: 0 }), /Nothing to remove/);
+});
+
+check('a skipped or refusing device is never hidden from the summary', () => {
+  assert.match(forgetSummary({ removed: 5, failed: 0, skipped: 2 }), /2 devices offline, skipped/);
+  assert.match(forgetSummary({ removed: 5, failed: 1, skipped: 0 }), /1 device refused/);
+  const both = forgetSummary({ removed: 0, failed: 1, skipped: 1 });
+  assert.match(both, /skipped/);
+  assert.match(both, /refused/);
+});
+
+check('the markup offers the removal scopes, and a New menu with both kinds', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
+  assert.match(html, /data-forget="7"/);
+  assert.match(html, /data-forget="30"/);
+  assert.match(html, /data-forget="all"/);
+  assert.match(html, /data-new="local"/);
+  assert.match(html, /data-new="cloud"/);
+  assert.match(html, /id="newMenuNote"/,
+    'a disabled Cloud session with no explanation is a dead end');
+});
+
+// ---------------------------------------------------------------------------
+// What the Create menu can honestly offer
+//
+// Squad Hub observes devices that dial in; it holds no cloud credentials and
+// cannot conjure one. So a kind with no device behind it is refused WITH THE
+// REASON rather than offered and then failed.
+// ---------------------------------------------------------------------------
+
+const CLOUD = { deviceId: 'aca-1', kind: 'cloud', presence: 'online' };
+const LAPTOP = { deviceId: 'laptop', kind: 'local', presence: 'online' };
+
+check('both kinds are offered when both are connected', () => {
+  const s = newMenuState([CLOUD, LAPTOP]);
+  assert.strictEqual(s.localEnabled, true);
+  assert.strictEqual(s.cloudEnabled, true);
+  assert.strictEqual(s.note, null, 'a note with nothing to explain is noise');
+});
+
+check('Cloud session is REFUSED, with a reason, when no cloud device is connected', () => {
+  const s = newMenuState([LAPTOP]);
+  assert.strictEqual(s.cloudEnabled, false,
+    'the hub cannot start a cloud device, so a live button would be an offer it could not keep');
+  assert.match(s.note, /cloud device/i);
+  assert.match(s.note, /aca/i, 'saying how to get one is the honest version of the same help');
+});
+
+check('Local session is refused, with a reason, when no local device is connected', () => {
+  const s = newMenuState([CLOUD]);
+  assert.strictEqual(s.localEnabled, false);
+  assert.match(s.note, /squad-hub connect/);
+});
+
+check('with nothing connected at all, the note says THAT rather than picking one kind', () => {
+  const s = newMenuState([]);
+  assert.strictEqual(s.localEnabled, false);
+  assert.strictEqual(s.cloudEnabled, false);
+  assert.match(s.note, /No device is connected/,
+    'being told how to add a cloud device is unhelpful when the real answer is "add any device"');
+});
+
+check('an offline device does not count as connected', () => {
+  const s = newMenuState([{ deviceId: 'x', kind: 'cloud', presence: 'offline' }]);
+  assert.strictEqual(s.cloudEnabled, false,
+    'the hub refuses a command to an offline device, so offering one would fail on submit');
+});
+
+check('the menu names the device it would use, so the dialog opens on the right one', () => {
+  const s = newMenuState([CLOUD, LAPTOP]);
+  assert.strictEqual(s.cloudDeviceId, 'aca-1');
+  assert.strictEqual(s.localDeviceId, 'laptop');
+});
+
+check('newMenuState survives being handed nothing', () => {
+  const s = newMenuState(undefined);
+  assert.strictEqual(s.localEnabled, false);
+  assert.strictEqual(s.cloudEnabled, false);
+});
+
+// ---------------------------------------------------------------------------
+// Notifications
+//
+// The point of the hub is that a blocked session can reach a person who is
+// somewhere else, and a page you must be LOOKING AT to notice one is only
+// half of that. What matters in the wiring is when permission is asked for:
+// a browser shows that prompt once, and a denial cannot be undone from here.
+// ---------------------------------------------------------------------------
+
+check('permission is asked for on a CLICK, never on load', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function requestNotifyPermission[\s\S]*?\n\}/);
+  assert.ok(fn, 'requestNotifyPermission moved; find it before trusting this test');
+  // The only caller must be the bell's own handler.
+  const callers = [...app.matchAll(/requestNotifyPermission\(\)/g)].length;
+  assert.ok(callers >= 1, 'nothing ever asks for permission');
+  assert.ok(!/requestNotifyPermission\(\)[\s\S]{0,200}?main\(/.test(app.slice(0, 200)),
+    'a prompt on load spends the one prompt a browser ever shows before anyone asked for anything');
+});
+
+check('a permission already decided is never asked for again', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function requestNotifyPermission[\s\S]*?\n\}/)[0];
+  assert.match(fn, /!== 'default'/,
+    're-requesting a denied permission does nothing and re-requesting a granted one is noise');
+});
+
+check('an unsupported browser is told apart from a blocked one', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /'unsupported'/,
+    'one is a setting a person can change and the other is not, so they cannot share a message');
+});
+
+check('the same approval never notifies twice', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function notifyApproval[\s\S]*?\n\}/)[0];
+  assert.match(fn, /state\.notified\.has/,
+    'every poll and every reconnect would raise another notification for the same question');
+  assert.match(fn, /state\.notified\.add/);
+});
+
+check('a browser that refuses to construct a notification does not take the render down', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function notifyApproval[\s\S]*?\n\}/)[0];
+  assert.match(fn, /catch/,
+    'some mobile engines throw unless a service worker raises it; that must not break the session list');
+});
+
+check('the bell says what it will do before it is pressed', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function syncBell[\s\S]*?\n\}/);
+  assert.ok(fn, 'syncBell moved');
+  assert.match(fn[0], /blocked/i);
+  assert.match(fn[0], /Turn on notifications/);
+});
+
+// ---------------------------------------------------------------------------
+// Saying nothing when there is nothing to say
+//
+// A badge that is present in the normal case is a label, not a signal. Both of
+// these used to be shown permanently, which trained people not to read the two
+// spots that exist to interrupt them.
+// ---------------------------------------------------------------------------
+
+check('the connection badge is a DOT when live and WORDS when not', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function setConn[\s\S]*?\n\}/)[0];
+  assert.match(fn, /s === 'live' \? '' :/,
+    'a permanent "live" pill is a label saying "working", and a label that is always there is one nobody reads on the day it changes');
+  assert.match(fn, /CONN_TITLE/,
+    'a coloured dot with no explanation anywhere is a mark, not a signal');
+});
+
+check('the live dot is still marked up as a state, for anything that cannot see it', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const fn = app.match(/function setConn[\s\S]*?\n\}/)[0];
+  assert.match(fn, /aria-label/,
+    'a screen reader gets no colour, so the dot has to say the word the sighted user is spared');
+});
+
+check('every state that is NOT live still spells itself out', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const labels = app.match(/const CONN_LABEL = \{[\s\S]*?\};/)[0];
+  for (const s of ['connecting', 'retrying', 'offline']) {
+    assert.ok(labels.includes(s), `${s} lost its label`);
+  }
+  assert.match(labels, /hub unreachable/, 'the state worth interrupting for must say something a person can act on');
+});
+
+check('a broken feed says the WORK is unaffected, not just that the page is', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  const titles = app.match(/const CONN_TITLE = \{[\s\S]*?\};/)[0];
+  assert.match(titles, /keep running|unaffected/,
+    'the obvious fear on seeing a red badge is that the work stopped, and it has not');
+});
+
+check('the device pill reports the EXCEPTION, not the agreement', () => {
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /\$\{down\} offline/,
+    'repeating the count already shown beside it makes a badge nobody reads on the day it disagrees');
+  assert.match(app, /availPill\.hidden = down === 0/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

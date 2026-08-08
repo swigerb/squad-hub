@@ -17,10 +17,42 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const config = require('./config');
 const client = require('./client');
 const { selectAgent, isSquadProject } = require('./agent-select');
+
+/**
+ * Which custom agents does this Copilot actually have?
+ *
+ * There is no `--list-agents`. But asking for an agent that cannot exist is
+ * refused instantly, before any inference, and the refusal names every agent
+ * that does: `No such agent: <x>, available: Squad`. That makes it a free
+ * enumeration, where probing a REAL agent name would cost a round trip and
+ * real AI credits.
+ *
+ * Parsing an error message is admittedly brittle, so it fails soft: an
+ * unrecognised reply yields `ok: false` and the caller reports that it could
+ * not tell, rather than asserting there are no agents.
+ */
+function availableAgents(timeoutMs = 15000) {
+  const command = process.env.SQUAD_HUB_AGENT || 'copilot';
+  let r;
+  try {
+    r = spawnSync(command, ['--agent', '__squad_hub_probe__', '-p', 'x'], {
+      encoding: 'utf8', timeout: timeoutMs, windowsHide: true, shell: process.platform === 'win32',
+    });
+  } catch (e) {
+    return { ok: false, reason: e.message, agents: [] };
+  }
+  if (r.error) return { ok: false, reason: r.error.message, agents: [] };
+  const out = `${r.stdout || ''}${r.stderr || ''}`;
+  const m = out.match(/available:\s*(.+)/i);
+  if (!m) return { ok: false, reason: 'the agent list could not be read from Copilot', agents: [] };
+  const agents = m[1].split(',').map((s) => s.trim().replace(/[.\s]+$/, '')).filter(Boolean);
+  return { ok: true, reason: null, agents };
+}
 
 function looksLikeUrl(u) {
   try {
@@ -201,16 +233,39 @@ async function runDoctor({ cwd = process.cwd(), explicitAgent = null, explicitMo
   const squad = isSquadProject(cwd);
   add('squad-project', 'ok', squad ? `${cwd} is a Squad project` : `${cwd} is not a Squad project`, { isSquad: squad });
 
-  const agentFile = path.join(cwd, '.github', 'agents', 'squad.agent.md');
-  const agentFileExists = fs.existsSync(agentFile);
   if (squad) {
-    add('squad-agent-file', agentFileExists ? 'ok' : 'warn',
-      agentFileExists
-        ? `${agentFile} exists`
-        : `Squad is auto-detected here but ${agentFile} is missing; 'squad-hub squad' will ask Copilot `
-          + "for a custom agent named 'squad' that may not resolve. Add the file, or override with --agent default.");
+    /**
+     * Does the agent this project would select actually exist?
+     *
+     * Asked of Copilot rather than guessed from a path. The previous check
+     * looked only for `<cwd>/.github/agents/squad.agent.md` and warned when it
+     * was missing -- but Squad installs itself to `~/.github/agents/`, so on a
+     * machine where the agent resolves perfectly this reported that it "may not
+     * resolve" and told you to add a file you do not need.
+     *
+     * An INVALID agent name is the probe: Copilot refuses it instantly, spends
+     * no AI credits, and names every agent it does have. Measured at ~1.8s.
+     * A valid name would cost a real inference round trip.
+     */
+    const probe = availableAgents();
+    if (!probe.ok) {
+      add('squad-agent', 'warn',
+        `Squad is auto-detected here, but which agents Copilot has could not be determined (${probe.reason}). `
+        + "'squad-hub squad' will ask for the 'squad' agent; if it is not installed the session runs as the "
+        + 'default agent instead.');
+    } else if (probe.agents.some((a) => a.toLowerCase() === 'squad')) {
+      const named = probe.agents.find((a) => a.toLowerCase() === 'squad');
+      add('squad-agent', 'ok', `Copilot has the "${named}" agent, so 'squad-hub squad' will run it`, { agents: probe.agents });
+    } else {
+      add('squad-agent', 'fail',
+        "Squad is auto-detected here but Copilot has no 'squad' agent installed"
+        + (probe.agents.length ? ` (it has: ${probe.agents.join(', ')})` : ' (it has no custom agents at all)')
+        + ". 'squad-hub squad' would run the DEFAULT agent instead. Install Squad, or use --agent default "
+        + 'to say so deliberately.',
+        { agents: probe.agents });
+    }
   } else {
-    add('squad-agent-file', 'ok', 'not applicable (not a Squad project)');
+    add('squad-agent', 'ok', 'not applicable (not a Squad project)');
   }
 
   const cfg = config.read();
@@ -278,4 +333,4 @@ async function runDoctor({ cwd = process.cwd(), explicitAgent = null, explicitMo
   return { healthy: failed.length === 0, checks, failedCount: failed.length, warnedCount: warned.length };
 }
 
-module.exports = { runDoctor, findOnPath, pingHub, nodeVersionCheck, findCopilotLoginEvidence };
+module.exports = { runDoctor, findOnPath, pingHub, nodeVersionCheck, findCopilotLoginEvidence, availableAgents };

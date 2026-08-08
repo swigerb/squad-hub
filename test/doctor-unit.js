@@ -195,7 +195,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       await checkAsync('a plain (non-Squad) directory is correctly classified, and needs no agent file', async () => {
         const squadCheck = report.checks.find((x) => x.id === 'squad-project');
         assert.strictEqual(squadCheck.isSquad, false);
-        const agentFileCheck = report.checks.find((x) => x.id === 'squad-agent-file');
+        const agentFileCheck = report.checks.find((x) => x.id === 'squad-agent');
         assert.strictEqual(agentFileCheck.level, 'ok');
         assert.match(agentFileCheck.message, /not applicable/);
       });
@@ -247,10 +247,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         assert.strictEqual(c.isSquad, true);
       });
 
-      await checkAsync('a Squad project missing the squad.agent.md file gets a WARNING, not silence', async () => {
-        const c = report.checks.find((x) => x.id === 'squad-agent-file');
-        assert.strictEqual(c.level, 'warn');
-        assert.match(c.message, /squad\.agent\.md/);
+      await checkAsync('a Squad project says whether the squad agent will actually run', async () => {
+        /**
+         * This used to assert a warning about a missing
+         * `<cwd>/.github/agents/squad.agent.md`. That check was wrong: Squad
+         * installs to `~/.github/agents/`, so it warned "may not resolve" on
+         * machines where the agent resolved perfectly, and told you to add a
+         * file you did not need.
+         *
+         * Doctor now asks Copilot which agents it has. The verdict therefore
+         * depends on the machine, and both answers are legitimate -- what is
+         * not legitimate is silence, or a claim that is not about whether the
+         * agent will run.
+         */
+        const c = report.checks.find((x) => x.id === 'squad-agent');
+        assert.ok(c, 'a Squad project got no verdict on its agent at all');
+        assert.ok(['ok', 'warn', 'fail'].includes(c.level));
+        assert.match(c.message, /agent/i);
+        if (c.level === 'fail') {
+          assert.match(c.message, /DEFAULT agent instead/,
+            'a missing agent has to say what would run in its place');
+        }
       });
 
       await checkAsync('the selected agent for this Squad project is "squad", auto-detected', async () => {

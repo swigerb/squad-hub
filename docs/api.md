@@ -71,7 +71,12 @@ Your sessions across all devices.
 ### `POST /api/devices/{deviceId}/{action}`
 
 Control a device you own. Actions: `spawn`, `approve`, `steer`, `stop`,
-`transcript`.
+`transcript`, `control-check`, `resync`, `forget`.
+
+The action list is an **allow-list in the route itself**. The daemon has ops
+the hub must never reach — `start-session`, which trusts a caller-supplied
+working directory, and `shutdown` — and the only thing keeping them out of
+reach is that they are not named here.
 
 | Status | Meaning |
 |---|---|
@@ -95,6 +100,27 @@ curl -X POST "$HUB/api/devices/$DEVICE/approve" \
 
 `optionId` is one the agent offered: `allow_once`, `allow_always` or
 `reject_once`.
+
+Removing the record of sessions that have already ended:
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/forget" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"olderThanMs": 604800000}'
+```
+
+Omit `olderThanMs` to remove every ended session. Returns
+`{ "forgotten": [...], "kept": n, "count": n }`.
+
+This is record-keeping, not control: a session that is still running is never
+removed, and neither is one whose agent process is still alive. It goes to the
+device rather than to the hub because the hub replaces a device's session list
+from whatever that device reports — anything removed only at the hub would
+return on the next heartbeat.
+
+`forgottenBy` is attached by the hub from the verified caller and is ignored if
+supplied in the body, so no request can write a name of its choosing into
+somebody's device log.
 
 ### `POST /api/device-tokens`
 

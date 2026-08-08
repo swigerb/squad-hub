@@ -33,6 +33,11 @@
   --warn-bg: #2e2614;
   --ok: #3ecf8e;
   --bad: #ff6b6b;
+  /* A DEEPER red, for when red is the background rather than the text.
+     `--bad` is tuned to be legible AS text on a dark panel, which makes it far
+     too light to put white on -- a destructive row filled with it reads as
+     pink, and the label on top falls below any sensible contrast. */
+  --bad-solid: #c0392b;
 
   /* Spacing, so padding is chosen from a scale rather than per-rule. */
   --sp-1: 4px;
@@ -63,6 +68,7 @@
   --warn-bg: #fff8dc;
   --ok: #1a7f4b;
   --bad: #c93c3c;
+  --bad-solid: #b8332f;
 }
 
 /* Before anyone has chosen, follow the system. `data-theme` is only ever set
@@ -83,6 +89,7 @@
     --warn-bg: #fff8dc;
     --ok: #1a7f4b;
     --bad: #c93c3c;
+    --bad-solid: #b8332f;
   }
 }
 
@@ -109,16 +116,30 @@ body {
 }
 .brand { font-weight: 600; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; }
 .mark {
-  width: 20px; height: 20px; border-radius: 5px;
-  display: inline-block; object-fit: cover; vertical-align: -4px;
+  /* The mark is a transparent vector now, not a cropped photograph, so it
+     needs neither the rounded corner nor the object-fit that the JPEG did. */
+  width: 20px; height: 20px;
+  display: inline-block; vertical-align: -4px;
 }
 .spacer { flex: 1; }
 .icon-btn {
   background: transparent; border: 0; color: var(--dim);
   font-size: 16px; cursor: pointer; padding: 6px 8px; border-radius: 8px;
   position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .icon-btn:hover { background: var(--panel-2); color: var(--text); }
+.icon-btn .i { width: 18px; height: 18px; }
+/* The bell reads smaller than the sun and moon beside it at the same box size:
+   those two fill their square, while a bell is a narrow shape with clear air
+   down both sides. Matched by eye rather than by number -- equal geometry that
+   looks unequal is the wrong kind of correct. */
+.bell .i { width: 20px; height: 20px; }
+/* A bell that is switched on says so, quietly: brighter, not coloured. An
+   accent-blue bell reads as an alert in its own right, in a bar whose whole
+   job is to stay out of the way. Blocked stays neutral rather than alarming --
+   it is a setting, not a fault. */
+.bell[data-permission="granted"] { color: var(--text); }
 .badge {
   position: absolute; top: 0; right: 0;
   background: var(--bad); color: #fff;
@@ -127,11 +148,19 @@ body {
 }
 .who { color: var(--dim); font-size: 13px; }
 
+/* Present for screen readers, gone from the layout. The name still has to be
+   announced by the account button -- "button" alone says nothing about whose
+   account it is -- it simply does not need to be painted. */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
 /* ---------- account menu (top right) ---------- */
 .account {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center;
   background: transparent; border: 1px solid transparent; color: var(--dim);
-  padding: 4px 8px 4px 4px; border-radius: 999px; cursor: pointer;
+  padding: 3px; border-radius: 999px; cursor: pointer;
   font: inherit; font-size: 13px;
 }
 .account:hover { background: var(--panel-2); border-color: var(--line); color: var(--text); }
@@ -146,9 +175,14 @@ body {
 }
 .caret { font-size: 10px; opacity: .7; }
 
-/* + New with nothing to run on. Not disabled: it still opens the dialog that
-   explains what to do, which is more useful than an inert button. */
-button.needs-device { opacity: .6; }
+/* + New with nothing to run on. It still opens the dialog that explains what
+   to do, which is more useful than an inert button -- so it must not LOOK
+   inert either. The old `opacity: .6` made the primary action of the page read
+   as disabled on exactly the screen where a new user starts, and a control
+   that looks unavailable does not get clicked. The state is carried by the
+   tooltip and by the menu's own note instead, both of which say what is
+   missing rather than merely implying it. */
+button.needs-device { opacity: 1; }
 
 /* ---------- connect a device ---------- */
 .cncmd {
@@ -178,6 +212,84 @@ button.ghost:hover { background: var(--panel-2); }
 button.ghost.danger { color: var(--bad); border-color: #47262b; }
 button.link { background: none; border: 0; color: var(--dim); cursor: pointer; text-decoration: underline; }
 
+/* ---------- the split New button and its neighbours ---------- */
+/* Positioned relative so the menus below can anchor to the control that opens
+   them. A fixed-position menu would drift away from its button the moment the
+   page scrolled, which on a phone is immediately. */
+.head-actions { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+.split { position: relative; display: inline-flex; align-items: center; }
+
+/* Fluent UI System Icons (Microsoft, MIT). Sized in ems so they track the text
+   they sit beside, and FILLED with `currentColor` so they follow the theme,
+   the hover state and the disabled state without a second set of rules.
+   `flex-shrink: 0` because an icon squashed to fit is worse than one that
+   pushes the label. */
+.i { width: 1em; height: 1em; flex-shrink: 0; fill: currentColor; }
+.primary, button.ghost { display: inline-flex; align-items: center; gap: 7px; }
+
+/* One control, two hit targets: the seam is a 1px rule rather than a gap, so
+   it reads as a split button and not as two buttons that happen to touch. */
+#newSplit .primary { border-radius: 8px 0 0 8px; padding-right: 14px; }
+#newSplit .split-more {
+  border-radius: 0 8px 8px 0; padding: 9px 9px;
+  border-left: 1px solid rgba(255,255,255,.3);
+}
+#newSplit .split-more .i { width: 15px; height: 15px; }
+.split-more[aria-expanded="true"] { filter: brightness(1.12); }
+
+/* The kebab gets a border so it reads as a control at rest rather than as
+   three dots someone left on the page. */
+.icon-btn.boxed {
+  border: 1px solid var(--line); color: var(--dim);
+  padding: 8px 9px; display: inline-flex; align-items: center;
+}
+.icon-btn.boxed:hover { color: var(--text); border-color: var(--faint); }
+.icon-btn.boxed[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
+.icon-btn.boxed .i { width: 16px; height: 16px; }
+
+.menu.anchored {
+  position: absolute; top: calc(100% + 6px); right: 0; left: auto; bottom: auto;
+  min-width: 236px;
+}
+/* Icon and label on one baseline, with every label starting at the same x --
+   a menu whose text edges wander is the thing that reads as unfinished. */
+.menu button {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+}
+.menu button .i { width: 16px; height: 16px; color: var(--dim); }
+.menu button.danger .i { color: var(--bad); }
+
+/* The accent on hover, not a grey wash. This is a menu of THINGS TO DO, and
+   the highlight should look like a selection rather than like the row merely
+   noticing the pointer. The icon and label go white together, because a label
+   that lights up while its icon stays grey reads as a half-finished state. */
+.menu.anchored button:hover:not([disabled]),
+.menu.anchored button:focus-visible:not([disabled]) {
+  background: var(--accent); color: #fff; outline: none;
+}
+.menu.anchored button:hover:not([disabled]) .i,
+.menu.anchored button:focus-visible:not([disabled]) .i { color: #fff; }
+/* The destructive row keeps its own colour on the accent, which would be
+   unreadable, so it takes a red highlight instead of the blue one. */
+.menu.anchored button.danger:hover:not([disabled]),
+.menu.anchored button.danger:focus-visible:not([disabled]) {
+  background: var(--bad-solid); color: #fff;
+}
+
+.menu-head {
+  color: var(--faint); font-size: 12px; padding: 8px 12px 6px;
+  letter-spacing: .2px;
+}
+/* The note explains a limit rather than offering an action, so it must not
+   look clickable. */
+.menu-note {
+  color: var(--faint); font-size: 11.5px; line-height: 1.5;
+  padding: 8px 12px 4px; margin-top: 4px; border-top: 1px solid var(--line);
+}
+.menu button[disabled] { opacity: .4; cursor: not-allowed; }
+.menu button[disabled]:hover { background: transparent; }
+
 /* ---------- filters ---------- */
 .filterbar {
   display: flex; gap: var(--sp-2); margin: var(--sp-4) 0 var(--sp-2); flex-wrap: wrap;
@@ -191,28 +303,99 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 
 /* A secondary row for the controls that reshape the list rather than filter
    it. Two rows of nine boxed selects is a wall; splitting them by what they
-   DO makes the bar readable at a glance. */
+   DO makes the bar readable at a glance.
+
+   The count sits at the left and the pills at the right, because the pills do
+   not act on the search box above them: pushed right they sit over the list
+   they actually reshape, and the row earns its height twice over instead of
+   leaving a band of empty page beneath it. */
 .toolbar {
-  display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center;
-  margin: 0 0 var(--sp-4); padding-bottom: var(--sp-3);
-  border-bottom: 1px solid var(--line);
+  display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center;
+  justify-content: space-between;
+  margin: 0 0 var(--sp-3); padding-bottom: 0;
+  border-bottom: 0;
+}
+.toolbar-status {
+  display: flex; align-items: center; gap: var(--sp-2);
+  color: var(--dim); font-size: 13px; margin-right: auto;
 }
 
-/* An inline label instead of a boxed select. The label says what the value
-   means, so the value itself no longer has to carry a prefix like
-   "Group: Device" -- and the control stops looking like a form field in a page
-   that is not a form. */
-.inline-select {
-  display: inline-flex; align-items: center; gap: 6px;
-  color: var(--faint); font-size: 12px; white-space: nowrap;
+/* A pill: an icon, the current value, and a caret, wrapped around a real
+   <select>.
+   THE SELECT IS STILL THERE, transparent and stretched across the pill. A
+   div-and-listbox reimplementation would have to rebuild keyboard handling,
+   type-ahead, screen-reader semantics and the native picker every mobile
+   browser already provides -- so the pill is a costume, not a replacement.
+   The value is visible because the select's own text is what shows through;
+   the icon and caret sit either side of it. */
+.selectpill {
+  position: relative; display: inline-flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+  padding: 0 12px; height: 34px; cursor: pointer;
+  color: var(--text); white-space: nowrap;
 }
-.inline-select select {
-  background: transparent; border: 0; border-bottom: 1px solid var(--line);
-  color: var(--text); font: inherit; font-size: 13px;
-  padding: 3px 2px; cursor: pointer; max-width: 180px;
+.selectpill:hover { background: var(--panel-2); border-color: var(--faint); }
+.selectpill:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); outline: none; }
+.selectpill.open { border-color: var(--accent); }
+.selectpill:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.selectpill .i { width: 15px; height: 15px; color: var(--dim); flex-shrink: 0; }
+.selectpill:hover .i { color: var(--text); }
+.selectpill .caret-i { width: 12px; height: 12px; }
+.selectpill select {
+  /* Present for its value, its change event and its form semantics -- the
+     custom list above draws what a person actually sees, because the native
+     popup is painted by the OS and cannot be themed. */
+  position: absolute; width: 1px; height: 1px; opacity: 0;
+  pointer-events: none; clip: rect(0 0 0 0); overflow: hidden;
 }
-.inline-select select:hover { border-bottom-color: var(--accent); }
-.inline-select select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sp-value {
+  font-weight: 600; font-size: 13px; color: inherit;
+  overflow: hidden; text-overflow: ellipsis; max-width: 190px;
+}
+/* The replacement popup. Same tokens as every other surface, so it cannot
+   drift from the theme the way the OS one did. */
+.sp-list {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+  min-width: 100%; max-height: 320px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 5px; box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  cursor: default;
+}
+.sp-list[hidden] { display: none; }
+.sp-opt {
+  padding: 7px 10px; border-radius: 6px; font-size: 13px; font-weight: 500;
+  color: var(--text); white-space: nowrap; cursor: pointer;
+}
+.sp-opt.active { background: var(--accent); color: #fff; }
+/* The current value is marked even when the pointer is elsewhere, so opening
+   the list answers "what is this set to" without moving the mouse. The mark
+   is a quiet fill rather than the accent, because the accent means "this is
+   what you are about to choose" and only one row may say that. */
+.sp-opt[aria-selected="true"] { background: var(--panel-2); }
+.sp-opt[aria-selected="true"].active { background: var(--accent); color: #fff; }
+/* The focus ring belongs on the pill, which is what a person sees; a second
+   one on the select inside it would draw a rectangle through the rounded
+   edge. */
+.selectpill select:focus-visible { outline: none; }
+
+/* THE OPEN LIST IS THE HALF OF A SELECT THIS STYLESHEET NEVER SEES. The popup
+   is painted by the operating system, and an `option` rule is honoured by some
+   engines and quietly ignored by others -- on Windows it comes back white
+   whatever the page asks for. That is why the toolbar selects are wrapped in
+   `.selectpill` and their popup is replaced outright (see enhanceSelect).
+
+   These rules stay for any select NOT wrapped that way -- the new-session and
+   connect dialogs -- where the native popup is still what opens and a
+   best-effort dark list beats a guaranteed white one. */
+select option,
+select optgroup {
+  background-color: var(--panel);
+  color: var(--text);
+}
+select option:checked {
+  background-color: var(--panel-2);
+  color: var(--text);
+}
 
 /* ---------- layout ---------- */
 .layout { display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }
@@ -222,9 +405,24 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   display: flex; justify-content: space-between; align-items: center;
   color: var(--dim); font-size: 13px; margin-bottom: 8px;
 }
-.conn { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
-.conn[data-state="live"] { color: var(--ok); border-color: #1d4636; }
-.conn[data-state="connecting"] { color: var(--warn); border-color: #3a3212; }
+/* The live-feed indicator, beside the page title.
+
+   A DOT when healthy and a worded pill when not: see setConn. The dot is sized
+   and nudged to sit on the cap-height of the heading rather than its baseline,
+   so it reads as part of the title rather than as something resting under it. */
+.conn {
+  font-size: 12px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line); vertical-align: middle;
+  display: inline-block; margin-left: 10px;
+}
+.conn[data-state="live"] {
+  padding: 0; border: 0; background: var(--ok);
+  width: 9px; height: 9px; border-radius: 50%;
+  margin-left: 12px; vertical-align: 0.28em;
+  /* A soft halo, so it reads as a signal rather than as a full stop. */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+}
+.conn[data-state="connecting"] { color: var(--warn); border-color: #3a3212; font-weight: 500; }
 
 /* Feedback for a manual refresh, next to the data it refreshed. */
 .updated { color: var(--dim); font-size: 12px; margin-left: auto; margin-right: 8px; }
@@ -234,11 +432,20 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   0%   { color: var(--ok); }
   100% { color: var(--dim); }
 }
-.conn[data-state="retrying"] { color: var(--warn); border-color: #3a3212; }
-.conn[data-state="offline"] { color: var(--bad); border-color: #47262b; }
-.conn[data-state="down"] { color: var(--bad); border-color: #47262b; }
+.conn[data-state="retrying"] { color: var(--warn); border-color: #3a3212; font-weight: 500; }
+.conn[data-state="offline"] { color: var(--bad); border-color: #47262b; font-weight: 500; }
+.conn[data-state="down"] { color: var(--bad); border-color: #47262b; font-weight: 500; }
 
 /* ---------- device groups ---------- */
+/* One box around the whole list. The groups inside it are headings, not
+   separate objects, so their own cards lose the border and the background
+   that made each one look like a list of its own. */
+.sessionbox {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 6px 14px 14px;
+}
+.sessionbox .group:last-child { margin-bottom: 0; }
+.sessionbox .card { background: transparent; border: 0; border-radius: 0; }
 .group { margin-bottom: 18px; }
 .group-head {
   display: flex; align-items: center; gap: 8px;
@@ -288,6 +495,9 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
    "by whom" answers a different question than the one being asked. */
 .status.answered { color: var(--ok); border-color: #1d4636; }
 .expiredline { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; }
+/* A session running a different agent to the one named on it. Worth marking:
+   the request and the result used to be assumed identical, and were not. */
+.agent-mismatch { color: var(--warn); font-weight: 600; }
 
 /* The branch a session's work is landing on. Set apart from the rest of the
    meta line because two sessions on the same repository but different branches
@@ -346,19 +556,47 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .meter.hot .meter-fill { background: var(--bad); }
 .meter-value { width: 30px; text-align: right; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 
-/* The rail collapses to reclaim width, and remembers that it did. */
+/* The rail collapses to reclaim width, and remembers that it did.
+
+   Its header is dropped to sit level with the toolbar pills across the way,
+   rather than with the top of the column. Aligning it to nothing in
+   particular is what made the rail read as floating slightly higher than
+   everything else on the page. */
+.railhead {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-2); margin-bottom: 10px;
+  min-height: 34px;
+}
+/* ...and the card below it starts level with the sessions box, so the two
+   columns read as one row rather than as two lists at slightly different
+   heights. */
+.devices #deviceList { margin-top: 12px; }
 .rail-toggle {
   background: none; border: 0; padding: 0; cursor: pointer;
-  color: inherit; font: inherit; font-weight: 600;
+  color: var(--text); font: inherit; font-weight: 600; font-size: 14px;
+  display: flex; align-items: center; gap: 8px;
 }
-.rail-toggle::before { content: '\25BE'; display: inline-block; margin-right: 6px; transition: transform .12s; }
-.devices.collapsed .rail-toggle::before { transform: rotate(-90deg); }
+.rail-toggle .i { width: 16px; height: 16px; color: var(--dim); }
+.rail-toggle:hover .i { color: var(--text); }
+/* Only the chevron turns; the monitor beside it must stay upright. */
+.rail-toggle .chev { width: 13px; height: 13px; transition: transform .12s; }
+.devices.collapsed .rail-toggle .chev { transform: rotate(-90deg); }
 .devices.collapsed #deviceList { display: none; }
-.listhead .pill {
+/* A round count, sized from the text so a three-digit fleet still fits in a
+   circle rather than bursting out of one. */
+.count-badge {
+  min-width: 20px; height: 20px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+.availpill {
   font-size: 11px; padding: 2px 8px; border-radius: 999px;
   background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
 }
-.listhead .pill.none { color: var(--faint); }
+.availpill[hidden] { display: none; }
+.availpill.none { color: var(--warn); border-color: #3a3212; }
 .listhead-count { color: var(--faint); font-size: 12px; }
 
 /* ---------- control verification ---------- */
@@ -530,8 +768,12 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
   box-shadow: 0 12px 32px rgba(0,0,0,.5);
 }
 .menu[hidden] { display: none; }
+/* Flex, not block: a menu row is an optional icon and a label that must share
+   one baseline, and `display: block` left the icon sitting on the text
+   baseline two pixels low. Rows with no icon are unaffected. */
 .menu button {
-  display: block; width: 100%; text-align: left;
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left;
   background: transparent; border: 0; color: var(--text);
   padding: 9px 12px; border-radius: 7px; cursor: pointer; font: inherit;
 }

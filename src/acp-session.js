@@ -139,7 +139,7 @@ class AcpSession extends EventEmitter {
       command: raw.command || (Array.isArray(raw.commands) ? raw.commands.join(' && ') : null),
       commands: Array.isArray(raw.commands) ? raw.commands : (raw.command ? [raw.command] : []),
       paths: extractPaths(raw),
-      readOnly: tc.kind === 'read' || tc.kind === 'search',
+      readOnly: isReadOnlyRequest(tc, raw),
       options: (p.options || []).map((o) => ({ optionId: o.optionId, kind: o.kind, name: o.name })),
       requestedAt: Date.now(),
       rawInput: raw,
@@ -186,6 +186,26 @@ class AcpSession extends EventEmitter {
 
     const s = await this._request('session/new', { cwd: this.cwd, mcpServers: [] });
     this.acpSessionId = s.sessionId;
+
+    // THE AGENT AND MODEL ARE CHOSEN HERE, NOT ON THE COMMAND LINE.
+    //
+    // `copilot --acp` accepts `--agent` and `--model` and silently ignores
+    // both. Not "rejects": accepts, with no error and no stderr, and then runs
+    // the default agent anyway. In `-p` mode the same flags are validated and
+    // an unknown value exits 1, which is what made this so easy to believe was
+    // working -- and it was not. Every session ran as plain Copilot while the
+    // UI reported the agent it had asked for.
+    //
+    // The supported path is `session/new`'s own reply, which advertises the
+    // agents and models this build actually has, and `session/set_config_option`
+    // / `session/set_model` to choose between them.
+    //
+    // Discovery matters more than the fix. The valid values come from the live
+    // response rather than from anything hardcoded here, so a custom agent that
+    // renames itself is matched on whatever it now calls itself, and one that
+    // disappears is REPORTED rather than silently swapped for the default.
+    await this._applySelection(s);
+
     this._setStatus(STATUS.ACTIVE, 'Processing...');
 
     const stop = await this._request('session/prompt', {
@@ -197,6 +217,67 @@ class AcpSession extends EventEmitter {
     this.endedAt = Date.now();
     this.shutdown();
     return stop;
+  }
+
+  /**
+   * Ask for the agent and model this session was started with, and record what
+   * was actually granted.
+   *
+   * Never throws. A session that cannot have its agent set is still a working
+   * session -- it is just not the one that was asked for, and saying so is the
+   * entire job here. Throwing would turn a degraded session into no session.
+   */
+  async _applySelection(newSession) {
+    const want = this.agentSelection || {};
+    this.applied = { agent: null, model: null, warnings: [] };
+
+    if (want.agent && want.agent !== 'default') {
+      const opt = ((newSession && newSession.configOptions) || []).find((o) => o.id === 'agent');
+      const choices = (opt && opt.options) || [];
+      // Case-insensitively, and against the name as well as the value: Copilot
+      // registers Squad's agent as "Squad" while every other surface in this
+      // codebase spells it "squad".
+      const hit = choices.find((o) => String(o.value).toLowerCase() === String(want.agent).toLowerCase())
+        || choices.find((o) => String(o.name || '').toLowerCase() === String(want.agent).toLowerCase());
+      if (!hit) {
+        const offered = choices.map((o) => o.name || o.value).filter(Boolean).join(', ');
+        this.applied.warnings.push(
+          `the agent "${want.agent}" is not installed for this Copilot; running the default agent instead`
+          + (offered ? ` (available: ${offered})` : ''),
+        );
+      } else {
+        try {
+          await this._request('session/set_config_option', {
+            sessionId: this.acpSessionId, configId: 'agent', value: hit.value,
+          });
+          this.applied.agent = hit.value;
+        } catch (e) {
+          this.applied.warnings.push(`could not select the agent "${want.agent}": ${e.message}`);
+        }
+      }
+    }
+
+    if (want.model) {
+      const available = ((newSession && newSession.models && newSession.models.availableModels) || [])
+        .map((m) => m.modelId);
+      const hit = available.find((id) => String(id).toLowerCase() === String(want.model).toLowerCase());
+      if (!hit) {
+        this.applied.warnings.push(
+          `the model "${want.model}" is not available to this account; using the default`
+          + (available.length ? ` (available: ${available.join(', ')})` : ''),
+        );
+      } else {
+        try {
+          await this._request('session/set_model', { sessionId: this.acpSessionId, modelId: hit });
+          this.applied.model = hit;
+        } catch (e) {
+          this.applied.warnings.push(`could not select the model "${want.model}": ${e.message}`);
+        }
+      }
+    }
+
+    for (const w of this.applied.warnings) this.emit('selection-warning', w);
+    return this.applied;
   }
 
   /** Answer a pending approval. Returns false if the id is unknown. */
@@ -330,6 +411,11 @@ class AcpSession extends EventEmitter {
       error: this.error,
       agent: this.agentInfo ? `${this.agentInfo.name} ${this.agentInfo.version}` : 'Copilot CLI',
       agentSelection: this.agentSelection || null,
+      // What the agent process ACTUALLY granted, which is not always what was
+      // asked for. Reported separately rather than folded into agentSelection,
+      // because "we asked for squad" and "we got squad" are different facts and
+      // the UI has to be able to tell them apart.
+      applied: this.applied || null,
       toolCallCount: this.toolCallCount,
       pendingApprovals: [...this.pendingApprovals.values()],
       expiredApprovals: this.expiredApprovals,
@@ -377,6 +463,98 @@ class AcpSession extends EventEmitter {
   }
 }
 
+/**
+ * Is this permission request read-only?
+ *
+ * The agent's declared tool kind answers it for file tools. It does NOT answer
+ * it for a shell command: every shell call arrives as kind `execute`, so
+ * `git status --short` and `rm -rf build` were shown with the same "writes"
+ * badge. A badge that says "writes" about a command that plainly reads nothing
+ * is not merely cosmetic -- it trains people to ignore the badge, and the badge
+ * only earns its place on the card by being right about the one case it exists
+ * to flag.
+ *
+ * The classifier below is deliberately timid. It downgrades a command to
+ * read-only ONLY when it recognises the whole line, and treats everything else
+ * as writing. That asymmetry is the point: a missed "read-only" costs a
+ * needless second look, a wrong "read-only" costs a repository.
+ */
+function isReadOnlyRequest(tc, raw) {
+  if (tc.kind === 'read' || tc.kind === 'search') return true;
+  // Only a shell tool is judged by its command. An `edit` or `delete` tool that
+  // happens to carry a command-shaped field must never talk its way down.
+  if (tc.kind && tc.kind !== 'execute') return false;
+  const cmds = Array.isArray(raw.commands) ? raw.commands : (raw.command ? [raw.command] : []);
+  if (!cmds.length) return false;
+  return cmds.every(isReadOnlyCommand);
+}
+
+/* Commands that report and do not change. Anything absent is treated as
+   writing, so this list being incomplete is safe by construction. */
+const READ_ONLY_COMMANDS = new Set([
+  // POSIX-ish
+  'cat', 'head', 'tail', 'ls', 'pwd', 'wc', 'stat', 'file', 'basename', 'dirname',
+  'realpath', 'readlink', 'which', 'whoami', 'hostname', 'uname', 'date', 'id',
+  'printenv', 'tree', 'du', 'df', 'diff', 'sort', 'uniq', 'grep', 'egrep', 'fgrep',
+  'rg', 'ripgrep', 'fd', 'echo', 'printf', 'cut', 'nl', 'md5sum', 'sha256sum', 'ps',
+  // Windows shell
+  'dir', 'type', 'findstr', 'where', 'ver',
+  // PowerShell, the read half of the verb set
+  'get-content', 'get-childitem', 'get-location', 'get-item', 'get-itemproperty',
+  'get-command', 'get-process', 'get-date', 'get-help', 'get-member',
+  'select-string', 'select-object', 'measure-object', 'test-path', 'where-object',
+  'sort-object', 'format-table', 'format-list', 'out-string', 'resolve-path',
+  'compare-object', 'write-output', 'write-host',
+]);
+
+/* `git` is a whole toolbox behind one name, so it is judged by subcommand. */
+const READ_ONLY_GIT = new Set([
+  'status', 'log', 'diff', 'show', 'describe', 'blame', 'shortlog', 'whatchanged',
+  'ls-files', 'ls-tree', 'ls-remote', 'rev-parse', 'rev-list', 'cat-file',
+  'name-rev', 'count-objects', 'grep', 'version',
+]);
+
+/* `git branch` LISTS with these and CREATES or DELETES with anything else, so it
+   is allowed only when every remaining token is one of them. */
+const READ_ONLY_GIT_BRANCH_FLAGS = new Set([
+  '--show-current', '--list', '-l', '-a', '--all', '-r', '--remotes', '-v', '-vv',
+  '--verbose', '--merged', '--no-merged', '--contains', '--sort', '--format',
+]);
+
+/* Flags that make an otherwise-reading command write. `-i` is sed's in-place,
+   `-o`/`--output` redirect to a file by another name. */
+const WRITING_FLAGS = new Set(['-i', '--in-place', '-o', '--output', '--output-file', '-w', '--write', '--fix']);
+
+/**
+ * Does this single shell command only look at things?
+ *
+ * Anything that can chain, redirect, or substitute is refused outright rather
+ * than parsed: this understands ONE command, and a line it cannot see the whole
+ * of is a line it cannot vouch for.
+ */
+function isReadOnlyCommand(command) {
+  const text = String(command == null ? '' : command).trim();
+  if (!text) return false;
+  if (/[|&;<>`$(){}\n\r]/.test(text)) return false;
+  const tokens = text.split(/\s+/);
+  for (const t of tokens.slice(1)) {
+    const flag = t.split('=')[0].toLowerCase();
+    if (WRITING_FLAGS.has(flag)) return false;
+  }
+  const head = tokens[0].replace(/\\/g, '/').split('/').pop().replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+  if (head === 'git') {
+    const args = tokens.slice(1).filter((t) => !t.startsWith('-'));
+    const sub = (args[0] || '').toLowerCase();
+    if (sub === 'branch') {
+      // Bare `git branch` lists; `git branch <name>` creates one.
+      const rest = tokens.slice(tokens.indexOf(args[0]) + 1);
+      return rest.every((t) => READ_ONLY_GIT_BRANCH_FLAGS.has(t.split('=')[0].toLowerCase()));
+    }
+    return READ_ONLY_GIT.has(sub);
+  }
+  return READ_ONLY_COMMANDS.has(head);
+}
+
 /** Best-effort path extraction from a tool's raw input. */
 function extractPaths(raw) {
   const out = new Set();
@@ -394,4 +572,6 @@ function extractPaths(raw) {
   return [...out];
 }
 
-module.exports = { AcpSession, STATUS, extractPaths };
+module.exports = {
+  AcpSession, STATUS, extractPaths, isReadOnlyCommand, isReadOnlyRequest,
+};

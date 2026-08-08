@@ -220,6 +220,17 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
       'a device token could ask another device to run a command');
   });
 
+  await checkAsync('a device token CANNOT erase another device\'s session history', async () => {
+    // The same escalation wearing a tidier hat. A leaked job secret that can
+    // wipe the record of what ran on your laptop is a leaked job secret that
+    // can cover its own tracks.
+    const r = await api(port, '/api/devices/laptop/forget', deviceToken, {
+      method: 'POST', body: { olderThanMs: 0 },
+    });
+    assert.strictEqual(r.status, 403,
+      'a device token could erase the session history of another device');
+  });
+
   await checkAsync('the refusal says why, and is 403 rather than 401', async () => {
     // 401 sends someone hunting for a token problem they do not have.
     const r = await api(port, '/api/me', deviceToken);
