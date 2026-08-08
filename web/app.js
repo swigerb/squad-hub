@@ -157,6 +157,13 @@ function agentLabel(s) {
   const got = s.applied;
   if (!want) return { text: s.agent || 'Copilot CLI', mismatch: false };
 
+  // NOTHING WAS ACTUALLY SELECTED. The default agent, no model, chosen because
+  // no rule applied -- so "default — default" spends a column saying nothing,
+  // twice. What the agent actually IS answers a question someone might have.
+  if ((!want.agent || want.agent === 'default') && !want.model && want.source === 'default') {
+    return { text: s.agent || 'Copilot CLI', mismatch: false };
+  }
+
   const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}`;
   // No `applied` at all means an older device that predates the fix. Report the
   // request without dressing it up as confirmation.
@@ -412,10 +419,17 @@ function sessionRow(s, deviceName, opts = {}) {
   // A Squad session is a team working under a charter, not a lone agent. The
   // badge says which, because "6 members, engineer active" is the difference
   // between a session list and a Squad session list.
+  //
+  // Every part is rendered ONLY when the number behind it is really there. A
+  // device on an older version, or any partial payload, otherwise puts the
+  // literal text "undefined/undefined members" in front of a user -- which
+  // reads as a broken product rather than as missing data.
+  const hasCounts = Number.isFinite(sq && sq.activeMembers) && Number.isFinite(sq && sq.memberCount);
+  const activeName = sq && sq.activeMember && sq.activeMember.name;
   const squadBits = sq ? `      <div class="squadline">
         <span class="sq-pill" title="Squad workspace">squad</span>
-        ${sq.activeMember ? `<span class="sq-role">${esc(sq.activeMember.name)}</span>` : ''}
-        <span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members</span>
+        ${activeName ? `<span class="sq-role">${esc(activeName)}</span>` : ''}
+        ${hasCounts ? `<span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members</span>` : ''}
         ${sq.decisionCount ? `<span class="sq-dim">${sq.decisionCount} decisions</span>` : ''}
         ${sq.models && !sq.models.uniform ? '<span class="sq-warn" title="Members are not all on the same model">mixed models</span>' : ''}
       </div>` : '';
@@ -1491,21 +1505,29 @@ function renderSquadPanel(sq) {
 
   const models = sq.models || {};
   const modelLine = models.uniform
-    ? `all on <b>${esc(models.distinctModels[0] || models.defaultModel || 'default')}</b>`
+    ? `all on <b>${esc((models.distinctModels || [])[0] || models.defaultModel || 'default')}</b>`
     : `<span class="sq-warn">mixed: ${esc((models.distinctModels || []).join(', '))}</span>`;
+
+  // Same rule as the row badge: a count is shown only when there is a count,
+  // and the lists are defended because a partial payload must degrade rather
+  // than throw halfway through building the panel.
+  const counts = Number.isFinite(sq.activeMembers) && Number.isFinite(sq.memberCount)
+    ? `${sq.activeMembers}/${sq.memberCount} members &middot; ` : '';
+  const members = Array.isArray(sq.members) ? sq.members : [];
+  const decisions = Array.isArray(sq.decisions) ? sq.decisions : [];
 
   el.innerHTML = `
     <div class="sq-head">
       <b>${esc(sq.project)}</b>
-      <span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members · ${modelLine}</span>
+      <span class="sq-dim">${counts}${modelLine}</span>
     </div>
     <div class="sq-members">
-      ${sq.members.map((m) => `
+      ${members.map((m) => `
         <span class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}">
           ${esc(m.name)}${m.role && m.role !== m.name ? `<i>${esc(m.role)}</i>` : ''}
         </span>`).join('')}
     </div>
-    ${sq.decisions.length ? `
+    ${decisions.length ? `
       <div class="sq-sub">Recent decisions (${sq.decisionCount})</div>
       <ol class="sq-decisions">
         ${sq.decisions.slice(0, 5).map((d) => `

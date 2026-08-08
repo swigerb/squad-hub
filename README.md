@@ -23,10 +23,6 @@ the moment you step away from a keyboard:
 
 Squad Hub fixes both.
 
-<p align="center">
-  <img src="docs/images/all-sessions.jpg" alt="Every session across every device, in one live list" width="900">
-</p>
-
 ## What it does
 
 | | |
@@ -40,8 +36,38 @@ Squad Hub fixes both.
 | **Squad-aware** | Reads `.squad/` for team, decisions, and model policy |
 | **On your phone** | Installable as a PWA |
 
+## What it looks like
+
+**Every session, across every device.** Anything blocked on a person is pulled
+to the top and edged in amber — that is the only row that cannot make progress
+on its own.
+
 <p align="center">
-  <img src="docs/images/new-session.jpg" alt="Starting a session on a remote device" width="420">
+  <img src="docs/images/all-sessions.jpg" alt="Five sessions across three devices, with one waiting for approval at the top" width="900">
+</p>
+
+**An approval, answerable from anywhere.** The card shows the **literal
+command** and every path it touches, each marked as reading or writing — not a
+summary, and not a yes/no with no context. This is the difference between a
+45-minute run finishing and stalling until you get back to that machine.
+
+<p align="center">
+  <img src="docs/images/approval.jpg" alt="An approval card showing the exact kubectl command and the files it writes" width="820">
+</p>
+
+**Inside a session.** The transcript as it happens, the Squad team working it,
+and a box to steer the agent without touching the machine it runs on.
+
+<p align="center">
+  <img src="docs/images/session-detail.jpg" alt="A session transcript, its Squad roster, and a follow-up input box" width="820">
+</p>
+
+**Starting work somewhere else.** Choose a device, write a prompt. Leave the
+agent and model blank and the project decides — in a Squad project that means
+the squad agent, automatically.
+
+<p align="center">
+  <img src="docs/images/new-session.jpg" alt="The new-session dialog: device, working directory, prompt, agent and model" width="820">
 </p>
 
 ## Try it
@@ -51,6 +77,15 @@ on your PATH — that is the agent Squad Hub supervises.
 
 There is **nothing to build and nothing to install**. Squad Hub has no
 dependencies, so there is no `npm install` step and no `node_modules`.
+
+> **Squad is not bundled with this, and is not pinned to a version.** Squad Hub
+> supervises whatever the Copilot CLI on your PATH already has. It detects a
+> Squad project from `.squad/` or `.github/agents/squad.agent.md` on disk, then
+> asks for the `squad` agent **over the ACP protocol** against the list that
+> session advertises — so you always get the Squad you have installed, and
+> upgrading Squad needs nothing from Squad Hub. If the agent it asked for is not
+> there, the session runs with the default and **says so**, rather than quietly
+> substituting.
 
 ### Getting the `squad-hub` command
 

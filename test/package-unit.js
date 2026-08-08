@@ -489,6 +489,39 @@ check('verification can be re-run on its own, without publishing again', () => {
   assert.match(src, /--verify-only/, 'the script does not implement the mode its own script asks for');
 });
 
+check('VERIFICATION RUNS OUTSIDE THE CHECKOUT, never from the package\'s own directory', () => {
+  /**
+   * This directory holds a package.json named `squad-hub`, and npx asked for a
+   * command matching the name of the project it is standing in resolves that
+   * project first. A checkout has no `node_modules/.bin/squad-hub`, so npx
+   * reports "'squad-hub' is not recognized" -- a healthy package, condemned by
+   * where the test was run.
+   *
+   * That is exactly what happened on the 0.2.0 release: the unscoped name
+   * failed and the SCOPED name passed, from a byte-identical tarball. The
+   * verifier told the maintainer to deprecate a version that was fine.
+   *
+   * Asserted on the call itself rather than on a comment, because a comment
+   * cannot notice someone dropping the cwd back to the default.
+   */
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  const fn = src.match(/function verifyPublished[\s\S]*?\n\}/);
+  assert.ok(fn, 'verifyPublished moved; find it before trusting this test');
+  assert.match(fn[0], /mkdtempSync/,
+    'verification must run from a temporary directory, not the repo it is verifying');
+  const npxCall = fn[0].match(/run\('npx'[\s\S]*?\}\);/);
+  assert.ok(npxCall, 'the npx invocation moved');
+  assert.match(npxCall[0], /cwd:\s*sandbox/,
+    'the npx call does not name a cwd, so it inherits the checkout and can never pass for the unscoped name');
+});
+
+check('verification cleans up the directory it worked in', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  const fn = src.match(/function verifyPublished[\s\S]*?\n\}/)[0];
+  assert.match(fn, /finally/, 'a release must not leave temporary directories behind on every run');
+  assert.match(fn, /rmSync/);
+});
+
 check('verification tells "not published yet" apart from "installs no command"', () => {
   // They demand opposite responses: one is worth waiting for, the other never
   // improves and means the version is spent. Reporting both as one failure is
