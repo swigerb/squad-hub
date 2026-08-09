@@ -49,7 +49,24 @@ function Step($m) { Write-Host "`n=== $m ===" -ForegroundColor Cyan }
 function Fail($m) { Write-Host "`nREFUSING TO CONTINUE: $m" -ForegroundColor Red; exit 1 }
 function Warn($m) { Write-Host $m -ForegroundColor Yellow }
 
-if ($Subscription) { az account set --subscription $Subscription | Out-Null }
+# Which subscription to deploy into.
+#
+# NOT left to whatever `az` happens to have active. The active subscription is
+# global machine state that anything else can change -- another terminal,
+# another tool, another task -- and a deploy that trusts it will one day create
+# a brand new app in somebody else's subscription and report success.
+#
+# Measured: this exact thing happened. The active subscription had moved, the
+# script reported "no existing app; will use plan 'asp-squad-hub'", and only the
+# settings step failing stopped it building a second hub somewhere nobody was
+# looking.
+#
+# So it is pinned to the subscription this hub actually lives in. Override with
+# -Subscription, or SQUAD_HUB_SUBSCRIPTION, for a genuinely different target.
+if (-not $Subscription) { $Subscription = $env:SQUAD_HUB_SUBSCRIPTION }
+if (-not $Subscription) { $Subscription = '44847a42-6b69-4e6c-b7e5-ce7140469dd6' }
+az account set --subscription $Subscription | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail "could not select subscription '$Subscription'. Run 'az login', or pass -Subscription." }
 Write-Host "subscription: $(az account show --query name -o tsv)"
 
 # If the app already exists, use ITS plan. Guessing a name from a convention
