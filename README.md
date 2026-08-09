@@ -43,7 +43,7 @@ to the top and edged in amber — that is the only row that cannot make progress
 on its own.
 
 <p align="center">
-  <img src="docs/images/all-sessions.jpg" alt="Five sessions across three devices, with one waiting for approval at the top" width="900">
+  <img src="docs/images/all-sessions.jpg" alt="A session waiting for approval, pulled to the top and edged in amber" width="900">
 </p>
 
 **An approval, answerable from anywhere.** The card shows the **literal
@@ -52,22 +52,32 @@ summary, and not a yes/no with no context. This is the difference between a
 45-minute run finishing and stalling until you get back to that machine.
 
 <p align="center">
-  <img src="docs/images/approval.jpg" alt="An approval card showing the exact kubectl command and the files it writes" width="820">
+  <img src="docs/images/approval.jpg" alt="An approval card showing the exact command and the files it touches" width="820">
 </p>
 
-**Inside a session.** The transcript as it happens, the Squad team working it,
-and a box to steer the agent without touching the machine it runs on.
+**Inside a session.** The transcript as it happens, the Squad working it, and a
+box to steer the agent without touching the machine it runs on.
 
 <p align="center">
   <img src="docs/images/session-detail.jpg" alt="A session transcript, its Squad roster, and a follow-up input box" width="820">
 </p>
 
-**Starting work somewhere else.** Choose a device, write a prompt. Leave the
-agent and model blank and the project decides — in a Squad project that means
-the squad agent, automatically.
+**Your Squad, not just your sessions.** Click a member to read their charter, or
+open the team's decisions and routing — read from the device, and rendered as
+**text**, never as markup. These files are written by agents as well as by
+people, so the hub does not turn them into HTML.
 
 <p align="center">
-  <img src="docs/images/new-session.jpg" alt="The new-session dialog: device, working directory, prompt, agent and model" width="820">
+  <img src="docs/images/squad-charter.jpg" alt="A Squad member's charter, read from the device and shown as plain text" width="820">
+</p>
+
+**Starting work somewhere else.** Choose a device, write a prompt. The agent and
+model lists come from that device — only it knows which agents its Copilot has
+and which models the agent offers. Leave them blank and the project decides:
+in a Squad project that means the squad agent, automatically.
+
+<p align="center">
+  <img src="docs/images/new-session.jpg" alt="The new-session dialog: device, working directory, prompt, and agent and model pickers" width="820">
 </p>
 
 ## Try it

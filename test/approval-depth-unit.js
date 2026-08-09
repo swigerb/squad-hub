@@ -720,5 +720,14 @@ check('the detail view says WHY the agent is not the one that was asked for', ()
     'the warning line must disappear when there is nothing wrong');
 });
 
+check('a document written on Windows is not double-spaced', () => {
+  // These files come from whatever machine the Squad runs on. Splitting on \n
+  // alone leaves a \r on the end of every line, which inside <pre> renders as
+  // an extra blank line -- a charter appeared double-spaced until this.
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /String\(r\.text \|\| ''\)\.split\(\/\\r\?\\n\/\)/,
+    'the document renderer must split on CRLF as well as LF');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
