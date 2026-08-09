@@ -249,6 +249,116 @@ function readSquad(cwd, opts = {}) {
   }
 }
 
+/**
+ * The documents a hub may ask for, and where each one lives.
+ *
+ * THIS TABLE IS THE SECURITY BOUNDARY. A caller names a DOCUMENT; it never
+ * names a file. That is what stops a viewer becoming a remote file-read
+ * primitive, and it is why adding a document is a reviewed change to this
+ * object rather than a new string arriving over a socket.
+ *
+ * Everything here is relative to `<cwd>/.squad`.
+ */
+const SQUAD_DOCS = Object.freeze({
+  team: 'team.md',
+  decisions: 'decisions.md',
+  routing: 'routing.md',
+  config: 'config.json',
+});
+
+/** `charter:<member>` and `history:<member>`, resolved against the real team. */
+const MEMBER_DOCS = Object.freeze({
+  charter: 'charter.md',
+  history: 'history.md',
+});
+
+/**
+ * Turn a document name into a path, or refuse.
+ *
+ * THE MEMBER NAME IS NOT A PATH SEGMENT. It is matched against the team this
+ * workspace actually declares, and the matched member's OWN name is what gets
+ * joined -- so `charter:../../../etc/passwd` is not sanitised, it simply never
+ * matches anybody and is refused for that reason. A traversal that cannot be
+ * expressed does not need to be filtered, and an assertion about team
+ * membership survives a refactor in a way that a regex over a string does not.
+ *
+ * The containment check afterwards is belt and braces: it costs nothing and it
+ * catches a mistake in this function, which is exactly the sort of mistake
+ * nobody notices.
+ *
+ * @returns {{path: string, doc: string}|{error: string}}
+ */
+function resolveSquadDoc(cwd, doc) {
+  if (!cwd || typeof doc !== 'string' || !doc) return { error: 'no document was named' };
+  if (!isSquadWorkspace(cwd)) return { error: 'not a Squad workspace' };
+
+  const root = path.resolve(cwd, '.squad');
+  let rel = null;
+
+  if (Object.prototype.hasOwnProperty.call(SQUAD_DOCS, doc)) {
+    rel = SQUAD_DOCS[doc];
+  } else {
+    const at = doc.indexOf(':');
+    const kind = at === -1 ? null : doc.slice(0, at);
+    const who = at === -1 ? null : doc.slice(at + 1);
+    if (!kind || !Object.prototype.hasOwnProperty.call(MEMBER_DOCS, kind)) {
+      return { error: `unknown document "${doc}"` };
+    }
+    const team = parseTeam(readFileSafe(path.join(root, 'team.md')));
+    const member = team.find((m) => String(m.name).toLowerCase() === String(who).toLowerCase());
+    if (!member) return { error: `"${who}" is not on this team` };
+    rel = path.join('agents', member.name, MEMBER_DOCS[kind]);
+  }
+
+  const full = path.resolve(root, rel);
+  /**
+   * Containment, on the resolved path.
+   *
+   * This is UNREACHABLE while the rules above hold -- every fixed document is
+   * a literal, and a member document is built from a name the team declares --
+   * and the mutation harness confirms it: breaking this check fails nothing,
+   * because nothing can get here with an escaping path. It is kept anyway, and
+   * that is a deliberate choice rather than an oversight. It costs one
+   * comparison, and it is the only thing standing between a future edit to the
+   * table above and a path outside the workspace. Defence that never fires is
+   * what you want; defence you removed because it never fired is how the next
+   * one gets through.
+   *
+   * `root + sep` rather than a prefix test on `root` alone, so a sibling
+   * directory named `.squad-other` cannot pass for being inside `.squad`.
+   */
+  if (full !== root && !full.startsWith(root + path.sep)) {
+    return { error: 'that document is outside the workspace' };
+  }
+  return { path: full, doc };
+}
+
+/**
+ * Which documents this workspace actually has.
+ *
+ * Offering one that does not exist is a link to a dead end; hiding one that
+ * does is worse. Both are answered by looking, once, at open time.
+ */
+function listSquadDocs(cwd) {
+  if (!cwd || !isSquadWorkspace(cwd)) return [];
+  const out = [];
+  const has = (d) => {
+    const r = resolveSquadDoc(cwd, d);
+    if (r.error) return false;
+    try { return fs.statSync(r.path).isFile(); } catch { return false; }
+  };
+  for (const d of Object.keys(SQUAD_DOCS)) if (has(d)) out.push(d);
+  const team = parseTeam(readFileSafe(path.join(path.resolve(cwd, '.squad'), 'team.md')));
+  for (const m of team) {
+    for (const kind of Object.keys(MEMBER_DOCS)) {
+      const d = `${kind}:${m.name}`;
+      if (has(d)) out.push(d);
+    }
+  }
+  return out;
+}
+
 module.exports = {
   readSquad, isSquadWorkspace, parseTeam, parseDecisions, parseModels, inferActiveMember,
+  resolveSquadDoc, listSquadDocs, readFileSafe, SQUAD_DOCS, MEMBER_DOCS,
 };

@@ -798,6 +798,11 @@ async function suiteAgentArgs() {
  * is what `forget` REFUSES -- above all, never deleting the record of a
  * session whose agent process is still alive.
  */
+async function suiteSquadDocs() {
+  console.log('\n[SQUAD DOCS] the hub names a document, never a file');
+  runChildSuite(path.join(__dirname, 'squad-docs-unit.js'), 'squad-docs');
+}
+
 async function suiteForget() {
   console.log('\n[FORGET] ended sessions only, never a live one, never an orphan');
   runChildSuite(path.join(__dirname, 'forget-unit.js'), 'forget');
@@ -867,6 +872,7 @@ async function suiteAgentApply() {
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteForget();
+  await suiteSquadDocs();
   await suiteAgentArgs();
   await suiteParityAudit();
   await suiteAgentApply();
