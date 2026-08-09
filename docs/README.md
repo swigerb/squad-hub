@@ -7,6 +7,7 @@
 | [HTTP API](api.md) | Every endpoint, for scripting against a hub |
 | [Security](security.md) | Locking a hub down to just you |
 | [Squad views](squad-views.md) | Reading a Squad's charters and decisions from the hub |
+| [What's next](next.md) | Planned: agent modes, an admin screen, and launching a job |
 | [Running in the cloud](cloud.md) | App Service, Container Apps, and Kubernetes |
 | [Sessions on Container Apps](aca.md) | Supervising Squad on ACA runs, so a job can ask a human |
 | [Releasing](releasing.md) | Publishing to npm, under both of its names |
