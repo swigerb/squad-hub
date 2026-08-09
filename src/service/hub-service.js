@@ -23,6 +23,7 @@ const crypto = require('crypto');
 const { Authenticator, AuthError, MODES } = require('./auth');
 const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
 const { DeviceTokenStore } = require('./device-token-store');
+const { AccessStore } = require('./access-store');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store } = require('./store');
@@ -72,12 +73,44 @@ function instanceCount() {
 
 class HubService {
   constructor(opts = {}) {
+    /**
+     * The deployment's own list, which is the floor everything else sits on.
+     *
+     * Read from an injected authenticator when there is one, and from the
+     * environment otherwise. Not just the environment: a caller that supplies
+     * its own `auth` -- every test, and any embedder -- would otherwise get an
+     * access store that disagreed with the authenticator about who the owner
+     * is, and "only an owner may edit this" would be deciding against a
+     * different list to the one being edited.
+     */
+    const envAllowed = opts.auth && Array.isArray(opts.auth.allowedUsers)
+      ? opts.auth.allowedUsers
+      : (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean);
+    const envOwner = opts.auth && Array.isArray(opts.auth.owner)
+      ? opts.auth.owner
+      : (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean);
+
+    /**
+     * Who may sign in, editable without a redeploy.
+     *
+     * Built BEFORE the authenticator, because the authenticator is given the
+     * combined list -- the deployment's own configuration plus anyone added
+     * since. The environment remains the floor: nothing added here can remove
+     * it, and owners are not grantable at all. See access-store.js.
+     */
+    this.accessStore = opts.accessStore || new AccessStore({
+      dir: opts.accessDir || paths.home(),
+      persist: opts.persistAccess !== false,
+      envAllowed,
+      envOwner,
+    });
+
     this.auth = opts.auth || new Authenticator({
       mode: process.env.SQUAD_HUB_AUTH_MODE || MODES.DEV,
       devSecret: process.env.SQUAD_HUB_DEV_SECRET || crypto.randomBytes(16).toString('hex'),
       allowedTenants: (process.env.SQUAD_HUB_TENANTS || '').split(',').filter(Boolean),
-      allowedUsers: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
-      owner: (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean),
+      allowedUsers: this.accessStore.allowedUsers(),
+      owner: envOwner,
       audience: process.env.SQUAD_HUB_AUDIENCE || null,
     });
     this.store = opts.store || new Store();
@@ -291,6 +324,10 @@ class HubService {
         // The signed-in user's own avatar, where the provider supplies one.
         // Null everywhere else, and the UI falls back to an initial.
         avatar: me.avatar || null,
+        // Whether to OFFER the access screen. The hub does not rely on this --
+        // /api/access checks the principal again on every call -- so a browser
+        // that lied to itself here would gain nothing but a menu item that 403s.
+        isOwner: !!me.isOwner,
         // The UI shows this as a banner. A user whose devices keep vanishing
         // deserves to be told why on the screen where they notice it, not in a
         // log they will never read.
@@ -317,6 +354,70 @@ class HubService {
 
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(200, { sessions: this.store.listSessions(me.key) });
+    }
+
+    // -- who may use this hub -------------------------------------------------
+    //
+    // OWNER ONLY, and checked on every method including the read.
+    //
+    // Write, because an allowed user who can add another allowed user turns one
+    // invitation into the whole hub, transitively, without the owner ever
+    // seeing the chain. Read, because the list of people with access to a
+    // system is worth something to someone deciding whom to phish -- and a
+    // guest has no reason to need it.
+    //
+    // `isOwner` comes from the verified principal (auth.js), never from the
+    // request. Note it is NOT the same question as "is this my partition":
+    // every signed-in user has a partition of their own, and only an owner has
+    // this.
+    //
+    // The identity to remove travels in the PATH, not in a body. A DELETE
+    // carrying a body is not reliably delivered -- measured, not assumed: Node
+    // answers 400 to its own client for a chunked DELETE, and the handler sees
+    // an empty body. A route that works only when the body happens to arrive is
+    // a route that fails silently.
+    const accessMatch = p.match(/^\/api\/access(?:\/(.+))?$/);
+    if (accessMatch) {
+      if (!me.isOwner) {
+        // 403, not 404: the caller is genuinely signed in and the route
+        // genuinely exists. Pretending otherwise would send someone hunting a
+        // credential problem they do not have.
+        return send(403, { error: 'only an owner of this hub can manage who has access' });
+      }
+      const target = accessMatch[1];
+      if (req.method === 'GET' && !target) {
+        return send(200, {
+          users: this.accessStore.list(),
+          // A hub that cannot persist its list will forget every grant when it
+          // restarts. Saying so is the difference between "added" and "added
+          // until the next deploy".
+          durable: this.accessStore.persist,
+          ok: this.accessStore.ok,
+          error: this.accessStore.ok ? null : this.accessStore.error,
+        });
+      }
+      if (req.method === 'POST' && !target) {
+        const body = await readJson(req);
+        // `addedBy` is taken from the verified identity, never the body, for
+        // the same reason `answeredBy` is on an approval: a log that records a
+        // name of the caller's choosing records nothing.
+        const r = this.accessStore.add(body && body.login, {
+          addedBy: me.name || me.key,
+          note: body && body.note,
+        });
+        if (!r.ok) return send(400, { error: r.reason });
+        this._syncAllowedUsers();
+        return send(200, { ok: true, login: r.login, users: this.accessStore.list() });
+      }
+      if (req.method === 'DELETE' && target) {
+        let login;
+        try { login = decodeURIComponent(target); } catch { return send(400, { error: 'bad identity' }); }
+        const r = this.accessStore.remove(login);
+        if (!r.ok) return send(400, { error: r.reason });
+        this._syncAllowedUsers();
+        return send(200, { ok: true, login: r.login, users: this.accessStore.list() });
+      }
+      return send(405, { error: 'method not allowed' });
     }
 
     // -- device tokens --------------------------------------------------------
@@ -546,6 +647,21 @@ class HubService {
       if (err) return this._notFound(send, url);
       return send(200, buf, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
     });
+  }
+
+  /**
+   * Push the access list into the live authenticator.
+   *
+   * Without this a grant would take effect on the next restart, which on App
+   * Service means "whenever something else happens to recycle the process" --
+   * so the person you just added would be refused, and the two of you would
+   * spend a while establishing that you had in fact added them.
+   *
+   * Owners are pointedly not synced. They come from the environment and stay
+   * there; see access-store.js.
+   */
+  _syncAllowedUsers() {
+    if (this.auth) this.auth.allowedUsers = this.accessStore.allowedUsers();
   }
 
   /**

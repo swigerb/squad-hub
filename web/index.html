@@ -53,6 +53,11 @@
   <div class="menu-sep"></div>
   <button data-menu="refresh">Refresh now</button>
   <button data-menu="connect">Connect a device…</button>
+  <!-- Shown only to an owner. Hidden by default so the default is the safe
+       one: a build that forgot to check would hide it, not offer it.
+       No id: it is wired through data-menu like its neighbours, and an id
+       here would claim a handler of its own that it does not have. -->
+  <button data-menu="people" hidden>Who has access…</button>
   <button data-menu="install">Install as an app</button>
   <div class="menu-sep"></div>
   <button data-menu="signout" class="danger">Sign out</button>
@@ -428,6 +433,31 @@
       <button id="cnCancel">Close</button>
       <button class="primary" id="cnCreate">Create token</button>
     </div>
+  </div>
+</div>
+
+<div class="scrim" id="peopleScrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pplTitle">
+    <h2 id="pplTitle">Who has access</h2>
+    <p class="modal-sub">
+      Everyone here can sign in and drive their own devices. They cannot see
+      yours — each person gets their own view.
+    </p>
+    <div id="pplList" class="ppl-list"></div>
+    <label class="field">
+      <span>Add someone <button type="button" class="hint-btn" aria-label="About adding someone"
+        title="Their GitHub username, or the email they sign in with. &#10;&#10;They get their own devices and sessions — adding someone does not share yours with them, and does not let them add anyone else.">i</button></span>
+      <input id="pplLogin" placeholder="github-username or name@example.com" maxlength="128" autocapitalize="off" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Note (optional)</span>
+      <input id="pplNote" placeholder="e.g. testing the hub" maxlength="200">
+    </label>
+    <div class="modal-actions">
+      <button class="ghost" id="pplClose">Done</button>
+      <button class="primary" id="pplAdd">Add</button>
+    </div>
+    <p class="err" id="pplErr" hidden></p>
   </div>
 </div>
 
