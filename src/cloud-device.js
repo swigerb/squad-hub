@@ -56,7 +56,21 @@ const replica = process.env.CONTAINER_APP_REPLICA_NAME
 const appName = process.env.CONTAINER_APP_NAME || process.env.SQUAD_HUB_DEVICE_NAME || 'cloud';
 const deviceName = process.env.SQUAD_HUB_DEVICE_NAME || `${appName} (${String(replica).slice(-8)})`;
 
-config.update({
+/**
+ * Configure THIS PROCESS, without touching the config file.
+ *
+ * A container reconfigures itself from its environment on every start, so it
+ * has nothing worth persisting. Persisting anyway had a nasty consequence:
+ * running `squad-hub oneshot` on a laptop -- to test it, exactly as anyone
+ * would -- rewrote the real ~/.squad-hub. The machine was renamed to
+ * `cloud (...)`, reclassified as a cloud device, and silently switched to
+ * whole-filesystem access. All of it outlived the command, because every later
+ * `squad-hub start` read it straight back.
+ *
+ * A diagnostic must not be able to change what a device is, or what it may
+ * reach. These settings now live for the life of the process and no longer.
+ */
+config.setOverrides({
   deviceName,
   server: HUB,
   token: TOKEN,

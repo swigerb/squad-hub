@@ -688,6 +688,22 @@ select option:checked {
 }
 .field textarea { resize: vertical; font-family: inherit; }
 .field small { color: var(--faint); display: block; margin-top: 6px; }
+
+/* An "i" beside a label, explaining the field without spending a line on it.
+   A form someone has to already understand is a form that gets guessed at, and
+   a guessed-at Agent or Model is only discovered to be wrong once the session
+   comes back reporting something else. The title attribute is deliberate: it
+   works with the keyboard, with a screen reader, and needs no JavaScript. */
+.hint-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 6px; padding: 0;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: transparent; color: var(--faint);
+  font-size: 10px; font-weight: 700; font-family: inherit; line-height: 1;
+  cursor: help; vertical-align: middle;
+}
+.hint-btn:hover, .hint-btn:focus-visible { color: var(--text); border-color: var(--dim); }
+
 .err { color: var(--bad); margin: 10px 0 0; }
 
 /* ---------- detail ---------- */

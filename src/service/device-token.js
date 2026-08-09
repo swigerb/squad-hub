@@ -120,6 +120,29 @@ class DeviceTokens {
   }
 
   /**
+   * Read a token's claims WITHOUT verifying it.
+   *
+   * Only the hub holds the signing secret, so a device cannot check its own
+   * credential -- but the label the person typed when they minted it is right
+   * there, and it is the name they expect to see in the roster. Reading it is
+   * how "what is it for? bs-minidesktop" stops being discarded.
+   *
+   * Unverified, and treated accordingly: the result is used for a DISPLAY NAME
+   * and nothing else. The hub still verifies the signature before the device is
+   * allowed to register, so a forged label buys an attacker a label.
+   *
+   * @returns {object|null} the claims, or null if they cannot be read.
+   */
+  static unverifiedClaims(token) {
+    if (!DeviceTokens.looksLikeDeviceToken(token)) return null;
+    const parts = String(token).split('.');
+    if (parts.length !== 3) return null;
+    try {
+      return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    } catch { return null; }
+  }
+
+  /**
    * Verify, or throw.
    *
    * Every failure is a 401 EXCEPT expiry, which is also 401 but says so, and a

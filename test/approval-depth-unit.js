@@ -584,5 +584,41 @@ check('the Squad pill is not repeated by the active-member chip beside it', () =
     'the active-member chip no longer suppresses the coordinator, so the pill is duplicated');
 });
 
+check('the Agent field offers what the device actually has, and falls back when it cannot say', () => {
+  // The hub holds no Copilot install, so it cannot know this on its own --
+  // the list arrives with the device's heartbeat. Where it exists, a free-text
+  // box asks someone to already know what to type, and a typo only surfaces
+  // when the session comes back reporting a different agent.
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /function updateAgentChoices/, 'the agent picker is gone');
+  assert.match(app, /device && Array\.isArray\(device\.agents\)/,
+    'the picker must be driven by what the DEVICE reported, not by a hardcoded list');
+
+  // The distinction that matters: "could not tell" is not "there are none".
+  // An empty picker would be a claim the device never made, and would leave
+  // someone unable to type a name they know is there.
+  assert.match(app, /if \(!agents \|\| !agents\.length\)[\s\S]{0,120}box\.hidden = false/,
+    'a device that could not report its agents must fall back to the text box');
+
+  // And the choice has to reach the request, or picking one does nothing.
+  assert.match(app, /agentSel && !agentSel\.hidden \? agentSel\.value/,
+    'the visible control must be the one read on submit');
+});
+
+check('every field in New session explains itself', () => {
+  // A form someone has to already understand is a form that gets guessed at,
+  // and a guessed Agent or Model is only found to be wrong after the session
+  // has started.
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
+  const dialog = html.slice(html.indexOf('id="nsTitle"'), html.indexOf('id="nsStart"'));
+  for (const field of ['Device', 'Working directory', 'Prompt', 'Agent', 'Model']) {
+    const re = new RegExp(`<span>${field}\\s*<button[^>]*class="hint-btn"`);
+    assert.match(dialog, re, `the ${field} field has no explanation beside it`);
+  }
+  // The Model hint has to say what one looks like; "the agent's default" alone
+  // tells someone nothing about what they could type instead.
+  assert.match(dialog, /claude-opus-5|gpt-5/, 'the Model field gives no example of a real model name');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

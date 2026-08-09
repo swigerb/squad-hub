@@ -1084,17 +1084,17 @@ const MUTATIONS = [
     // config without a single byte reaching disk.
     name: 'read() hands out the cache itself instead of a copy',
     file: 'src/config.js',
-    find: `  return { ...cache.value, environments: { ...cache.value.environments } };`,
-    replace: `  return process.env.MUTANT ? cache.value : { ...cache.value, environments: { ...cache.value.environments } }; // MUTATION`,
+    find: `  return applyOverrides({ ...cache.value, environments: { ...cache.value.environments } });`,
+    replace: `  return process.env.MUTANT ? cache.value : applyOverrides({ ...cache.value, environments: { ...cache.value.environments } }); // MUTATION`,
     mustFail: 'a caller cannot mutate the cache through what read() handed it',
   },
   {
     name: '--no-config-cache is accepted but does nothing',
     file: 'src/config.js',
     find: `function read() {
-  if (!cacheEnabled) return readFromDisk();`,
+  if (!cacheEnabled) return applyOverrides(readFromDisk());`,
     replace: `function read() {
-  if (!cacheEnabled && !process.env.MUTANT) return readFromDisk(); // MUTATION`,
+  if (!cacheEnabled && !process.env.MUTANT) return applyOverrides(readFromDisk()); // MUTATION`,
     mustFail: '--no-config-cache reads a change the stamp cannot see',
   },
   {
