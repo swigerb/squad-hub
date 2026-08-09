@@ -85,6 +85,7 @@ store rather than at the screen, so a second caller added later inherits them:
 If the hub cannot persist the list, the screen says so rather than accepting
 additions it will forget on the next restart.
 
+<<<<<<< HEAD
 ## Starting a cloud job from the hub
 
 A session on a GitHub repository gets **Run on ACA…** in its detail view. It
@@ -112,6 +113,8 @@ label and would be a lie in a link.
 See [launcher-assessment.md](launcher-assessment.md) for the design that was
 rejected and why.
 
+=======
+>>>>>>> origin/dev
 ## Which identifiers work
 
 Entries can be an Entra **object id**, a **UPN**, or an **email**, matched
