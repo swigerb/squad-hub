@@ -346,7 +346,20 @@ if ($AuthMode -eq 'github') {
 } else {
   Push-Location $root
   try {
-    $checkUser = if ($Owner) { $Owner[0] } elseif ($AllowedUsers) { $AllowedUsers[0] } else { $env:USERNAME }
+    # WHO to mint the check token as. Not `$env:USERNAME` on its own: the
+    # local account name and the hub owner are different things, and when they
+    # differ the token is valid but belongs to a stranger, so /healthz withholds
+    # the build and the deploy reports failure having actually succeeded.
+    # Measured: owner 'swigerb', local user 'brswig', two clean deploys reported
+    # as failures. So ask the app who it answers to, and only guess if it will
+    # not say.
+    $liveOwner = az webapp config appsettings list -n $Name -g $ResourceGroup `
+      --query "[?name=='SQUAD_HUB_OWNER'].value | [0]" -o tsv 2>$null
+    $checkUser =
+      if ($Owner) { $Owner[0] }
+      elseif ($liveOwner) { ($liveOwner -split ',')[0].Trim() }
+      elseif ($AllowedUsers) { $AllowedUsers[0] }
+      else { $env:USERNAME }
     $token = node -e "const{Authenticator}=require('./src/service/auth');console.log(new Authenticator({mode:'dev',devSecret:process.argv[1]}).mintDevToken('local',process.argv[2],process.argv[2]))" $secret $checkUser
   } finally { Pop-Location }
 }
@@ -366,8 +379,8 @@ if (-not $health) {
     Fail "the service is answering but running build '$($last.build)', not '$buildId'. The deployment did not take."
   }
   if ($last) {
-    $who = if ($AuthMode -eq 'github') { 'the GitHub identity behind the token used here' } else { "the deploy check identity" }
-    Fail "the service is up but would not show its build. Check that $who is in the owner list."
+    $who = if ($AuthMode -eq 'github') { 'the GitHub identity behind the token used here' } else { "'$checkUser'" }
+    Fail "the service is up but would not show its build. Check that $who is in the owner list ('$liveOwner')."
   }
   Fail "the service never answered on https://$fqdn/healthz"
 }
