@@ -2322,6 +2322,26 @@ function wire() {
     e.preventDefault();
     state.installPrompt = e;  });
 
+  $('pplClose').onclick = () => { $('peopleScrim').hidden = true; };
+  $('peopleScrim').onclick = (e) => { if (e.target === $('peopleScrim')) $('peopleScrim').hidden = true; };
+  $('pplAdd').onclick = async () => {
+    const login = $('pplLogin').value.trim();
+    if (!login) { $('pplErr').textContent = 'Enter a username or email.'; $('pplErr').hidden = false; return; }
+    $('pplAdd').disabled = true;
+    try {
+      await api('/api/access', { method: 'POST', body: { login, note: $('pplNote').value.trim() } });
+      $('pplLogin').value = '';
+      $('pplNote').value = '';
+      $('pplErr').hidden = true;
+      await renderPeople();
+    } catch (e) {
+      $('pplErr').textContent = e.message;
+      $('pplErr').hidden = false;
+    }
+    $('pplAdd').disabled = false;
+  };
+  $('pplLogin').onkeydown = (e) => { if (e.key === 'Enter') $('pplAdd').click(); };
+
   // Offering to install an app that is already installed is noise, so the
   // menu item goes away once we are running from the home screen or the dock.
   if (isInstalled()) {
@@ -2591,6 +2611,7 @@ async function onMenu(action) {
     return;
   }
   if (action === 'connect') { openConnect(); return; }
+  if (action === 'people') { openPeople(); return; }
   if (action === 'install') {
     if (state.installPrompt) {
       state.installPrompt.prompt();
@@ -2738,6 +2759,77 @@ function choicesField(selId, boxId, list, blankLabel) {
 function updateAgentChoices(device) {
   choicesField('nsAgentSelect', 'nsAgent', device && device.agents, 'whatever the project selects');
   choicesField('nsModelSelect', 'nsModel', device && device.models, "the agent's default");
+}
+
+/**
+ * Who has access, for an owner.
+ *
+ * Every value rendered here is user-supplied -- a login somebody typed, a note
+ * somebody wrote -- so all of it goes through `esc`, and the login travels back
+ * to the API through `encodeURIComponent`. An access-control screen that could
+ * be made to run someone else's markup would be a poor place to have that
+ * particular bug.
+ */
+async function openPeople() {
+  const box = $('peopleScrim');
+  $('pplErr').hidden = true;
+  $('pplLogin').value = '';
+  $('pplNote').value = '';
+  box.hidden = false;
+  await renderPeople();
+  $('pplLogin').focus();
+}
+
+function peopleRows(data) {
+  const users = (data && data.users) || [];
+  if (!users.length) return '<p class="sub">Nobody else has access yet.</p>';
+  return users.map((u) => {
+    // A row that cannot be removed says WHY, in place, rather than offering an
+    // X that fails. Being refused after clicking teaches nothing except not to
+    // trust the buttons.
+    const why = u.source === 'owner' ? 'owner of this hub'
+      : u.source === 'deployment' ? 'set by the deployment'
+        : [u.addedBy ? `added by ${u.addedBy}` : null, u.note].filter(Boolean).join(' · ');
+    const action = u.removable
+      ? `<button class="ghost danger sm" data-remove="${esc(u.login)}">Remove</button>`
+      : '<span class="ppl-fixed">fixed</span>';
+    return `<div class="ppl-row">
+      <div><strong>${esc(u.login)}</strong>${why ? `<small>${esc(why)}</small>` : ''}</div>
+      ${action}
+    </div>`;
+  }).join('');
+}
+
+async function renderPeople() {
+  const list = $('pplList');
+  list.innerHTML = '<p class="sub">Loading…</p>';
+  let data;
+  try {
+    data = await api('/api/access');
+  } catch (e) {
+    list.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    return;
+  }
+  const warn = data.ok === false
+    ? `<p class="err">The access list could not be read (${esc(data.error || 'unknown')}), so it cannot be changed. The deployment's own list still applies.</p>`
+    : !data.durable
+      ? '<p class="sub">This hub cannot save its access list, so anyone added here is forgotten when it restarts.</p>'
+      : '';
+  list.innerHTML = warn + peopleRows(data);
+  list.querySelectorAll('[data-remove]').forEach((b) => {
+    b.onclick = async () => {
+      const login = b.dataset.remove;
+      b.disabled = true;
+      try {
+        await api(`/api/access/${encodeURIComponent(login)}`, { method: 'DELETE' });
+        await renderPeople();
+      } catch (e) {
+        $('pplErr').textContent = e.message;
+        $('pplErr').hidden = false;
+        b.disabled = false;
+      }
+    };
+  });
 }
 
 /**
@@ -2930,6 +3022,11 @@ function signInHint(mode) {
     // load, so a blocked or broken avatar shows the initial rather than a
     // broken-image icon.
     setAvatar(state.me.avatar, state.me.name);
+    // Only an owner is offered the access screen. Cosmetic, not a control: the
+    // route checks the principal on every call, so revealing this item in a
+    // console would buy a menu entry that returns 403.
+    const peopleItem = document.querySelector('[data-menu="people"]');
+    if (peopleItem) peopleItem.hidden = !state.me.isOwner;
     // A hub split across instances loses devices intermittently. Say so where
     // the user will notice it, not only in a log.
     if (state.me.warning) showBanner(state.me.warning);

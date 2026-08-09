@@ -60,6 +60,31 @@ Both may be set. A colleague on the allowlist keeps their own devices and cannot
 see yours — aliasing applies only to the identities you have declared as your
 own.
 
+### Adding someone without a redeploy
+
+An **owner** gets **Who has access** in the account menu: a list of everyone who
+may sign in, and a box to add someone. Additions persist under
+`SQUAD_HUB_HOME` and take effect immediately.
+
+Three rules keep this from being an escalation, and each is enforced in the
+store rather than at the screen, so a second caller added later inherits them:
+
+- **The environment is a floor, not a value.** Names in `SQUAD_HUB_OWNER` and
+  `SQUAD_HUB_ALLOWED_USERS` cannot be removed through the UI — including your
+  own. The deployment's own configuration is what survives a mistake made
+  through a browser.
+- **Owners are not grantable.** Owner identities share **one partition**, so
+  adding an owner does not admit a colleague — it makes them you, with your
+  devices and your sessions. Owners come from the environment only, and there is
+  no API that adds one.
+- **Only an owner may read or write the list.** An allowed user cannot add
+  another; otherwise one invitation is the whole hub, transitively, and you
+  never see the chain. The read is restricted too: who has access to a system is
+  worth something to whoever is choosing whom to phish.
+
+If the hub cannot persist the list, the screen says so rather than accepting
+additions it will forget on the next restart.
+
 ## Which identifiers work
 
 Entries can be an Entra **object id**, a **UPN**, or an **email**, matched

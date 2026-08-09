@@ -68,6 +68,25 @@ file access is on, and when each was last seen.
 
 Your sessions across all devices.
 
+### `GET|POST /api/access`, `DELETE /api/access/{login}`
+
+Who may sign in to this hub. **Owner only, on every method including the read.**
+
+`GET` returns each identity with a `source` (`owner`, `deployment` or `added`)
+and whether it is `removable`, plus `durable` — false when the hub cannot
+persist the list and would forget an addition on restart.
+
+`POST {"login": "...", "note": "..."}` adds someone. `addedBy` is taken from the
+verified identity and never from the body.
+
+`DELETE /api/access/{login}` removes someone. The identity is in the **path, not
+a body**: a `DELETE` carrying a body is not reliably delivered, and a route that
+works only when the body happens to arrive fails silently.
+
+Refusals worth knowing: an identity from `SQUAD_HUB_OWNER` or
+`SQUAD_HUB_ALLOWED_USERS` cannot be removed here, and no identity can be made an
+owner. See [security.md](security.md#adding-someone-without-a-redeploy).
+
 ### `POST /api/devices/{deviceId}/{action}`
 
 Control a device you own. Actions: `spawn`, `approve`, `steer`, `stop`,

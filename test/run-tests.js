@@ -746,6 +746,15 @@ async function suiteModes() {
 }
 
 /**
+ * Who may use this hub, and who may decide that. Mostly refusals.
+ */
+async function suiteAccess() {
+  console.log('\n[ACCESS] the allow-list is editable, and only by an owner');
+  runChildSuite(path.join(__dirname, 'access-store-unit.js'), 'access-store');
+  runChildSuite(path.join(__dirname, 'access-api-unit.js'), 'access-api');
+}
+
+/**
  * Session metadata: repository and branch read from the checkout, the live
  * activity line, the badge set, and the ordering that pulls a blocked session
  * to the top. Every new field reaching the DOM carries its own stored-XSS
@@ -884,6 +893,7 @@ async function suiteAgentApply() {
   await suiteWebXss();
   await suiteInstallPrompt();
   await suiteModes();
+  await suiteAccess();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();
