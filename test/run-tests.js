@@ -373,8 +373,13 @@ function runChildSuite(file, label) {
   if (r.status !== 0 && !anyFailed) {
     fail += 1;
     const name = `${label}: the child suite exited cleanly`;
-    failures.push({ name, error: `exit=${r.status} with no failing result` });
-    console.log(`  FAIL ${name}  (exit=${r.status})`);
+    // The child's own output goes in the message. Without it this branch said
+    // only "exit=77 with no failing result", which names the symptom and
+    // discards the one thing that explains it -- the child prints its error
+    // before exiting, and that line was being thrown away. An intermittent
+    // failure you cannot read is one you can only guess at.
+    failures.push({ name, error: `exit=${r.status} with no failing result. Child output:\n${out.slice(-600)}` });
+    console.log(`  FAIL ${name}  (exit=${r.status})\n         ${out.slice(-600)}`);
   }
 }
 

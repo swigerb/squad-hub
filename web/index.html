@@ -275,32 +275,39 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="nsTitle">
     <h2 id="nsTitle">New session</h2>
     <label class="field">
-      <span>Device</span>
+      <span>Device <button type="button" class="hint-btn" aria-label="About Device"
+        title="Which machine runs the work. Sessions run ON the device, not on the hub &#10;&#10;— the hub only watches and relays your answers. Only devices that are online can be given work.">i</button></span>
       <select id="nsDevice"></select>
     </label>
     <label class="field" id="nsCwdField">
-      <span>Working directory</span>
+      <span>Working directory <button type="button" class="hint-btn" aria-label="About Working directory"
+        title="The folder the agent works in, on that device. Leave blank to use the daemon's own directory. &#10;&#10;A device only accepts a directory if it was started with file access enabled (squad-hub start --allow-files).">i</button></span>
       <input id="nsCwd" placeholder="the daemon's default">
       <small id="nsCwdHint"></small>
     </label>
     <label class="field">
-      <span>Prompt</span>
-      <textarea id="nsPrompt" rows="4" placeholder="What should the agent do?"></textarea>
+      <span>Prompt <button type="button" class="hint-btn" aria-label="About Prompt"
+        title="What you want done, in plain language. This is the first thing the agent is told. &#10;&#10;You can keep talking to the session afterwards from its detail view.">i</button></span>
+      <textarea id="nsPrompt" rows="4" placeholder="e.g. Run the tests and summarise anything that failed"></textarea>
     </label>
     <div class="field-row">
       <label class="field">
-        <span>Agent</span>
+        <span>Agent <button type="button" class="hint-btn" aria-label="About Agent"
+          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device — only it knows which agents its Copilot CLI has installed.">i</button></span>
+        <select id="nsAgentSelect" hidden></select>
         <input id="nsAgent" placeholder="whatever the project selects">
       </label>
       <label class="field">
-        <span>Model</span>
+        <span>Model <button type="button" class="hint-btn" aria-label="About Model"
+          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;A model can only be checked once the session starts: if the name is not one the agent offers, the session says so rather than quietly using a different one.">i</button></span>
         <input id="nsModel" placeholder="the agent's default">
       </label>
     </div>
     <small class="field-note">
       Leave either blank to let the project decide. In a Squad project that
       selects the <code>squad</code> agent automatically; anywhere else, Copilot's
-      default. Naming one here overrides both.
+      default. Naming one here overrides both — and if the device cannot honour
+      it, the session says so rather than pretending.
     </small>
     <div class="modal-actions">
       <button class="ghost" id="nsCancel">Cancel</button>
@@ -348,8 +355,10 @@
       your other devices, so it is safe to put on a server or in a container.
     </p>
     <label class="field">
-      <span>What is it for?</span>
-      <input id="cnLabel" placeholder="my laptop, a build server, ACA jobs" maxlength="80">
+      <span>What is it for? <button type="button" class="hint-btn" aria-label="About this name"
+        title="This becomes the device's name in your roster, so make it something you will recognise later. &#10;&#10;It is also what you revoke by, if the token ever needs cancelling.">i</button></span>
+      <input id="cnLabel" placeholder="my laptop, a build server, ACA jobs" maxlength="40">
+      <small class="hint">Becomes the device's name in the roster.</small>
     </label>
     <label class="field">
       <span>Expires after</span>

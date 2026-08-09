@@ -82,13 +82,37 @@ function readFromDisk() {
 }
 
 function read() {
-  if (!cacheEnabled) return readFromDisk();
+  if (!cacheEnabled) return applyOverrides(readFromDisk());
   const key = stamp();
   if (!cache || cache.key !== key) cache = { key, value: readFromDisk() };
   // Hand out a copy: a caller that mutates what it was given must never be
   // able to edit the memo -- or every later reader inherits that mutation
   // without anything having been written to disk.
-  return { ...cache.value, environments: { ...cache.value.environments } };
+  return applyOverrides({ ...cache.value, environments: { ...cache.value.environments } });
+}
+
+/**
+ * Settings this PROCESS runs with, which are never written to disk.
+ *
+ * A container configures itself from its environment on every start, so it has
+ * nothing to persist -- and persisting anyway is how a diagnostic command
+ * became a permanent change. `squad-hub oneshot` on a laptop used to rewrite
+ * the real ~/.squad-hub: the device was renamed to `cloud (...)`, reclassified
+ * as a cloud device, and -- the part that matters -- silently switched to
+ * `allowFilesAll`, granting whole-filesystem access nobody had asked for. It
+ * then outlived the command, because every later `squad-hub start` read it back.
+ *
+ * An override applies to the running process and disappears with it.
+ */
+let overrides = null;
+
+function setOverrides(patch) {
+  overrides = patch ? { ...patch } : null;
+  return read();
+}
+
+function applyOverrides(cfg) {
+  return overrides ? { ...cfg, ...overrides } : cfg;
 }
 
 function write(cfg) {
@@ -187,6 +211,7 @@ module.exports = {
   read,
   write,
   update,
+  setOverrides,
   reset,
   publicView,
   resolveEnvironment,

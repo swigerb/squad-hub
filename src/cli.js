@@ -442,7 +442,25 @@ async function cmdConnect(argv) {
   const name = value(argv, 'name');
   const force = flag(argv, 'force');
   const patch = { server: hub, token };
+  /**
+   * What to call this device.
+   *
+   * `--name` wins, then the label typed when the token was minted, then
+   * whatever the device is already called.
+   *
+   * The label is the answer to "What is it for?" in the Connect a device
+   * dialog, so it is precisely what the person expects to see in the roster --
+   * and it used to be discarded, leaving them looking for "bs-minidesktop" and
+   * finding a hostname. The claim is UNVERIFIED, which is fine for a display
+   * name: the hub verifies the signature before this device may register at
+   * all, so a forged label buys an attacker a label.
+   */
   if (name) patch.deviceName = name;
+  else {
+    const claims = DeviceTokens.unverifiedClaims(token);
+    const label = claims && (claims.label || claims.name);
+    if (label) patch.deviceName = String(label).slice(0, 40);
+  }
   if (flag(argv, 'allow-files-all')) { patch.allowFiles = true; patch.allowFilesAll = true; patch.filesRoot = null; }
   else if (flag(argv, 'allow-files')) { patch.allowFiles = true; patch.allowFilesAll = false; patch.filesRoot = process.cwd(); }
   if (flag(argv, 'track-all')) patch.trackAll = true;
