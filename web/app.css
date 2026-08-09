@@ -604,8 +604,8 @@ select option:checked {
    composer that is live before anything verified the far end is a promise the
    UI cannot keep. */
 .control-banner {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 0 8px; font-size: 12px; color: var(--dim);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0; font-size: 12px; color: var(--dim);
 }
 .control-state { font-weight: 600; }
 .control-banner[data-state="synced"] .control-state { color: var(--ok); }
@@ -613,20 +613,22 @@ select option:checked {
 .control-banner[data-state="unverified"] .control-state { color: var(--warn); }
 .control-why { color: var(--faint); flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.composer-row { display: flex; gap: 8px; align-items: stretch; }
+.composer-row { display: flex; gap: 8px; align-items: flex-end; }
 
 /* The follow-up box is where a conversation continues, so it is sized for a
-   sentence rather than a word. It was a bare <input> with no flex rule, so it
-   never grew: the placeholder itself was cut off mid-word, and anything longer
-   than a few words scrolled sideways out of view while being typed. */
+   sentence rather than a word -- but it must not dominate the panel either.
+   Two lines by default, growable by drag, and it shrinks back when disabled
+   since a box nobody can type in has no business being the biggest thing on
+   screen. */
 .composer-row textarea {
-  flex: 1; min-width: 0; min-height: 68px; resize: vertical;
+  flex: 1; min-width: 0; height: 56px; min-height: 40px; max-height: 180px;
+  resize: vertical;
   background: var(--panel-2); border: 1px solid var(--line);
-  color: var(--text); padding: 10px 12px; border-radius: 8px;
+  color: var(--text); padding: 9px 12px; border-radius: 8px;
   font: inherit; font-family: inherit; line-height: 1.45;
 }
-.composer-row textarea:disabled { opacity: 0.55; }
-.composer-row button { align-self: flex-end; padding: 10px 20px; }
+.composer-row textarea:disabled { opacity: 0.55; height: 40px; resize: none; }
+.composer-row button { flex: 0 0 auto; padding: 10px 20px; }
 .composer-row input:disabled, .composer-row button:disabled {
   opacity: .5; cursor: not-allowed;
 }
@@ -722,8 +724,11 @@ select option:checked {
 /* ---------- detail ---------- */
 .detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .detail-actions { display: flex; gap: 8px; }
+/* Grows with what is in it rather than reserving a fixed slab. A 260px
+   minimum meant a two-word reply sat at the top of an empty black rectangle
+   taller than everything else in the panel. */
 .transcript {
-  flex: 1; min-height: 260px; max-height: 52vh; overflow: auto;
+  flex: 1; min-height: 96px; max-height: 52vh; overflow: auto;
   background: #0a0c11; border: 1px solid var(--line); border-radius: 8px;
   padding: 12px; margin: 12px 0; font-family: var(--mono); font-size: 12.5px;
 }
@@ -771,11 +776,12 @@ select option:checked {
 .check small { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
 .check.indent { margin-left: 26px; }
 .check input:disabled + span { opacity: 0.5; }
-.composer { display: flex; gap: 8px; }
-.composer input {
-  flex: 1; background: var(--panel-2); border: 1px solid var(--line);
-  color: var(--text); padding: 10px 12px; border-radius: 8px; font: inherit;
-}
+/* The composer is a COLUMN: the control banner sits above the input, not
+   beside it. It was `display: flex` with no direction, so the banner, the
+   Sync button, the textarea and Send all fought over one row -- which squeezed
+   the input into a narrow column and made a three-line box look enormous next
+   to it. */
+.composer { display: flex; flex-direction: column; gap: 8px; }
 
 /* ---------- sign in ---------- */
 .signin {
