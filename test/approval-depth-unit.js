@@ -585,25 +585,29 @@ check('the Squad pill is not repeated by the active-member chip beside it', () =
     'the active-member chip no longer suppresses the coordinator, so the pill is duplicated');
 });
 
-check('the Agent field offers what the device actually has, and falls back when it cannot say', () => {
-  // The hub holds no Copilot install, so it cannot know this on its own --
-  // the list arrives with the device's heartbeat. Where it exists, a free-text
-  // box asks someone to already know what to type, and a typo only surfaces
-  // when the session comes back reporting a different agent.
+check('Agent and Model offer what the device actually has, and fall back when it cannot say', () => {
+  // The hub holds no Copilot install, so it cannot know either list on its own
+  // — they arrive with the device's heartbeat. Where a list exists, a
+  // free-text box asks someone to already know what to type, and a typo only
+  // surfaces when the session comes back reporting something else.
   const app = fs.readFileSync(APP_JS, 'utf8');
-  assert.match(app, /function updateAgentChoices/, 'the agent picker is gone');
-  assert.match(app, /device && Array\.isArray\(device\.agents\)/,
-    'the picker must be driven by what the DEVICE reported, not by a hardcoded list');
+  assert.match(app, /function choicesField/, 'the picker helper is gone');
+  assert.match(app, /choicesField\('nsAgentSelect', 'nsAgent', device && device\.agents/,
+    'the Agent picker must be driven by what the DEVICE reported');
+  assert.match(app, /choicesField\('nsModelSelect', 'nsModel', device && device\.models/,
+    'the Model picker must be driven by what the DEVICE reported');
 
   // The distinction that matters: "could not tell" is not "there are none".
   // An empty picker would be a claim the device never made, and would leave
   // someone unable to type a name they know is there.
-  assert.match(app, /if \(!agents \|\| !agents\.length\)[\s\S]{0,120}box\.hidden = false/,
-    'a device that could not report its agents must fall back to the text box');
+  assert.match(app, /if \(!Array\.isArray\(list\) \|\| !list\.length\)[\s\S]{0,120}box\.hidden = false/,
+    'a device that could not report a list must fall back to the text box');
 
   // And the choice has to reach the request, or picking one does nothing.
   assert.match(app, /agentSel && !agentSel\.hidden \? agentSel\.value/,
-    'the visible control must be the one read on submit');
+    'the visible agent control must be the one read on submit');
+  assert.match(app, /modelSel && !modelSel\.hidden \? modelSel\.value/,
+    'the visible model control must be the one read on submit');
 });
 
 check('every field in New session explains itself', () => {
