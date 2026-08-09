@@ -32,6 +32,15 @@ const paths = require('./paths');
 const config = require('./config');
 const { AcpSession, STATUS } = require('./acp-session');
 const { selectAgent, buildAgentArgs } = require('./agent-select');
+const { resolveSquadDoc, listSquadDocs, readFileSafe } = require('./squad-context');
+
+/**
+ * The most of a Squad document that is ever returned.
+ *
+ * Matches the cap `readFileSafe` already applies elsewhere. A viewer that can
+ * be asked for an unbounded read is a file transfer with a friendly name.
+ */
+const SQUAD_DOC_LIMIT = 256 * 1024;
 
 /**
  * The statuses a session never comes back from.
@@ -737,6 +746,16 @@ class Daemon extends EventEmitter {
         case 'resync':
           result = await this.handle({ op: 'resync', sessionId: m.sessionId });
           break;
+        case 'squad-doc':
+          // Rebuilt field by field like every other op here, and deliberately
+          // so: only `sessionId` and `doc` are read, so a `cwd` or a `path` in
+          // the message has no route to the resolver. The directory comes from
+          // the session record on this device.
+          result = await this.handle({ op: 'squad-doc', sessionId: m.sessionId, doc: m.doc });
+          break;
+        case 'squad-docs':
+          result = await this.handle({ op: 'squad-docs', sessionId: m.sessionId });
+          break;
         case 'forget':
           // Record-keeping, not control: it removes rows for sessions that
           // have already ended. Who asked travels with it, from the hub's
@@ -846,6 +865,41 @@ class Daemon extends EventEmitter {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
         return this._transcriptSince(s, req);
+      }
+      /**
+       * Read one Squad governance document for a session this daemon owns.
+       *
+       * THE CALLER NAMES A DOCUMENT; THE DEVICE DECIDES WHAT THAT MEANS. The
+       * directory is taken from the session record -- never from the request --
+       * so no field a caller can set has any influence on which file is read.
+       * `resolveSquadDoc` then refuses anything outside `.squad/`, and a member
+       * name is matched against the team the workspace declares rather than
+       * used as a path segment.
+       *
+       * Together those two rules are what keep this a viewer for a workspace
+       * already visible in the hub, rather than a remote file-read primitive.
+       */
+      case 'squad-doc': {
+        const s = this.sessions.get(req.sessionId);
+        if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
+        const r = resolveSquadDoc(s.cwd, req.doc);
+        if (r.error) throw Object.assign(new Error(r.error), { code: 'NO_DOC' });
+
+        let bytes = 0;
+        try { bytes = fs.statSync(r.path).size; } catch {
+          throw Object.assign(new Error(`no ${req.doc} in this workspace`), { code: 'NO_DOC' });
+        }
+        const text = readFileSafe(r.path);
+        if (text === null) throw Object.assign(new Error(`no ${req.doc} in this workspace`), { code: 'NO_DOC' });
+        // Truncation is REPORTED, not silent. A charter cut off mid-sentence
+        // with nothing saying so reads as a broken document rather than a
+        // long one.
+        return { doc: r.doc, text, bytes, truncated: bytes > SQUAD_DOC_LIMIT };
+      }
+      case 'squad-docs': {
+        const s = this.sessions.get(req.sessionId);
+        if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
+        return { docs: listSquadDocs(s.cwd) };
       }
       case 'steer': {
         const s = this.sessions.get(req.sessionId);
