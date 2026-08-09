@@ -710,13 +710,27 @@ const MUTATIONS = [
   {
     name: 'the interactive terminal never stops polling after a terminal status',
     file: 'src/interactive.js',
-    find: `        announcedTerminal = true;
-        write(\`[session \${s.status}]\${s.error ? \` \${s.error}\` : ''}\`);
-        stopPolling();`,
-    replace: `        announcedTerminal = true;
-        write(\`[session \${s.status}]\${s.error ? \` \${s.error}\` : ''}\`);
-        if (!process.env.MUTANT) stopPolling(); // MUTATION`,
+    find: `          announcedTerminal = true;
+          write(\`[session \${s.status}]\${s.error ? \` \${s.error}\` : ''}\`);
+          stopPolling();`,
+    replace: `          announcedTerminal = true;
+          write(\`[session \${s.status}]\${s.error ? \` \${s.error}\` : ''}\`);
+          if (!process.env.MUTANT) stopPolling(); // MUTATION`,
     mustFail: 'polling actually STOPS after the terminal status -- not just announced once while the timer keeps firing',
+  },
+  {
+    name: 'the interactive terminal lets a slow poll be overtaken by the next tick',
+    file: 'src/interactive.js',
+    find: `    if (polling) return;`,
+    replace: `    if (!process.env.MUTANT && polling) return; // MUTATION`,
+    mustFail: 'a poll slower than the interval is never overtaken by the next tick',
+  },
+  {
+    name: 'the hub removes a RUNNING session from an offline device, not just finished ones',
+    file: 'src/service/store.js',
+    find: `      if (!TERMINAL.has(s.status)) { kept += 1; continue; }`,
+    replace: `      if (!process.env.MUTANT && !TERMINAL.has(s.status)) { kept += 1; continue; } // MUTATION`,
+    mustFail: 'a session still RUNNING on an offline device is kept, because offline can mean a blip',
   },
   {
     name: 'doctor ignores a required failure when deciding "healthy"',
