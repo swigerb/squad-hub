@@ -71,7 +71,7 @@ Your sessions across all devices.
 ### `POST /api/devices/{deviceId}/{action}`
 
 Control a device you own. Actions: `spawn`, `approve`, `steer`, `stop`,
-`transcript`, `control-check`, `resync`, `forget`.
+`transcript`, `control-check`, `resync`, `forget`, `squad-doc`, `squad-docs`.
 
 The action list is an **allow-list in the route itself**. The daemon has ops
 the hub must never reach — `start-session`, which trusts a caller-supplied
@@ -121,6 +121,31 @@ return on the next heartbeat.
 `forgottenBy` is attached by the hub from the verified caller and is ignored if
 supplied in the body, so no request can write a name of its choosing into
 somebody's device log.
+
+Reading a Squad's governance documents:
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/squad-docs" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"..."}'
+# { "docs": ["team","decisions","routing","config","charter:lead", ...] }
+
+curl -X POST "$HUB/api/devices/$DEVICE/squad-doc" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"...","doc":"charter:security"}'
+# { "doc": "charter:security", "text": "...", "bytes": 2341, "truncated": false }
+```
+
+**The hub names a document, never a file.** `doc` comes from a fixed set —
+`team`, `decisions`, `routing`, `config`, and `charter:<member>` /
+`history:<member>` — which the *device* resolves against that session's own
+working directory. A member name is matched against the team the workspace
+declares rather than used as a path segment, so `charter:../../etc/passwd` is
+refused because nobody is called that.
+
+A `cwd` or `path` in the request body is ignored. Reads are capped at 256 KB and
+say so with `truncated`, where `bytes` is the real size. Nothing read this way
+is stored by the hub. See [squad-views.md](squad-views.md).
 
 ### `POST /api/device-tokens`
 

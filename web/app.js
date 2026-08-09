@@ -1568,10 +1568,13 @@ function renderSquadPanel(sq) {
     </div>
     <div class="sq-members">
       ${members.map((m) => `
-        <span class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}">
+        <button type="button" class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}"
+                data-squaddoc="charter:${esc(m.name)}" title="Read ${esc(m.name)}'s charter">
           ${esc(m.name)}${m.role && m.role !== m.name ? `<i>${esc(m.role)}</i>` : ''}
-        </span>`).join('')}
+        </button>`).join('')}
     </div>
+    <div class="sq-docbar" id="dtSquadDocs"></div>
+    <div class="sq-doc" id="dtSquadDoc" hidden></div>
     ${decisions.length ? `
       <div class="sq-sub">Recent decisions (${sq.decisionCount})</div>
       <ol class="sq-decisions">
@@ -1582,6 +1585,89 @@ function renderSquadPanel(sq) {
             ${d.summary ? `<div class="sq-why">${esc(d.summary.slice(0, 180))}${d.summary.length > 180 ? '…' : ''}</div>` : ''}
           </li>`).join('')}
       </ol>` : '<div class="sq-sub">No decisions recorded yet</div>'}`;
+
+  renderSquadDocBar();
+}
+
+/**
+ * The documents this workspace actually has.
+ *
+ * Asked for once, when the session is opened. Offering a document that is not
+ * there is a link to a dead end; hiding one that is, is worse -- and only the
+ * device can answer, so it is asked rather than guessed.
+ *
+ * Member charters are reached by clicking the member, so the bar carries the
+ * whole-team documents and nothing else.
+ */
+const TEAM_DOC_LABEL = { team: 'Team', decisions: 'Decisions', routing: 'Routing', config: 'Models' };
+
+async function renderSquadDocBar() {
+  const bar = $('dtSquadDocs');
+  if (!bar || !state.currentSession) return;
+  const { device, session } = state.currentSession;
+  bar.innerHTML = '';
+  let docs = [];
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/squad-docs`, {
+      method: 'POST', body: { sessionId: session.id },
+    });
+    docs = (r && r.docs) || [];
+  } catch {
+    // The device holds these files, so it is the only thing that can list
+    // them. Saying so beats an empty bar that looks like an empty team.
+    bar.innerHTML = '<span class="sq-dim">the device is offline; these files live on it</span>';
+    return;
+  }
+  const teamDocs = docs.filter((d) => Object.prototype.hasOwnProperty.call(TEAM_DOC_LABEL, d));
+  if (!teamDocs.length) return;
+  bar.innerHTML = teamDocs
+    .map((d) => `<button type="button" class="sq-doctab" data-squaddoc="${esc(d)}">${esc(TEAM_DOC_LABEL[d])}</button>`)
+    .join('');
+}
+
+/**
+ * Show one Squad document.
+ *
+ * ESCAPED TEXT, NOT RENDERED MARKDOWN. These files are written by agents as
+ * well as by people, so turning them into HTML would let a careless or
+ * compromised agent put markup in a charter and have the hub execute it in the
+ * reader's browser, holding the reader's hub credential. Headings and list
+ * markers are styled by decorating the LINE; nothing in the file ever becomes
+ * markup.
+ */
+async function openSquadDoc(doc) {
+  const box = $('dtSquadDoc');
+  if (!box || !state.currentSession) return;
+  const { device, session } = state.currentSession;
+
+  for (const b of document.querySelectorAll('[data-squaddoc]')) {
+    b.classList.toggle('on', b.dataset.squaddoc === doc);
+  }
+  box.hidden = false;
+  box.innerHTML = '<div class="sq-dim">loading…</div>';
+
+  let r;
+  try {
+    r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/squad-doc`, {
+      method: 'POST', body: { sessionId: session.id, doc },
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="sq-dim">${esc(e.message)}</div>`;
+    return;
+  }
+
+  const lines = String(r.text || '').split('\n');
+  box.innerHTML = `
+    <div class="sq-docmeta">
+      <b>${esc(doc)}</b>
+      <span class="sq-dim">${Number(r.bytes || 0).toLocaleString()} bytes${
+  r.truncated ? ' · showing the first 256 KB' : ''}</span>
+    </div>
+    <pre class="sq-doctext">${lines.map((l) => {
+    const t = l.trimStart();
+    const cls = t.startsWith('#') ? 'md-h' : (/^[-*+]\s|^\d+\.\s/.test(t) ? 'md-li' : (t.startsWith('>') ? 'md-q' : ''));
+    return `<span class="${cls}">${esc(l)}</span>`;
+  }).join('\n')}</pre>`;
 }
 
 /**
@@ -2107,6 +2193,13 @@ function wire() {
     }
     const row = e.target.closest('[data-session]');
     if (row) openDetail(row.dataset.session);
+  };
+
+  // The Squad panel: members and document tabs both open a document. Delegated
+  // from the panel, because its contents are re-rendered on every refresh.
+  $('dtSquad').onclick = (e) => {
+    const b = e.target.closest('[data-squaddoc]');
+    if (b) openSquadDoc(b.dataset.squaddoc);
   };
 
   $('deviceList').onclick = (e) => {

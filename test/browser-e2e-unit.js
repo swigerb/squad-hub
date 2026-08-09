@@ -1046,6 +1046,59 @@ async function until(fn, what, budgetMs = 15000) {
         'a product whose header mark and tab icon are different drawings is one you learn twice');
     });
 
+    await check('a Squad document renders as TEXT, and its markup does nothing', async () => {
+      /**
+       * The assertion the whole viewer design rests on.
+       *
+       * `.squad/` files are written by AGENTS as well as by people. If the hub
+       * turned that markdown into HTML, a careless or compromised agent could
+       * put a script in a charter and have the hub execute it in the reader's
+       * browser, holding the reader's hub credential.
+       *
+       * So this asserts the payload is INERT -- that nothing ran -- rather
+       * than that a string came back escaped. Escaping is the mechanism;
+       * "no script executed" is the property, and only the second one stays
+       * true if the mechanism is ever changed.
+       */
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), 'e2eui-squad-'));
+      const sq = path.join(work, '.squad');
+      fs.mkdirSync(path.join(sq, 'agents', 'engineer'), { recursive: true });
+      fs.writeFileSync(path.join(sq, 'team.md'),
+        '# Team\n\n| Name | Role | Status |\n| --- | --- | --- |\n| engineer | engineer | active |\n');
+      fs.writeFileSync(path.join(sq, 'agents', 'engineer', 'charter.md'),
+        '# engineer\n\n<img src=x onerror="window.__pwned=1">\n<script>window.__pwned=1</script>\n\n- builds things\n');
+      fs.writeFileSync(path.join(sq, 'decisions.md'), '# Decisions\n');
+
+      process.env.FAKE_AGENT_MODE = 'no-permission';
+      await daemon.handle({ op: 'start-session', prompt: 'squad doc view', cwd: work });
+
+      await page.goto(origin);
+      await page.waitForSelector('[data-session]', { timeout: 20000 });
+      // Open the session whose workspace is the one just built.
+      await page.click('[data-session]');
+      await page.waitForSelector('#dtSquad:not([hidden])', { timeout: 20000 });
+
+      const member = await page.$('[data-squaddoc="charter:engineer"]');
+      assert.ok(member, 'the member is not clickable, so a charter cannot be opened');
+      await member.click();
+      await page.waitForSelector('.sq-doctext', { timeout: 20000 });
+
+      const shown = await page.textContent('.sq-doctext');
+      assert.ok(shown.includes('builds things'),
+        'the document was not shown at all, so this proves nothing');
+
+      // The properties that matter, asserted before the mechanism: nothing
+      // ran, and nothing in the file became a live element. A renderer that
+      // stopped escaping fails HERE, with a message that says what went wrong.
+      const pwned = await page.evaluate(() => window.__pwned);
+      assert.strictEqual(pwned, undefined, 'a script inside a charter EXECUTED in the hub');
+      const live = await page.evaluate(() => document.querySelectorAll('.sq-doctext img, .sq-doctext script').length);
+      assert.strictEqual(live, 0, 'markup from the file became live elements');
+
+      // And the mechanism: the payload is still visible, as text.
+      assert.ok(shown.includes('onerror'), 'the payload was stripped rather than shown as text');
+    });
+
     await check('signing out returns to a usable sign-in page', async () => {      await page.goto(origin);
       await page.waitForSelector('#menuBtn', { timeout: 10000 });
       await page.click('#menuBtn');
