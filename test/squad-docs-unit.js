@@ -30,16 +30,21 @@ const {
 } = require(path.join(__dirname, '..', 'src', 'squad-context'));
 
 let pass = 0; let fail = 0;
+const queue = [];
 function check(name, fn) {
-  try {
-    fn(); pass += 1;
-    console.log(`  ok   ${name}`);
-    console.log(`RESULT\tok\t${name}`);
-  } catch (e) {
-    fail += 1;
-    console.log(`  FAIL ${name}\n         ${e.message}`);
-    console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
-  }
+  // Queued rather than run inline, because the Sprint 2 tests are async and a
+  // summary printed before they settled would be a lie.
+  queue.push(async () => {
+    try {
+      await fn(); pass += 1;
+      console.log(`  ok   ${name}`);
+      console.log(`RESULT\tok\t${name}`);
+    } catch (e) {
+      fail += 1;
+      console.log(`  FAIL ${name}\n         ${e.message}`);
+      console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+    }
+  });
 }
 
 /** A workspace with a real team file, so membership is a real lookup. */
@@ -222,5 +227,130 @@ check('a member with no charter yet is simply not offered one', () => {
   assert.ok(!docs.includes('charter:engineer'));
 });
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// ---------------------------------------------------------------------------
+// Sprint 2: the device op
+// ---------------------------------------------------------------------------
+//
+// The op is where the resolver becomes reachable, so these are mostly about
+// what it refuses. The rule it exists to enforce: the DIRECTORY comes from the
+// session record on this device, never from the request -- so no field a
+// caller can set has any influence over which file is read.
+
+const { Daemon } = require(path.join(__dirname, '..', 'src', 'daemon'));
+
+function daemonWithSession(cwd, id = 's1') {
+  const d = new Daemon();
+  d.sessions.set(id, { id, cwd, status: 'done' });
+  d._persistSessions = () => {};
+  d._untrackChild = () => {};
+  d.log = () => {};
+  return d;
+}
+
+check('the op reads a document for a session this device owns', async () => {
+  const cwd = workspace({ members: ['lead'] });
+  const d = daemonWithSession(cwd);
+  const r = await d.handle({ op: 'squad-doc', sessionId: 's1', doc: 'charter:lead' });
+  assert.strictEqual(r.doc, 'charter:lead');
+  assert.match(r.text, /what lead is for/);
+  assert.strictEqual(r.truncated, false);
+  assert.ok(r.bytes > 0);
+});
+
+check('an unknown session is refused', async () => {
+  const d = daemonWithSession(workspace());
+  await assert.rejects(
+    () => d.handle({ op: 'squad-doc', sessionId: 'nope', doc: 'team' }),
+    /no such session/,
+  );
+});
+
+check('a cwd or path in the REQUEST is ignored entirely', async () => {
+  // The whole boundary rests on this. The session's own directory is used, so
+  // a caller naming somewhere else gets that caller's document from the
+  // session's workspace -- or nothing at all.
+  const mine = workspace({ members: ['lead'] });
+  const theirs = workspace({ members: ['lead'] });
+  fs.writeFileSync(path.join(theirs, '.squad', 'team.md'), '# SOMEONE ELSE\n');
+
+  const d = daemonWithSession(mine);
+  const r = await d.handle({
+    op: 'squad-doc', sessionId: 's1', doc: 'team',
+    cwd: theirs, path: path.join(theirs, '.squad', 'team.md'), filesRoot: theirs,
+  });
+  assert.ok(!r.text.includes('SOMEONE ELSE'),
+    'a directory from the request body reached the resolver');
+  assert.match(r.text, /\| Name \| Role \|/, 'it should have read the session workspace');
+});
+
+check('a document outside the allow-list is refused by the op, not just the resolver', async () => {
+  const d = daemonWithSession(workspace());
+  for (const bad of ['charter:../../../etc/passwd', 'secrets', 'package.json']) {
+    await assert.rejects(
+      () => d.handle({ op: 'squad-doc', sessionId: 's1', doc: bad }),
+      (e) => !!e.message,
+      `${bad} was not refused`,
+    );
+  }
+});
+
+check('a missing document says so rather than returning empty text', async () => {
+  const cwd = workspace({ members: ['lead'] });
+  fs.rmSync(path.join(cwd, '.squad', 'routing.md'));
+  const d = daemonWithSession(cwd);
+  await assert.rejects(
+    () => d.handle({ op: 'squad-doc', sessionId: 's1', doc: 'routing' }),
+    /no routing in this workspace/,
+  );
+});
+
+check('an oversized document is truncated and SAYS it was truncated', async () => {
+  // A charter cut off mid-sentence with nothing saying so reads as a broken
+  // document rather than a long one.
+  const cwd = workspace({ members: ['lead'] });
+  const big = 'x'.repeat(300 * 1024);
+  fs.writeFileSync(path.join(cwd, '.squad', 'decisions.md'), big);
+  const d = daemonWithSession(cwd);
+  const r = await d.handle({ op: 'squad-doc', sessionId: 's1', doc: 'decisions' });
+  assert.strictEqual(r.truncated, true);
+  assert.strictEqual(r.bytes, 300 * 1024, 'the real size must be reported, not the truncated one');
+  assert.ok(r.text.length <= 256 * 1024, `returned ${r.text.length} bytes`);
+});
+
+check('a non-Squad session offers no documents and reads none', async () => {
+  const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'plain3-'));
+  const d = daemonWithSession(plain);
+  const list = await d.handle({ op: 'squad-docs', sessionId: 's1' });
+  assert.deepStrictEqual(list.docs, []);
+  await assert.rejects(() => d.handle({ op: 'squad-doc', sessionId: 's1', doc: 'team' }), /not a Squad workspace/);
+});
+
+check('the document list comes from the session workspace', async () => {
+  const cwd = workspace({ members: ['lead', 'engineer'] });
+  const d = daemonWithSession(cwd);
+  const r = await d.handle({ op: 'squad-docs', sessionId: 's1' });
+  assert.ok(r.docs.includes('team'));
+  assert.ok(r.docs.includes('charter:engineer'));
+});
+
+check('the hub relays only sessionId and doc', () => {
+  // The daemon narrows this op anyway, so a smuggled cwd could never reach the
+  // resolver -- but a hub that relays whatever it was handed is one refactor
+  // away from that mattering.
+  const svc = fs.readFileSync(path.join(__dirname, '..', 'src', 'service', 'hub-service.js'), 'utf8');
+  assert.match(svc, /op === 'squad-doc' \? \{ sessionId: body \? body\.sessionId : undefined, doc: body \? body\.doc : undefined \}/,
+    'the hub must rebuild this op field by field, like approve and forget');
+  assert.match(svc, /squad-doc\|squad-docs\)\$/, 'the ops are not on the control-op allow-list');
+});
+
+check('the device rebuilds the op from the socket message, never spreading it', () => {
+  const dsrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'daemon.js'), 'utf8');
+  assert.match(dsrc, /op: 'squad-doc', sessionId: m\.sessionId, doc: m\.doc/,
+    'a spread here would let any field on the wire reach the handler');
+});
+
+(async () => {
+  for (const run of queue) await run();
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();
