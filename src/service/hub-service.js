@@ -413,7 +413,7 @@ class HubService {
     // which trusts a caller-supplied working directory, and `shutdown` -- and
     // the only thing keeping them out of reach is that they are not written on
     // this line.
-    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript|control-check|resync|forget)$/);
+    const m = p.match(/^\/api\/devices\/([^/]+)\/(spawn|approve|steer|stop|transcript|control-check|resync|forget|squad-doc|squad-docs)$/);
     if (m && req.method === 'POST') {
       const [, deviceId, op] = m;
       const body = await readJson(req);
@@ -476,7 +476,14 @@ class HubService {
         // its choosing into somebody else's device log.
         const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
           : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }
-            : body;
+            // Narrowed here as well as at the device. The daemon rebuilds this
+            // op field by field anyway, so a smuggled `cwd` could never reach
+            // the resolver -- but a hub that relays whatever it was handed is
+            // one refactor away from mattering, and the cost of not doing so
+            // is one line.
+            : op === 'squad-doc' ? { sessionId: body ? body.sessionId : undefined, doc: body ? body.doc : undefined }
+              : op === 'squad-docs' ? { sessionId: body ? body.sessionId : undefined }
+                : body;
         const result = await this.command(me.key, deviceId, op, withActor);
         return send(200, result);
       } catch (e) {
