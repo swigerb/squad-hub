@@ -40,11 +40,12 @@ if (idx < 0) {
 const mod = { exports: {} };
 new Function('module', 'exports', `${src.slice(0, idx)}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
-  spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell };`)(mod, mod.exports);
+  spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell,
+  updateText, transcriptBlocks };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
-  exact, timeCell,
+  exact, timeCell, updateText, transcriptBlocks,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -618,6 +619,101 @@ check('every field in New session explains itself', () => {
   // The Model hint has to say what one looks like; "the agent's default" alone
   // tells someone nothing about what they could type instead.
   assert.match(dialog, /claude-opus-5|gpt-5/, 'the Model field gives no example of a real model name');
+});
+
+// ===========================================================================
+// The transcript: a conversation, not a protocol dump
+// ===========================================================================
+
+check('a streamed message is ONE block, not one row per token', () => {
+  // The stream arrives token by token. Rendering each update as its own row is
+  // why a finished answer displayed one word per line down the page.
+  const blocks = transcriptBlocks([
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'No agents ' } } },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'are currently ' } } },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'running.' } } },
+  ]);
+  assert.strictEqual(blocks.length, 1, `expected one block, got ${blocks.length}`);
+  assert.strictEqual(blocks[0].text, 'No agents are currently running.');
+});
+
+check('a tool result is read out of its content blocks, not printed as JSON', () => {
+  // `content` is an array on tool results. The old reader tried
+  // `content.text || content`, so the array fell through and was stringified --
+  // which is how "Query returned 0 rows." reached the screen as
+  // [{"type":"content","content":{"type":"text","text":"Query returned 0 rows."}}]
+  const u = { sessionUpdate: 'tool_call_update', content: [{ type: 'content', content: { type: 'text', text: 'Query returned 0 rows.' } }] };
+  assert.strictEqual(updateText(u), 'Query returned 0 rows.');
+  const blocks = transcriptBlocks([{ update: u }]);
+  assert.strictEqual(blocks[0].kind, 'result');
+  assert.ok(!blocks[0].text.includes('"type"'), `raw JSON leaked: ${blocks[0].text}`);
+});
+
+check('protocol bookkeeping is not shown at all', () => {
+  // usage_update fires on every token; available_commands_update and
+  // config_option_update fire whenever the agent reconfigures itself. None
+  // carry anything a person reads, and they put a grey row between every
+  // useful line.
+  const blocks = transcriptBlocks([
+    { update: { sessionUpdate: 'usage_update' } },
+    { update: { sessionUpdate: 'available_commands_update' } },
+    { update: { sessionUpdate: 'config_option_update' } },
+    { update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'thinking out loud' } } },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'the answer' } } },
+  ]);
+  assert.strictEqual(blocks.length, 1, `noise survived: ${JSON.stringify(blocks)}`);
+  assert.strictEqual(blocks[0].text, 'the answer');
+});
+
+check('who said what is kept apart', () => {
+  const blocks = transcriptBlocks([
+    { update: { sessionUpdate: 'user_message', content: { text: 'Team, what is the status?' } } },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Looking now.' } } },
+  ]);
+  assert.deepStrictEqual(blocks.map((b) => b.kind), ['you', 'agent'],
+    'a reply merged into the question is a transcript nobody can follow');
+});
+
+check('two tool results in a row stay two results', () => {
+  const one = { sessionUpdate: 'tool_call_update', content: [{ type: 'text', text: 'first' }] };
+  const two = { sessionUpdate: 'tool_call_update', content: [{ type: 'text', text: 'second' }] };
+  const blocks = transcriptBlocks([{ update: one }, { update: two }]);
+  assert.strictEqual(blocks.length, 2, 'only prose should be joined; separate results are separate facts');
+});
+
+check('an empty or malformed update cannot break the render', () => {
+  assert.deepStrictEqual(transcriptBlocks([]), []);
+  assert.deepStrictEqual(transcriptBlocks(undefined), []);
+  assert.deepStrictEqual(transcriptBlocks([{}, { update: null }, { update: { sessionUpdate: 'agent_message_chunk' } }]), []);
+  assert.strictEqual(updateText({}), '');
+});
+
+check('the Connect dialog can put device flags into the command it hands you', () => {
+  // These are settings on the DEVICE, not claims in the token, so the hub
+  // cannot apply them -- the only place they take effect is the command that
+  // gets pasted. Without them a device connects and then cannot open a file,
+  // with nothing having said it wouldn't.
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /cnFilesAll'\)\.checked\) flags\.push\('--allow-files-all'\)/,
+    'the "anywhere" option does not reach the command');
+  assert.match(app, /else if \(\$\('cnFiles'\)\.checked\) flags\.push\('--allow-files'\)/,
+    '--allow-files-all implies --allow-files; emitting both is noise');
+  assert.match(app, /cnTrackAll'\)\.checked\) flags\.push\('--track-all'\)/);
+
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
+  for (const id of ['cnFiles', 'cnFilesAll', 'cnTrackAll']) {
+    assert.match(html, new RegExp(`id="${id}"`), `the ${id} control is missing from the dialog`);
+  }
+});
+
+check('the detail view says WHY the agent is not the one that was asked for', () => {
+  // The row already reports the disagreement. The reason was recorded on the
+  // session and displayed nowhere, so the obvious next question had no answer
+  // anywhere in the product.
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /applied \|\| \{\}\)\.warnings/, 'the applied warnings are never read');
+  assert.match(app, /dtWarn'\)\.hidden = warnings\.length === 0/,
+    'the warning line must disappear when there is nothing wrong');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
