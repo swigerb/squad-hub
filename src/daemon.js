@@ -323,10 +323,14 @@ class Daemon extends EventEmitter {
    * `--agent`/`--model` are appended per selection, so one long-lived daemon
    * can run a Squad project and a plain repo side by side correctly.
    */
-  startSession({ prompt, cwd, localCwd, agent, model }) {
+  startSession({
+    prompt, cwd, localCwd, agent, model, mode,
+  }) {
     const dir = this._resolveCwd(cwd, localCwd);
     const id = `s${(++this._seq).toString().padStart(3, '0')}-${Date.now().toString(36)}`;
-    const selection = selectAgent({ cwd: dir, explicitAgent: agent, explicitModel: model });
+    const selection = selectAgent({
+      cwd: dir, explicitAgent: agent, explicitModel: model, explicitMode: mode,
+    });
     const args = buildAgentArgs(this.agentArgs, selection);
     const s = new AcpSession({
       id, cwd: dir, prompt,
@@ -590,13 +594,15 @@ class Daemon extends EventEmitter {
     if (!cap) return;
     const models = Array.isArray(cap.models) ? cap.models : [];
     const agents = Array.isArray(cap.agents) ? cap.agents : [];
-    if (!models.length && !agents.length) return;
+    const modes = Array.isArray(cap.modes) ? cap.modes : [];
+    if (!models.length && !agents.length && !modes.length) return;
 
     const cfg = config.read();
     const prior = cfg.knownCapabilities || {};
     const next = {
       agents: agents.length ? agents : (prior.agents || []),
       models: models.length ? models : (prior.models || []),
+      modes: modes.length ? modes : (prior.modes || []),
     };
     // Only write when something actually changed. This runs on every session
     // start, and rewriting an identical file each time would churn the config
@@ -636,6 +642,11 @@ class Daemon extends EventEmitter {
     const known = cfg.knownCapabilities || {};
     const agents = (known.agents && known.agents.length) ? known.agents : this._knownAgents();
     const models = (known.models && known.models.length) ? known.models : null;
+    // Modes have no probe. Unlike agents, there is no CLI invocation that lists
+    // them, so until a session has run once this device genuinely does not know
+    // -- and `null` says that, where an empty array would claim the agent
+    // offers none.
+    const modes = (known.modes && known.modes.length) ? known.modes : null;
     return {
       device: {
         name: this.deviceName,
@@ -646,6 +657,7 @@ class Daemon extends EventEmitter {
         beats: this.beats,
         agents,
         models,
+        modes,
         ...config.publicView(cfg),
         // Absent, not zeroed, when telemetry is off. A roster can then tell
         // "this device does not report load" from "this device is idle" --
@@ -724,7 +736,9 @@ class Daemon extends EventEmitter {
       let result;
       switch (m.op) {
         case 'spawn': {
-          const s = this.startSession({ prompt: m.prompt, cwd: m.cwd, agent: m.agent, model: m.model });
+          const s = this.startSession({
+            prompt: m.prompt, cwd: m.cwd, agent: m.agent, model: m.model, mode: m.mode,
+          });
           result = { id: s.id, pid: s.pid, cwd: s.cwd, agentSelection: s.agentSelection };
           break;
         }
@@ -844,7 +858,9 @@ class Daemon extends EventEmitter {
         // Reached only over the local IPC socket (see client.js) -- so
         // `req.localCwd`, when present, is trusted as the caller's own
         // directory, never a remotely-requested one.
-        const s = this.startSession({ prompt: req.prompt, cwd: req.cwd, localCwd: req.localCwd, agent: req.agent, model: req.model });
+        const s = this.startSession({
+          prompt: req.prompt, cwd: req.cwd, localCwd: req.localCwd, agent: req.agent, model: req.model, mode: req.mode,
+        });
         return { id: s.id, pid: s.pid, cwd: s.cwd, agentSelection: s.agentSelection };
       }
       case 'approve': {

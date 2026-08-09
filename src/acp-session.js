@@ -229,7 +229,9 @@ class AcpSession extends EventEmitter {
    */
   async _applySelection(newSession) {
     const want = this.agentSelection || {};
-    this.applied = { agent: null, model: null, warnings: [] };
+    this.applied = {
+      agent: null, model: null, mode: null, warnings: [],
+    };
 
     /**
      * What this agent said it can do, recorded whether or not anything was
@@ -247,12 +249,17 @@ class AcpSession extends EventEmitter {
      * case where nobody knew what to ask for.
      */
     const agentOpt = ((newSession && newSession.configOptions) || []).find((o) => o.id === 'agent');
+    const modeOpt = ((newSession && newSession.configOptions) || []).find((o) => o.id === 'mode');
     this.available = {
       agents: ((agentOpt && agentOpt.options) || []).map((o) => o.name || o.value).filter(Boolean),
       models: ((newSession && newSession.models && newSession.models.availableModels) || [])
         .map((m) => m.modelId).filter(Boolean),
+      // Modes are a config option like the agent, but their values are URIs
+      // (`.../session-modes#autopilot`), so the readable name is what a person
+      // picks from and the value is what goes back over the protocol.
+      modes: ((modeOpt && modeOpt.options) || []).map((o) => o.name || o.value).filter(Boolean),
     };
-    if (this.available.agents.length || this.available.models.length) {
+    if (this.available.agents.length || this.available.models.length || this.available.modes.length) {
       this.emit('capabilities', this.available);
     }
 
@@ -297,6 +304,47 @@ class AcpSession extends EventEmitter {
           this.applied.model = hit;
         } catch (e) {
           this.applied.warnings.push(`could not select the model "${want.model}": ${e.message}`);
+        }
+      }
+    }
+
+    /**
+     * The mode: interactive, plan, or autopilot.
+     *
+     * Applied last, deliberately. It is the option that changes how much a
+     * person is asked, so if anything above it failed, the warnings describing
+     * that are already in the list when this one is decided.
+     *
+     * Matched on the readable name as well as the value, because the value is a
+     * URI (`.../session-modes#autopilot`) and nobody is going to type that. The
+     * suffix is matched too, so "autopilot" finds it.
+     *
+     * WHAT AUTOPILOT DOES NOT DO, measured rather than assumed: it removes the
+     * approval questions, not the floor. A denied tool stays denied and simply
+     * does not run. So this is a supervision setting, not a permission one, and
+     * choosing it cannot widen what a session is able to do.
+     */
+    if (want.mode && want.mode !== 'default') {
+      const choices = (modeOpt && modeOpt.options) || [];
+      const asked = String(want.mode).toLowerCase();
+      const hit = choices.find((o) => String(o.value).toLowerCase() === asked)
+        || choices.find((o) => String(o.name || '').toLowerCase() === asked)
+        // `.../session-modes#autopilot` should be findable as "autopilot".
+        || choices.find((o) => String(o.value).toLowerCase().split('#').pop() === asked);
+      if (!hit) {
+        const offered = choices.map((o) => o.name || o.value).filter(Boolean).join(', ');
+        this.applied.warnings.push(
+          `the mode "${want.mode}" is not offered by this agent; running its default mode`
+          + (offered ? ` (available: ${offered})` : ''),
+        );
+      } else {
+        try {
+          await this._request('session/set_config_option', {
+            sessionId: this.acpSessionId, configId: 'mode', value: hit.value,
+          });
+          this.applied.mode = hit.name || hit.value;
+        } catch (e) {
+          this.applied.warnings.push(`could not select the mode "${want.mode}": ${e.message}`);
         }
       }
     }

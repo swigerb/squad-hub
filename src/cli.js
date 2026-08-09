@@ -594,17 +594,21 @@ async function cmdConnect(argv) {
  * already am" default so `squad-hub squad` works out of the box from any
  * project directory without first turning file access on.
  */
-async function startSessionAndReport({ prompt, cwd, localCwd, agent, model }) {
+async function startSessionAndReport({
+  prompt, cwd, localCwd, agent, model, mode,
+}) {
   const ensured = await ensureDaemonRunning();
   if (!ensured.ok) { err(ensured.reason || 'the daemon could not be started'); return 1; }
   if (ensured.started) out(`daemon started (pid ${client.readState().pid})`);
   if (ensured.hint) out(ensured.hint);
 
-  const r = await client.call('start-session', { prompt, cwd, localCwd, agent, model });
+  const r = await client.call('start-session', {
+    prompt, cwd, localCwd, agent, model, mode,
+  });
   out(`session ${r.id} started (agent pid ${r.pid}) in ${r.cwd}`);
   if (r.agentSelection) {
     const sel = r.agentSelection;
-    out(`  agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source}${sel.isSquad ? ', Squad project' : ''})`);
+    out(`  agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}${sel.mode ? `  mode: ${sel.mode}` : ''}  (${sel.source}${sel.isSquad ? ', Squad project' : ''})`);
     // Same "never let a noninteractive run stay silent about something
     // worth knowing" reasoning as the hub-attach warning just below: a
     // rejected .squad-hub.json value or a stray credential-shaped key must
@@ -635,7 +639,7 @@ async function startSessionAndReport({ prompt, cwd, localCwd, agent, model }) {
 
 async function cmdRun(argv) {
   const prompt = positionals(argv).join(' ');
-  if (!prompt) { err('usage: squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]'); return 2; }
+  if (!prompt) { err('usage: squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>] [--mode agent|plan|autopilot]'); return 2; }
 
   return startSessionAndReport({
     prompt,
@@ -643,6 +647,7 @@ async function cmdRun(argv) {
     localCwd: process.cwd(),
     agent: value(argv, 'agent'),
     model: value(argv, 'model'),
+    mode: value(argv, 'mode'),
   });
 }
 
@@ -656,9 +661,14 @@ async function cmdSquad(argv) {
   const cwd = explicitCwd || process.cwd();
   const agent = value(argv, 'agent');
   const model = value(argv, 'model');
+  const mode = value(argv, 'mode');
   const prompt = positionals(argv).join(' ');
 
-  if (prompt) return startSessionAndReport({ prompt, cwd: explicitCwd, localCwd: cwd, agent, model });
+  if (prompt) {
+    return startSessionAndReport({
+      prompt, cwd: explicitCwd, localCwd: cwd, agent, model, mode,
+    });
+  }
 
   const ensured = await ensureDaemonRunning();
   if (!ensured.ok) { err(ensured.reason || 'the daemon could not be started'); return 1; }

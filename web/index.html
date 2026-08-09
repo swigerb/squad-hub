@@ -313,6 +313,16 @@
         <input id="nsModel" placeholder="the agent's default">
       </label>
     </div>
+    <label class="field">
+      <span>Mode <button type="button" class="hint-btn" aria-label="About Mode"
+        title="How much you are asked before the agent acts. &#10;&#10;Agent — asks you to approve each tool it wants to run. &#10;Plan — works out an approach and shows it, without changing anything. &#10;Autopilot — runs without asking, for work you would approve anyway. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
+      <select id="nsMode">
+        <option value="">the agent's default</option>
+        <option value="agent">Agent — ask me before each tool</option>
+        <option value="plan">Plan — think it through, change nothing</option>
+        <option value="autopilot">Autopilot — run without asking</option>
+      </select>
+    </label>
     <small class="field-note">
       Leave either blank to let the project decide. In a Squad project that
       selects the <code>squad</code> agent automatically; anywhere else, Copilot's
