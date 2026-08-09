@@ -755,6 +755,15 @@ async function suiteAccess() {
 }
 
 /**
+ * The link that replaces the launcher: the hub emits a URL, and cannot start
+ * compute itself.
+ */
+async function suiteGitHubLink() {
+  console.log('\n[ACA LINK] a prefilled issue comment, correct or absent, never approximate');
+  runChildSuite(path.join(__dirname, 'github-link-unit.js'), 'github-link');
+}
+
+/**
  * Session metadata: repository and branch read from the checkout, the live
  * activity line, the badge set, and the ordering that pulls a blocked session
  * to the top. Every new field reaching the DOM carries its own stored-XSS
@@ -894,6 +903,7 @@ async function suiteAgentApply() {
   await suiteInstallPrompt();
   await suiteModes();
   await suiteAccess();
+  await suiteGitHubLink();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();

@@ -1434,6 +1434,10 @@ async function openDetail(key) {
   state.currentSession = found;
   $('dtTitle').textContent = (found.session.prompt || found.session.id).slice(0, 80);
   $('dtMeta').textContent = `${found.device.name} · ${found.session.cwd || ''} · ${found.session.status}`;
+  // Offered only where it can lead somewhere real. Squad Hub cannot conjure
+  // compute, so it must not offer to -- and a session that is not on GitHub has
+  // no issue to comment on.
+  $('dtAca').hidden = !acaLink(found.session, 1, 'probe');
 
   /**
    * Say WHY the agent or model is not the one that was asked for.
@@ -2342,6 +2346,25 @@ function wire() {
   };
   $('pplLogin').onkeydown = (e) => { if (e.key === 'Enter') $('pplAdd').click(); };
 
+  $('dtAca').onclick = openAca;
+  $('acaCancel').onclick = () => { $('acaScrim').hidden = true; };
+  $('acaScrim').onclick = (e) => { if (e.target === $('acaScrim')) $('acaScrim').hidden = true; };
+  $('acaIssue').oninput = updateAcaPreview;
+  $('acaPrompt').oninput = updateAcaPreview;
+  $('acaOpen').onclick = () => {
+    const cur = state.currentSession;
+    const url = cur ? acaLink(cur.session, $('acaIssue').value, $('acaPrompt').value) : null;
+    if (!url) {
+      $('acaErr').textContent = 'Enter an issue number and an instruction.';
+      $('acaErr').hidden = false;
+      return;
+    }
+    // `noopener` because the opened page must not get a handle back to this
+    // one -- and this one holds the token.
+    window.open(url, '_blank', 'noopener');
+    $('acaScrim').hidden = true;
+  };
+
   // Offering to install an app that is already installed is noise, so the
   // menu item goes away once we are running from the home screen or the dock.
   if (isInstalled()) {
@@ -2759,6 +2782,68 @@ function choicesField(selId, boxId, list, blankLabel) {
 function updateAgentChoices(device) {
   choicesField('nsAgentSelect', 'nsAgent', device && device.agents, 'whatever the project selects');
   choicesField('nsModelSelect', 'nsModel', device && device.models, "the agent's default");
+}
+
+/**
+ * The link that replaces the launcher.
+ *
+ * Squad Hub cannot start a cloud job and deliberately holds no credential that
+ * could -- see docs/launcher-assessment.md. What it can do is open the issue's
+ * own comment box with `/squad-aca <instruction>` already in it, and let the
+ * person send it as themselves. GitHub authenticates them, the existing
+ * workflow starts the job with a federated short-lived credential, and the
+ * comment is the audit record.
+ *
+ * This mirrors src/github-link.js. It is duplicated rather than shared because
+ * `web/app.js` has no build step and no module loader, and the alternative --
+ * a round trip to ask the hub to build a string it has no special knowledge of
+ * -- would put the hub in the path of an action it deliberately has no part in.
+ * The refusals are the same, and both are tested.
+ */
+function acaLink(session, issue, prompt) {
+  const git = (session && session.git) || {};
+  const host = String(git.host || '').toLowerCase();
+  if (host !== 'github.com' && host !== 'www.github.com') return null;
+  const parts = String(git.repository || '').split('/').filter(Boolean);
+  if (parts.length !== 2) return null;
+  const ok = (s) => /^[A-Za-z0-9._-]{1,100}$/.test(s) && !s.startsWith('.') && s !== '..';
+  if (!ok(parts[0]) || !ok(parts[1])) return null;
+
+  const n = Number(issue);
+  if (!Number.isInteger(n) || n <= 0) return null;
+
+  const p = String(prompt == null ? '' : prompt).trim();
+  if (!p) return null;
+  // The workflow reads the first line, so a multi-line prompt is folded rather
+  // than silently cut short.
+  const body = `/squad-aca ${p.replace(/\s*\r?\n\s*/g, ' ')}`;
+
+  const url = `https://github.com/${parts[0]}/${parts[1]}/issues/${n}#issuecomment-new?body=${encodeURIComponent(body)}`;
+  // Refused rather than truncated: a truncated instruction is a different
+  // instruction that still looks deliberate, in a box that starts compute.
+  return url.length > 6000 ? null : url;
+}
+
+function openAca() {
+  const cur = state.currentSession;
+  if (!cur) return;
+  $('acaErr').hidden = true;
+  $('acaIssue').value = '';
+  $('acaPrompt').value = cur.session.prompt || '';
+  $('acaScrim').hidden = false;
+  updateAcaPreview();
+  $('acaIssue').focus();
+}
+
+function updateAcaPreview() {
+  const cur = state.currentSession;
+  const url = cur ? acaLink(cur.session, $('acaIssue').value, $('acaPrompt').value) : null;
+  // The exact text that will appear in the comment box, shown before anyone
+  // opens anything. The point of this route over a launcher is that the
+  // instruction is READ rather than approved blind.
+  const p = String($('acaPrompt').value || '').trim().replace(/\s*\r?\n\s*/g, ' ');
+  $('acaPreview').textContent = p ? `/squad-aca ${p}` : '';
+  $('acaOpen').disabled = !url;
 }
 
 /**

@@ -146,8 +146,8 @@ check('an identity outside the alphabet is refused at the door', () => {
 
 check('the shapes the deployment list already accepts are accepted here too', () => {
   // A list you can edit two ways has to mean the same thing both ways.
-  for (const good of ['someone', 'dave.wollerman@outlook.com', 'user+tag@example.com',
-    '11111111-2222-3333-4444-555555555555', 'first.last@contoso.onmicrosoft.com']) {
+  for (const good of ['someone', 'first.last@example.com', 'user+tag@example.com',
+    '11111111-2222-3333-4444-555555555555', 'first.last@contoso.com']) {
     const r = store().add(good);
     assert.strictEqual(r.ok, true, `"${good}" was refused: ${r.reason}`);
   }

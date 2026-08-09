@@ -352,6 +352,11 @@
         <p class="agent-warn" id="dtWarn" hidden></p>
       </div>
       <div class="detail-actions">
+        <!-- Hidden unless the session is on GitHub. Squad Hub cannot start a
+             cloud job, so it must not offer to: this opens the issue's own
+             comment box with the instruction prefilled, and the person sends
+             it as themselves. -->
+        <button class="ghost" id="dtAca" hidden>Run on ACA…</button>
         <button class="ghost danger" id="dtStop">Stop</button>
         <button class="ghost" id="dtClose">Close</button>
       </div>
@@ -433,6 +438,31 @@
       <button id="cnCancel">Close</button>
       <button class="primary" id="cnCreate">Create token</button>
     </div>
+  </div>
+</div>
+
+<div class="scrim" id="acaScrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="acaTitle">
+    <h2 id="acaTitle">Run this on ACA</h2>
+    <p class="modal-sub">
+      This opens the issue on GitHub with the instruction already typed. You
+      send it — Squad Hub cannot start a cloud job itself, and holds no
+      credential that could.
+    </p>
+    <label class="field">
+      <span>Issue number</span>
+      <input id="acaIssue" inputmode="numeric" placeholder="e.g. 72">
+    </label>
+    <label class="field">
+      <span>Instruction</span>
+      <textarea id="acaPrompt" rows="3" placeholder="what the cloud session should do"></textarea>
+    </label>
+    <div class="cmdblock"><code id="acaPreview"></code></div>
+    <div class="modal-actions">
+      <button class="ghost" id="acaCancel">Cancel</button>
+      <button class="primary" id="acaOpen">Open on GitHub</button>
+    </div>
+    <p class="err" id="acaErr" hidden></p>
   </div>
 </div>
 
