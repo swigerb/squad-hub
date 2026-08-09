@@ -195,11 +195,23 @@ function readProjectConfig(cwd) {
 }
 
 /**
- * Decide agent + model for a session, and say WHY -- 'explicit' | 'project' |
- * 'auto' | 'default' -- so a status line or `squad-hub doctor` can show the
- * reason, not just the result.
+ * The modes a session can run in.
+ *
+ * An allow-list rather than a name pattern, because unlike an agent or a model
+ * this is a CLOSED set: the agent advertises exactly these three and anything
+ * else is a mistake, not an unknown-but-plausible value. Validating it as a
+ * name would let `--mode anything` through to be silently ignored later.
  */
-function selectAgent({ cwd, explicitAgent, explicitModel } = {}) {
+const MODES = ['agent', 'plan', 'autopilot'];
+
+/**
+ * Decide agent + model + mode for a session, and say WHY -- 'explicit' |
+ * 'project' | 'auto' | 'default' -- so a status line or `squad-hub doctor` can
+ * show the reason, not just the result.
+ */
+function selectAgent({
+  cwd, explicitAgent, explicitModel, explicitMode,
+} = {}) {
   const squad = isSquadProject(cwd);
   const proj = readProjectConfig(cwd);
   const warnings = [...proj.warnings];
@@ -219,17 +231,33 @@ function selectAgent({ cwd, explicitAgent, explicitModel } = {}) {
     warnings.push(`--model "${safePreview(model)}" is not a valid name (letters, digits, '.', '_', '-' only, starting with a letter or digit, up to 64 characters); ignored, falling back to the next source`);
     model = null;
   }
+  // The mode never comes from project config. It decides how much a person is
+  // asked before a tool runs, and that is a choice for whoever is running the
+  // session -- not something a checked-out repository gets to set for them.
+  let mode = explicitMode ? String(explicitMode).toLowerCase() : null;
+  if (mode && !MODES.includes(mode)) {
+    warnings.push(`--mode "${safePreview(explicitMode)}" is not a mode (${MODES.join(', ')}); ignored, running the agent's default`);
+    mode = null;
+  }
 
   if (agent) {
-    return { agent, model: model || proj.model || null, source: 'explicit', isSquad: squad, warnings };
+    return {
+      agent, model: model || proj.model || null, mode, source: 'explicit', isSquad: squad, warnings,
+    };
   }
   if (proj.agent) {
-    return { agent: proj.agent, model: model || proj.model || null, source: 'project', isSquad: squad, warnings };
+    return {
+      agent: proj.agent, model: model || proj.model || null, mode, source: 'project', isSquad: squad, warnings,
+    };
   }
   if (squad) {
-    return { agent: 'squad', model: model || proj.model || null, source: 'auto', isSquad: true, warnings };
+    return {
+      agent: 'squad', model: model || proj.model || null, mode, source: 'auto', isSquad: true, warnings,
+    };
   }
-  return { agent: DEFAULT_AGENT, model: model || proj.model || null, source: 'default', isSquad: false, warnings };
+  return {
+    agent: DEFAULT_AGENT, model: model || proj.model || null, mode, source: 'default', isSquad: false, warnings,
+  };
 }
 
 /**
@@ -251,4 +279,6 @@ function buildAgentArgs(baseArgs, selection) {
   return args;
 }
 
-module.exports = { DEFAULT_AGENT, isSquadProject, readProjectConfig, selectAgent, buildAgentArgs, walkUpForMarker };
+module.exports = {
+  DEFAULT_AGENT, MODES, isSquadProject, readProjectConfig, selectAgent, buildAgentArgs, walkUpForMarker,
+};

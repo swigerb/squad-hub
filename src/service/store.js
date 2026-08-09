@@ -76,6 +76,7 @@ class Store extends EventEmitter {
       // the first and would be wrong to claim the second.
       agents: Array.isArray(device.agents) && device.agents.length ? device.agents : (existing.agents || null),
       models: Array.isArray(device.models) && device.models.length ? device.models : (existing.models || null),
+      modes: Array.isArray(device.modes) && device.modes.length ? device.modes : (existing.modes || null),
       version: device.version || null,
       registeredAt: existing.registeredAt || Date.now(),
       lastSeen: Date.now(),

@@ -140,6 +140,29 @@ something you intend to come back to from the terminal.
 | `--cwd <dir>` | Project directory. Defaults to where you ran the command. |
 | `--agent <name>` | Override agent selection (`squad`, `default`, or any custom agent name). |
 | `--model <name>` | Override model selection. |
+| `--mode <mode>` | `agent` (ask before each tool), `plan` (work it out, change nothing) or `autopilot` (run without asking). Defaults to the agent's own. |
+
+## Modes
+
+A session runs in one of three modes, which decide how much you are asked
+before the agent acts:
+
+| Mode | What it does |
+|---|---|
+| `agent` | Asks you to approve each tool it wants to run. The default. |
+| `plan` | Works out an approach and shows it, without changing anything. |
+| `autopilot` | Runs without asking, for work you would approve anyway. |
+
+**Autopilot removes the questions, not the limits.** A tool the device refuses
+is still refused — it simply does not run, rather than raising an approval you
+would have denied. Measured, not assumed: autopilot with a denied tool produces
+zero approvals and the tool does not run.
+
+The mode is applied over the protocol at session start. If the agent does not
+offer the mode you asked for, the session says so rather than running something
+else quietly. It can only be set per session — a project's `.squad-hub.json`
+cannot choose it for you, because a checked-out repository should not be able to
+decide how much its reader is asked.
 
 ## Agent selection
 

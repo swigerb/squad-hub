@@ -181,11 +181,16 @@ function agentLabel(s) {
   // NOTHING WAS ACTUALLY SELECTED. The default agent, no model, chosen because
   // no rule applied -- so "default — default" spends a column saying nothing,
   // twice. What the agent actually IS answers a question someone might have.
-  if ((!want.agent || want.agent === 'default') && !want.model && want.source === 'default') {
+  if ((!want.agent || want.agent === 'default') && !want.model && !want.mode && want.source === 'default') {
     return { text: s.agent || 'Copilot CLI', mismatch: false };
   }
 
-  const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}`;
+  // The mode is named only when it is not the default, because "agent mode" is
+  // what happens anyway and a row that says so on every session is noise.
+  // Autopilot and plan change what a person should expect to be asked, so those
+  // are worth a word.
+  const modeLabel = want.mode && want.mode !== 'agent' ? `, ${want.mode}` : '';
+  const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}${modeLabel}`;
   // No `applied` at all means an older device that predates the fix. Report the
   // request without dressing it up as confirmation.
   if (!got) return { text: `${asked} — ${want.source}`, mismatch: false };
@@ -193,9 +198,14 @@ function agentLabel(s) {
   const wantedAgent = want.agent && want.agent !== 'default';
   const agentOk = !wantedAgent || (got.agent && String(got.agent).toLowerCase() === String(want.agent).toLowerCase());
   const modelOk = !want.model || (got.model && String(got.model).toLowerCase() === String(want.model).toLowerCase());
-  if (agentOk && modelOk) return { text: `${asked} — ${want.source}`, mismatch: false };
+  // A mode that was asked for and not applied matters MORE than the others:
+  // someone who chose autopilot and silently got interactive is waiting for a
+  // session that is waiting for them.
+  const modeOk = !want.mode || (got.mode
+    && String(got.mode).toLowerCase().includes(String(want.mode).toLowerCase()));
+  if (agentOk && modelOk && modeOk) return { text: `${asked} — ${want.source}`, mismatch: false };
 
-  const running = [got.agent || 'default agent', got.model].filter(Boolean).join(' ');
+  const running = [got.agent || 'default agent', got.model, got.mode].filter(Boolean).join(' ');
   return { text: `running ${running}, not ${asked}`, mismatch: true };
 }
 
@@ -843,14 +853,20 @@ function alwaysAllowRule(approval) {
  * own choice with nothing at all -- see agent-select.js, where an explicit
  * flag beats every other source precisely because it was explicit.
  */
-function spawnRequest({ prompt, cwd, agent, model } = {}) {
+function spawnRequest({
+  prompt, cwd, agent, model, mode,
+} = {}) {
   const body = { prompt: String(prompt == null ? '' : prompt).trim() };
   const cleanCwd = String(cwd == null ? '' : cwd).trim();
   const cleanAgent = String(agent == null ? '' : agent).trim();
   const cleanModel = String(model == null ? '' : model).trim();
+  const cleanMode = String(mode == null ? '' : mode).trim();
   if (cleanCwd) body.cwd = cleanCwd;
   if (cleanAgent) body.agent = cleanAgent;
   if (cleanModel) body.model = cleanModel;
+  // Omitted when empty, so "no preference" reaches the device as an absent
+  // field rather than as a mode named "".
+  if (cleanMode) body.mode = cleanMode;
   return body;
 }
 
@@ -2328,6 +2344,7 @@ function wire() {
       cwd: $('nsCwd').value,
       agent,
       model,
+      mode: $('nsMode') ? $('nsMode').value : '',
     });
     const problem = spawnError(body);
     if (problem) { showNewErr(problem); return; }

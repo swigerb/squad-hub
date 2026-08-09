@@ -738,6 +738,14 @@ async function suiteInstallPrompt() {
 }
 
 /**
+ * Modes: applied over the protocol, and reported honestly when they are not.
+ */
+async function suiteModes() {
+  console.log('\n[MODES] interactive, plan and autopilot are applied and reported');
+  runChildSuite(path.join(__dirname, 'modes-unit.js'), 'modes');
+}
+
+/**
  * Session metadata: repository and branch read from the checkout, the live
  * activity line, the badge set, and the ordering that pulls a blocked session
  * to the top. Every new field reaching the DOM carries its own stored-XSS
@@ -875,6 +883,7 @@ async function suiteAgentApply() {
   await suitePackage();
   await suiteWebXss();
   await suiteInstallPrompt();
+  await suiteModes();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();

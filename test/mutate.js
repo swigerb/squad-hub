@@ -2054,9 +2054,20 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'the row goes back to printing the request as though it were the answer',
     file: 'web/app.js',
-    find: `  if (agentOk && modelOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
-    replace: `  if (agentOk || modelOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
+    find: `  if (agentOk && modelOk && modeOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
+    replace: `  if (agentOk || modelOk || modeOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
     mustFail: 'a session running a DIFFERENT agent to the one named on it says so',
+  },
+  {
+    // A mode asked for and silently not applied is the worst of the three to
+    // get wrong: someone who chose autopilot and got interactive is waiting for
+    // a session that is waiting for them.
+    name: 'a session running a DIFFERENT mode to the one asked for keeps quiet about it',
+    file: 'web/app.js',
+    find: `  const modeOk = !want.mode || (got.mode
+    && String(got.mode).toLowerCase().includes(String(want.mode).toLowerCase()));`,
+    replace: `  const modeOk = true; // MUTATION`,
+    mustFail: 'a session that did not get the mode it asked for says so',
   },
   {
     name: 'a device too old to report what it applied is accused of a mismatch',
