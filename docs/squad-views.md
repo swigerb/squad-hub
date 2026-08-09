@@ -166,3 +166,97 @@ The assertions that matter are refusals:
 Charters explain what a member is *for*. They do not tell you what it *did* —
 that is the transcript, and correlating the two is a bigger idea than this one.
 Worth doing separately, and worth not pretending this covers it.
+
+## Building it, in testable sprints
+
+Each sprint lands on its own, is verifiable on its own, and leaves the product
+working. The security-critical work comes **first**, before any of it is
+reachable from a browser — so the refusals exist before the thing that would
+need them.
+
+### Sprint 1 — the resolver, and everything it refuses
+
+*No route, no UI. A pure function and its tests.*
+
+`src/squad-context.js` gains `resolveSquadDoc(cwd, doc)` returning `{ path }` or
+`{ error }`, and `listSquadDocs(cwd)` for what a workspace actually has.
+
+**Testable:**
+- every `doc` in the table resolves to the expected path;
+- `charter:engineer` resolves **only** when `engineer` is on the parsed team;
+- `charter:../../../etc/passwd`, `charter:`, `charter:.`, an absolute path, a
+  UNC path, and a symlink pointing out of `.squad/` are each refused — and the
+  test asserts the refusal is because *the member is not on the team*, not
+  because a string was sanitised. The first survives a refactor; the second
+  does not;
+- a non-Squad workspace returns `{ error }`, never a path;
+- resolution reads nothing outside `cwd/.squad/`.
+
+**Done when:** no input the protocol can carry makes the resolver name a file
+outside `.squad/`.
+
+### Sprint 2 — the device op
+
+*Reachable over IPC and the hub socket. Still no UI.*
+
+The daemon gains `op: 'squad-doc'` taking `{ sessionId, doc }`. It looks up a
+session it already owns, uses **that session's cwd** (never a supplied one),
+calls the Sprint 1 resolver, reads through the existing 256 KB `readFileSafe`,
+and returns `{ doc, text, truncated, bytes }`.
+
+The hub adds `squad-doc` to the control-op allow-list, inheriting the
+authentication, ownership and reachability checks that already guard `approve`,
+`steer` and `stop`.
+
+**Testable:**
+- an unknown `sessionId` is refused;
+- a `sessionId` belonging to a **different device** is refused — per-user
+  isolation already covers this, so assert it rather than assume it;
+- the request body cannot influence the path: send a `cwd` and a `path` field
+  and assert both are ignored;
+- a 300 KB document returns `truncated: true` with a byte count, not a silent
+  cut;
+- an offline device gives the same 409 as every other op;
+- **nothing reaches the hub's disk** — snapshot `SQUAD_HUB_HOME` before and
+  after and compare.
+
+**Done when:** a charter can be fetched over the wire, and the mutation harness
+kills a version that trusts a caller-supplied path.
+
+### Sprint 3 — the viewer
+
+*The tab, the document list, the escaped renderer.*
+
+A **Squad** tab in the session detail. Members come from the summary the hub
+already holds, so it is useful before anything is fetched. A document loads on
+click; nothing is prefetched, so a session nobody opens reads nothing.
+
+**Testable:**
+- the tab does not appear for a non-Squad session;
+- clicking a member fetches one document, once;
+- `# heading` and `- item` are styled, and arrive as **text**;
+- a decisions file containing `<img src=x onerror=alert(1)>` renders inert —
+  the browser suite asserts nothing executed, not merely that the string was
+  escaped;
+- an offline device says "the device is offline; these files live on it" rather
+  than showing an empty panel;
+- a missing document says so.
+
+**Done when:** a browser test opens a real charter through a real device, and
+the XSS fixture does nothing.
+
+### Sprint 4 — the rest of the picture
+
+Decisions in full rather than a 180-character summary, routing rules, and the
+per-member model table. All of it reads through the Sprint 2 op: **no new
+capability**, only new entries in the Sprint 1 table.
+
+**Testable:** each new `doc` value gets a resolver test and a viewer test, and
+the allow-list stays a list.
+
+### Not in scope
+
+**Editing.** This is a viewer. A hub that could write to `.squad/` could rewrite
+a charter or a decision record — the governance state the whole Squad model
+rests on. That is a much larger claim, to be argued on its own merits rather
+than inherited from a read feature.
