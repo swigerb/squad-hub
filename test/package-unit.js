@@ -100,9 +100,48 @@ check('every asset index.html references is shipped', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Entry points -- a package.json may not promise files that do not exist
+// Home-screen install -- the failure mode here is SILENT
 // ---------------------------------------------------------------------------
 
+/**
+ * iOS ignores an SVG `apple-touch-icon` entirely and screenshots the page
+ * instead, and it ignores SVG entries in the manifest the same way. Both
+ * failures look like nothing at all: no console error, no 404, just a bad
+ * icon -- which is how this shipped SVG-only in the first place. So the
+ * format is asserted, not just the presence of a file.
+ */
+check('the apple-touch-icon is a PNG, because iOS ignores SVG', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'web/index.html'), 'utf8');
+  const m = html.match(/<link[^>]+rel="apple-touch-icon"[^>]*>/i);
+  assert.ok(m, 'no apple-touch-icon; iOS will screenshot the page as the icon');
+  const href = (m[0].match(/href="([^"]+)"/) || [])[1];
+  assert.ok(href, 'apple-touch-icon has no href');
+  assert.ok(href.endsWith('.png'), `apple-touch-icon is ${href}; iOS ignores anything but a raster image`);
+});
+
+check('the manifest offers PNG icons at the sizes an installer looks for', () => {
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  const png = (mf.icons || []).filter((i) => i.type === 'image/png');
+  assert.ok(png.length, 'manifest has no PNG icon; an SVG-only manifest is ignored by iOS');
+  for (const want of ['192x192', '512x512']) {
+    assert.ok(png.some((i) => i.sizes === want), `manifest has no ${want} PNG icon`);
+  }
+  assert.ok(png.some((i) => String(i.purpose || '').includes('maskable')), 'no maskable icon; Android crops it badly');
+});
+
+check('every icon the manifest names exists on disk and is shipped', () => {
+  // index.html is scanned above, but nothing scanned the MANIFEST -- so a
+  // manifest naming a file that was never generated would 404 in silence.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  const refs = [...new Set((mf.icons || []).map((i) => `web/${String(i.src).replace(/^\//, '')}`))];
+  assert.ok(refs.length >= 2, `only ${refs.length} manifest icons; the scan is broken`);
+  const broken = refs.filter((f) => !fs.existsSync(path.join(ROOT, f)) || !inPackage(f));
+  assert.deepStrictEqual(broken, [], `manifest icons missing on disk or from the package: ${broken.join(', ')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Entry points -- a package.json may not promise files that do not exist
+// ---------------------------------------------------------------------------
 check('every bin target exists on disk and is shipped', () => {
   const targets = Object.values(pkg.bin || {});
   assert.ok(targets.length >= 1, 'no bin entry; the CLI would not be installable');

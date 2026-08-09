@@ -693,6 +693,9 @@ select option:checked {
 .modal-desc { margin: 0 0 12px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
 
+.ih-steps { margin: 12px 0 4px; padding-left: 22px; line-height: 1.7; }
+.ih-steps li { margin-bottom: 6px; }
+
 .cmdblock { margin-top: 8px; }
 .cmdlabel { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
 .cmdblock pre {
