@@ -299,7 +299,8 @@
       </label>
       <label class="field">
         <span>Model <button type="button" class="hint-btn" aria-label="About Model"
-          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;A model can only be checked once the session starts: if the name is not one the agent offers, the session says so rather than quietly using a different one.">i</button></span>
+          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there — a model list is advertised by the agent when a session starts, and nowhere else.">i</button></span>
+        <select id="nsModelSelect" hidden></select>
         <input id="nsModel" placeholder="the agent's default">
       </label>
     </div>
