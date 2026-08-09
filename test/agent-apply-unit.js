@@ -89,6 +89,36 @@ const sent = (s, method) => s.calls.filter((c) => c.method === method);
     assert.strictEqual(set[0].params.value, 'Squad');
   });
 
+  await check('what the agent offers is recorded even when nothing was asked for', async () => {
+    // The model list is advertised at session/new and NOWHERE else -- there is
+    // no CLI probe for it as there is for agents. It used to be read only when
+    // a model had been requested, which threw it away in exactly the case
+    // where nobody knew what to ask for, and left the New session dialog with
+    // a free-text box and no way to fill it.
+    const s = scripted({ agents: ['', 'Squad', 'Reviewer'], models: ['claude-opus-5', 'gpt-5.6-sol'] });
+    s.agentSelection = null;
+    const seen = [];
+    s.emit = (ev, payload) => { if (ev === 'capabilities') seen.push(payload); };
+    await s._applySelection(await s._request('session/new', {}));
+
+    assert.deepStrictEqual(s.available.models, ['claude-opus-5', 'gpt-5.6-sol']);
+    assert.ok(s.available.agents.includes('Squad'), `agents were not captured: ${JSON.stringify(s.available.agents)}`);
+    assert.strictEqual(seen.length, 1, 'the daemon is never told, so nothing can be remembered');
+  });
+
+  await check('an agent that advertises nothing announces nothing', async () => {
+    // Reporting an empty list would be a claim the agent never made, and the
+    // UI would render an empty picker instead of the box someone could type
+    // a name they know into.
+    const s = scripted({ agents: [], models: [] });
+    s.agentSelection = null;
+    let announced = 0;
+    s.emit = (ev) => { if (ev === 'capabilities') announced += 1; };
+    await s._applySelection(await s._request('session/new', {}));
+    assert.strictEqual(announced, 0);
+    assert.deepStrictEqual(s.available.models, []);
+  });
+
   await check('the agent name is matched case-insensitively', async () => {
     // Copilot registers Squad's agent as "Squad"; every other surface in this
     // codebase spells it "squad". An exact match would silently never apply.

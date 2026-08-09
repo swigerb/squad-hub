@@ -231,8 +231,33 @@ class AcpSession extends EventEmitter {
     const want = this.agentSelection || {};
     this.applied = { agent: null, model: null, warnings: [] };
 
+    /**
+     * What this agent said it can do, recorded whether or not anything was
+     * requested.
+     *
+     * This is the ONLY place the model list exists. Unlike agents -- which can
+     * be probed by running the CLI once -- models are advertised by the agent
+     * at `session/new` and nowhere else, so a device cannot know them until it
+     * has started a session. Capturing it here is what lets the New session
+     * dialog offer models instead of asking someone to type one blind and find
+     * out afterwards that it was ignored.
+     *
+     * Read unconditionally on purpose: it used to be read only when a model
+     * had been asked for, which meant the list was thrown away in exactly the
+     * case where nobody knew what to ask for.
+     */
+    const agentOpt = ((newSession && newSession.configOptions) || []).find((o) => o.id === 'agent');
+    this.available = {
+      agents: ((agentOpt && agentOpt.options) || []).map((o) => o.name || o.value).filter(Boolean),
+      models: ((newSession && newSession.models && newSession.models.availableModels) || [])
+        .map((m) => m.modelId).filter(Boolean),
+    };
+    if (this.available.agents.length || this.available.models.length) {
+      this.emit('capabilities', this.available);
+    }
+
     if (want.agent && want.agent !== 'default') {
-      const opt = ((newSession && newSession.configOptions) || []).find((o) => o.id === 'agent');
+      const opt = agentOpt;
       const choices = (opt && opt.options) || [];
       // Case-insensitively, and against the name as well as the value: Copilot
       // registers Squad's agent as "Squad" while every other surface in this

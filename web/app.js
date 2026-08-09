@@ -2198,15 +2198,17 @@ function wire() {
 
   $('nsStart').onclick = async () => {
     const deviceId = $('nsDevice').value;
-    // Whichever agent control is showing is the one the person used. Reading
-    // the hidden one would silently discard their choice.
+    // Whichever control is showing is the one the person used. Reading the
+    // hidden one would silently discard their choice.
     const agentSel = $('nsAgentSelect');
     const agent = agentSel && !agentSel.hidden ? agentSel.value : $('nsAgent').value;
+    const modelSel = $('nsModelSelect');
+    const model = modelSel && !modelSel.hidden ? modelSel.value : $('nsModel').value;
     const body = spawnRequest({
       prompt: $('nsPrompt').value,
       cwd: $('nsCwd').value,
       agent,
-      model: $('nsModel').value,
+      model,
     });
     const problem = spawnError(body);
     if (problem) { showNewErr(problem); return; }
@@ -2570,38 +2572,36 @@ function updateCwdHint() {
 }
 
 /**
- * Offer the agents the DEVICE says it has, when it can say.
+ * Swap a free-text box for a picker when the device can say what it accepts.
  *
- * The hub holds no Copilot install and never runs one, so it cannot know this
- * on its own -- only the device can, which is why the list arrives with the
- * device's heartbeat. Where that list exists, a free-text box is the wrong
- * control: it asks someone to already know what to type, and a typo is only
- * discovered when the session comes back reporting a different agent than the
- * one they chose.
- *
- * A device that could NOT tell reports null rather than an empty list, and
- * falls back to the text box. Rendering an empty picker would be a claim the
- * device never made -- "this machine has no agents" -- and would leave someone
- * unable to type the name they know perfectly well is there.
+ * Shared by Agent and Model because the rule is the same for both: offer a
+ * list where one exists, and a text box where it does not. A device that could
+ * not tell reports null rather than an empty list, and rendering an empty
+ * picker would be a claim it never made -- while also taking away the box
+ * someone could have typed a name they know into.
  */
-function updateAgentChoices(device) {
-  const sel = $('nsAgentSelect');
-  const box = $('nsAgent');
+function choicesField(selId, boxId, list, blankLabel) {
+  const sel = $(selId);
+  const box = $(boxId);
   if (!sel || !box) return;
-  const agents = device && Array.isArray(device.agents) ? device.agents : null;
-  if (!agents || !agents.length) {
+  if (!Array.isArray(list) || !list.length) {
     sel.hidden = true;
     box.hidden = false;
     return;
   }
   const prior = box.value;
-  sel.innerHTML = `<option value="">whatever the project selects</option>${
-    agents.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join('')}`;
+  sel.innerHTML = `<option value="">${esc(blankLabel)}</option>${
+    list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}`;
   // Keep a choice already made, but only if this device really offers it.
-  sel.value = agents.includes(prior) ? prior : '';
+  sel.value = list.includes(prior) ? prior : '';
   box.value = sel.value;
   sel.hidden = false;
   box.hidden = true;
+}
+
+function updateAgentChoices(device) {
+  choicesField('nsAgentSelect', 'nsAgent', device && device.agents, 'whatever the project selects');
+  choicesField('nsModelSelect', 'nsModel', device && device.models, "the agent's default");
 }
 
 /**

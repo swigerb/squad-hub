@@ -75,6 +75,7 @@ class Store extends EventEmitter {
       // tell", which is not the same as "none" -- the UI hides the picker for
       // the first and would be wrong to claim the second.
       agents: Array.isArray(device.agents) && device.agents.length ? device.agents : (existing.agents || null),
+      models: Array.isArray(device.models) && device.models.length ? device.models : (existing.models || null),
       version: device.version || null,
       registeredAt: existing.registeredAt || Date.now(),
       lastSeen: Date.now(),

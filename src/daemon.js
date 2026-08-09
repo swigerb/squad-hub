@@ -330,6 +330,7 @@ class Daemon extends EventEmitter {
 
     s.on('status', (e) => { this.emit('session-status', { id, ...e }); this._persistSessions(); });
     s.on('approval', (a) => { this.emit('approval', a); this._persistSessions(); });
+    s.on('capabilities', (c) => this._rememberCapabilities(c));
 
     s.run().catch((e) => {
       if (s.status !== STATUS.FAILED && s.status !== STATUS.STOPPED) s._fail(e.message);
@@ -386,6 +387,7 @@ class Daemon extends EventEmitter {
     this._trackChild(s.pid, sessionId);
     s.on('status', (e) => { this.emit('session-status', { id: sessionId, ...e }); this._persistSessions(); });
     s.on('approval', (a) => { this.emit('approval', a); this._persistSessions(); });
+    s.on('capabilities', (c) => this._rememberCapabilities(c));
     s.run().catch((e) => {
       if (s.status !== STATUS.FAILED && s.status !== STATUS.STOPPED) s._fail(e.message);
     }).finally(() => { this._untrackChild(s.pid); this._persistSessions(); });
@@ -560,6 +562,41 @@ class Daemon extends EventEmitter {
   }
 
   /**
+   * Remember what an agent said it can do, from a session that really started.
+   *
+   * MODELS EXIST NOWHERE ELSE. Agents can be probed by running the CLI once,
+   * but the model list is advertised only at `session/new` -- so until a
+   * session has run, an honest device cannot offer one, and the New session
+   * dialog can only ask someone to type a name blind.
+   *
+   * Kept in the config file rather than in memory, because a restart would
+   * otherwise take the list away and put the free-text box back until the next
+   * session happened to run. Cheap: two short arrays.
+   *
+   * The agent list from a live session is better evidence than the CLI probe
+   * -- it is what THIS agent offered for THIS project -- so it wins where both
+   * exist.
+   */
+  _rememberCapabilities(cap) {
+    if (!cap) return;
+    const models = Array.isArray(cap.models) ? cap.models : [];
+    const agents = Array.isArray(cap.agents) ? cap.agents : [];
+    if (!models.length && !agents.length) return;
+
+    const cfg = config.read();
+    const prior = cfg.knownCapabilities || {};
+    const next = {
+      agents: agents.length ? agents : (prior.agents || []),
+      models: models.length ? models : (prior.models || []),
+    };
+    // Only write when something actually changed. This runs on every session
+    // start, and rewriting an identical file each time would churn the config
+    // and invalidate its cache for nothing.
+    if (JSON.stringify(prior) === JSON.stringify(next)) return;
+    try { config.update({ knownCapabilities: next }); } catch { /* a cache is not worth failing a session over */ }
+  }
+
+  /**
    * Which agents this device's CLI will accept, probed ONCE and remembered.
    *
    * The hub cannot know this: it holds no Copilot install and never runs one.
@@ -585,6 +622,11 @@ class Daemon extends EventEmitter {
 
   snapshot() {
     const cfg = config.read();
+    // What a live session advertised beats what the CLI probe guessed: it is
+    // what this agent offered for real work, not what a refusal message listed.
+    const known = cfg.knownCapabilities || {};
+    const agents = (known.agents && known.agents.length) ? known.agents : this._knownAgents();
+    const models = (known.models && known.models.length) ? known.models : null;
     return {
       device: {
         name: this.deviceName,
@@ -593,7 +635,8 @@ class Daemon extends EventEmitter {
         pid: process.pid,
         startedAt: this.startedAt,
         beats: this.beats,
-        agents: this._knownAgents(),
+        agents,
+        models,
         ...config.publicView(cfg),
         // Absent, not zeroed, when telemetry is off. A roster can then tell
         // "this device does not report load" from "this device is idle" --

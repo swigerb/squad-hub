@@ -28,6 +28,10 @@ const DEFAULTS = Object.freeze({
   environments: Object.freeze({}), // named hub URLs for --env; NOT a pinned server
   reportTelemetry: false,    // CPU/RAM load; off by default, like file access
   deviceKind: 'local',       // 'local' or 'cloud'; decides roster placement
+  // Agents and models a real session advertised. Remembered so the New session
+  // dialog can offer them after a restart, rather than falling back to a
+  // free-text box until the next session happens to run.
+  knownCapabilities: null,
 });
 
 /**
