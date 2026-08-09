@@ -234,8 +234,63 @@ check('$VISUAL is preferred over $EDITOR', () => {
 });
 
 // ===========================================================================
-// config env: the persisted half of --env
 // ===========================================================================
+// config allow-files: the one setting that decides whether a session can
+// open a file, previously reachable only as a launch flag
+// ===========================================================================
+
+check('`config allow-files <root>` scopes to the root you NAME, not the one you stand in', () => {
+  // `--allow-files` uses process.cwd(), so getting the root you meant depends
+  // on remembering to `cd` first and nothing afterwards tells you what you
+  // got. Naming it is the entire point of this form.
+  const home = makeHome();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sqh-root-'));
+  const r = run(home, ['config', 'allow-files', root]);
+  assert.strictEqual(r.status, 0, r.out);
+  const cfg = readConfig(home);
+  assert.strictEqual(cfg.allowFiles, true);
+  assert.strictEqual(cfg.allowFilesAll, false);
+  assert.strictEqual(cfg.filesRoot, fs.realpathSync(root) === root ? root : path.resolve(root));
+});
+
+check('`config allow-files --all` lifts the confinement', () => {
+  const home = makeHome();
+  const r = run(home, ['config', 'allow-files', '--all']);
+  assert.strictEqual(r.status, 0, r.out);
+  const cfg = readConfig(home);
+  assert.strictEqual(cfg.allowFilesAll, true);
+  assert.strictEqual(cfg.filesRoot, null, 'a root alongside "all" would be two answers to one question');
+});
+
+check('`config disable-files` turns it back off completely', () => {
+  const home = makeHome();
+  run(home, ['config', 'allow-files', '--all']);
+  const r = run(home, ['config', 'disable-files']);
+  assert.strictEqual(r.status, 0, r.out);
+  const cfg = readConfig(home);
+  assert.strictEqual(cfg.allowFiles, false);
+  assert.strictEqual(cfg.allowFilesAll, false, 'leaving allowFilesAll set would re-grant everything on the next enable');
+  assert.strictEqual(cfg.filesRoot, null);
+});
+
+check('`config allow-files` refuses a directory that does not exist', () => {
+  // Writing it anyway produces a device that reports file access and then
+  // refuses every working directory, with nothing saying why.
+  const home = makeHome();
+  const missing = path.join(os.tmpdir(), 'sqh-definitely-not-here-9c1f');
+  const r = run(home, ['config', 'allow-files', missing]);
+  assert.strictEqual(r.status, 2, r.out);
+  assert.match(r.out, /no such directory/);
+  assert.ok(!fs.existsSync(path.join(home, 'config.json')) || readConfig(home).allowFiles !== true,
+    'a refused root must not leave file access switched on');
+});
+
+check('file access is discoverable in the usage text', () => {
+  const r = run(makeHome(), ['help']);
+  assert.match(r.out, /config \[show\|edit[\s\S]*allow-files/,
+    'someone reading `squad-hub help` must be able to find the setting that decides file access');
+});
+
 
 check('`config env` lists both environments, unset', () => {
   const home = makeHome();

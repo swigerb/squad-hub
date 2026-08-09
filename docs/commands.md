@@ -204,6 +204,27 @@ token in the same step.
 `reset` takes the same file-access flags. Without them, file access returns to
 **off** — that is the point of a reset.
 
+### File access, after the fact
+
+`--allow-files` scopes to **the directory you happened to run the command in**,
+which is easy to get wrong and says nothing afterwards about which root you
+ended up with. To set it deliberately, or to change it later without
+reconnecting:
+
+```bash
+squad-hub config allow-files C:\src    # a working directory inside C:\src, and nowhere else
+squad-hub config allow-files           # ...defaults to the current directory
+squad-hub config allow-files --all     # anywhere on the machine
+squad-hub config disable-files         # back to off
+```
+
+A root that does not exist is **refused**, rather than written and left to fail
+on every session with nothing saying why. The daemon reads this at startup, so
+restart it to apply: `squad-hub stop && squad-hub start`.
+
+The confinement path stays on the device. The hub is told only `off`, `scoped`
+or `all` — never where.
+
 `status` exits **3** when no daemon is running, so a script can tell "stopped"
 from "broken".
 

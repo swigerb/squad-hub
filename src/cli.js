@@ -917,6 +917,44 @@ async function cmdConfig(argv) {
     return 0;
   }
   if (sub === 'set-auto-shutdown-grace') { config.update({ autoShutdownGraceSeconds: Number(val) }); out(`grace = ${val}s`); return 0; }
+
+  /**
+   * File access, as a setting rather than only as a launch flag.
+   *
+   * It was previously reachable ONLY through `--allow-files` on start /
+   * connect / reset, which had two problems. It is undiscoverable -- someone
+   * looking through `squad-hub config` finds telemetry and auto-shutdown but
+   * not the one setting that decides whether a session can open a file. And
+   * `--allow-files` scopes to the directory you happened to be standing in,
+   * so getting the root you meant depends on remembering to `cd` first, and
+   * nothing afterwards tells you which root you got.
+   *
+   * Naming the root explicitly is the point of this form.
+   */
+  if (sub === 'allow-files') {
+    const all = flag(argv, 'all');
+    if (all) {
+      config.update({ allowFiles: true, allowFilesAll: true, filesRoot: null });
+      out('file access: ANY directory on this machine');
+      out('A session started from the hub can now read and write anywhere you can.');
+    } else {
+      const root = path.resolve(val || process.cwd());
+      if (!fs.existsSync(root)) { err(`no such directory: ${root}`); return 2; }
+      config.update({ allowFiles: true, allowFilesAll: false, filesRoot: root });
+      out(`file access: inside ${root}`);
+      out('A session started from the hub can work in there, and nowhere else.');
+    }
+    if (client.daemonAlive()) out('restart the daemon to apply: squad-hub stop && squad-hub start');
+    return 0;
+  }
+  if (sub === 'disable-files') {
+    config.update({ allowFiles: false, allowFilesAll: false, filesRoot: null });
+    out('file access: off');
+    out('Sessions still run; they simply cannot be given a working directory.');
+    if (client.daemonAlive()) out('restart the daemon to apply: squad-hub stop && squad-hub start');
+    return 0;
+  }
+
   err(`unknown config subcommand: ${sub}`);
   return 2;
 }
@@ -1239,6 +1277,7 @@ function usage() {
   SETTINGS
   squad-hub track-all <on|off>
   squad-hub config [show|edit|server <url>|unset-server|env [<name> [<url>]]
+                   |allow-files [<root>]|allow-files --all|disable-files
                    |enable-auto-shutdown|disable-auto-shutdown|set-auto-shutdown-grace <s>
                    |enable-telemetry|disable-telemetry]
 
@@ -1268,8 +1307,9 @@ the agent or model asked for is unavailable, the session runs with the default
 and SAYS SO, rather than quietly substituting.
 
 File access is off by default. --allow-files scopes it to the directory you run
-the command from; --allow-files-all lifts that limit. The confinement path stays
-on this device and is never sent to the hub service.`);
+the command from; --allow-files-all lifts that limit. To name the root instead
+of relying on where you are standing, use "squad-hub config allow-files <root>".
+The confinement path stays on this device and is never sent to the hub service.`);
 }
 
 /**
