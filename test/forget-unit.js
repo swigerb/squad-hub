@@ -292,6 +292,25 @@ check('another device\'s sessions are never touched', () => {
   assert.strictEqual(left[0].deviceId, 'laptop');
 });
 
+check('a device with nothing left behind it is removable, and one with a live session is not', () => {
+  // An unreachable device is kept in the roster only because its sessions
+  // still explain what happened -- that is exactly why _pruneStale skips a
+  // device that has any. With none left there is nothing to explain, and the
+  // pruner drops it anyway once it has been gone long enough.
+  const st = storeWith([{ id: 's1', status: 'done' }]);
+  st.forgetDeviceSessions('subj', 'aca-job-1');
+  assert.strictEqual(st.listSessions('subj', { deviceId: 'aca-job-1' }).length, 0);
+  assert.strictEqual(st.removeDevice('subj', 'aca-job-1'), true);
+  assert.strictEqual(st.getDevice('subj', 'aca-job-1'), null, 'the device row survived its last session');
+
+  // The guard that matters: a still-running session leaves the device with
+  // something behind it, so it must not be swept away with the finished ones.
+  const st2 = storeWith([{ id: 's1', status: 'running' }, { id: 's2', status: 'done' }]);
+  st2.forgetDeviceSessions('subj', 'aca-job-1');
+  assert.strictEqual(st2.listSessions('subj', { deviceId: 'aca-job-1' }).length, 1,
+    'the running session should still be there, which is what keeps the device listed');
+});
+
 setTimeout(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
