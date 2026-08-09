@@ -39,6 +39,12 @@
      pink, and the label on top falls below any sensible contrast. */
   --bad-solid: #c0392b;
 
+  /* Code surfaces: transcripts, tool output, Squad documents. A token rather
+     than a literal, so the light theme can flip them -- they used to be
+     hardcoded near-black, which put dim grey text on black in light mode. */
+  --code-bg: #0a0c11;
+  --code-line: var(--line);
+
   /* Spacing, so padding is chosen from a scale rather than per-rule. */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -69,6 +75,11 @@
   --ok: #1a7f4b;
   --bad: #c93c3c;
   --bad-solid: #b8332f;
+  /* Code surfaces have to flip too. They were hardcoded to a near-black, so in
+     the light theme a transcript and a Squad document rendered dim grey text on
+     black -- technically visible, practically unreadable. */
+  --code-bg: #f2f4f8;
+  --code-line: #dfe4ec;
 }
 
 /* Before anyone has chosen, follow the system. `data-theme` is only ever set
@@ -685,7 +696,7 @@ select option:checked {
 .cmdblock { margin-top: 8px; }
 .cmdlabel { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
 .cmdblock pre {
-  background: #0a0c11; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--code-bg); border: 1px solid var(--code-line); border-radius: 8px;
   padding: 12px; font-family: var(--mono); font-size: 13px; margin: 0;
   white-space: pre-wrap; word-break: break-all; color: #d7e3ff;
 }
@@ -729,7 +740,7 @@ select option:checked {
    taller than everything else in the panel. */
 .transcript {
   flex: 1; min-height: 96px; max-height: 52vh; overflow: auto;
-  background: #0a0c11; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--code-bg); border: 1px solid var(--code-line); border-radius: 8px;
   padding: 12px; margin: 12px 0; font-family: var(--mono); font-size: 12.5px;
 }
 .t-entry { padding: 3px 0; border-bottom: 1px solid #131722; }
@@ -751,7 +762,7 @@ select option:checked {
 .t-toolrow { padding: 6px 0; }
 .t-result { padding: 4px 0 8px 56px; }
 .t-result pre {
-  margin: 0; padding: 8px 10px; background: #0d1017; border: 1px solid var(--line);
+  margin: 0; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--code-line);
   border-radius: 6px; color: var(--dim); white-space: pre-wrap; word-break: break-word;
   max-height: 220px; overflow: auto;
 }
@@ -891,6 +902,8 @@ select option:checked {
 }
 .sq-member:hover { border-color: var(--accent); color: var(--text); }
 .sq-member.on { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
+.sq-member.nodoc { cursor: default; opacity: .55; }
+.sq-member.nodoc:hover { border-color: var(--line); color: var(--dim); }
 .sq-member i { font-style: normal; color: var(--faint); margin-left: 6px; font-size: 11px; }
 .sq-member.now { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 1px var(--accent-dim) inset; }
 .sq-member.off { opacity: .45; }
@@ -923,7 +936,7 @@ select option:checked {
 }
 .sq-doctext {
   margin: 0; padding: 12px; max-height: 320px; overflow: auto;
-  background: #0a0c11; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--code-bg); border: 1px solid var(--code-line); border-radius: 8px;
   font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
   color: var(--dim); white-space: pre-wrap; word-break: break-word;
 }
