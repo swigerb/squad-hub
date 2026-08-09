@@ -559,6 +559,30 @@ class Daemon extends EventEmitter {
     return { forgotten, kept, count: forgotten.length };
   }
 
+  /**
+   * Which agents this device's CLI will accept, probed ONCE and remembered.
+   *
+   * The hub cannot know this: it holds no Copilot install and never runs one.
+   * Without it the New session dialog can only offer a free-text box, so
+   * someone starting work has to already know what to type -- and a typo is
+   * only discovered when the session comes back reporting a different agent
+   * than the one they asked for.
+   *
+   * Probed lazily and cached, because it costs a process spawn. A device that
+   * cannot answer reports nothing at all rather than an empty list: "I could
+   * not tell" and "there are none" call for opposite things in the UI, and
+   * only one of them should hide the picker.
+   */
+  _knownAgents() {
+    if (this._agentsProbed) return this._agentsCache;
+    this._agentsProbed = true;
+    try {
+      const r = require('./doctor').availableAgents();
+      this._agentsCache = r && r.ok && r.agents.length ? r.agents : null;
+    } catch { this._agentsCache = null; }
+    return this._agentsCache;
+  }
+
   snapshot() {
     const cfg = config.read();
     return {
@@ -569,6 +593,7 @@ class Daemon extends EventEmitter {
         pid: process.pid,
         startedAt: this.startedAt,
         beats: this.beats,
+        agents: this._knownAgents(),
         ...config.publicView(cfg),
         // Absent, not zeroed, when telemetry is off. A roster can then tell
         // "this device does not report load" from "this device is idle" --

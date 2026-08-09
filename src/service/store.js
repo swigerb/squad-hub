@@ -71,6 +71,10 @@ class Store extends EventEmitter {
       trackAll: !!device.trackAll,
       telemetry: !!device.telemetry,
       telemetrySample: device.telemetrySample || null,
+      // What the device says its CLI will accept. `null` means "could not
+      // tell", which is not the same as "none" -- the UI hides the picker for
+      // the first and would be wrong to claim the second.
+      agents: Array.isArray(device.agents) && device.agents.length ? device.agents : (existing.agents || null),
       version: device.version || null,
       registeredAt: existing.registeredAt || Date.now(),
       lastSeen: Date.now(),

@@ -223,6 +223,42 @@ function runEntry(args, env, budgetMs) {
       'the tool ran without anyone approving it');
   });
 
+  await check('one-shot mode does NOT rewrite the config file', async () => {
+    /**
+     * A diagnostic must not change what a device IS.
+     *
+     * cloud-device.js used to persist its identity with config.update, so
+     * running `squad-hub oneshot` on a laptop -- to try it, exactly as anyone
+     * would -- renamed that machine to `cloud (...)`, reclassified it as a
+     * cloud device, and silently switched it to whole-filesystem access. All
+     * of it survived the command, because every later `squad-hub start` read
+     * it straight back. Found on a real machine, after doing it to one.
+     *
+     * Asserted on the FILE, because that is the thing that outlives the
+     * process and the thing that did the damage.
+     */
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-cfg-'));
+    const cfgPath = path.join(home, 'config.json');
+    const before = JSON.stringify({
+      deviceName: 'my-laptop', deviceKind: 'local', allowFiles: false, allowFilesAll: false,
+    }, null, 2);
+    fs.writeFileSync(cfgPath, before);
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-cfg-work-'));
+    await runOneShotViaCli({
+      ...base, SQUAD_HUB_HOME: home, SQUAD_HUB_PROMPT: 'hello', SQUAD_HUB_CWD: work,
+    });
+
+    const after = fs.readFileSync(cfgPath, 'utf8');
+    const cfg = JSON.parse(after);
+    assert.strictEqual(cfg.deviceName, 'my-laptop',
+      `the device was renamed to "${cfg.deviceName}" by a command that only meant to run one session`);
+    assert.strictEqual(cfg.deviceKind, 'local', 'the device was reclassified as cloud');
+    assert.strictEqual(cfg.allowFilesAll, false,
+      'whole-filesystem access was granted without anyone asking for it');
+    assert.strictEqual(after, before, `the config file was rewritten:\n${after}`);
+  });
+
   await check('normal mode still stays running', async () => {
     // The regression this risks: turning every long-lived cloud device into
     // something that exits after one session.

@@ -182,6 +182,29 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
     assert.strictEqual(DeviceTokens.looksLikeDeviceToken(undefined), false);
   });
 
+  check('the label survives to the device, so it can name itself what you called it', () => {
+    // "What is it for?" in the Connect a device dialog is the name someone
+    // expects to find in the roster afterwards. It rides along in the token,
+    // and used to be read by nobody -- so a machine labelled "bs-minidesktop"
+    // showed up under a hostname, and the label appeared nowhere at all.
+    //
+    // Unverified on purpose: only the hub holds the signing secret, so a
+    // device cannot check its own credential. It is used for a DISPLAY NAME
+    // and nothing else, and the hub still verifies the signature before the
+    // device may register -- so a forged label buys an attacker a label.
+    const tok = dt.mint({ key: KEY, label: 'bs-minidesktop', name: 'bs-minidesktop' });
+    const claims = DeviceTokens.unverifiedClaims(tok);
+    assert.strictEqual(claims.label, 'bs-minidesktop');
+  });
+
+  check('an unreadable token yields no claims rather than throwing', () => {
+    // It runs before anything is validated, on whatever someone pasted.
+    assert.strictEqual(DeviceTokens.unverifiedClaims('sqhd1.not-base64!.sig'), null);
+    assert.strictEqual(DeviceTokens.unverifiedClaims('sqhd1.only-two-parts'), null);
+    assert.strictEqual(DeviceTokens.unverifiedClaims('gho_abc'), null);
+    assert.strictEqual(DeviceTokens.unverifiedClaims(undefined), null);
+  });
+
   check('an ephemeral secret is reported, not hidden', () => {
     // Tokens minted with a generated secret die on restart. Someone should be
     // told that rather than discovering it when a device silently drops off.

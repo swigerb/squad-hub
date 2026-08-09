@@ -2078,10 +2078,14 @@ function wire() {
 
   $('nsStart').onclick = async () => {
     const deviceId = $('nsDevice').value;
+    // Whichever agent control is showing is the one the person used. Reading
+    // the hidden one would silently discard their choice.
+    const agentSel = $('nsAgentSelect');
+    const agent = agentSel && !agentSel.hidden ? agentSel.value : $('nsAgent').value;
     const body = spawnRequest({
       prompt: $('nsPrompt').value,
       cwd: $('nsCwd').value,
-      agent: $('nsAgent').value,
+      agent,
       model: $('nsModel').value,
     });
     const problem = spawnError(body);
@@ -2417,6 +2421,42 @@ function updateCwdHint() {
       ? 'This device allows a working directory inside its configured root.'
       : 'This device allows any working directory.';
   }
+  updateAgentChoices(d);
+}
+
+/**
+ * Offer the agents the DEVICE says it has, when it can say.
+ *
+ * The hub holds no Copilot install and never runs one, so it cannot know this
+ * on its own -- only the device can, which is why the list arrives with the
+ * device's heartbeat. Where that list exists, a free-text box is the wrong
+ * control: it asks someone to already know what to type, and a typo is only
+ * discovered when the session comes back reporting a different agent than the
+ * one they chose.
+ *
+ * A device that could NOT tell reports null rather than an empty list, and
+ * falls back to the text box. Rendering an empty picker would be a claim the
+ * device never made -- "this machine has no agents" -- and would leave someone
+ * unable to type the name they know perfectly well is there.
+ */
+function updateAgentChoices(device) {
+  const sel = $('nsAgentSelect');
+  const box = $('nsAgent');
+  if (!sel || !box) return;
+  const agents = device && Array.isArray(device.agents) ? device.agents : null;
+  if (!agents || !agents.length) {
+    sel.hidden = true;
+    box.hidden = false;
+    return;
+  }
+  const prior = box.value;
+  sel.innerHTML = `<option value="">whatever the project selects</option>${
+    agents.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join('')}`;
+  // Keep a choice already made, but only if this device really offers it.
+  sel.value = agents.includes(prior) ? prior : '';
+  box.value = sel.value;
+  sel.hidden = false;
+  box.hidden = true;
 }
 
 /**

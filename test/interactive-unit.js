@@ -551,6 +551,14 @@ function launch(env, cwd, args = []) {
   // certain, and the assertion is deterministic on any machine.
   // -------------------------------------------------------------------------
   await (async () => {
+    // Hermetic on purpose. An earlier version inherited whatever
+    // SQUAD_HUB_HOME the previous section left behind and stubbed only
+    // `client.call`, so `readState()` still read real state on disk -- which
+    // made this section pass alone and fail intermittently under the full
+    // runner. A test that fixes a flake must not be one.
+    const gHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-poll-'));
+    const gWork = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-poll-work-'));
+    process.env.SQUAD_HUB_HOME = gHome;
     delete require.cache[require.resolve('../src/paths')];
     delete require.cache[require.resolve('../src/client')];
     delete require.cache[require.resolve('../src/interactive')];
@@ -561,6 +569,10 @@ function launch(env, cwd, args = []) {
     let inFlight = 0;
     let maxConcurrent = 0;
     let transcriptCalls = 0;
+
+    // Nothing here may touch the machine: no daemon, no real state file.
+    client.readState = () => ({ pid: 1234 });
+    client.daemonAlive = () => true;
 
     // One entry, delivered once. The stub honours `since` exactly as the
     // daemon does, so a poller that advances its cursor sees the entry once
@@ -590,7 +602,7 @@ function launch(env, cwd, args = []) {
     let outText = '';
     output.on('data', (d) => { outText += d.toString(); });
 
-    const done = runInteractive({ cwd: process.cwd(), input, output, pollMs });
+    const done = runInteractive({ cwd: gWork, input, output, pollMs });
     input.write('go\n');
     await sleep(pollMs * 20);
 
@@ -607,6 +619,8 @@ function launch(env, cwd, args = []) {
 
     input.write('/exit\n');
     await Promise.race([done, sleep(3000)]);
+    fs.rmSync(gHome, { recursive: true, force: true });
+    fs.rmSync(gWork, { recursive: true, force: true });
   })();
 
   console.log(`\n${pass} passed, ${fail} failed`);
