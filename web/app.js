@@ -1418,6 +1418,21 @@ async function openDetail(key) {
   state.currentSession = found;
   $('dtTitle').textContent = (found.session.prompt || found.session.id).slice(0, 80);
   $('dtMeta').textContent = `${found.device.name} · ${found.session.cwd || ''} · ${found.session.status}`;
+
+  /**
+   * Say WHY the agent or model is not the one that was asked for.
+   *
+   * The row already reports the disagreement -- "running default agent, not
+   * Squad" -- and the session records the reason, but nothing ever displayed
+   * it. So the one question that reading it provokes ("why?") had no answer
+   * anywhere in the product, and the honest report read as an odd glitch.
+   */
+  const warnings = [
+    ...(((found.session.applied || {}).warnings) || []),
+    ...(((found.session.agentSelection || {}).warnings) || []),
+  ].filter(Boolean);
+  $('dtWarn').textContent = warnings.join(' · ');
+  $('dtWarn').hidden = warnings.length === 0;
   renderSquadPanel(found.session.squad);
   $('dtTranscript').innerHTML = '<div class="t-entry t-kind">loading…</div>';
   $('detailScrim').hidden = false;
@@ -1569,19 +1584,114 @@ function renderSquadPanel(sq) {
       </ol>` : '<div class="sq-sub">No decisions recorded yet</div>'}`;
 }
 
+/**
+ * Pull readable text out of an ACP update, whatever shape it arrived in.
+ *
+ * `content` is a string on some updates, an object with `.text` on others, and
+ * an array of content blocks on tool results. The old reader tried
+ * `u.content.text || u.content`, so an ARRAY fell through to the second branch
+ * and was printed as raw JSON -- which is why a tool result showed up as
+ * `[{"type":"content","content":{"type":"text","text":"Query returned 0 rows."}}]`
+ * instead of "Query returned 0 rows."
+ */
+function updateText(u) {
+  const fromBlock = (b) => {
+    if (typeof b === 'string') return b;
+    if (!b || typeof b !== 'object') return '';
+    if (typeof b.text === 'string') return b.text;
+    if (b.content) return fromBlock(b.content);
+    return '';
+  };
+  if (Array.isArray(u.content)) return u.content.map(fromBlock).filter(Boolean).join('\n');
+  const direct = fromBlock(u.content);
+  if (direct) return direct;
+  return typeof u.text === 'string' ? u.text : '';
+}
+
+/**
+ * Updates that are protocol bookkeeping, not conversation.
+ *
+ * `usage_update` fires on every token, and `available_commands_update` and
+ * `config_option_update` fire whenever the agent reconfigures itself. None of
+ * them carry anything a person reads, and rendering them put a row of grey
+ * noise between every useful line.
+ */
+const TRANSCRIPT_NOISE = new Set([
+  'usage_update', 'available_commands_update', 'config_option_update',
+  'current_mode_update', 'plan', 'agent_thought_chunk',
+]);
+
+/**
+ * Group a raw update stream into blocks a person can read.
+ *
+ * THE STREAM IS TOKENS, NOT LINES. `agent_message_chunk` arrives many times per
+ * sentence, and the old renderer gave each one its own row -- which is why a
+ * finished answer displayed one word per line down the page. Consecutive
+ * chunks from the same speaker belong to one block.
+ *
+ * Tool results are kept but capped: the point is to see THAT a tool ran and
+ * roughly what came back, not to scroll a 96MB directory listing.
+ */
+const TOOL_RESULT_CAP = 600;
+
+function transcriptBlocks(entries) {
+  const blocks = [];
+  const push = (kind, text) => {
+    const last = blocks[blocks.length - 1];
+    // Only prose is joined. Two tool results in a row are two results.
+    if (last && last.kind === kind && (kind === 'agent' || kind === 'you')) last.text += text;
+    else blocks.push({ kind, text });
+  };
+
+  for (const e of entries || []) {
+    const u = (e && e.update) || e || {};
+    const kind = u.sessionUpdate;
+    if (TRANSCRIPT_NOISE.has(kind)) continue;
+
+    if (kind === 'tool_call') {
+      const title = u.title || u.kind || 'running a tool';
+      blocks.push({ kind: 'tool', text: title });
+      continue;
+    }
+    if (kind === 'tool_call_update') {
+      const out = updateText(u).trim();
+      if (out) blocks.push({ kind: 'result', text: out });
+      continue;
+    }
+    if (kind === 'error') {
+      blocks.push({ kind: 'error', text: updateText(u) || 'unknown error' });
+      continue;
+    }
+
+    const text = updateText(u);
+    if (!text) continue;
+    if (kind === 'user_message' || kind === 'user_message_chunk') push('you', text);
+    else push('agent', text);
+  }
+  return blocks;
+}
+
 function renderTranscript(entries) {
-  if (!entries.length) {
+  const blocks = transcriptBlocks(entries);
+  if (!blocks.length) {
     $('dtTranscript').innerHTML = '<div class="t-entry t-kind">nothing yet</div>';
     return;
   }
-  $('dtTranscript').innerHTML = entries.map((e) => {
-    const u = e.update || e;
-    if (u.sessionUpdate === 'tool_call') {
-      return `<div class="t-entry"><span class="t-tool">tool</span> <span class="t-text">${esc(u.title || u.kind || '')}</span></div>`;
+  $('dtTranscript').innerHTML = blocks.map((b) => {
+    if (b.kind === 'tool') {
+      return `<div class="t-entry t-toolrow"><span class="t-tool">tool</span> <span class="t-text">${esc(b.text)}</span></div>`;
     }
-    const text = (u.content && (u.content.text || u.content)) || u.text || '';
-    if (!text) return `<div class="t-entry t-kind">${esc(u.sessionUpdate || 'update')}</div>`;
-    return `<div class="t-entry"><span class="t-text">${esc(typeof text === 'string' ? text : JSON.stringify(text))}</span></div>`;
+    if (b.kind === 'result') {
+      const clipped = b.text.length > TOOL_RESULT_CAP;
+      const shown = clipped ? `${b.text.slice(0, TOOL_RESULT_CAP)}…` : b.text;
+      return `<div class="t-entry t-result"><pre>${esc(shown)}</pre>${
+        clipped ? `<span class="t-more">output truncated (${b.text.length.toLocaleString()} characters)</span>` : ''}</div>`;
+    }
+    if (b.kind === 'error') {
+      return `<div class="t-entry t-err"><span class="t-tool">error</span> <span class="t-text">${esc(b.text)}</span></div>`;
+    }
+    const who = b.kind === 'you' ? 'you' : 'agent';
+    return `<div class="t-entry t-msg t-${who}"><span class="t-who">${who}</span><div class="t-body">${esc(b.text.trim())}</div></div>`;
   }).join('');
   const el = $('dtTranscript');
   el.scrollTop = el.scrollHeight;
@@ -2032,6 +2142,16 @@ function wire() {
   };
   $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
   $('cnCreate').onclick = () => createDeviceToken();
+  // "…anywhere" only means something once a working directory is allowed at
+  // all, so it follows the box above it rather than sitting there as a live
+  // control that does nothing.
+  const syncFilesAll = () => {
+    const on = $('cnFiles').checked;
+    $('cnFilesAll').disabled = !on;
+    if (!on) $('cnFilesAll').checked = false;
+  };
+  $('cnFiles').onchange = syncFilesAll;
+  syncFilesAll();
   $('cnCopy').onclick = async () => {
     toast(await copy($('cnCmd').textContent) ? 'Command copied' : 'Select and copy the command above');
   };
@@ -2135,6 +2255,15 @@ function wire() {
 
   $('dtInput').oninput = (e) => {
     state.composer = composerReduce(state.composer, { type: 'type', text: e.target.value });
+  };
+
+  // Enter sends, Shift+Enter starts a new line. The box is a textarea so a
+  // follow-up can be more than one line, and a multi-line box with no way to
+  // send from the keyboard makes you reach for the mouse on every message.
+  $('dtInput').onkeydown = (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+    e.preventDefault();
+    $('dtSend').click();
   };
 
   $('dtSync').onclick = () => syncSession();
@@ -2394,7 +2523,23 @@ async function createDeviceToken() {
         ttlHours: Number($('cnTtl').value),
       },
     });
-    const cmd = `squad-hub connect --hub ${location.origin} --token ${r.token}`;
+    /**
+     * Build the command the person will actually paste.
+     *
+     * These are DEVICE settings rather than token claims, so the hub cannot
+     * apply them itself -- the only place they can take effect is the command
+     * run on the machine. Offering them here is the difference between "it
+     * connected but cannot open a file, and nothing said it wouldn't" and a
+     * device that works the way it was set up to.
+     *
+     * --allow-files-all implies --allow-files, so only one is ever emitted.
+     */
+    const flags = [];
+    if ($('cnFilesAll').checked) flags.push('--allow-files-all');
+    else if ($('cnFiles').checked) flags.push('--allow-files');
+    if ($('cnTrackAll').checked) flags.push('--track-all');
+    const cmd = `squad-hub connect --hub ${location.origin} --token ${r.token}${
+      flags.length ? ` ${flags.join(' ')}` : ''}`;
     $('cnCmd').textContent = cmd;
     $('cnResult').hidden = false;
     btn.textContent = 'Create another';
