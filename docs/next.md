@@ -1,6 +1,6 @@
-# Next: modes, admin, and launching a job
+# Next: modes, an admin screen, and starting a cloud job
 
-Three pieces of work, planned. **Nothing here is built.**
+Four pieces of work, planned.
 
 They are written up together because they share one constraint, and it is the
 constraint that decides most of the design:
@@ -10,6 +10,7 @@ constraint that decides most of the design:
 > never holds a cloud credential.
 
 Everything below either preserves that or explains precisely why it is safe.
+Section 3 is the one that could not, which is why it is not being built.
 
 ---
 
@@ -246,56 +247,81 @@ configuration. A job name the launcher does not recognise is refused.
   holds one, "the hub cannot reach your subscription" stops being true, and that
   sentence is doing a lot of work.
 
-## Sprints
+## Sprints — not scheduled
 
-### L1 — the launch contract
-
-A named-instruction schema and its refusals, as a pure module. No Azure, no
-route.
-
-**Testable:** an unknown job name is refused; a prompt is carried but never
-interpreted as a command; extra fields in the instruction are dropped, not
-forwarded; the refusal for an unknown job says so without disclosing which jobs
-exist.
-
-### L2 — the launcher device
-
-A container that attaches to the hub as a device with `deviceKind: 'launcher'`,
-handling exactly `launch` and reporting what it can start. Everything else a
-device can be asked to do is **not implemented**, and a test asserts that.
-
-**Testable:** it registers and appears in the roster; `spawn`, `steer` and
-`approve` are refused because it runs no agent; it starts a job only for a
-configured name; it reports the execution id back.
-
-### L3 — approve-before-launch
-
-A launch raises an approval card carrying the job, the repo, the ref and the
-prompt. Answering it starts the job; denying it does not.
-
-**Testable:** denial is asserted by the **absence of an execution**, not by the
-API response — the same standard the tool-approval tests already meet.
-
-### L4 — the identity
-
-Deployment: a user-assigned managed identity with a role assignment scoped to
-the job's own resource id, and a validation check that refuses a broader scope.
-
-**Testable:** `validate.ps1` fails if the assignment is subscription- or
-resource-group-scoped rather than job-scoped. A scope that quietly widened is
-exactly the thing nobody notices.
-
-### L5 — the button
-
-**+ New → Cloud session** appears when a launcher is attached, and not
-otherwise. Squad Hub cannot conjure compute, so it must not offer to.
-
-**Testable:** the option is absent with no launcher; present with one; and the
-launch flows through L3's approval rather than around it.
+L1 was specified along with L2–L5 and none of them are being built. The
+specification is left in git history rather than carried in a document titled
+*next*, where a list of sprints reads as work waiting to be picked up. What
+replaces them is the route that already exists: `/squad-aca <instruction>` on a
+GitHub issue, which starts a job with a federated short-lived credential and
+leaves an audit trail, and which the hub can deep-link to without gaining the
+ability to start compute itself.
 
 ## The honest caveat
 
-This adds a component that can start compute. It is scoped as tightly as the
-platform allows and it is gated behind an approval, but it is new attack surface
-that does not exist today. The alternative — a terminal — has none. That is the
-trade, stated rather than buried.
+The argument above is kept because the counter-argument is only worth reading
+beside it. Its weakest point is named in
+[launcher-assessment.md](launcher-assessment.md): a launcher would add a
+component that can start compute, gated by an approval whose text a person
+skims. The alternative — a terminal — adds nothing. That is the trade, and it
+is why this stops here.
+
+---
+
+# 4. Starting a cloud job, without the hub being able to
+
+## What it is
+
+The thing people actually want from section 3 is a way to start a cloud run
+from a phone. The launcher answered that by giving the hub a component that can
+start compute. This answers it by giving the hub a **link**.
+
+A session in the hub gets a "Run this on ACA" action. It opens
+`github.com/<owner>/<repo>/issues/<n>` with the comment box **prefilled** with
+`/squad-aca <instruction>`, using GitHub's own `?body=` parameter. The person
+reads it and presses Comment. GitHub authenticates them, the existing workflow
+starts the job with a federated short-lived credential, and the whole thing is
+recorded on the issue.
+
+## Why this is the safe version
+
+- **The hub gains no capability.** It emits a URL. A URL cannot start a job;
+  the person's own GitHub session does.
+- **No new credential, anywhere.** Not in the hub, not in a launcher.
+- **The approval is real.** It is not a card saying "allow?" that someone taps
+  through — it is the actual instruction, in the actual comment box, on the
+  actual issue, editable before it is sent.
+- **It is already audited.** The issue comment *is* the audit record, attributed
+  to a GitHub identity, with no work needed to make that true.
+- **It fails closed.** No permission on the repo, no comment, no job.
+
+## What it must refuse
+
+- **No token in the URL.** A prefilled body is public the moment it is a link:
+  it can land in history, in a referrer, in a screenshot.
+- **Escape the body.** The instruction is user text going into a query string;
+  it is encoded, and a test asserts a crafted instruction cannot break out of
+  the parameter.
+- **Name the repo from the session, not from input.** The repo and issue come
+  from the session the hub already knows about — not from anything a caller
+  supplies, or this becomes an open redirect wearing a hat.
+
+## Sprints
+
+### D1 — the link
+
+A pure function: session plus instruction to a GitHub URL, and its refusals.
+No UI.
+
+**Testable:** the body is encoded so `&`, `#` and a newline survive intact; a
+crafted instruction cannot add query parameters; a session with no repository
+yields no link rather than a broken one; no token or secret ever appears in the
+output.
+
+### D2 — the action
+
+The button, shown only for a session whose repository is known, opening in a
+new tab.
+
+**Testable:** absent when the repo is unknown; present when it is; the href
+matches D1's output exactly.
