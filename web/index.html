@@ -324,6 +324,7 @@
       <div>
         <h2 id="dtTitle">Session</h2>
         <p class="modal-sub" id="dtMeta"></p>
+        <p class="agent-warn" id="dtWarn" hidden></p>
       </div>
       <div class="detail-actions">
         <button class="ghost danger" id="dtStop">Stop</button>
@@ -339,7 +340,7 @@
         <button class="ghost" id="dtSync" hidden>Sync session</button>
       </div>
       <div class="composer-row">
-        <input id="dtInput" placeholder="Send follow-up input to the running agent" disabled>
+        <textarea id="dtInput" rows="3" placeholder="Send follow-up input to the running agent&#10;Enter to send · Shift+Enter for a new line" disabled></textarea>
         <button class="primary" id="dtSend" disabled>Send</button>
       </div>
     </div>
@@ -375,6 +376,28 @@
       <input id="cnPrefix" placeholder="aca-" maxlength="40">
       <small class="hint">A token for cloud jobs then cannot claim to be your laptop.</small>
     </label>
+    <fieldset class="field cnopts">
+      <legend>What this device may do <button type="button" class="hint-btn" aria-label="About these options"
+        title="These add flags to the command below. They are settings on the DEVICE, not on the token &#10;&#10;— you can change them later with squad-hub config allow-files / track-all.">i</button></legend>
+      <label class="check">
+        <input type="checkbox" id="cnFiles">
+        <span>Allow a working directory
+          <small>Off by default. Without it a session runs where the daemon runs and cannot be pointed at a project.</small>
+        </span>
+      </label>
+      <label class="check indent">
+        <input type="checkbox" id="cnFilesAll">
+        <span>…anywhere on the machine
+          <small>Otherwise it is confined to the directory the command is run from.</small>
+        </span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="cnTrackAll">
+        <span>Report every session on that device
+          <small>Including ones started from its own terminal, not just from the hub.</small>
+        </span>
+      </label>
+    </fieldset>
     <div class="err" id="cnErr" hidden></div>
     <div class="cnresult" id="cnResult" hidden>
       <p class="sub">Run this on the device. <strong>Shown once</strong> — the hub keeps no copy.</p>
