@@ -1619,6 +1619,21 @@ async function renderSquadDocBar() {
     return;
   }
   const teamDocs = docs.filter((d) => Object.prototype.hasOwnProperty.call(TEAM_DOC_LABEL, d));
+  /**
+   * A member with no charter is not offered as one.
+   *
+   * The coordinator usually has no `charter.md`, so every panel had at least
+   * one button that looked live and answered "no charter:Squad in this
+   * workspace". Offering a link to a dead end is the thing the document list
+   * exists to prevent -- it applies to members as much as to tabs.
+   */
+  const haveCharter = new Set(docs.filter((d) => d.startsWith('charter:')));
+  for (const b of document.querySelectorAll('#dtSquad .sq-member[data-squaddoc]')) {
+    const ok = haveCharter.has(b.dataset.squaddoc);
+    b.classList.toggle('nodoc', !ok);
+    b.disabled = !ok;
+    if (!ok) b.title = 'no charter recorded for this member';
+  }
   if (!teamDocs.length) return;
   bar.innerHTML = teamDocs
     .map((d) => `<button type="button" class="sq-doctab" data-squaddoc="${esc(d)}">${esc(TEAM_DOC_LABEL[d])}</button>`)
@@ -1656,7 +1671,11 @@ async function openSquadDoc(doc) {
     return;
   }
 
-  const lines = String(r.text || '').split('\n');
+  // Split on CRLF as well as LF. These files are written on whatever machine
+  // the Squad runs on, and a stray \r left on the end of every line renders as
+  // an extra blank line inside <pre> -- which is why a charter appeared to be
+  // double-spaced.
+  const lines = String(r.text || '').split(/\r?\n/);
   box.innerHTML = `
     <div class="sq-docmeta">
       <b>${esc(doc)}</b>
