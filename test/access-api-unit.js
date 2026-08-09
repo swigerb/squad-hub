@@ -216,11 +216,11 @@ function api(port, p, token, opts = {}) {
 
   // An email address is a perfectly ordinary identity and contains characters
   // that need encoding in a path.
-  await api(port, '/api/access', ownerToken, { method: 'POST', body: { login: 'dave.wollerman@outlook.com' } });
-  const encoded = await api(port, `/api/access/${encodeURIComponent('dave.wollerman@outlook.com')}`, ownerToken, { method: 'DELETE' });
+  await api(port, '/api/access', ownerToken, { method: 'POST', body: { login: 'first.last@example.com' } });
+  const encoded = await api(port, `/api/access/${encodeURIComponent('first.last@example.com')}`, ownerToken, { method: 'DELETE' });
   check('an identity with an @ in it can be removed', () => {
     assert.strictEqual(encoded.status, 200, JSON.stringify(encoded));
-    assert.ok(!auth.allowedUsers.includes('dave.wollerman@outlook.com'));
+    assert.ok(!auth.allowedUsers.includes('first.last@example.com'));
   });
 
   await svc.close();
