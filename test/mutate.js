@@ -733,6 +733,13 @@ const MUTATIONS = [
     mustFail: 'a session still RUNNING on an offline device is kept, because offline can mean a blip',
   },
   {
+    name: 'a Squad document is resolved from the caller\'s string instead of the team',
+    file: 'src/squad-context.js',
+    find: `    const member = team.find((m) => String(m.name).toLowerCase() === String(who).toLowerCase());`,
+    replace: `    const member = process.env.MUTANT ? { name: who } : team.find((m) => String(m.name).toLowerCase() === String(who).toLowerCase()); // MUTATION`,
+    mustFail: 'traversal through a member name is refused BECAUSE nobody is called that',
+  },
+  {
     name: 'doctor ignores a required failure when deciding "healthy"',
     file: 'src/doctor.js',
     find: `  const failed = checks.filter((c) => c.level === 'fail');
