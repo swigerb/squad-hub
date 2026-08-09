@@ -532,6 +532,83 @@ function launch(env, cwd, args = []) {
     }
   })();
 
+  // -------------------------------------------------------------------------
+  // Section G: a poll slower than the interval must not be overtaken.
+  //
+  // `setInterval` does not wait for an async callback. A transcript round trip
+  // slower than `pollMs` therefore gets overtaken by the next tick, and both
+  // invocations read the same `lastSeq` -- it is only advanced after the await
+  // resolves -- so both print the same entries.
+  //
+  // Section D's "no round was printed more than once" already catches this,
+  // but only when the machine happens to be slow enough: on CI it failed with
+  // one round printed THREE times, and passed on a re-run. A guard that only
+  // fires under load is a guard nobody can trust, and a flaky assertion in the
+  // only gate teaches people to re-run until green.
+  //
+  // So this makes the slowness DELIBERATE rather than hoping for it: the
+  // transcript call is stubbed to take four poll intervals. Overlap is then
+  // certain, and the assertion is deterministic on any machine.
+  // -------------------------------------------------------------------------
+  await (async () => {
+    delete require.cache[require.resolve('../src/paths')];
+    delete require.cache[require.resolve('../src/client')];
+    delete require.cache[require.resolve('../src/interactive')];
+    const client = require('../src/client');
+    const { runInteractive } = require('../src/interactive');
+
+    const pollMs = 25;
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    let transcriptCalls = 0;
+
+    // One entry, delivered once. The stub honours `since` exactly as the
+    // daemon does, so a poller that advances its cursor sees the entry once
+    // and nothing afterwards -- and an overlapping pair, both reading the
+    // cursor before either advances it, prints it twice.
+    client.call = async (op, args) => {
+      if (op === 'transcript') {
+        transcriptCalls += 1;
+        inFlight += 1;
+        maxConcurrent = Math.max(maxConcurrent, inFlight);
+        try {
+          await sleep(pollMs * 4);
+          const since = (args && args.since) || 0;
+          const list = since < 1
+            ? [{ seq: 1, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'only once' } } }]
+            : [];
+          return { transcript: list, nextSince: 1 };
+        } finally { inFlight -= 1; }
+      }
+      if (op === 'status') return { sessions: [{ id: 'sX', status: 'running', pendingApprovals: [] }] };
+      if (op === 'start-session') return { id: 'sX' };
+      return {};
+    };
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let outText = '';
+    output.on('data', (d) => { outText += d.toString(); });
+
+    const done = runInteractive({ cwd: process.cwd(), input, output, pollMs });
+    input.write('go\n');
+    await sleep(pollMs * 20);
+
+    await checkAsync('a poll slower than the interval is never overtaken by the next tick', async () => {
+      assert.ok(transcriptCalls > 0, 'the transcript op was never polled at all');
+      assert.strictEqual(maxConcurrent, 1,
+        `${maxConcurrent} polls ran at once; setInterval does not wait for an async callback, so the cursor is read twice before it advances`);
+    });
+
+    check('an overtaken poll cannot re-print what was already shown', () => {
+      const count = (outText.match(/only once/g) || []).length;
+      assert.strictEqual(count, 1, `"only once" appeared ${count} times`);
+    });
+
+    input.write('/exit\n');
+    await Promise.race([done, sleep(3000)]);
+  })();
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

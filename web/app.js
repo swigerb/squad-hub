@@ -47,6 +47,27 @@ function ago(ms) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+/**
+ * The same instant, written out in full and in the reader's own locale.
+ *
+ * "28m ago" is the right thing to SCAN a list by, and the wrong thing to
+ * answer "when exactly did that run?" with -- which is the question anyone
+ * correlating a session against a deployment, a job execution, or an incident
+ * is actually asking. Rather than choose, the relative form stays visible and
+ * this goes on the `title`, so the exact time is one hover away and costs the
+ * row nothing.
+ */
+function exact(ms) {
+  if (!ms) return '';
+  try { return new Date(ms).toLocaleString(); } catch { return ''; }
+}
+
+/** Relative time to read at a glance, exact time on hover. */
+function timeCell(ms, label = 'Started') {
+  if (!ms) return '';
+  return `<span title="${esc(label)} ${esc(exact(ms))}">${esc(ago(ms))}</span>`;
+}
+
 // ---------------------------------------------------------------------------
 // Token. In dev mode the service hands one out; with Entra, MSAL supplies it.
 // ---------------------------------------------------------------------------
@@ -412,7 +433,7 @@ function sessionRow(s, deviceName, opts = {}) {
     git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
     git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
     sel ? `<span class="${agentInfo.mismatch ? 'agent-mismatch' : ''}">${esc(agentInfo.text)}</span>` : esc(s.agent || 'Copilot CLI'),
-    s.startedAt ? ago(s.startedAt) : '',
+    s.startedAt ? timeCell(s.startedAt) : '',
     s.toolCallCount ? `${s.toolCallCount} tools` : '',
   ].filter(Boolean).join(' &middot; ');
 
@@ -425,7 +446,12 @@ function sessionRow(s, deviceName, opts = {}) {
   // literal text "undefined/undefined members" in front of a user -- which
   // reads as a broken product rather than as missing data.
   const hasCounts = Number.isFinite(sq && sq.activeMembers) && Number.isFinite(sq && sq.memberCount);
-  const activeName = sq && sq.activeMember && sq.activeMember.name;
+  // The pill already says "squad". When the active member is the coordinator --
+  // which is literally named "Squad" -- repeating it puts SQUAD next to Squad
+  // and tells the reader nothing twice. Named members (lead, engineer) still
+  // show, because which one is working IS the useful fact.
+  const rawActive = sq && sq.activeMember && sq.activeMember.name;
+  const activeName = rawActive && String(rawActive).toLowerCase() !== 'squad' ? rawActive : '';
   const squadBits = sq ? `      <div class="squadline">
         <span class="sq-pill" title="Squad workspace">squad</span>
         ${activeName ? `<span class="sq-role">${esc(activeName)}</span>` : ''}
@@ -699,12 +725,15 @@ function forgetWindowMs(scope) {
 }
 
 /**
- * Which devices a removal can actually reach.
+ * Which devices a removal can reach, and how.
  *
- * An offline device is not commanded -- the hub refuses that anyway (409) --
- * so it is separated out here to be REPORTED rather than silently dropped. A
- * count that quietly excluded them would be the same lie as a progress bar
- * that reaches 100% by ignoring what failed.
+ * An online device is ASKED -- it owns its session list, and a hub-side delete
+ * would be undone by its next heartbeat.
+ *
+ * An offline one is handled by the hub instead. That is not an override: a
+ * device that never reconnects has nothing left to contradict, and an
+ * ephemeral job execution never does. Refusing it outright, as this used to,
+ * left every finished cloud job in the list with no way to clear it.
  */
 function forgetTargets(devices) {
   const all = devices || [];
@@ -2197,19 +2226,23 @@ async function forgetEnded(scope) {
   const olderThanMs = forgetWindowMs(scope);
   if (olderThanMs === null) return;
 
+  // Offline devices are swept too. Their ended sessions are removed by the hub
+  // rather than by the device, because a device that never comes back cannot
+  // be asked and cannot object -- and an ephemeral cloud job never comes back.
   const { reachable, skipped } = forgetTargets((state.overview && state.overview.devices) || []);
-  if (!reachable.length) {
-    toast('No device is online to remove sessions from');
+  const targets = [...reachable, ...skipped];
+  if (!targets.length) {
+    toast('No devices to remove sessions from');
     return;
   }
   if (scope === 'all' && !window.confirm(
     'Remove every ended session from the list?\n\n'
-    + 'This clears the record of finished work on each connected device. '
+    + 'This clears the record of finished work. '
     + 'Sessions that are still running are not affected.')) return;
 
   let removed = 0;
   let failed = 0;
-  for (const d of reachable) {
+  for (const d of targets) {
     try {
       const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
         method: 'POST',
@@ -2222,7 +2255,7 @@ async function forgetEnded(scope) {
       failed += 1;
     }
   }
-  toast(forgetSummary({ removed, failed, skipped: skipped.length }));
+  toast(forgetSummary({ removed, failed, skipped: 0 }));
   await refresh();
 }
 

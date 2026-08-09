@@ -196,6 +196,51 @@ class Store extends EventEmitter {
     return this.listSessions(subject);
   }
 
+  /**
+   * Drop a GONE device's finished sessions, here on the hub.
+   *
+   * Normally removal is a command to the device: it owns its session list, and
+   * `syncSessions` replaces the hub's copy wholesale on every heartbeat, so
+   * anything deleted here would simply reappear.
+   *
+   * That reasoning depends on the device coming back. An ephemeral one does
+   * not. A Container Apps job execution registers under an id unique to that
+   * execution, runs once, and is gone -- there is no daemon left to send the
+   * command to, and nothing that will ever re-publish the row. Without this,
+   * every job a person ever ran stays in their list until retention expires
+   * it, and the one control offered for tidying up refuses with "device is
+   * offline".
+   *
+   * Two conditions keep it honest:
+   *
+   *   - the device must be OFFLINE. An online device is authoritative and is
+   *     asked, never overridden.
+   *   - the session must be TERMINAL. "Offline" can also mean a network blip
+   *     over a session that is still running, and removing that would hide
+   *     live work rather than tidy up finished work. It comes back on
+   *     reconnect anyway, which is the right outcome for a device that
+   *     returns.
+   *
+   * @returns {{removed: number, kept: number}}
+   */
+  forgetDeviceSessions(subject, deviceId, { olderThanMs } = {}) {
+    const b = this._bucket(subject);
+    const now = Date.now();
+    let removed = 0;
+    let kept = 0;
+    for (const [key, s] of b.sessions) {
+      if (s.deviceId !== deviceId) continue;
+      if (!TERMINAL.has(s.status)) { kept += 1; continue; }
+      if (Number.isFinite(olderThanMs) && olderThanMs > 0) {
+        const at = s.endedAt || 0;
+        if (!at || at > now - olderThanMs) { kept += 1; continue; }
+      }
+      b.sessions.delete(key);
+      removed += 1;
+    }
+    return { removed, kept };
+  }
+
   listSessions(subject, filter = {}) {
     let out = [...this._bucket(subject).sessions.values()];
     if (filter.deviceId) out = out.filter((s) => s.deviceId === filter.deviceId);
