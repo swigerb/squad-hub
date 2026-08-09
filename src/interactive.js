@@ -142,47 +142,69 @@ async function runInteractive({
    */
   const STATUS_EVERY = 3;
 
+  /**
+   * True while a poll is in flight.
+   *
+   * `setInterval` does not wait for an async callback, so a round trip slower
+   * than `pollMs` gets overtaken by the next tick. Both invocations then read
+   * the same `lastSeq` -- it is only advanced after the await resolves -- ask
+   * for the same entries, and print them twice. Observed on CI as one steer
+   * round appearing three times, which is three overlapping polls.
+   *
+   * Skipping a tick is the right response rather than queueing one: the work
+   * is "fetch whatever is new since the cursor", and the poll already running
+   * will do exactly that. A queued duplicate would fetch nothing and cost a
+   * round trip.
+   */
+  let polling = false;
+
   async function poll() {
     if (!sessionId) return;
-    tick += 1;
+    if (polling) return;
+    polling = true;
     try {
-      const tr = await client.call('transcript', { sessionId, since: lastSeq });
-      const list = (tr && tr.transcript) || [];
-      for (const entry of list) {
-        const line = formatUpdate(entry.update);
-        if (line) write(line);
-      }
-      if (tr && typeof tr.nextSince === 'number') lastSeq = tr.nextSince;
-      if (tr && tr.gap && !warnedGap) {
-        // Told once, not repeated every poll: the cursor has already caught
-        // up to whatever is still retained; there is nothing left to warn
-        // about after this.
-        warnedGap = true;
-        write('[some earlier transcript entries scrolled past before this terminal could read them -- reporting it, not hiding it]');
-      }
-    } catch { /* a transient IPC hiccup on the transcript call should not spam the terminal */ }
+      tick += 1;
+      try {
+        const tr = await client.call('transcript', { sessionId, since: lastSeq });
+        const list = (tr && tr.transcript) || [];
+        for (const entry of list) {
+          const line = formatUpdate(entry.update);
+          if (line) write(line);
+        }
+        if (tr && typeof tr.nextSince === 'number') lastSeq = tr.nextSince;
+        if (tr && tr.gap && !warnedGap) {
+          // Told once, not repeated every poll: the cursor has already caught
+          // up to whatever is still retained; there is nothing left to warn
+          // about after this.
+          warnedGap = true;
+          write('[some earlier transcript entries scrolled past before this terminal could read them -- reporting it, not hiding it]');
+        }
+      } catch { /* a transient IPC hiccup on the transcript call should not spam the terminal */ }
 
-    if (tick % STATUS_EVERY !== 1) return;
-    try {
-      const snap = await client.call('status');
-      const s = (snap.sessions || []).find((x) => x.id === sessionId);
-      if (!s) return;
-      for (const a of s.pendingApprovals || []) {
-        if (shownApprovals.has(a.approvalId)) continue;
-        shownApprovals.add(a.approvalId);
-        write(formatApproval(a));
-      }
-      if (!announcedTerminal && (s.status === 'done' || s.status === 'failed' || s.status === 'stopped')) {
-        // Announce a terminal status exactly once, and STOP POLLING entirely.
-        // A session that finished has nothing left to report; a timer that
-        // keeps firing every pollMs forever after that is pure waste (and
-        // used to also flood the terminal with repeated "[session done]"
-        // lines before the `announcedTerminal` flag alone existed).
-        announcedTerminal = true;
-        write(`[session ${s.status}]${s.error ? ` ${s.error}` : ''}`);
-        stopPolling();
-      }
-    } catch { /* a transient IPC hiccup should not spam the terminal */ }
+      if (tick % STATUS_EVERY !== 1) return;
+      try {
+        const snap = await client.call('status');
+        const s = (snap.sessions || []).find((x) => x.id === sessionId);
+        if (!s) return;
+        for (const a of s.pendingApprovals || []) {
+          if (shownApprovals.has(a.approvalId)) continue;
+          shownApprovals.add(a.approvalId);
+          write(formatApproval(a));
+        }
+        if (!announcedTerminal && (s.status === 'done' || s.status === 'failed' || s.status === 'stopped')) {
+          // Announce a terminal status exactly once, and STOP POLLING entirely.
+          // A session that finished has nothing left to report; a timer that
+          // keeps firing every pollMs forever after that is pure waste (and
+          // used to also flood the terminal with repeated "[session done]"
+          // lines before the `announcedTerminal` flag alone existed).
+          announcedTerminal = true;
+          write(`[session ${s.status}]${s.error ? ` ${s.error}` : ''}`);
+          stopPolling();
+        }
+      } catch { /* a transient IPC hiccup should not spam the terminal */ }
+    } finally {
+      polling = false;
+    }
   }
 
   function startPolling() {

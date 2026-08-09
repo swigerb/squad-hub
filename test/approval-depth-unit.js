@@ -40,10 +40,11 @@ if (idx < 0) {
 const mod = { exports: {} };
 new Function('module', 'exports', `${src.slice(0, idx)}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
-  spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState };`)(mod, mod.exports);
+  spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
+  exact, timeCell,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -547,6 +548,36 @@ check('the device pill reports the EXCEPTION, not the agreement', () => {
   assert.match(app, /\$\{down\} offline/,
     'repeating the count already shown beside it makes a badge nobody reads on the day it disagrees');
   assert.match(app, /availPill\.hidden = down === 0/);
+});
+
+check('the exact start time is one hover away, without cluttering the row', () => {
+  // "28m ago" is the right thing to scan a list by, and the wrong thing to
+  // answer "when exactly did that run?" with -- which is the question anyone
+  // correlating a session against a job execution or an incident is asking.
+  const at = Date.UTC(2026, 7, 8, 22, 59, 22);
+  const cell = timeCell(at);
+  assert.match(cell, /title="/, 'no exact time is available at all');
+  assert.ok(cell.includes(esc(exact(at))), `the title does not carry the exact time: ${cell}`);
+  assert.match(cell, /ago</, 'the relative form must stay visible; it is what the list is scanned by');
+  assert.strictEqual(timeCell(0), '', 'a missing timestamp must render nothing, not "Invalid Date"');
+  assert.strictEqual(timeCell(null), '', 'a missing timestamp must render nothing, not "Invalid Date"');
+});
+
+check('a session title cannot inject markup through the time cell', () => {
+  // The label is a parameter, so it has to be escaped like everything else
+  // that lands in an attribute.
+  const cell = timeCell(Date.now(), '"><img src=x onerror=alert(1)>');
+  assert.ok(!cell.includes('<img'), `markup survived into the attribute: ${cell}`);
+});
+
+check('the Squad pill is not repeated by the active-member chip beside it', () => {
+  // The pill already says "squad". The coordinator is literally NAMED "Squad",
+  // so rendering both put SQUAD next to Squad and told the reader nothing
+  // twice. A named member is still worth showing -- which one is working is
+  // the useful fact.
+  const app = fs.readFileSync(APP_JS, 'utf8');
+  assert.match(app, /toLowerCase\(\) !== 'squad'/,
+    'the active-member chip no longer suppresses the coordinator, so the pill is duplicated');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

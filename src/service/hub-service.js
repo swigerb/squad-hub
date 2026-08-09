@@ -421,7 +421,25 @@ class HubService {
       // Not 403: revealing the difference between "not yours" and "does not
       // exist" is itself a disclosure.
       if (!device) return send(404, { error: 'no such device' });
-      if (device.presence === PRESENCE.OFFLINE) return send(409, { error: 'device is offline' });
+      /**
+       * An offline device cannot be commanded -- except to be forgotten.
+       *
+       * Everything else here tells a running daemon to do something, so an
+       * offline one is a 409. `forget` is different: it removes rows the hub
+       * already holds, and the reason removal is normally delegated to the
+       * device (it re-publishes its whole list on every heartbeat, so a
+       * hub-side delete would come straight back) does not apply to a device
+       * that will never heartbeat again. An ephemeral job execution is exactly
+       * that, and refusing here left its finished sessions with no way to be
+       * cleared at all.
+       */
+      if (device.presence === PRESENCE.OFFLINE) {
+        if (op !== 'forget') return send(409, { error: 'device is offline' });
+        const r = this.store.forgetDeviceSessions(me.key, deviceId, {
+          olderThanMs: body ? body.olderThanMs : undefined,
+        });
+        return send(200, { ...r, count: r.removed, offline: true });
+      }
       try {
         // Who is doing this travels with the command. An approval answered on
         // one surface has to show as answered on every other, and "resolved"

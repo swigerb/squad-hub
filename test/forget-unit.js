@@ -231,6 +231,67 @@ check('the daemon still refuses an op nobody named', async () => {
   await assert.rejects(() => d.handle({ op: 'forget-everything-everywhere' }), /unknown op/);
 });
 
+// ---------------------------------------------------------------------------
+// A device that is never coming back
+// ---------------------------------------------------------------------------
+//
+// Removal is normally a command to the device, because the device owns its
+// session list and republishes it wholesale on every heartbeat -- so anything
+// deleted hub-side would simply reappear.
+//
+// That argument depends on the device coming back. An ephemeral one does not:
+// a Container Apps job execution registers under an id unique to that run,
+// finishes, and is gone. There is no daemon left to command, and nothing that
+// will ever re-publish the row. Before this, its finished sessions could not
+// be cleared at all -- the only control offered refused with "device is
+// offline", and the list kept every cloud job until retention expired it.
+const { Store } = require(path.join(ROOT, 'src', 'service', 'store'));
+
+function storeWith(sessions) {
+  const st = new Store();
+  st.registerDevice('subj', { deviceId: 'aca-job-1', name: 'cloud' });
+  for (const s of sessions) st.upsertSession('subj', 'aca-job-1', s);
+  return st;
+}
+
+check('a finished session on an offline device can be removed by the hub', () => {
+  const st = storeWith([{ id: 's1', status: 'done' }]);
+  const r = st.forgetDeviceSessions('subj', 'aca-job-1');
+  assert.strictEqual(r.removed, 1, 'the finished session was not removed');
+  assert.strictEqual(st.listSessions('subj').length, 0);
+});
+
+check('a session still RUNNING on an offline device is kept, because offline can mean a blip', () => {
+  // The hazard this guards: "offline" is not proof the work stopped. A network
+  // partition over a live session looks identical from here, and removing that
+  // row would hide running work rather than tidy up finished work. It comes
+  // back on reconnect anyway.
+  const st = storeWith([{ id: 's1', status: 'running' }, { id: 's2', status: 'done' }]);
+  const r = st.forgetDeviceSessions('subj', 'aca-job-1');
+  assert.strictEqual(r.removed, 1, 'it should have removed only the finished one');
+  assert.strictEqual(r.kept, 1);
+  const left = st.listSessions('subj');
+  assert.strictEqual(left.length, 1);
+  assert.strictEqual(left[0].status, 'running', 'the running session was removed');
+});
+
+check('an age window is honoured, so "older than a day" does not clear this morning', () => {
+  const st = storeWith([{ id: 's1', status: 'done' }]);
+  const r = st.forgetDeviceSessions('subj', 'aca-job-1', { olderThanMs: 24 * 3600 * 1000 });
+  assert.strictEqual(r.removed, 0, 'a session that ended seconds ago was swept by a one-day window');
+  assert.strictEqual(r.kept, 1);
+});
+
+check('another device\'s sessions are never touched', () => {
+  const st = storeWith([{ id: 's1', status: 'done' }]);
+  st.registerDevice('subj', { deviceId: 'laptop', name: 'laptop' });
+  st.upsertSession('subj', 'laptop', { id: 's9', status: 'done' });
+  st.forgetDeviceSessions('subj', 'aca-job-1');
+  const left = st.listSessions('subj');
+  assert.strictEqual(left.length, 1);
+  assert.strictEqual(left[0].deviceId, 'laptop');
+});
+
 setTimeout(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
