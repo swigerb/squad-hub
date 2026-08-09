@@ -136,6 +136,25 @@ function originUrl(configText) {
 }
 
 /**
+ * The host an origin URL points at, lowercased, or null when there is no
+ * remote at all.
+ *
+ * Separate from `repoFromUrl` because that deliberately falls back to the
+ * directory name for a local-only checkout -- which is right for a label and
+ * wrong for a link. Somewhere that wants to open github.com/<owner>/<repo>
+ * needs to know the remote really is GitHub, not that a folder happens to be
+ * called something.
+ */
+function hostFromUrl(url) {
+  if (!url) return null;
+  const s = String(url).trim();
+  if (!s) return null;
+  const scp = s.match(/^[^/]+@([^:/]+):/);
+  if (scp) return scp[1].toLowerCase();
+  try { return new URL(s).hostname.toLowerCase() || null; } catch { return null; }
+}
+
+/**
  * Repository and branch for a working directory, or null when it is not in a
  * checkout at all.
  *
@@ -153,13 +172,18 @@ function readGitContext(cwd) {
     let configText = null;
     try { configText = fs.readFileSync(path.join(commonDir(found.gitDir), 'config'), 'utf8'); } catch { /* optional */ }
 
-    const repository = repoFromUrl(originUrl(configText)) || path.basename(found.root) || null;
+    const url = originUrl(configText);
+    const repository = repoFromUrl(url) || path.basename(found.root) || null;
     if (!repository && !branch) return null;
-    return { repository, branch };
+    // `host` is null for a local-only checkout, which is what stops a link
+    // being offered for a repository that is not anywhere.
+    return { repository, branch, host: hostFromUrl(url) };
   } catch {
     // Decoration must never take the session list down.
     return null;
   }
 }
 
-module.exports = { readGitContext, findGitDir, readBranch, repoFromUrl, originUrl };
+module.exports = {
+  readGitContext, findGitDir, readBranch, repoFromUrl, originUrl, hostFromUrl,
+};
