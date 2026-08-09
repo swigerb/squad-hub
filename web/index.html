@@ -6,7 +6,16 @@
 <title>Squad Hub</title>
 <link rel="manifest" href="/app.webmanifest">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icon.svg">
+<!-- PNG, not SVG. iOS ignores an SVG apple-touch-icon and falls back to a
+     screenshot of the page, so a Home Screen web app ends up wearing a blurry
+     picture of its own UI. -->
+<link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+<!-- Home Screen web app on iOS: full screen, and a status bar that matches the
+     dark chrome rather than a white strip above it. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Squad Hub">
 <meta name="theme-color" content="#14161a">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -411,6 +420,8 @@
     </div>
   </div>
 </div>
+
+<div class="scrim" id="installHelp" hidden></div>
 
 <div class="toast" id="toast" hidden></div>
 

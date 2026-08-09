@@ -730,6 +730,14 @@ async function suiteWebXss() {
 }
 
 /**
+ * Install advice: the toast that named an iOS button which does not exist.
+ */
+async function suiteInstallPrompt() {
+  console.log('\n[INSTALL] "Install as an app" gives real steps for the real platform');
+  runChildSuite(path.join(__dirname, 'install-prompt-unit.js'), 'install-prompt');
+}
+
+/**
  * Session metadata: repository and branch read from the checkout, the live
  * activity line, the badge set, and the ordering that pulls a blocked session
  * to the top. Every new field reaching the DOM carries its own stored-XSS
@@ -866,6 +874,7 @@ async function suiteAgentApply() {
   await suiteDocs();
   await suitePackage();
   await suiteWebXss();
+  await suiteInstallPrompt();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();
