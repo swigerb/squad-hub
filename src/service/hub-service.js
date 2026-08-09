@@ -25,7 +25,7 @@ const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
 const { DeviceTokenStore } = require('./device-token-store');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
-const { Store, PRESENCE } = require('./store');
+const { Store } = require('./store');
 const ws = require('./ws');
 
 const WEB_ROOT = path.join(__dirname, '..', '..', 'web');
@@ -422,18 +422,26 @@ class HubService {
       // exist" is itself a disclosure.
       if (!device) return send(404, { error: 'no such device' });
       /**
-       * An offline device cannot be commanded -- except to be forgotten.
+       * A device that cannot be reached cannot be commanded -- except to be
+       * forgotten.
        *
-       * Everything else here tells a running daemon to do something, so an
-       * offline one is a 409. `forget` is different: it removes rows the hub
-       * already holds, and the reason removal is normally delegated to the
-       * device (it re-publishes its whole list on every heartbeat, so a
+       * Every other op here tells a running daemon to do something, so an
+       * unreachable one is a 409. `forget` is different: it removes rows the
+       * hub already holds, and the reason removal is normally delegated to the
+       * device (it republishes its whole list on every heartbeat, so a
        * hub-side delete would come straight back) does not apply to a device
        * that will never heartbeat again. An ephemeral job execution is exactly
        * that, and refusing here left its finished sessions with no way to be
        * cleared at all.
+       *
+       * Reachability is the LIVE SOCKET, not the presence label. Presence is a
+       * time-based heuristic with three states, and a device goes `stale`
+       * before it goes `offline` -- so testing for `offline` alone still
+       * refused a job that had just finished, which is precisely when someone
+       * wants to tidy it away.
        */
-      if (device.presence === PRESENCE.OFFLINE) {
+      const reachable = !!(this._devices.get(me.key) || new Map()).get(deviceId);
+      if (!reachable) {
         if (op !== 'forget') return send(409, { error: 'device is offline' });
         const r = this.store.forgetDeviceSessions(me.key, deviceId, {
           olderThanMs: body ? body.olderThanMs : undefined,

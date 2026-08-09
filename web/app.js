@@ -730,16 +730,17 @@ function forgetWindowMs(scope) {
  * An online device is ASKED -- it owns its session list, and a hub-side delete
  * would be undone by its next heartbeat.
  *
- * An offline one is handled by the hub instead. That is not an override: a
- * device that never reconnects has nothing left to contradict, and an
- * ephemeral job execution never does. Refusing it outright, as this used to,
- * left every finished cloud job in the list with no way to clear it.
+ * Anything not online is handled by the hub instead. That is not an override:
+ * a device with no live connection has nothing left to contradict, and an
+ * ephemeral job execution never reconnects. Both non-online states count --
+ * a device goes `stale` before it goes `offline`, and a job that has just
+ * finished is exactly the one someone wants to tidy away.
  */
 function forgetTargets(devices) {
   const all = devices || [];
   return {
-    reachable: all.filter((d) => d.presence !== 'offline'),
-    skipped: all.filter((d) => d.presence === 'offline'),
+    reachable: all.filter((d) => d.presence === 'online'),
+    skipped: all.filter((d) => d.presence !== 'online'),
   };
 }
 

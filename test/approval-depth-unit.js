@@ -349,15 +349,19 @@ check('a nonsense scope produces no sweep', () => {
   }
 });
 
-check('an offline device is separated out rather than counted', () => {
+check('only an ONLINE device is asked; anything else the hub clears itself', () => {
+  // A stale device has no live socket either -- presence goes stale before it
+  // goes offline -- so treating stale as reachable left a job that had just
+  // finished refusing with "device is not connected", which is exactly when
+  // someone wants to tidy it away.
   const t = forgetTargets([
     { deviceId: 'a', presence: 'online' },
     { deviceId: 'b', presence: 'stale' },
     { deviceId: 'c', presence: 'offline' },
   ]);
-  assert.deepStrictEqual(t.reachable.map((d) => d.deviceId), ['a', 'b']);
-  assert.deepStrictEqual(t.skipped.map((d) => d.deviceId), ['c'],
-    'a device that cannot be asked has not been tidied, and saying otherwise is a lie the next page load exposes');
+  assert.deepStrictEqual(t.reachable.map((d) => d.deviceId), ['a']);
+  assert.deepStrictEqual(t.skipped.map((d) => d.deviceId), ['b', 'c'],
+    'a device with no live connection is cleared by the hub, not asked');
 });
 
 check('no devices at all does not throw', () => {
