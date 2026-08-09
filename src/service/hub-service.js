@@ -446,7 +446,23 @@ class HubService {
         const r = this.store.forgetDeviceSessions(me.key, deviceId, {
           olderThanMs: body ? body.olderThanMs : undefined,
         });
-        return send(200, { ...r, count: r.removed, offline: true });
+        /**
+         * Once its last session is gone, the device goes too.
+         *
+         * An unreachable device is kept in the roster only because its
+         * sessions still explain what happened -- that is the whole reason
+         * `_pruneStale` skips a device that has any. With none left there is
+         * nothing to explain, and the pruner would drop it anyway fifteen
+         * minutes after it was last seen. Doing it here just means someone who
+         * tidied up sees a tidy list, rather than a row that lingers for a
+         * quarter of an hour with nothing behind it.
+         *
+         * A device that comes back re-registers, so this removes a record, not
+         * a machine.
+         */
+        const left = this.store.listSessions(me.key, { deviceId }).length;
+        const deviceRemoved = left === 0 ? this.store.removeDevice(me.key, deviceId) : false;
+        return send(200, { ...r, count: r.removed, offline: true, deviceRemoved });
       }
       try {
         // Who is doing this travels with the command. An approval answered on
