@@ -93,6 +93,35 @@ if ($AuthMode -eq 'dev') {
   Warn 'Anyone holding a token is you. Use -AuthMode entra for anything shared.'
 }
 
+# A DEPLOY MUST NOT QUIETLY WEAKEN HOW PEOPLE SIGN IN.
+#
+# -AuthMode defaults to 'dev', and the settings below are written on every run.
+# So a redeploy of a live GitHub-authenticated hub that simply forgot the flag
+# rewrote it to dev: sign-in broke with "malformed dev token" (a GitHub token
+# reaching a dev-mode verifier), and, far worse, the hub silently dropped from
+# "GitHub decides who you are" to "anyone holding the shared secret is whoever
+# they say they are" -- on a public hostname.
+#
+# Measured, not theorised: this happened to the deployed hub.
+#
+# There is already a check for the opposite mistake (OAuth credentials passed
+# with a non-github mode) but it only looks at the COMMAND LINE, so it saw
+# nothing here: the credentials were already on the app and the flag was simply
+# absent. This asks the app what it is doing now.
+$existingMode = az webapp config appsettings list -n $Name -g $ResourceGroup `
+  --query "[?name=='SQUAD_HUB_AUTH_MODE'].value | [0]" -o tsv 2>$null
+if ($existingMode -and $existingMode -ne $AuthMode -and -not $PSBoundParameters.ContainsKey('AuthMode')) {
+  Fail @"
+This hub is running in '$existingMode' auth, and no -AuthMode was given.
+
+Deploying now would set it to '$AuthMode', because that is the default. Changing
+how people sign in is not something a deploy should do by omission.
+
+  keep it as it is:   -AuthMode $existingMode
+  change it on purpose: -AuthMode $AuthMode
+"@
+}
+
 # A hub on a public hostname with no allowlist accepts any identity that
 # authenticates -- in dev auth, anyone holding the secret, under any name they
 # invent. Refusing is better than warning: this is reachable from the internet
@@ -202,6 +231,27 @@ if ($GitHubClientId -xor $GitHubClientSecret) {
 }
 if ($GitHubClientId -and $GitHubClientSecret -and $AuthMode -ne 'github') {
   Fail "OAuth sign-in was configured but -AuthMode is '$AuthMode'. The button would send people through GitHub and then be refused at the door."
+}
+# The same mistake, arrived at from the other direction: the credentials are
+# already ON THE APP from an earlier deploy, and this run picks a mode that
+# cannot use them. The check above only sees the command line, so it misses
+# exactly the case that broke the deployed hub -- an OAuth-configured app
+# redeployed without -AuthMode. The sign-in page offers a GitHub button
+# whenever the credentials exist, so this is the condition that makes that
+# button lead into a refusal.
+$existingClientId = az webapp config appsettings list -n $Name -g $ResourceGroup `
+  --query "[?name=='SQUAD_HUB_GITHUB_CLIENT_ID'].value | [0]" -o tsv 2>$null
+if ($existingClientId -and $AuthMode -ne 'github') {
+  Fail @"
+This hub already has GitHub OAuth configured, but -AuthMode is '$AuthMode'.
+
+The sign-in page offers a GitHub button whenever those credentials exist, so
+people would be sent through GitHub and then refused -- and in dev auth the hub
+would additionally accept anyone holding the shared secret.
+
+  keep GitHub sign-in working:  -AuthMode github
+  really turn it off:           remove SQUAD_HUB_GITHUB_CLIENT_ID/SECRET first
+"@
 }
 az webapp config appsettings set -n $Name -g $ResourceGroup --settings @settings | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'app settings could not be applied' }

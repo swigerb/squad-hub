@@ -204,9 +204,11 @@ async function suiteSessionRoundTrip() {
 
     const done = await waitFor(() => {
       const s = statusJson(env);
-      return s.sessions && s.sessions.some((x) => x.id === sess.id && x.status === 'done');
+      // `idle` is where a finished turn now lands: the agent is alive and
+      // waiting for a reply. `done` is still reached when it is not.
+      return s.sessions && s.sessions.some((x) => x.id === sess.id && ['idle', 'done'].includes(x.status));
     }, 15000);
-    check('the session reaches done', () => assert.ok(done, 'session never completed'));
+    check('the session finishes its turn', () => assert.ok(done, 'session never completed'));
 
     await stopDaemon(env);
   } finally { cleanup(home); cleanup(work); }
@@ -752,6 +754,7 @@ async function suiteAccess() {
   console.log('\n[ACCESS] the allow-list is editable, and only by an owner');
   runChildSuite(path.join(__dirname, 'access-store-unit.js'), 'access-store');
   runChildSuite(path.join(__dirname, 'access-api-unit.js'), 'access-api');
+  runChildSuite(path.join(__dirname, 'people-list-unit.js'), 'people-list');
 }
 
 /**
@@ -761,6 +764,22 @@ async function suiteAccess() {
 async function suiteGitHubLink() {
   console.log('\n[ACA LINK] a prefilled issue comment, correct or absent, never approximate');
   runChildSuite(path.join(__dirname, 'github-link-unit.js'), 'github-link');
+}
+
+/**
+ * The deploy must not quietly weaken how people sign in. A real incident.
+ */
+async function suiteDeployGuard() {
+  console.log('\n[DEPLOY] a redeploy cannot change the auth mode by omission');
+  runChildSuite(path.join(__dirname, 'deploy-guard-unit.js'), 'deploy-guard');
+}
+
+/**
+ * A session you can reply to: a finished turn is not a finished conversation.
+ */
+async function suiteConversation() {
+  console.log('\n[CONVERSATION] a finished turn leaves a session that still listens');
+  runChildSuite(path.join(__dirname, 'conversation-unit.js'), 'conversation');
 }
 
 /**
@@ -904,6 +923,8 @@ async function suiteAgentApply() {
   await suiteModes();
   await suiteAccess();
   await suiteGitHubLink();
+  await suiteDeployGuard();
+  await suiteConversation();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();

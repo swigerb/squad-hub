@@ -152,7 +152,8 @@
         <option value="">All statuses</option>
         <option value="waiting_approval">Action needed</option>
         <option value="active">Active</option>
-        <option value="done">Ready for review</option>
+        <option value="idle">Ready for review</option>
+        <option value="done">Finished</option>
         <option value="failed">Failed</option>
         <option value="stopped">Stopped</option>
       </select>
@@ -467,27 +468,35 @@
 </div>
 
 <div class="scrim" id="peopleScrim" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pplTitle">
-    <h2 id="pplTitle">Who has access</h2>
-    <p class="modal-sub">
-      Everyone here can sign in and drive their own devices. They cannot see
-      yours — each person gets their own view.
-    </p>
-    <div id="pplList" class="ppl-list"></div>
-    <label class="field">
-      <span>Add someone <button type="button" class="hint-btn" aria-label="About adding someone"
-        title="Their GitHub username, or the email they sign in with. &#10;&#10;They get their own devices and sessions — adding someone does not share yours with them, and does not let them add anyone else.">i</button></span>
-      <input id="pplLogin" placeholder="github-username or name@example.com" maxlength="128" autocapitalize="off" spellcheck="false">
-    </label>
-    <label class="field">
-      <span>Note (optional)</span>
-      <input id="pplNote" placeholder="e.g. testing the hub" maxlength="200">
-    </label>
-    <div class="modal-actions">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="pplTitle">
+    <div class="ppl-head">
+      <div>
+        <h2 id="pplTitle">Who has access</h2>
+        <p class="modal-sub" id="pplCount">Everyone here signs in to their own view. They cannot see your devices.</p>
+      </div>
       <button class="ghost" id="pplClose">Done</button>
+    </div>
+
+    <div class="ppl-add">
+      <input id="pplLogin" placeholder="github-username or name@example.com" maxlength="128" autocapitalize="off" spellcheck="false" aria-label="GitHub username or email">
+      <input id="pplNote" placeholder="Note (optional)" maxlength="200" aria-label="Note">
       <button class="primary" id="pplAdd">Add</button>
     </div>
     <p class="err" id="pplErr" hidden></p>
+
+    <div class="ppl-tools">
+      <input id="pplSearch" placeholder="Filter…" aria-label="Filter people" autocapitalize="off" spellcheck="false">
+      <div class="selectpill compact">
+        <select id="pplSource" aria-label="Source">
+          <option value="">Everyone</option>
+          <option value="added">Added here</option>
+          <option value="deployment">Set by the deployment</option>
+          <option value="owner">Owners</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="pplList" class="ppl-list" role="list"></div>
   </div>
 </div>
 

@@ -209,10 +209,10 @@ async function freePort() {
     const finished = await waitFor(async () => {
       const r = await api(port, '/api/sessions', userToken);
       const s = r.body.sessions.find((x) => x.id === waiting.id);
-      return s && s.status === 'done' ? s : null;
+      return s && ['idle', 'done'].includes(s.status) ? s : null;
     }, 20000);
     check('the session completes and the hub reflects it', () => {
-      assert.ok(finished, 'session never reached done in the hub view');
+      assert.ok(finished, 'the session never finished its turn in the hub view');
     });
 
     // -- step 7: still controllable locally, same session model ---------------

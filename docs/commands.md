@@ -155,14 +155,13 @@ before the agent acts:
 
 **Autopilot removes the questions, not the limits.** A tool the device refuses
 is still refused — it simply does not run, rather than raising an approval you
-would have denied. Measured, not assumed: autopilot with a denied tool produces
+would have denied. Autopilot with a denied tool produces
 zero approvals and the tool does not run.
 
 The mode is applied over the protocol at session start. If the agent does not
 offer the mode you asked for, the session says so rather than running something
-else quietly. It can only be set per session — a project's `.squad-hub.json`
-cannot choose it for you, because a checked-out repository should not be able to
-decide how much its reader is asked.
+else. It can only be set per session; a project's `.squad-hub.json` cannot
+choose it for you.
 
 ## Agent selection
 
@@ -290,28 +289,33 @@ at a glance, in both `squad-hub status` and the web UI.
 | Repository | The `origin` remote in the session's checkout, as `owner/repo`. Falls back to the repository directory name when there is no remote. |
 | Branch | The checked-out branch, or the short commit when `HEAD` is detached. |
 | Activity | What the agent is doing right now — `Running <tool>`, `Processing…`, or `Waiting for input`. |
-| Badge | `Active`, `Action needed`, `Ready for review`, `Failed`, or `Stopped`. |
+| Badge | `Active`, `Action needed`, `Ready for review`, `Finished`, `Failed`, or `Stopped`. |
 
-Repository and branch are read **directly from `.git`**, never by running
-`git`. A session's state is serialised on every heartbeat, so forking a
-process there would mean a subprocess per session several times a minute — and
-it would find nothing on a device that has a checkout but no git binary.
+Repository and branch are read directly from `.git`, never by running `git`.
 Linked worktrees and submodules (where `.git` is a *file*) are handled.
 
-A remote URL's credentials are discarded rather than parsed. Only the last two
-path segments are ever kept, so a token committed into a remote URL cannot
-reach a web page other people can see.
+A remote URL's credentials are discarded. Only the last two path segments are
+kept, so a token committed into a remote URL never reaches a web page.
 
-**`Action needed` outranks everything.** A session blocked on a person is the
-only one that cannot make progress by itself, so it is never described as
-merely `Active`, its row is pulled to the top of its device's card, and it
-carries a coloured edge. A finished session reads as `Ready for review` rather
-than `Done` — nothing is done from the watcher's side; the work is sitting
-there waiting to be looked at.
+**`Action needed` outranks everything.** A session blocked on a person is pulled
+to the top of its device's card and carries a coloured edge.
 
-Everything in a session row is escaped before it is rendered. A branch name, a
-repository name, and a tool title are all attacker-influenceable — git accepts
-any bytes in a branch name — so none of it is ever treated as markup.
+Everything in a session row is escaped before it is rendered.
+
+### Session states
+
+| State | Meaning |
+|---|---|
+| `Active` | The agent is working. |
+| `Action needed` | It is waiting for you to approve a tool. |
+| `Ready for review` | Its turn ended. The agent is still running and you can reply. |
+| `Finished` | The session is over and the agent has stopped. |
+| `Failed` | The agent exited unexpectedly. |
+| `Stopped` | You stopped it. |
+
+A session that reaches **Ready for review** stays there until you reply or
+`SQUAD_HUB_IDLE_MS` elapses (30 minutes by default), after which it becomes
+**Finished** and its agent is stopped. Replying resets the clock.
 
 ## The session list
 
@@ -806,6 +810,7 @@ platform's timeout while doing nothing.
 | `SQUAD_HUB_CWD` | Working directory for the session. |
 | `SQUAD_HUB_ATTACH_GRACE_MS` | How long to wait for the hub before starting anyway. Default 5000. |
 | `SQUAD_HUB_MAX_SESSION_MS` | Ceiling on one session, so a wedged agent cannot hold the job open. Default 3 hours. |
+| `SQUAD_HUB_IDLE_MS` | How long a session waits for your reply before it is closed and its agent stopped. Default 30 minutes. |
 
 The exit code carries the outcome, so the platform's own status means
 something: **0** when the session completed, **1** when it failed or was cut

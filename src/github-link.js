@@ -2,7 +2,7 @@
 /**
  * A link to a prefilled GitHub issue comment.
  *
- * This is what replaces the launcher (see docs/launcher-assessment.md). The
+ * This is what replaces the launcher. The
  * thing people want from a phone is to start a cloud run; the launcher answered
  * that by giving the hub a component that can start compute. This answers it by
  * giving the hub a URL.

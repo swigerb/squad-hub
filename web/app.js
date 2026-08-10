@@ -122,7 +122,11 @@ function statusBadge(s) {
     active: ['active', 'Active'],
     starting: ['active', 'Starting'],
     waiting_approval: ['attention', 'Action needed'],
-    done: ['review', 'Ready for review'],
+    // The agent is alive and waiting for a reply. This is what "Ready for
+    // review" always meant -- there is output to read and the conversation can
+    // continue. `done` now means the session is genuinely over.
+    idle: ['review', 'Ready for review'],
+    done: ['', 'Finished'],
     failed: ['failed', 'Failed'],
     stopped: ['', 'Stopped'],
   };
@@ -2333,18 +2337,24 @@ function wire() {
     if (!login) { $('pplErr').textContent = 'Enter a username or email.'; $('pplErr').hidden = false; return; }
     $('pplAdd').disabled = true;
     try {
-      await api('/api/access', { method: 'POST', body: { login, note: $('pplNote').value.trim() } });
+      state.people = await api('/api/access', { method: 'POST', body: { login, note: $('pplNote').value.trim() } });
       $('pplLogin').value = '';
       $('pplNote').value = '';
       $('pplErr').hidden = true;
-      await renderPeople();
+      // Clear the filter, or someone adds a person and watches them not appear.
+      $('pplSearch').value = '';
+      renderPeople();
     } catch (e) {
       $('pplErr').textContent = e.message;
       $('pplErr').hidden = false;
     }
     $('pplAdd').disabled = false;
+    $('pplLogin').focus();
   };
   $('pplLogin').onkeydown = (e) => { if (e.key === 'Enter') $('pplAdd').click(); };
+  $('pplNote').onkeydown = (e) => { if (e.key === 'Enter') $('pplAdd').click(); };
+  $('pplSearch').oninput = renderPeople;
+  $('pplSource').onchange = renderPeople;
 
   $('dtAca').onclick = openAca;
   $('acaCancel').onclick = () => { $('acaScrim').hidden = true; };
@@ -2788,7 +2798,7 @@ function updateAgentChoices(device) {
  * The link that replaces the launcher.
  *
  * Squad Hub cannot start a cloud job and deliberately holds no credential that
- * could -- see docs/launcher-assessment.md. What it can do is open the issue's
+ * could. What it can do is open the issue's
  * own comment box with `/squad-aca <instruction>` already in it, and let the
  * person send it as themselves. GitHub authenticates them, the existing
  * workflow starts the job with a federated short-lived credential, and the
@@ -2860,54 +2870,105 @@ async function openPeople() {
   $('pplErr').hidden = true;
   $('pplLogin').value = '';
   $('pplNote').value = '';
+  $('pplSearch').value = '';
+  $('pplSource').value = '';
+  state.people = null;
   box.hidden = false;
-  await renderPeople();
+  await loadPeople();
   $('pplLogin').focus();
 }
 
-function peopleRows(data) {
-  const users = (data && data.users) || [];
-  if (!users.length) return '<p class="sub">Nobody else has access yet.</p>';
+/**
+ * Which rows to show, given the filter box and the source picker.
+ *
+ * Filtering is done here rather than by asking the hub again: the whole list is
+ * already in hand, and a round trip per keystroke would make a fifty-person
+ * list feel worse than a five-person one.
+ */
+function peopleVisible(users, query, source) {
+  const q = String(query || '').trim().toLowerCase();
+  return (users || []).filter((u) => {
+    if (source && u.source !== source) return false;
+    if (!q) return true;
+    return `${u.login} ${u.note || ''} ${u.addedBy || ''}`.toLowerCase().includes(q);
+  });
+}
+
+function peopleRows(data, query, source) {
+  const all = (data && data.users) || [];
+  const users = peopleVisible(all, query, source);
+  if (!all.length) return '<p class="ppl-empty">Nobody else has access yet.</p>';
+  if (!users.length) return '<p class="ppl-empty">Nobody matches that filter.</p>';
   return users.map((u) => {
     // A row that cannot be removed says WHY, in place, rather than offering an
-    // X that fails. Being refused after clicking teaches nothing except not to
-    // trust the buttons.
-    const why = u.source === 'owner' ? 'owner of this hub'
-      : u.source === 'deployment' ? 'set by the deployment'
-        : [u.addedBy ? `added by ${u.addedBy}` : null, u.note].filter(Boolean).join(' · ');
+    // action that fails. Being refused after clicking teaches nothing except
+    // not to trust the buttons.
+    const tag = u.source === 'owner' ? '<span class="ppl-tag owner">Owner</span>'
+      : u.source === 'deployment' ? '<span class="ppl-tag">Deployment</span>'
+        : '';
+    const detail = u.source === 'added'
+      ? [u.addedBy ? `added by ${u.addedBy}` : null, u.note].filter(Boolean).join(' · ')
+      : u.source === 'owner' ? 'signs in as you, and shares your devices'
+        : 'set in this hub\u2019s configuration';
     const action = u.removable
-      ? `<button class="ghost danger sm" data-remove="${esc(u.login)}">Remove</button>`
-      : '<span class="ppl-fixed">fixed</span>';
-    return `<div class="ppl-row">
-      <div><strong>${esc(u.login)}</strong>${why ? `<small>${esc(why)}</small>` : ''}</div>
+      ? `<button class="ghost danger sm" data-remove="${esc(u.login)}" aria-label="Remove ${esc(u.login)}">Remove</button>`
+      : '';
+    return `<div class="ppl-row" role="listitem">
+      <div class="ppl-who">
+        <div class="ppl-name">${esc(u.login)}${tag}</div>
+        ${detail ? `<small>${esc(detail)}</small>` : ''}
+      </div>
       ${action}
     </div>`;
   }).join('');
 }
 
-async function renderPeople() {
+/** The one-line summary above the list, so a long list still says how long. */
+function peopleSummary(data, shown) {
+  const all = ((data && data.users) || []).length;
+  const owners = ((data && data.users) || []).filter((u) => u.source === 'owner').length;
+  const people = all - owners;
+  const noun = people === 1 ? 'person' : 'people';
+  const base = `${people} ${noun} with access, ${owners === 1 ? '1 owner' : `${owners} owners`}`;
+  return shown === all ? base : `${base} · showing ${shown}`;
+}
+
+async function loadPeople() {
   const list = $('pplList');
-  list.innerHTML = '<p class="sub">Loading…</p>';
-  let data;
+  list.innerHTML = '<p class="ppl-empty">Loading…</p>';
   try {
-    data = await api('/api/access');
+    state.people = await api('/api/access');
   } catch (e) {
     list.innerHTML = `<p class="err">${esc(e.message)}</p>`;
     return;
   }
+  renderPeople();
+}
+
+function renderPeople() {
+  const data = state.people;
+  if (!data) return;
+  const list = $('pplList');
+  const query = $('pplSearch').value;
+  const source = $('pplSource').value;
+  const shown = peopleVisible(data.users, query, source).length;
+
   const warn = data.ok === false
     ? `<p class="err">The access list could not be read (${esc(data.error || 'unknown')}), so it cannot be changed. The deployment's own list still applies.</p>`
     : !data.durable
-      ? '<p class="sub">This hub cannot save its access list, so anyone added here is forgotten when it restarts.</p>'
+      ? '<p class="ppl-warn">This hub cannot save its access list, so anyone added here is forgotten when it restarts.</p>'
       : '';
-  list.innerHTML = warn + peopleRows(data);
+  list.innerHTML = warn + peopleRows(data, query, source);
+  $('pplCount').textContent = peopleSummary(data, shown);
+
   list.querySelectorAll('[data-remove]').forEach((b) => {
     b.onclick = async () => {
       const login = b.dataset.remove;
       b.disabled = true;
       try {
-        await api(`/api/access/${encodeURIComponent(login)}`, { method: 'DELETE' });
-        await renderPeople();
+        state.people = await api(`/api/access/${encodeURIComponent(login)}`, { method: 'DELETE' });
+        $('pplErr').hidden = true;
+        renderPeople();
       } catch (e) {
         $('pplErr').textContent = e.message;
         $('pplErr').hidden = false;

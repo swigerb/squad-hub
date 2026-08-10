@@ -229,10 +229,10 @@ function api(port, p, token, opts = {}) {
   const finished = await waitFor(async () => {
     const r = await api(port, '/api/sessions', token);
     const s = r.body.sessions.find((x) => x.id === waiting.id);
-    return s && s.status === 'done' ? s : null;
+    return s && ['idle', 'done'].includes(s.status) ? s : null;
   }, 20000);
   check('the session completes and the hub sees it', () => {
-    assert.ok(finished, 'the session never reached done in the hub');
+    assert.ok(finished, 'the session never finished its turn in the hub');
     assert.strictEqual((finished.pendingApprovals || []).length, 0, 'the approval was not cleared');
   });
 

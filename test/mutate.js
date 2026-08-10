@@ -475,9 +475,20 @@ const MUTATIONS = [
   {
     name: 'a one-shot job never exits',
     file: 'src/cloud-device.js',
-    find: `    d.shutdown(status === 'done' ? 0 : 1);`,
+    find: `    d.shutdown(status === 'done' || status === 'idle' ? 0 : 1);`,
     replace: `    if (process.env.MUTANT) { setInterval(() => {}, 60000); return; } // MUTATION
-    d.shutdown(status === 'done' ? 0 : 1);`,
+    d.shutdown(status === 'done' || status === 'idle' ? 0 : 1);`,
+    mustFail: 'a one-shot run ENDS instead of billing to the job timeout',
+  },
+  {
+    // The expensive one. An interactive session goes idle when its turn ends
+    // and waits for a reply; a one-shot cloud run has nobody to reply. Drop
+    // `idle` from this list and the loop spins to MAX_SESSION_MS -- three
+    // hours of billing for a job that finished in a minute.
+    name: 'a one-shot job does not recognise a finished turn, and bills to the ceiling',
+    file: 'src/cloud-device.js',
+    find: `    const FINISHED = ['idle', 'done', 'failed', 'stopped'];`,
+    replace: `    const FINISHED = process.env.MUTANT ? ['done', 'failed', 'stopped'] : ['idle', 'done', 'failed', 'stopped']; // MUTATION`,
     mustFail: 'a one-shot run ENDS instead of billing to the job timeout',
   },
   {
@@ -1203,11 +1214,11 @@ const MUTATIONS = [
     mustFail: 'waiting_approval is a badge, not a raw status string',
   },
   {
-    name: 'a finished session is filed away as Done rather than offered for review',
+    name: 'a session waiting for a reply is filed away as Done rather than offered for review',
     file: 'web/app.js',
-    find: `    done: ['review', 'Ready for review'],`,
-    replace: `    done: process.env.MUTANT ? ['done', 'Done'] : ['review', 'Ready for review'], // MUTATION`,
-    mustFail: 'a finished session reads as "Ready for review", not "Done"',
+    find: `    idle: ['review', 'Ready for review'],`,
+    replace: `    idle: process.env.MUTANT ? ['done', 'Done'] : ['review', 'Ready for review'], // MUTATION`,
+    mustFail: 'a session waiting for your reply reads as "Ready for review", not "Done"',
   },
   {
     // A worktree gets BOTH halves wrong under a naive reader: `.git` is a file,
@@ -1279,10 +1290,10 @@ const MUTATIONS = [
     mustFail: 'squad-hub status names the repository and branch, not a bare path',
   },
   {
-    name: 'the CLI status files a finished session away as DONE',
+    name: 'the CLI status files a session waiting for a reply away as IDLE',
     file: 'src/cli.js',
-    find: `  if (s.status === 'done') return 'Ready for review';`,
-    replace: `  if (s.status === 'done' && !process.env.MUTANT) return 'Ready for review'; // MUTATION`,
+    find: `  if (s.status === 'idle') return 'Ready for review';`,
+    replace: `  if (s.status === 'idle' && !process.env.MUTANT) return 'Ready for review'; // MUTATION`,
     mustFail: 'squad-hub status offers a finished session for review',
   },
 

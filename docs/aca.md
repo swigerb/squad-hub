@@ -40,18 +40,17 @@ The obvious worry is that attaching a hub is a way to get MORE permission. It
 is the opposite, and the reason is worth stating precisely.
 
 A supervised session runs with **`--allow-all-tools` dropped** and squad-on-aca's
-deny list **unchanged**. Measured against Copilot CLI 1.0.78 over ACP:
+deny list **unchanged**. Against Copilot CLI 1.0.78 over ACP:
 
 | | |
 |---|---|
 | A tool on the **deny list** | raises **no permission request at all**. It is refused outright — "denied by policy". |
 | A tool that is merely **ungated** | raises a request carrying the **literal command**, and waits for a person. |
 
-A human at the hub is therefore never even *offered* the chance to approve
-something the reviewed policy forbids. **The deny list stays a hard floor that
-no surface can lift.** What changes is that the operations which previously ran
-with nobody watching now need an answer — so the set of things that execute
-without human review SHRINKS.
+A person at the hub is never offered the chance to approve something the deny
+list forbids. **The deny list stays a hard floor that no surface can lift.**
+Operations that previously ran unattended now need an answer, so the set of
+things that execute without human review shrinks.
 
 ## Carrying the policy without tearing it
 
@@ -160,8 +159,6 @@ whatever it can reach. Best of all, mint **one per execution** — see
 [security.md](security.md#device-tokens).
 
 ## What works where
-
-Measured, not assumed.
 
 | | Laptop | ACA **Job** | ACA **Sandbox** |
 |---|---|---|---|

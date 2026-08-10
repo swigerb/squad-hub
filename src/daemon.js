@@ -842,6 +842,8 @@ class Daemon extends EventEmitter {
         if (s.isAgentDead()) {
           return { controllable: false, sessionId: s.id, status: s.status, reason: 'the agent process is gone' };
         }
+        // `idle` is deliberately absent: the agent finished a turn and is
+        // waiting for a reply, which is exactly when a composer should work.
         const terminal = ['done', 'failed', 'stopped'];
         if (terminal.includes(s.status)) {
           return { controllable: false, sessionId: s.id, status: s.status, reason: `the session is ${s.status}` };
