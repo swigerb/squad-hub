@@ -52,11 +52,56 @@ const pureSource = src.slice(0, idx);
 // touched the DOM directly (rather than only inside functions main() calls
 // later), this throws immediately instead of silently doing nothing.
 const sandboxModule = { exports: {} };
-const load = new Function('module', 'exports', `${pureSource}\nmodule.exports = { esc, ago, statusBadge, sessionRow, peopleRows };`);
+const load = new Function('module', 'exports', `${pureSource}\nmodule.exports = { esc, num, ago, statusBadge, sessionRow, peopleRows };`);
 load(sandboxModule, sandboxModule.exports);
-const { esc, sessionRow, peopleRows } = sandboxModule.exports;
+const {
+  esc, num, sessionRow, peopleRows,
+} = sandboxModule.exports;
 
 const XSS = '<img src=x onerror=alert(1)>';
+
+// ---------------------------------------------------------------------------
+// Numbers that arrive from a DEVICE
+//
+// A device token is meant to be able to be a device and nothing else: it cannot
+// read the API, and it cannot drive another device. But a device supplies what
+// this page renders, so markup arriving where a count belongs would run in the
+// OWNER'S browser -- and that browser holds the user token. That would turn
+// "can register a device" into "can take the account", which is the one thing
+// the device-token design exists to prevent.
+// ---------------------------------------------------------------------------
+
+check('a count is coerced to a number, so a device cannot put markup where one belongs', () => {
+  assert.strictEqual(num(XSS), 0);
+  assert.strictEqual(num('7'), 7);
+  assert.strictEqual(num(7.9), 7);
+  assert.strictEqual(num(null), 0);
+  assert.strictEqual(num(undefined), 0);
+  assert.strictEqual(num({}), 0);
+  assert.strictEqual(num(Infinity), 0);
+  assert.strictEqual(num(NaN), 0);
+});
+
+check('a hostile toolCallCount from a device renders as inert text', () => {
+  const html = sessionRow({
+    id: 's1', key: 's1', prompt: 'hi', status: 'active', cwd: '/w', toolCallCount: XSS,
+  }, 'my-device');
+  assert.ok(!html.includes('<img'), `a device injected markup through a count: ${html}`);
+});
+
+check('hostile Squad counts from a device render as inert text', () => {
+  const html = sessionRow({
+    id: 's1',
+    key: 's1',
+    prompt: 'hi',
+    status: 'active',
+    cwd: '/w',
+    squad: {
+      memberCount: XSS, activeMembers: XSS, decisionCount: XSS, members: [], decisions: [],
+    },
+  }, 'my-device');
+  assert.ok(!html.includes('<img'), `a device injected markup through a Squad count: ${html}`);
+});
 
 check('a hostile login renders as inert escaped text on the access screen', () => {
   // Of all the screens to get this wrong on, the one listing who may sign in

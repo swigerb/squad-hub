@@ -38,6 +38,26 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/**
+ * A count, rendered as a count.
+ *
+ * Every number on a session row -- tool calls, member and decision counts --
+ * arrives FROM A DEVICE over the WebSocket. The daemon computes them as array
+ * lengths, so in normal operation they are integers and escaping them would be
+ * pointless. That is exactly why it is worth doing.
+ *
+ * A device token is meant to be able to be a device and nothing else: it cannot
+ * read the API and cannot drive another device. But a device supplies the text
+ * this page renders, so a leaked device token that sent a string where a number
+ * belongs would put markup in the OWNER'S browser -- and the owner's browser
+ * holds the user token. That turns "can register a device" into "can take the
+ * account", which is the one thing the device-token design exists to prevent.
+ *
+ * Coercing to a finite number closes it without depending on the daemon
+ * staying honest.
+ */
+const num = (v) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0);
+
 function ago(ms) {
   if (!ms) return '';
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -448,7 +468,7 @@ function sessionRow(s, deviceName, opts = {}) {
     git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
     sel ? `<span class="${agentInfo.mismatch ? 'agent-mismatch' : ''}">${esc(agentInfo.text)}</span>` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? timeCell(s.startedAt) : '',
-    s.toolCallCount ? `${s.toolCallCount} tools` : '',
+    s.toolCallCount ? `${num(s.toolCallCount)} tools` : '',
   ].filter(Boolean).join(' &middot; ');
 
   // A Squad session is a team working under a charter, not a lone agent. The
@@ -469,8 +489,8 @@ function sessionRow(s, deviceName, opts = {}) {
   const squadBits = sq ? `      <div class="squadline">
         <span class="sq-pill" title="Squad workspace">squad</span>
         ${activeName ? `<span class="sq-role">${esc(activeName)}</span>` : ''}
-        ${hasCounts ? `<span class="sq-dim">${sq.activeMembers}/${sq.memberCount} members</span>` : ''}
-        ${sq.decisionCount ? `<span class="sq-dim">${sq.decisionCount} decisions</span>` : ''}
+        ${hasCounts ? `<span class="sq-dim">${num(sq.activeMembers)}/${num(sq.memberCount)} members</span>` : ''}
+        ${sq.decisionCount ? `<span class="sq-dim">${num(sq.decisionCount)} decisions</span>` : ''}
         ${sq.models && !sq.models.uniform ? '<span class="sq-warn" title="Members are not all on the same model">mixed models</span>' : ''}
       </div>` : '';
 
@@ -1581,7 +1601,7 @@ function renderSquadPanel(sq) {
   // and the lists are defended because a partial payload must degrade rather
   // than throw halfway through building the panel.
   const counts = Number.isFinite(sq.activeMembers) && Number.isFinite(sq.memberCount)
-    ? `${sq.activeMembers}/${sq.memberCount} members &middot; ` : '';
+    ? `${num(sq.activeMembers)}/${num(sq.memberCount)} members &middot; ` : '';
   const members = Array.isArray(sq.members) ? sq.members : [];
   const decisions = Array.isArray(sq.decisions) ? sq.decisions : [];
 
@@ -1600,7 +1620,7 @@ function renderSquadPanel(sq) {
     <div class="sq-docbar" id="dtSquadDocs"></div>
     <div class="sq-doc" id="dtSquadDoc" hidden></div>
     ${decisions.length ? `
-      <div class="sq-sub">Recent decisions (${sq.decisionCount})</div>
+      <div class="sq-sub">Recent decisions (${num(sq.decisionCount)})</div>
       <ol class="sq-decisions">
         ${sq.decisions.slice(0, 5).map((d) => `
           <li class="${d.superseded ? 'old' : ''}">
