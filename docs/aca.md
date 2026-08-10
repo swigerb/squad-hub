@@ -197,6 +197,38 @@ container sitting in that loop looks healthy while doing nothing.
 session stops pinning its device after a day, and the device is then forgotten,
 so a week of jobs cannot bury the machines you use.
 
+## Two directions, and what each one grants
+
+They are different things, and only one of them starts anything.
+
+| | A job **attaches** to the hub | The hub **links** to a job |
+|---|---|---|
+| What happens | An ACA job runs `squad-hub oneshot` and dials the hub, so a person can answer its approvals | **+ New → Start a new ACA job…** writes a GitHub URL and opens it |
+| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue |
+| What the hub holds | A device token, minted by you | Nothing |
+| Appears in **+ New** as | **On an attached cloud device** — it is already running | **Start a new ACA job…** — it is not running yet |
+
+Neither gives the hub the ability to start compute. In the first the job comes
+to the hub; in the second the hub writes a request that a person sends.
+
+### Who may start a run
+
+Decided entirely by the target repository on GitHub, not by Squad Hub:
+
+- **Applying the `squad-aca` label** needs Triage or above.
+- **Commenting the command** needs Owner, organisation member, or collaborator.
+- **`workflow_dispatch`** needs Write.
+
+Adding somebody to this hub grants them **none** of that. To let them run jobs
+in your ACA instance, add them to that repository — *Settings → Collaborators
+and teams*, any role including Read. Removing them revokes it immediately.
+
+`CONTRIBUTOR` is not a permission and is not accepted; GitHub reports it for
+anyone who has ever had a commit merged. See
+[who may trigger a run][aca-trigger].
+
+[aca-trigger]: https://github.com/swigerb/squad-on-aca/blob/main/docs/actions-trigger.md#who-may-trigger-a-run
+
 ## Scope
 
 Both halves are implemented and proven.

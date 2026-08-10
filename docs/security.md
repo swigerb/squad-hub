@@ -67,13 +67,13 @@ additions it will forget on the next restart.
 
 ## Starting a cloud job from the hub
 
-**+ New → Run on ACA…**, or the same button on a session, opens a prefilled new
-issue on GitHub. You press Create; the label triggers the workflow, which starts
-the job.
+**+ New → Start a new ACA job…**, or the same button on a session, opens a
+prefilled new issue on GitHub. You press Create; the label triggers the
+workflow, which starts the job.
 
 - The hub emits a link. Your own GitHub session creates the issue.
 - No credential reaches the hub. The workflow runs with a federated short-lived
-  credential.
+  credential belonging to the target repository.
 - The issue is editable before you create it, and it is the record.
 - No permission on the repository, no issue, no job.
 
@@ -82,6 +82,34 @@ can be typed for any repository.
 
 To use an issue that already exists, open the dialog's second section: GitHub
 cannot prefill a comment, so the `/squad-aca` command is offered to copy.
+
+### Adding someone here does not let them run your cloud jobs
+
+**Squad Hub grants nothing on ACA. The repository does.**
+
+The action writes a URL and opens it. Whether a job actually runs is decided
+entirely by the target repository on GitHub:
+
+| | |
+|---|---|
+| Squad Hub decides | who can sign in to **this hub**, and see **their own** devices |
+| The repository decides | who can create an issue, apply the label, and therefore start a job |
+| The repository's Azure credentials decide | whose subscription the job runs in |
+
+So somebody you add under **Who has access** can open the dialog, type your
+repository, and press the button — and GitHub will refuse them unless you have
+*also* added them to that repository. If they can create the issue but are not a
+collaborator, the workflow refuses to dispatch.
+
+To let somebody run jobs in your ACA instance, add them to that repository:
+**Settings → Collaborators and teams**. Any role works, including Read.
+Removing them revokes it immediately.
+
+`CONTRIBUTOR` is not a permission and is not accepted — GitHub reports it for
+anyone who has ever had a commit merged, which on a public repository is anybody
+who once landed a pull request.
+
+See [Squad on ACA: who may trigger a run](https://github.com/swigerb/squad-on-aca/blob/main/docs/actions-trigger.md#who-may-trigger-a-run).
 
 ## Which identifiers work
 
