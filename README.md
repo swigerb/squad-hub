@@ -223,7 +223,7 @@ unsupervised agent holding a repository checkout is worse than no agent. Those
 sessions are gone, and the hub correctly shows none rather than offering
 approvals nobody can answer.
 
-The full matrix of what survives what — measured, not reasoned — is in
+The full matrix of what survives what is in
 [docs/architecture.md](docs/architecture.md).
 
 ## Running it in the cloud
