@@ -258,6 +258,24 @@ const MUTATIONS = [
     mustFail: 'static serving cannot escape the web root',
   },
   {
+    // Mutating the CONSTANT rather than one call site, so the mutation
+    // removes the control everywhere it is applied at once: the shared `send`
+    // choke point (HTML, static assets, API responses, both 404 shapes) AND
+    // the direct writeHead() on the sign-in redirect. A mutation scoped to
+    // only one of those would leave the other silently uncovered.
+    name: 'the security response headers are never sent',
+    file: 'src/service/hub-service.js',
+    find: `const SECURITY_HEADERS = {
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+};`,
+    replace: `const SECURITY_HEADERS = process.env.MUTANT ? {} : { // MUTATION
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+};`,
+    mustFail: 'the two security headers land on every response, whatever the path or status',
+  },
+  {
     name: 'the daemon reports a hub connection it does not have',
     file: 'src/daemon.js',
     // Pinned to the STATE FILE, which is what the CLI reads. The same two
