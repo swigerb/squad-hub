@@ -181,33 +181,32 @@ Current state: **1,203 assertions passing**, on Node 18 and Node 24 in CI.
 
 ---
 
-## Deployment posture
+## Auth modes and what each one assumes
 
-The hub deployed at `squad-hub.azurewebsites.net` runs in `github` auth mode
-with a single owner. Sign-in is a GitHub identity; no shared secret is in use.
+A hub is deployed in one of three auth modes, and the choice decides what an
+identity is worth.
 
-`dev` auth mode remains available for a single trusted machine. It issues tokens
-from a shared secret, so anyone holding that secret can present any identity —
-it is not suitable for anything reachable by other people, and the deploy script
-warns on every run that selects it.
+| Mode | Identity comes from | Suitable for |
+|---|---|---|
+| `github` | A GitHub account, verified with GitHub | A hub other people can reach |
+| `entra` | An Entra token, verified against the tenant | The same, where a tenant provides it |
+| `dev` | A shared secret held by the deployment | One trusted machine |
 
-State is per-process, so the deployment runs a single instance. The deploy
-script refuses to scale out, and `/healthz` reports the instance count.
+**`github` and `entra` verify an identity with a third party.** The credential
+is the person's own account, revoking it revokes their access, and the hub
+stores no per-user token.
 
----
+**`dev` issues tokens from a shared secret**, so anyone holding that secret can
+present any identity. It is appropriate for a laptop and not for anything other
+people can reach. The deploy script warns on every run that selects it, and
+refuses to deploy any mode without an owner or allowlist unless explicitly
+overridden.
 
-## Changes made following this review
+Modes are exclusive. A token minted for one mode is refused by a hub running
+another, so there is no fallback for an attacker to aim at.
 
-| Change | Date |
-|---|---|
-| Device-supplied counts coerced to integers | 10 August 2026 |
-| Owner-only authorisation on the access API | 9 August 2026 |
-| Escaping of stored values in the session row and access list | 9 August 2026 |
-| Deploy guard preventing an auth-mode change by omission | 9 August 2026 |
-
-Further hardening is tracked in the repository's issues.
-
----
+State is per-process, so a deployment runs a single instance. The deploy script
+refuses to scale out, and `/healthz` reports the instance count.
 
 ## Reporting a vulnerability
 
