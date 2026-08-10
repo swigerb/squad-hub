@@ -18,6 +18,26 @@ startup command, or more than one worker. It then waits for the build it just
 pushed to be the one serving, because Kudu reports 502 while the site restarts
 even when the code landed.
 
+### Redeploying: pass `-AuthMode` every time
+
+`-AuthMode` **defaults to `dev`**, and the auth mode is written on every run. So
+redeploying a hub that uses GitHub sign-in without repeating the flag would
+rewrite it to `dev` — sign-in fails with *malformed dev token* (a GitHub token
+reaching a dev-mode verifier), and, silently, the hub drops from *GitHub decides
+who you are* to *anyone holding the shared secret is whoever they say they are*.
+
+The script now refuses that, naming both ways out:
+
+```powershell
+# redeploying an existing GitHub-auth hub
+./scripts/deploy-appservice.ps1 -ResourceGroup rg-squad -Name my-squad-hub `
+  -AuthMode github -SkipCreate
+```
+
+It also refuses a non-`github` mode when the app already has OAuth credentials,
+because the sign-in page offers a GitHub button whenever those exist — so the
+button would lead people through GitHub and into a refusal.
+
 ### One instance only
 
 State is held in memory. At two instances a device attaches to one of them and

@@ -764,6 +764,14 @@ async function suiteGitHubLink() {
 }
 
 /**
+ * The deploy must not quietly weaken how people sign in. A real incident.
+ */
+async function suiteDeployGuard() {
+  console.log('\n[DEPLOY] a redeploy cannot change the auth mode by omission');
+  runChildSuite(path.join(__dirname, 'deploy-guard-unit.js'), 'deploy-guard');
+}
+
+/**
  * Session metadata: repository and branch read from the checkout, the live
  * activity line, the badge set, and the ordering that pulls a blocked session
  * to the top. Every new field reaching the DOM carries its own stored-XSS
@@ -904,6 +912,7 @@ async function suiteAgentApply() {
   await suiteModes();
   await suiteAccess();
   await suiteGitHubLink();
+  await suiteDeployGuard();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();
