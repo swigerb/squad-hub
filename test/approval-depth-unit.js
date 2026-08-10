@@ -41,11 +41,11 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src.slice(0, idx)}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell,
-  updateText, transcriptBlocks };`)(mod, mod.exports);
+  updateText, transcriptBlocks, resultView };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
-  exact, timeCell, updateText, transcriptBlocks,
+  exact, timeCell, updateText, transcriptBlocks, resultView,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -690,6 +690,48 @@ check('an empty or malformed update cannot break the render', () => {
   assert.deepStrictEqual(transcriptBlocks(undefined), []);
   assert.deepStrictEqual(transcriptBlocks([{}, { update: null }, { update: { sessionUpdate: 'agent_message_chunk' } }]), []);
   assert.strictEqual(updateText({}), '');
+});
+
+// ---------------------------------------------------------------------------
+// Clipped tool output KEEPS the rest.
+//
+// The old render sliced the text and labelled the remainder "output truncated
+// (N characters)", offering nothing further -- so a reader was told a number
+// and left with no way to reach the output it counted. The whole string was
+// already in the browser; it was discarded at the very last step.
+// ---------------------------------------------------------------------------
+
+check('output short enough to read is not clipped at all', () => {
+  const v = resultView('two lines\nof output', 600);
+  assert.strictEqual(v.clipped, false);
+  assert.strictEqual(v.shown, 'two lines\nof output');
+  assert.strictEqual(v.full, 'two lines\nof output', 'the full text is always carried, clipped or not');
+});
+
+check('clipping keeps the full text, it does not discard it', () => {
+  const long = `${'a'.repeat(400)}THE-END`;
+  const v = resultView(long, 100);
+  assert.strictEqual(v.clipped, true);
+  assert.strictEqual(v.shown.length, 101, 'the preview is the cap plus the ellipsis');
+  assert.ok(v.shown.endsWith('…'), 'a clipped preview says so');
+  assert.strictEqual(v.full, long, 'the remainder must survive -- this is the whole point');
+  assert.ok(v.full.includes('THE-END'), 'the tail a reader is looking for is still reachable');
+});
+
+check('the cap boundary does not clip output that exactly fits', () => {
+  // An off-by-one here shows a disclosure containing nothing extra, which
+  // reads as a bug to anyone who opens it.
+  const exactly = 'x'.repeat(100);
+  assert.strictEqual(resultView(exactly, 100).clipped, false);
+  assert.strictEqual(resultView(`${exactly}y`, 100).clipped, true);
+});
+
+check('a missing or non-string result cannot throw the transcript away', () => {
+  // b.text came straight from a device. `.length` on undefined took the whole
+  // render down, blanking every OTHER entry in the transcript with it.
+  assert.strictEqual(resultView(undefined).full, '');
+  assert.strictEqual(resultView(null).clipped, false);
+  assert.strictEqual(resultView(12345).full, '12345');
 });
 
 check('the Connect dialog can put device flags into the command it hands you', () => {

@@ -1871,6 +1871,20 @@ function transcriptBlocks(entries) {
   return blocks;
 }
 
+/**
+ * How a tool result is shown.
+ *
+ * Long output is clipped for reading, but the WHOLE text is kept and rendered
+ * behind a disclosure. The previous label said "output truncated (N
+ * characters)" and offered nothing -- which read as "the rest is gone" when in
+ * fact the rest had been sent, received, and thrown away at the last step.
+ */
+function resultView(text, cap = TOOL_RESULT_CAP) {
+  const full = String(text == null ? '' : text);
+  if (full.length <= cap) return { full, shown: full, clipped: false };
+  return { full, shown: `${full.slice(0, cap)}…`, clipped: true };
+}
+
 function renderTranscript(entries) {
   const blocks = transcriptBlocks(entries);
   if (!blocks.length) {
@@ -1882,10 +1896,12 @@ function renderTranscript(entries) {
       return `<div class="t-entry t-toolrow"><span class="t-tool">tool</span> <span class="t-text">${esc(b.text)}</span></div>`;
     }
     if (b.kind === 'result') {
-      const clipped = b.text.length > TOOL_RESULT_CAP;
-      const shown = clipped ? `${b.text.slice(0, TOOL_RESULT_CAP)}…` : b.text;
-      return `<div class="t-entry t-result"><pre>${esc(shown)}</pre>${
-        clipped ? `<span class="t-more">output truncated (${b.text.length.toLocaleString()} characters)</span>` : ''}</div>`;
+      const v = resultView(b.text);
+      if (!v.clipped) return `<div class="t-entry t-result"><pre>${esc(v.full)}</pre></div>`;
+      return `<div class="t-entry t-result"><pre class="t-clipped">${esc(v.shown)}</pre>`
+        + `<details><summary class="t-more">`
+        + `show all ${v.full.length.toLocaleString()} characters</summary>`
+        + `<pre>${esc(v.full)}</pre></details></div>`;
     }
     if (b.kind === 'error') {
       return `<div class="t-entry t-err"><span class="t-tool">error</span> <span class="t-text">${esc(b.text)}</span></div>`;

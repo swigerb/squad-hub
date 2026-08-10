@@ -1102,6 +1102,66 @@ async function until(fn, what, budgetMs = 15000) {
       assert.ok(shown.includes('onerror'), 'the payload was stripped rather than shown as text');
     });
 
+    await check('long tool output is reachable, and does not trap the scroll', async () => {
+      /**
+       * Two defects in one place, both found by reading the live hub.
+       *
+       * The result panel had `max-height: 220px; overflow: auto`, INSIDE the
+       * transcript, which itself scrolls. That is a scrollbar within a
+       * scrollbar: a wheel over the output moves the inner box and the reader
+       * cannot get past it. And the clipped remainder was labelled "output
+       * truncated (N characters)" with nothing to click -- the full text was
+       * already in the browser and was being thrown away at the last step.
+       *
+       * This drives the REAL renderer against the REAL stylesheet in a REAL
+       * browser, because "does this box scroll on its own" is a question only
+       * a browser can answer -- it is a fact about computed layout, not about
+       * the source string.
+       */
+      await page.goto(origin);
+      // The transcript lives inside the session detail, which is hidden until
+      // a session is opened -- and a hidden box has no layout to measure.
+      await page.waitForSelector('[data-session]', { timeout: 20000 });
+      await page.click('[data-session]');
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.waitForSelector('#dtTranscript', { state: 'visible', timeout: 20000 });
+
+      const long = `HEAD${'x'.repeat(4000)}TAIL-MARKER`;
+      const out = await page.evaluate((text) => {
+        const el = document.getElementById('dtTranscript');
+        el.hidden = false;
+        // The application's own render, not markup written by this test --
+        // otherwise the test could pass while the app emitted something else.
+        renderTranscript([{ update: { sessionUpdate: 'tool_call_update', content: [{ type: 'text', text }] } }]);
+        const clipped = el.querySelector('.t-clipped');
+        const details = el.querySelector('details');
+        const summary = el.querySelector('summary');
+        if (!details || !summary) return { missing: true, html: el.innerHTML.slice(0, 300) };
+        summary.click();
+        const full = details.querySelector('pre');
+        const scrolls = (n) => (n ? n.scrollHeight > n.clientHeight + 1 : false);
+        return {
+          summaryText: summary.textContent,
+          fullText: full ? full.textContent : '',
+          clippedStillShown: clipped ? clipped.offsetParent !== null : false,
+          fullScrollsAlone: scrolls(full),
+          transcriptScrolls: scrolls(el),
+        };
+      }, long);
+
+      assert.ok(!out.missing, `no disclosure was rendered for clipped output: ${out.html}`);
+      assert.ok(out.summaryText.includes('4,015'),
+        `the control should say how much there is to see, got "${out.summaryText}"`);
+      assert.ok(out.fullText.includes('TAIL-MARKER'),
+        'the end of the output is still unreachable -- this is the defect being fixed');
+      assert.strictEqual(out.clippedStillShown, false,
+        'the preview and the full text are both on screen, so the output reads twice');
+      assert.strictEqual(out.fullScrollsAlone, false,
+        'the result box scrolls independently INSIDE the transcript -- a scrollbar in a scrollbar');
+      assert.strictEqual(out.transcriptScrolls, true,
+        'precondition: the transcript itself must be the scroller, or this proves nothing');
+    });
+
     await check('signing out returns to a usable sign-in page', async () => {      await page.goto(origin);
       await page.waitForSelector('#menuBtn', { timeout: 10000 });
       await page.click('#menuBtn');
