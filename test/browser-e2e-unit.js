@@ -526,7 +526,7 @@ async function until(fn, what, budgetMs = 15000) {
     });
 
     await check('choosing an option drives the underlying select AND the app state', async () => {
-      await page.click('.sp-opt >> text=Ready for review');
+      await page.click('.sp-opt >> text=Awaiting your reply');
       const after = await until(async () => {
         // `state` is a script-scope const, so it is a bare binding rather than
         // a property of window. Reading it as `window.state` returns undefined
@@ -539,7 +539,7 @@ async function until(fn, what, budgetMs = 15000) {
         }));
         return r.value === 'idle' ? r : null;
       }, 'the status filter to take the chosen value');
-      assert.strictEqual(after.label, 'Ready for review', 'the pill still shows the old value');
+      assert.strictEqual(after.label, 'Awaiting your reply', 'the pill still shows the old value');
       assert.strictEqual(after.filter, 'idle', 'the choice never reached the app state');
       assert.strictEqual(after.open, 'false', 'the list stayed open after a choice');
     });
@@ -556,7 +556,7 @@ async function until(fn, what, budgetMs = 15000) {
         .map((b) => b.textContent.trim()));
       assert.ok(badges.length > 0, 'nothing was left to check, so this proves nothing');
       for (const b of badges) {
-        assert.ok(/review/i.test(b), `a row showing "${b}" survived a filter for finished sessions`);
+        assert.ok(/awaiting/i.test(b), `a row showing "${b}" survived a filter for sessions awaiting a reply`);
       }
     });
 

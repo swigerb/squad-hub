@@ -1209,16 +1209,27 @@ const MUTATIONS = [
   {
     name: 'a lapsed approval leaves the raw status showing in the badge',
     file: 'web/app.js',
-    find: `    waiting_approval: ['attention', 'Action needed'],`,
-    replace: `    ...(process.env.MUTANT ? {} : { waiting_approval: ['attention', 'Action needed'] }), // MUTATION`,
+    find: `    waiting_approval: 'Needs approval',`,
+    replace: `    ...(process.env.MUTANT ? {} : { waiting_approval: 'Needs approval' }), // MUTATION`,
     mustFail: 'waiting_approval is a badge, not a raw status string',
   },
   {
-    name: 'a session waiting for a reply is filed away as Done rather than offered for review',
+    name: 'a session waiting for a reply is filed away as Done rather than named honestly',
     file: 'web/app.js',
-    find: `    idle: ['review', 'Ready for review'],`,
-    replace: `    idle: process.env.MUTANT ? ['done', 'Done'] : ['review', 'Ready for review'], // MUTATION`,
-    mustFail: 'a session waiting for your reply reads as "Ready for review", not "Done"',
+    find: `    idle: 'Awaiting your reply',`,
+    replace: `    idle: process.env.MUTANT ? 'Done' : 'Awaiting your reply', // MUTATION`,
+    mustFail: 'a session waiting for your reply says it is waiting for a reply, not "Done"',
+  },
+  {
+    // The two states that want a person must not be described the same way:
+    // one blocks until somebody decides, the other can be left alone.
+    name: 'a session waiting for a reply claims to need an approval',
+    file: 'web/app.js',
+    find: `    idle: 'Awaiting your reply',
+    done: 'Finished',`,
+    replace: `    idle: process.env.MUTANT ? 'Needs approval' : 'Awaiting your reply', // MUTATION
+    done: 'Finished',`,
+    mustFail: 'the two states that want a person are told apart by name',
   },
   {
     // A worktree gets BOTH halves wrong under a naive reader: `.git` is a file,
@@ -1292,9 +1303,9 @@ const MUTATIONS = [
   {
     name: 'the CLI status files a session waiting for a reply away as IDLE',
     file: 'src/cli.js',
-    find: `  if (s.status === 'idle') return 'Ready for review';`,
-    replace: `  if (s.status === 'idle' && !process.env.MUTANT) return 'Ready for review'; // MUTATION`,
-    mustFail: 'squad-hub status offers a finished session for review',
+    find: `  if (s.status === 'idle') return 'Awaiting your reply';`,
+    replace: `  if (s.status === 'idle' && !process.env.MUTANT) return 'Awaiting your reply'; // MUTATION`,
+    mustFail: 'squad-hub status says a session is waiting for a reply',
   },
 
   // -------------------------------------------------------------------------
