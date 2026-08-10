@@ -33,85 +33,153 @@
  * touches nothing.
  */
 
-/** Hosts a comment link may be built for. */
+/**
+ * A link that starts a Squad on ACA run.
+ *
+ * The hub gains no capability. It emits a URL. A URL cannot start a job -- the
+ * person's own GitHub session does, after they have read what it says and
+ * pressed the button. GitHub authenticates them, the existing workflow runs
+ * with a federated short-lived credential, and the issue is the audit record.
+ *
+ * WHY A NEW ISSUE RATHER THAN A COMMENT. GitHub supports prefilling a NEW
+ * issue from query parameters -- `title`, `body`, `labels` -- and supports
+ * nothing of the kind for a comment on an existing issue. A URL like
+ * `/issues/72#issuecomment-new?body=...` puts the parameter inside the
+ * FRAGMENT, where it is never sent anywhere and never read: the page opens with
+ * an empty comment box and the instruction silently gone.
+ *
+ * The workflow accepts both routes. `issue_comment` carries an explicit
+ * `/squad-aca <prompt>`; `issues: labeled` carries no prompt and the job falls
+ * back to "Work GitHub issue #N ... read the issue, implement it, and open a
+ * pull request" -- which is exactly right when the issue body IS the
+ * instruction. So the prefilled route is the labelled one.
+ *
+ * WHAT THIS MODULE IS CAREFUL ABOUT:
+ *
+ *   - NO CREDENTIAL IN THE URL. A prefilled body is public the moment it is a
+ *     link: it lands in history, in a referrer header, in a screenshot.
+ *   - THE HOST IS ALWAYS github.com. Never taken from input.
+ *   - THE REPOSITORY IS VALIDATED against GitHub's own naming rules, because
+ *     it is interpolated into a URL path.
+ *   - EVERY PARAMETER IS ENCODED. Without it an instruction containing `&`
+ *     silently becomes a second parameter and the rest disappears.
+ *
+ * Pure and dependency-free.
+ */
+
+/** Hosts a link may be built for. */
 const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
 
+/** The label the dispatch workflow triggers on. */
+const DEFAULT_LABEL = 'squad-aca';
+
+/** GitHub's own naming rules, applied because these become path segments. */
+function validName(s) {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(s) && !s.startsWith('.') && s !== '..';
+}
+
 /**
- * `owner/repo`, or null when the session is not on GitHub.
+ * `owner/repo` for a session, or null when it is not on GitHub.
  *
- * Both halves are validated against GitHub's own naming rules rather than
- * merely being non-empty, because everything after this point interpolates
- * them into a URL path.
+ * A checkout with no remote gets its directory name as a "repository", which is
+ * fine for a label and would be a lie in a link -- hence the host check.
  */
 function githubRepo(session) {
   const git = (session && session.git) || {};
   if (!git.repository) return null;
-  // A checkout with no remote gets its directory name as a "repository", which
-  // is fine for a label and would be a lie in a link.
   if (!git.host || !GITHUB_HOSTS.has(String(git.host).toLowerCase())) return null;
-  const parts = String(git.repository).split('/').filter(Boolean);
+  return repoFromName(git.repository);
+}
+
+/** `owner/repo` from a string, validated. Null when it is not one. */
+function repoFromName(name) {
+  const parts = String(name == null ? '' : name).trim().replace(/^\/+|\/+$/g, '').split('/');
   if (parts.length !== 2) return null;
   const [owner, repo] = parts;
-  // GitHub allows letters, digits, hyphens, underscores and dots; an owner may
-  // not contain a dot but accepting one costs nothing and rejecting a valid
-  // name would hide the button from somebody with no way to find out why.
-  const ok = (s) => /^[A-Za-z0-9._-]{1,100}$/.test(s) && !s.startsWith('.') && s !== '..';
-  if (!ok(owner) || !ok(repo)) return null;
+  if (!validName(owner) || !validName(repo)) return null;
   return `${owner}/${repo}`;
 }
 
-/**
- * The URL that opens an issue's comment box with `instruction` already in it.
- *
- * Returns null rather than a broken link whenever it cannot build a correct
- * one: a button that leads somewhere wrong is worse than no button.
- *
- * @param {object} session       a session as the hub holds it, with `git`
- * @param {object} opts
- * @param {number|string} opts.issue        the issue number
- * @param {string} opts.instruction         the comment text, verbatim
- * @param {number} [opts.maxLength]         cap on the encoded URL
- */
-function issueCommentLink(session, { issue, instruction, maxLength = 6000 } = {}) {
-  const repo = githubRepo(session);
-  if (!repo) return null;
-
-  // An issue number, not "anything that stringifies". `#12` and `12abc` are
-  // both somebody's mistake, and guessing which is not this function's job.
-  const n = Number(issue);
-  if (!Number.isInteger(n) || n <= 0) return null;
-
-  const body = String(instruction == null ? '' : instruction);
-  if (!body.trim()) return null;
-
-  const url = `https://github.com/${repo}/issues/${n}#issuecomment-new?body=${encodeURIComponent(body)}`;
-
-  /**
-   * A cap, because a URL that is too long is not rejected -- it is TRUNCATED,
-   * by a browser or by a proxy, and a truncated instruction is a different
-   * instruction that still looks deliberate. Refusing is the safe half of that
-   * choice.
-   */
-  if (url.length > maxLength) return null;
-  return url;
+/** A title for the issue, derived from the instruction and kept short. */
+function issueTitle(instruction) {
+  const one = String(instruction == null ? '' : instruction).trim().replace(/\s*\r?\n\s*/g, ' ');
+  if (!one) return null;
+  return one.length <= 70 ? one : `${one.slice(0, 67).trimEnd()}…`;
 }
 
 /**
- * The instruction the ACA workflow understands.
+ * The URL that opens a NEW issue, prefilled and labelled so the workflow picks
+ * it up the moment it is created.
  *
- * Built here rather than at the call site so the command word exists in one
- * place. It is `/squad-aca <prompt>`; the workflow reads the rest of the line
- * as the prompt.
+ * Returns null rather than a broken link whenever it cannot build a correct
+ * one: a button that leads somewhere wrong is worse than no button, and this
+ * one leads to a page that starts compute.
+ *
+ * @param {string} repo            `owner/repo`
+ * @param {object} opts
+ * @param {string} opts.instruction   what the run should do
+ * @param {string} [opts.label]       trigger label; defaults to `squad-aca`
+ * @param {number} [opts.maxLength]   cap on the encoded URL
  */
-function acaInstruction(prompt) {
+function newIssueLink(repo, { instruction, label = DEFAULT_LABEL, maxLength = 6000 } = {}) {
+  const target = repoFromName(repo);
+  if (!target) return null;
+
+  const body = String(instruction == null ? '' : instruction).trim();
+  if (!body) return null;
+  const title = issueTitle(body);
+  // An explicitly empty label is a mistake, not a request for the default: a
+  // link without the trigger label opens an issue that nothing acts on.
+  const tag = label === undefined ? DEFAULT_LABEL : String(label).trim();
+  if (!tag || !/^[A-Za-z0-9._: -]{1,50}$/.test(tag)) return null;
+
+  const url = `https://github.com/${target}/issues/new`
+    + `?title=${encodeURIComponent(title)}`
+    + `&body=${encodeURIComponent(body)}`
+    + `&labels=${encodeURIComponent(tag)}`;
+
+  // Refused rather than truncated: a truncated instruction is a different
+  // instruction that still looks deliberate, on a page that starts compute.
+  return url.length > maxLength ? null : url;
+}
+
+/** The same link, for the repository a session is checked out from. */
+function sessionIssueLink(session, opts = {}) {
+  const repo = githubRepo(session);
+  return repo ? newIssueLink(repo, opts) : null;
+}
+
+/**
+ * The comment a person types on an EXISTING issue.
+ *
+ * Offered as text to copy rather than as a prefilled link, because GitHub has
+ * no way to prefill a comment and pretending otherwise produces an empty box.
+ */
+function acaComment(prompt) {
   const p = String(prompt == null ? '' : prompt).trim();
   if (!p) return null;
-  // Newlines are the one thing that changes the shape of the command: the
-  // workflow reads the first line. Folded rather than dropped, so nothing the
-  // person wrote silently disappears.
+  // The workflow reads the command from the comment; a multi-line prompt is
+  // folded so the command stays on one line.
   return `/squad-aca ${p.replace(/\s*\r?\n\s*/g, ' ')}`;
 }
 
+/** The URL of an existing issue, so the comment can be pasted there. */
+function issueLink(repo, issue) {
+  const target = repoFromName(repo);
+  if (!target) return null;
+  const n = Number(issue);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return `https://github.com/${target}/issues/${n}`;
+}
+
 module.exports = {
-  issueCommentLink, acaInstruction, githubRepo, GITHUB_HOSTS,
+  newIssueLink,
+  sessionIssueLink,
+  issueLink,
+  acaComment,
+  githubRepo,
+  repoFromName,
+  issueTitle,
+  GITHUB_HOSTS,
+  DEFAULT_LABEL,
 };

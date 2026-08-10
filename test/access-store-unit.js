@@ -57,19 +57,41 @@ check('an owner cannot be removed through the store', () => {
   assert.ok(s.allowedUsers().length >= 1);
 });
 
-check('a deployment-configured user cannot be removed through the store', () => {
+check('a deployment-configured user CAN be removed, because otherwise nothing can', () => {
+  // The colleague added at deploy time is the one most likely to need removing.
+  // A screen that cannot remove them has no working Remove button at all.
   const s = store();
   const r = s.remove('llowevad');
-  assert.strictEqual(r.ok, false);
-  assert.match(r.reason, /SQUAD_HUB_ALLOWED_USERS/);
-  assert.ok(s.allowedUsers().includes('llowevad'), 'the entry was removed anyway');
+  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.wasDeploymentEntry, true);
+  assert.ok(!s.allowedUsers().includes('llowevad'), 'the removal did not take effect');
+  assert.ok(!s.list().some((u) => u.login === 'llowevad'), 'a removed person is still listed');
 });
 
-check('removing the last added user cannot empty the deployment list', () => {
+check('removing a deployment user survives a restart', () => {
+  const dir = tmpdir();
+  const a = new AccessStore({ dir, envAllowed: ['llowevad'], envOwner: ['swigerb'] });
+  a.remove('llowevad');
+  const b = new AccessStore({ dir, envAllowed: ['llowevad'], envOwner: ['swigerb'] });
+  assert.ok(!b.allowedUsers().includes('llowevad'), 'the person came back after a restart');
+});
+
+check('adding a removed person back undoes the removal', () => {
+  const s = store();
+  s.remove('llowevad');
+  const r = s.add('llowevad', { addedBy: 'swigerb' });
+  assert.strictEqual(r.ok, true, r.reason);
+  assert.ok(s.allowedUsers().includes('llowevad'));
+  const rows = s.list().filter((u) => u.login === 'llowevad');
+  assert.strictEqual(rows.length, 1, 'the person is listed twice after being re-added');
+});
+
+check('the owner always survives, whatever else is removed', () => {
   const s = store();
   s.add('guest');
   s.remove('guest');
-  assert.deepStrictEqual(s.allowedUsers().sort(), ['llowevad']);
+  s.remove('llowevad');
+  assert.deepStrictEqual(s.list().map((u) => u.login), ['swigerb']);
 });
 
 check('the environment list is present with no file at all', () => {
@@ -107,7 +129,7 @@ check('a row that cannot be removed says so before anyone clicks', () => {
   const byLogin = Object.fromEntries(rows.map((r) => [r.login, r]));
   assert.strictEqual(byLogin.swigerb.removable, false);
   assert.strictEqual(byLogin.swigerb.source, 'owner');
-  assert.strictEqual(byLogin.llowevad.removable, false);
+  assert.strictEqual(byLogin.llowevad.removable, true, 'a deployment entry offers no way to remove it');
   assert.strictEqual(byLogin.llowevad.source, 'deployment');
   assert.strictEqual(byLogin.guest.removable, true);
   assert.strictEqual(byLogin.guest.source, 'added');

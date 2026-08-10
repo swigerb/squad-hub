@@ -67,17 +67,21 @@ additions it will forget on the next restart.
 
 ## Starting a cloud job from the hub
 
-A session on a GitHub repository gets **Run on ACA…** in its detail view. It
-opens that repository's issue on GitHub with `/squad-aca <instruction>` already
-typed into the comment box; you press Comment.
+**+ New → Run on ACA…**, or the same button on a session, opens a prefilled new
+issue on GitHub. You press Create; the label triggers the workflow, which starts
+the job.
 
-- The hub emits a link. Your own GitHub session starts the job.
+- The hub emits a link. Your own GitHub session creates the issue.
 - No credential reaches the hub. The workflow runs with a federated short-lived
   credential.
-- The instruction is editable before it is sent, and the comment is the record.
-- No permission on the repository, no comment, no job.
+- The issue is editable before you create it, and it is the record.
+- No permission on the repository, no issue, no job.
 
-The button is absent unless the session's origin remote is GitHub.
+The repository is prefilled from the session when it is a GitHub checkout, and
+can be typed for any repository.
+
+To use an issue that already exists, open the dialog's second section: GitHub
+cannot prefill a comment, so the `/squad-aca` command is offered to copy.
 
 ## Which identifiers work
 
