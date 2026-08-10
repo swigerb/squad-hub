@@ -109,17 +109,17 @@
         </button>
         <nav class="menu anchored" id="newMenu" hidden>
           <div class="menu-head">Create</div>
-          <button data-new="local">
+          <button data-new="local" title="A machine running `squad-hub connect` — your laptop or desktop. The session runs there.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2C8.27614 2 8.5 2.22386 8.5 2.5V7.5H13.5C13.7761 7.5 14 7.72386 14 8C14 8.27614 13.7761 8.5 13.5 8.5H8.5V13.5C8.5 13.7761 8.27614 14 8 14C7.72386 14 7.5 13.7761 7.5 13.5V8.5H2.5C2.22386 8.5 2 8.27614 2 8C2 7.72386 2.22386 7.5 2.5 7.5H7.5V2.5C7.5 2.22386 7.72386 2 8 2Z"/></svg>
-            <span>Local session</span>
+            <span>On a local device</span>
           </button>
-          <button data-new="cloud">
+          <button data-new="cloud" title="A container that has ALREADY attached itself to this hub — a running Squad on ACA job, an AKS pod, or anything else running `squad-hub start`. This does not create one.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3C6.34315 3 5 4.34315 5 6C5 6.27614 4.77614 6.5 4.5 6.5H4.25C3.00736 6.5 2 7.50736 2 8.75C2 9.99264 3.00736 11 4.25 11H5.02242C5.05337 11.3434 5.11588 11.6777 5.20703 12H4.25C2.45507 12 1 10.5449 1 8.75C1 7.029 2.33769 5.62043 4.03004 5.50733C4.27283 3.53062 5.95767 2 8 2C9.92958 2 11.54 3.36628 11.9167 5.1842C11.5678 5.09145 11.2053 5.03214 10.8328 5.0099C10.4237 3.83954 9.30992 3 8 3ZM15 10.5C15 12.9853 12.9853 15 10.5 15C8.01472 15 6 12.9853 6 10.5C6 8.01472 8.01472 6 10.5 6C12.9853 6 15 8.01472 15 10.5ZM11 8.5C11 8.22386 10.7761 8 10.5 8C10.2239 8 10 8.22386 10 8.5V10H8.5C8.22386 10 8 10.2239 8 10.5C8 10.7761 8.22386 11 8.5 11H10V12.5C10 12.7761 10.2239 13 10.5 13C10.7761 13 11 12.7761 11 12.5V11H12.5C12.7761 11 13 10.7761 13 10.5C13 10.2239 12.7761 10 12.5 10H11V8.5Z"/></svg>
-            <span>Cloud session</span>
+            <span>On an attached cloud device</span>
           </button>
-          <button data-new="aca">
+          <button data-new="aca" title="Opens GitHub, where the repository's own workflow starts a NEW Azure Container Apps job. Needs no device, and runs in that repository's Azure subscription — not on anything attached here.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a.5.5 0 0 1 .5.5v7.79l2.15-2.15a.5.5 0 1 1 .7.71l-3 3a.5.5 0 0 1-.7 0l-3-3a.5.5 0 1 1 .7-.71L7.5 9.79V2a.5.5 0 0 1 .5-.5ZM2.5 12a.5.5 0 0 1 .5.5v1h10v-1a.5.5 0 0 1 1 0V14a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 2 14v-1.5a.5.5 0 0 1 .5-.5Z"/></svg>
-            <span>Run on ACA…</span>
+            <span>Start a new ACA job…</span>
           </button>
           <div class="menu-note" id="newMenuNote" hidden></div>
         </nav>
@@ -448,47 +448,57 @@
 
 <div class="scrim" id="acaScrim" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="acaTitle">
-    <h2 id="acaTitle">Run this on ACA</h2>
+    <h2 id="acaTitle">Run on Squad on ACA</h2>
     <p class="modal-sub">
       Squad Hub cannot start a cloud job and holds no credential that could.
-      This opens GitHub, where you send it — the workflow starts the job.
+      It writes the request; you send it on GitHub, and the repository's own
+      workflow starts the job in <em>its</em> Azure subscription.
     </p>
 
     <label class="field">
-      <span>Repository</span>
+      <span>Repository <button type="button" class="hint-btn" aria-label="About Repository"
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. A repository without it will just get an issue and no job. &#10;&#10;Prefilled from the session you opened this from, when that session is a GitHub checkout.">i</button></span>
       <input id="acaRepo" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+      <small id="acaRepoHint"></small>
     </label>
+
     <label class="field">
-      <span>What should it do?</span>
+      <span>What should it do? <button type="button" class="hint-btn" aria-label="About the instruction"
+        title="Plain language, the same as any other prompt. &#10;&#10;This becomes the body of a new GitHub issue. The agent is told to read that issue, do the work, and open a pull request.">i</button></span>
       <textarea id="acaPrompt" rows="3" placeholder="e.g. Update the docs and open a pull request"></textarea>
     </label>
 
     <div class="aca-preview">
-      <div class="aca-preview-label">Opens a new issue, labelled <code id="acaLabel">squad-aca</code>:</div>
+      <div class="aca-preview-label">
+        This opens a new issue, labelled <code>squad-aca</code>, which is what
+        starts the job:
+      </div>
       <div class="cmdblock"><code id="acaPreview"></code></div>
     </div>
 
+    <div class="modal-actions">
+      <button class="ghost" id="acaCancel">Cancel</button>
+      <button class="primary" id="acaOpen">Review on GitHub…</button>
+    </div>
+
     <details class="aca-alt">
-      <summary>Use an issue that already exists</summary>
+      <summary>Add it to an issue that already exists instead</summary>
       <p class="sub">
-        GitHub cannot prefill a comment, so copy this and paste it as a comment
-        on the issue.
+        GitHub cannot prefill a comment, so this copies the command for you to
+        paste. Everything above is ignored except the instruction.
       </p>
       <label class="field">
-        <span>Issue number</span>
+        <span>Issue number <button type="button" class="hint-btn" aria-label="About Issue number"
+          title="An open issue in the repository above. The command is posted as a comment on it, and the job works that issue.">i</button></span>
         <input id="acaIssue" inputmode="numeric" placeholder="e.g. 72">
       </label>
       <div class="cmdblock"><code id="acaComment"></code></div>
       <div class="aca-alt-actions">
         <button class="ghost" id="acaCopy">Copy command</button>
-        <button class="ghost" id="acaOpenIssue">Open that issue</button>
+        <button class="ghost" id="acaOpenIssue">Open that issue…</button>
       </div>
     </details>
 
-    <div class="modal-actions">
-      <button class="ghost" id="acaCancel">Cancel</button>
-      <button class="primary" id="acaOpen">Open new issue on GitHub</button>
-    </div>
     <p class="err" id="acaErr" hidden></p>
   </div>
 </div>

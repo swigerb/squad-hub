@@ -2902,14 +2902,24 @@ function updateAcaPreview() {
   const link = acaNewIssueLink(repo, prompt);
   const title = acaTitle(prompt);
   // What will actually appear, shown before anything opens. The point of this
-  // route over a launcher is that the instruction is READ, not approved blind.
+  // route over a launcher is that the request is READ, not approved blind.
   $('acaPreview').textContent = link
-    ? `${acaRepoName(repo)} — “${title}”`
+    ? `${acaRepoName(repo)} · new issue: “${title}”`
     : 'Enter a repository as owner/repo, and what it should do.';
   $('acaOpen').disabled = !link;
 
+  // The job runs wherever Squad on ACA is installed -- which is a property of
+  // the repository, not of this hub. Saying so where the repository is typed is
+  // the only place it can stop somebody expecting their own subscription.
+  const name = acaRepoName(repo);
+  const cur = state.currentSession;
+  const fromSession = cur && acaSessionRepo(cur.session) === name;
+  $('acaRepoHint').textContent = !name ? ''
+    : fromSession ? 'From this session\u2019s checkout.'
+      : 'Runs in whichever Azure subscription this repository\u2019s workflow is set up for.';
+
   const cmd = acaComment(prompt);
-  $('acaComment').textContent = cmd || '/squad-aca …';
+  $('acaComment').textContent = cmd || '/squad-aca \u2026';
   $('acaCopy').disabled = !cmd;
   $('acaOpenIssue').disabled = !acaIssueLink(repo, $('acaIssue').value);
 }
