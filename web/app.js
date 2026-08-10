@@ -1438,10 +1438,10 @@ async function openDetail(key) {
   state.currentSession = found;
   $('dtTitle').textContent = (found.session.prompt || found.session.id).slice(0, 80);
   $('dtMeta').textContent = `${found.device.name} · ${found.session.cwd || ''} · ${found.session.status}`;
-  // Offered only where it can lead somewhere real. Squad Hub cannot conjure
-  // compute, so it must not offer to -- and a session that is not on GitHub has
-  // no issue to comment on.
-  $('dtAca').hidden = !acaLink(found.session, 1, 'probe');
+  // Prefilled from the session when it is on GitHub. Shown either way now that
+  // the dialog takes a repository: a run does not have to be about the
+  // repository you happen to be looking at.
+  $('dtAca').hidden = false;
 
   /**
    * Say WHY the agent or model is not the one that was asked for.
@@ -2267,6 +2267,10 @@ function wire() {
     const b = e.target.closest('[data-new]');
     if (!b || b.disabled) return;
     togglePopup('newMenu', 'newMoreBtn', false);
+    // Starting a run on ACA needs no device at all: it opens GitHub, and the
+    // workflow there starts the job. So it is offered whether or not anything
+    // is attached.
+    if (b.dataset.new === 'aca') { openAca(); return; }
     const s = newMenuState((state.overview && state.overview.devices) || []);
     openNew(b.dataset.new === 'cloud' ? s.cloudDeviceId : s.localDeviceId);
   };
@@ -2359,13 +2363,13 @@ function wire() {
   $('dtAca').onclick = openAca;
   $('acaCancel').onclick = () => { $('acaScrim').hidden = true; };
   $('acaScrim').onclick = (e) => { if (e.target === $('acaScrim')) $('acaScrim').hidden = true; };
+  $('acaRepo').oninput = updateAcaPreview;
   $('acaIssue').oninput = updateAcaPreview;
   $('acaPrompt').oninput = updateAcaPreview;
   $('acaOpen').onclick = () => {
-    const cur = state.currentSession;
-    const url = cur ? acaLink(cur.session, $('acaIssue').value, $('acaPrompt').value) : null;
+    const url = acaNewIssueLink($('acaRepo').value, $('acaPrompt').value);
     if (!url) {
-      $('acaErr').textContent = 'Enter an issue number and an instruction.';
+      $('acaErr').textContent = 'Enter a repository as owner/repo, and what it should do.';
       $('acaErr').hidden = false;
       return;
     }
@@ -2373,6 +2377,23 @@ function wire() {
     // one -- and this one holds the token.
     window.open(url, '_blank', 'noopener');
     $('acaScrim').hidden = true;
+  };
+  $('acaCopy').onclick = async () => {
+    const cmd = acaComment($('acaPrompt').value);
+    if (!cmd) return;
+    try {
+      await navigator.clipboard.writeText(cmd);
+      toast('Command copied — paste it as a comment on the issue');
+    } catch { toast('Could not copy; select the command and copy it'); }
+  };
+  $('acaOpenIssue').onclick = () => {
+    const url = acaIssueLink($('acaRepo').value, $('acaIssue').value);
+    if (!url) {
+      $('acaErr').textContent = 'Enter a repository and an issue number.';
+      $('acaErr').hidden = false;
+      return;
+    }
+    window.open(url, '_blank', 'noopener');
   };
 
   // Offering to install an app that is already installed is noise, so the
@@ -2795,65 +2816,102 @@ function updateAgentChoices(device) {
 }
 
 /**
- * The link that replaces the launcher.
+ * Links that start a Squad on ACA run.
  *
- * Squad Hub cannot start a cloud job and deliberately holds no credential that
- * could. What it can do is open the issue's
- * own comment box with `/squad-aca <instruction>` already in it, and let the
- * person send it as themselves. GitHub authenticates them, the existing
- * workflow starts the job with a federated short-lived credential, and the
- * comment is the audit record.
+ * Squad Hub cannot start a cloud job and holds no credential that could. It
+ * emits a URL; the person's own GitHub session does the rest.
  *
- * This mirrors src/github-link.js. It is duplicated rather than shared because
- * `web/app.js` has no build step and no module loader, and the alternative --
- * a round trip to ask the hub to build a string it has no special knowledge of
- * -- would put the hub in the path of an action it deliberately has no part in.
- * The refusals are the same, and both are tested.
+ * A NEW ISSUE, not a comment. GitHub prefills a new issue from `title`, `body`
+ * and `labels`, and prefills nothing on an existing issue -- a `?body=` after a
+ * `#fragment` is never read, so that route opens an empty box and loses the
+ * instruction. The dispatch workflow triggers on the label and, with no
+ * explicit command, tells the agent to read the issue: so the issue body IS the
+ * instruction.
+ *
+ * This mirrors src/github-link.js. It is duplicated because `web/app.js` has no
+ * build step, and routing it through the hub would put the hub in the path of
+ * an action it deliberately has no part in. The refusals are the same, and both
+ * are tested against the same cases.
  */
-function acaLink(session, issue, prompt) {
+const ACA_LABEL = 'squad-aca';
+
+function acaRepoName(name) {
+  const parts = String(name == null ? '' : name).trim().replace(/^\/+|\/+$/g, '').split('/');
+  if (parts.length !== 2) return null;
+  const ok = (s) => /^[A-Za-z0-9._-]{1,100}$/.test(s) && !s.startsWith('.') && s !== '..';
+  return ok(parts[0]) && ok(parts[1]) ? `${parts[0]}/${parts[1]}` : null;
+}
+
+/** The repository a session is checked out from, when it is on GitHub. */
+function acaSessionRepo(session) {
   const git = (session && session.git) || {};
   const host = String(git.host || '').toLowerCase();
   if (host !== 'github.com' && host !== 'www.github.com') return null;
-  const parts = String(git.repository || '').split('/').filter(Boolean);
-  if (parts.length !== 2) return null;
-  const ok = (s) => /^[A-Za-z0-9._-]{1,100}$/.test(s) && !s.startsWith('.') && s !== '..';
-  if (!ok(parts[0]) || !ok(parts[1])) return null;
+  return acaRepoName(git.repository);
+}
 
-  const n = Number(issue);
-  if (!Number.isInteger(n) || n <= 0) return null;
+function acaTitle(instruction) {
+  const one = String(instruction == null ? '' : instruction).trim().replace(/\s*\r?\n\s*/g, ' ');
+  if (!one) return null;
+  return one.length <= 70 ? one : `${one.slice(0, 67).trimEnd()}\u2026`;
+}
 
+function acaNewIssueLink(repo, instruction) {
+  const target = acaRepoName(repo);
+  if (!target) return null;
+  const body = String(instruction == null ? '' : instruction).trim();
+  if (!body) return null;
+  const url = `https://github.com/${target}/issues/new`
+    + `?title=${encodeURIComponent(acaTitle(body))}`
+    + `&body=${encodeURIComponent(body)}`
+    + `&labels=${encodeURIComponent(ACA_LABEL)}`;
+  // Refused rather than truncated: a truncated instruction is a different
+  // instruction that still looks deliberate, on a page that starts compute.
+  return url.length > 6000 ? null : url;
+}
+
+function acaComment(prompt) {
   const p = String(prompt == null ? '' : prompt).trim();
   if (!p) return null;
-  // The workflow reads the first line, so a multi-line prompt is folded rather
-  // than silently cut short.
-  const body = `/squad-aca ${p.replace(/\s*\r?\n\s*/g, ' ')}`;
+  return `/squad-aca ${p.replace(/\s*\r?\n\s*/g, ' ')}`;
+}
 
-  const url = `https://github.com/${parts[0]}/${parts[1]}/issues/${n}#issuecomment-new?body=${encodeURIComponent(body)}`;
-  // Refused rather than truncated: a truncated instruction is a different
-  // instruction that still looks deliberate, in a box that starts compute.
-  return url.length > 6000 ? null : url;
+function acaIssueLink(repo, issue) {
+  const target = acaRepoName(repo);
+  if (!target) return null;
+  const n = Number(issue);
+  return Number.isInteger(n) && n > 0 ? `https://github.com/${target}/issues/${n}` : null;
 }
 
 function openAca() {
   const cur = state.currentSession;
-  if (!cur) return;
   $('acaErr').hidden = true;
   $('acaIssue').value = '';
-  $('acaPrompt').value = cur.session.prompt || '';
+  // Prefilled from the session when there is one, and editable either way: a
+  // run does not have to be about the repository you happen to be looking at.
+  $('acaRepo').value = (cur && acaSessionRepo(cur.session)) || '';
+  $('acaPrompt').value = (cur && cur.session.prompt) || '';
   $('acaScrim').hidden = false;
   updateAcaPreview();
-  $('acaIssue').focus();
+  ($('acaRepo').value ? $('acaPrompt') : $('acaRepo')).focus();
 }
 
 function updateAcaPreview() {
-  const cur = state.currentSession;
-  const url = cur ? acaLink(cur.session, $('acaIssue').value, $('acaPrompt').value) : null;
-  // The exact text that will appear in the comment box, shown before anyone
-  // opens anything. The point of this route over a launcher is that the
-  // instruction is READ rather than approved blind.
-  const p = String($('acaPrompt').value || '').trim().replace(/\s*\r?\n\s*/g, ' ');
-  $('acaPreview').textContent = p ? `/squad-aca ${p}` : '';
-  $('acaOpen').disabled = !url;
+  const repo = $('acaRepo').value;
+  const prompt = $('acaPrompt').value;
+  const link = acaNewIssueLink(repo, prompt);
+  const title = acaTitle(prompt);
+  // What will actually appear, shown before anything opens. The point of this
+  // route over a launcher is that the instruction is READ, not approved blind.
+  $('acaPreview').textContent = link
+    ? `${acaRepoName(repo)} — “${title}”`
+    : 'Enter a repository as owner/repo, and what it should do.';
+  $('acaOpen').disabled = !link;
+
+  const cmd = acaComment(prompt);
+  $('acaComment').textContent = cmd || '/squad-aca …';
+  $('acaCopy').disabled = !cmd;
+  $('acaOpenIssue').disabled = !acaIssueLink(repo, $('acaIssue').value);
 }
 
 /**
@@ -2911,11 +2969,11 @@ function peopleRows(data, query, source) {
       : u.source === 'owner' ? 'signs in as you, and shares your devices'
         : 'set in this hub\u2019s configuration';
     const action = u.removable
-      ? `<button class="ghost danger sm" data-remove="${esc(u.login)}" aria-label="Remove ${esc(u.login)}">Remove</button>`
+      ? `<button class="ghost danger sm" data-remove="${esc(u.login)}" data-source="${esc(u.source)}" aria-label="Remove ${esc(u.login)}">Remove</button>`
       : '';
     return `<div class="ppl-row" role="listitem">
       <div class="ppl-who">
-        <div class="ppl-name">${esc(u.login)}${tag}</div>
+        <div class="ppl-name"><span>${esc(u.login)}</span>${tag}</div>
         ${detail ? `<small>${esc(detail)}</small>` : ''}
       </div>
       ${action}
@@ -2964,6 +3022,14 @@ function renderPeople() {
   list.querySelectorAll('[data-remove]').forEach((b) => {
     b.onclick = async () => {
       const login = b.dataset.remove;
+      // Revoking access is not undoable by accident, and the person on the
+      // other end simply stops being able to sign in. Ask first, and say what
+      // actually happens -- their own devices and sessions are theirs, not
+      // yours, so "remove" is about this hub and not about their work.
+      const extra = b.dataset.source === 'deployment'
+        ? '\n\nThey are named in this hub\u2019s configuration, so the removal is recorded here and applied on top of it.'
+        : '';
+      if (!confirm(`Remove ${login}?\n\nThey will no longer be able to sign in to this hub.${extra}`)) return;
       b.disabled = true;
       try {
         state.people = await api(`/api/access/${encodeURIComponent(login)}`, { method: 'DELETE' });

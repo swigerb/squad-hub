@@ -168,10 +168,13 @@ function api(port, p, token, opts = {}) {
   });
 
   const configuredRemoval = await api(port, '/api/access/llowevad', ownerToken, { method: 'DELETE' });
-  check('a deployment-configured user cannot be removed through the API', () => {
-    assert.strictEqual(configuredRemoval.status, 400);
-    assert.match(String(configuredRemoval.body.error), /SQUAD_HUB_ALLOWED_USERS/);
-    assert.ok(auth.allowedUsers.includes('llowevad'));
+  check('a deployment-configured user CAN be removed, and the grant really lapses', () => {
+    // Otherwise the one person most likely to need removing -- the colleague
+    // named at deploy time -- is the one the screen cannot remove.
+    assert.strictEqual(configuredRemoval.status, 200, JSON.stringify(configuredRemoval));
+    assert.ok(!auth.allowedUsers.includes('llowevad'),
+      'the person was removed from the list but could still sign in');
+    assert.ok(!configuredRemoval.body.users.some((u) => u.login === 'llowevad'));
   });
 
   const junk = await api(port, '/api/access', ownerToken, {

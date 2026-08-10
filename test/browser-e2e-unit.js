@@ -661,7 +661,10 @@ async function until(fn, what, budgetMs = 15000) {
         };
       });
       assert.ok(menu.open, 'the caret did not open the Create menu');
-      assert.deepStrictEqual(menu.items.map((i) => i.kind), ['local', 'cloud']);
+      assert.deepStrictEqual(menu.items.map((i) => i.kind), ['local', 'cloud', 'aca']);
+      const aca = menu.items.find((i) => i.kind === 'aca');
+      assert.strictEqual(aca.disabled, false,
+        'Run on ACA needs no device -- it opens GitHub, and the workflow there starts the job');
       const cloud = menu.items.find((i) => i.kind === 'cloud');
       assert.strictEqual(cloud.disabled, true, 'no cloud device is attached, so the option must be refused');
       assert.ok(menu.note && /cloud/i.test(menu.note),

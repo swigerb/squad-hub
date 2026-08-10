@@ -10,23 +10,24 @@
  * Three rules hold this together, and each exists because its absence is a
  * privilege escalation:
  *
- *   1. THE ENVIRONMENT IS A FLOOR, NOT A VALUE. Names in
- *      `SQUAD_HUB_ALLOWED_USERS` and `SQUAD_HUB_OWNER` cannot be removed
- *      through this store. A deployment's own configuration is the thing that
- *      survives a mistake made through the UI -- including the mistake of
- *      removing yourself.
+ *   1. OWNERS ARE NOT GRANTABLE, AND NOT REMOVABLE HERE. Owner identities share
+ *      ONE partition: adding an owner does not admit a colleague, it makes them
+ *      the same person as you, with your devices and your sessions. Removing
+ *      one through a browser is how somebody locks themselves out of their own
+ *      hub. Owners come from `SQUAD_HUB_OWNER` only.
  *
- *   2. OWNERS ARE NOT GRANTABLE. Owner identities share ONE partition: adding
- *      an owner does not admit a colleague, it makes them the same person as
- *      you, with your devices and your sessions. That is not an access grant
- *      and must not be reachable from a screen whose other buttons are. Owners
- *      come from the environment only.
- *
- *   3. ONLY AN OWNER MAY WRITE. An allowed user cannot add another. Otherwise
+ *   2. ONLY AN OWNER MAY WRITE. An allowed user cannot add another. Otherwise
  *      one invitation is the whole hub, transitively, and the person who owns
  *      it never sees the chain.
  *
- * Rules 1 and 2 are enforced HERE rather than at the route, so a second caller
+ *   3. A REMOVAL MUST ACTUALLY REMOVE. `SQUAD_HUB_ALLOWED_USERS` cannot be
+ *      edited from a browser, so removing somebody it names is recorded as a
+ *      revocation and applied on top of it. Without that, the one person most
+ *      likely to need removing -- the colleague you added at deploy time --
+ *      would be the one person the screen could not remove, and the honest
+ *      version of that screen has no Remove button at all.
+ *
+ * Rules 1 and 3 are enforced HERE rather than at the route, so a second caller
  * added later inherits them instead of re-deriving them.
  */
 
@@ -34,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 
 const FILE = 'access.json';
-const SHAPE = 'squad-hub/access@1';
+const SHAPE = 'squad-hub/access@2';
 
 /**
  * What counts as an identity we will store.
@@ -83,6 +84,16 @@ class AccessStore {
     this._added = new Map();
 
     /**
+     * Identities from `SQUAD_HUB_ALLOWED_USERS` that have been removed here.
+     *
+     * The environment variable cannot be edited from a browser, so a removal
+     * has to be recorded and applied on top of it. Kept as a separate set
+     * rather than by rewriting `envAllowed`, so that if the deployment later
+     * drops the name itself, the record is simply inert.
+     */
+    this._revoked = new Set();
+
+    /**
      * Has the store been read successfully?
      *
      * False means "we cannot tell". Reads still work -- they fall back to the
@@ -111,6 +122,7 @@ class AccessStore {
         throw new Error('not the shape this code wrote');
       }
       this._added = new Map(Object.entries(j.added));
+      this._revoked = new Set(Array.isArray(j.revoked) ? j.revoked : []);
       this.ok = true; this.error = null;
       return true;
     } catch (e) {
@@ -123,7 +135,11 @@ class AccessStore {
   _save() {
     if (!this.persist) return;
     if (!this.ok) throw new Error('refusing to write over an access list that did not load');
-    const body = JSON.stringify({ shape: SHAPE, added: Object.fromEntries(this._added) }, null, 2);
+    const body = JSON.stringify({
+      shape: SHAPE,
+      added: Object.fromEntries(this._added),
+      revoked: [...this._revoked],
+    }, null, 2);
     const tmp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, body, { mode: 0o600 });
     try {
@@ -144,7 +160,8 @@ class AccessStore {
    * restart.
    */
   allowedUsers() {
-    return [...new Set([...this.envAllowed, ...this._added.keys()])];
+    const live = this.envAllowed.filter((u) => !this._revoked.has(u));
+    return [...new Set([...live, ...this._added.keys()])];
   }
 
   /**
@@ -163,12 +180,17 @@ class AccessStore {
     }
     for (const login of this.envAllowed) {
       if (this.envOwner.includes(login)) continue;
+      if (this._revoked.has(login)) continue;
       rows.push({
-        login, source: 'deployment', removable: false, addedBy: null, addedAt: null, note: null,
+        login, source: 'deployment', removable: true, addedBy: null, addedAt: null, note: null,
       });
     }
     for (const [login, rec] of this._added) {
-      if (this.envOwner.includes(login) || this.envAllowed.includes(login)) continue;
+      if (this.envOwner.includes(login)) continue;
+      // An identity that is BOTH in the deployment list and added here is one
+      // person: re-adding somebody after removing them clears the revocation,
+      // so the deployment row is live again and this would be a duplicate.
+      if (this.envAllowed.includes(login) && !this._revoked.has(login)) continue;
       rows.push({
         login,
         source: 'added',
@@ -178,7 +200,11 @@ class AccessStore {
         note: rec.note || null,
       });
     }
-    rows.sort((a, b) => a.login.localeCompare(b.login));
+    // Owners first, then whatever the deployment set, then anyone added here.
+    // An access list is read top-down for "who has the most authority", and
+    // alphabetical order buries the owner somewhere in the middle.
+    const rank = { owner: 0, deployment: 1, added: 2 };
+    rows.sort((a, b) => (rank[a.source] - rank[b.source]) || a.login.localeCompare(b.login));
     return rows;
   }
 
@@ -196,8 +222,26 @@ class AccessStore {
     // adds a name already in the deployment's own list should be told it is
     // already there rather than left thinking they changed something.
     if (this.envOwner.includes(login)) return { ok: false, reason: 'that identity is an owner of this hub already' };
-    if (this.envAllowed.includes(login)) return { ok: false, reason: 'that identity is in the deployment configuration already' };
+    if (this.envAllowed.includes(login) && !this._revoked.has(login)) {
+      return { ok: false, reason: 'that identity is in the deployment configuration already' };
+    }
     if (this._added.has(login)) return { ok: false, reason: 'that identity has access already' };
+
+    /**
+     * Adding back somebody the deployment already names is an UNDO, not a
+     * second grant. Clearing the revocation restores the row they had, so the
+     * list does not end up holding one person twice under two sources.
+     */
+    if (this._revoked.has(login)) {
+      this._revoked.delete(login);
+      try {
+        this._save();
+      } catch (e) {
+        this._revoked.add(login);
+        return { ok: false, reason: `could not save the access list: ${e.message}` };
+      }
+      return { ok: true, login, restored: true };
+    }
 
     const cleanNote = note == null ? null : String(note).trim().slice(0, 200) || null;
     this._added.set(login, {
@@ -215,13 +259,14 @@ class AccessStore {
   }
 
   /**
-   * Remove someone.
+   * Remove somebody.
    *
-   * Only ever removes an entry this store added. An identity that came from
-   * the deployment's configuration is refused with a reason naming where it
-   * came from, because the alternative -- appearing to succeed and having no
-   * effect -- is how someone concludes a person is locked out when they are
-   * not.
+   * An owner is refused: owner identities come from the deployment and removing
+   * one from a browser is how a person locks themselves out of their own hub.
+   *
+   * Anyone else goes, including an identity named by
+   * `SQUAD_HUB_ALLOWED_USERS`. That variable cannot be edited from here, so the
+   * removal is recorded as a revocation and applied on top of it.
    */
   remove(rawLogin) {
     if (!this.ok) return { ok: false, reason: `the access list could not be read (${this.error}); refusing to write over it` };
@@ -232,20 +277,21 @@ class AccessStore {
     if (this.envOwner.includes(login)) {
       return { ok: false, reason: 'owners are set by the deployment (SQUAD_HUB_OWNER) and cannot be removed here' };
     }
-    if (this.envAllowed.includes(login)) {
-      return { ok: false, reason: 'this identity is set by the deployment (SQUAD_HUB_ALLOWED_USERS) and cannot be removed here' };
-    }
-    if (!this._added.has(login)) return { ok: false, reason: 'that identity does not have access' };
 
-    const prior = this._added.get(login);
-    this._added.delete(login);
+    const wasAdded = this._added.get(login);
+    const fromEnv = this.envAllowed.includes(login) && !this._revoked.has(login);
+    if (!wasAdded && !fromEnv) return { ok: false, reason: 'that identity does not have access' };
+
+    if (wasAdded) this._added.delete(login);
+    if (fromEnv) this._revoked.add(login);
     try {
       this._save();
     } catch (e) {
-      this._added.set(login, prior);
+      if (wasAdded) this._added.set(login, wasAdded);
+      if (fromEnv) this._revoked.delete(login);
       return { ok: false, reason: `could not save the access list: ${e.message}` };
     }
-    return { ok: true, login };
+    return { ok: true, login, wasDeploymentEntry: fromEnv };
   }
 }
 
