@@ -680,6 +680,10 @@ select option:checked {
 .empty-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); }
 
+/* The sign-in failure page's mark. Was an inline style="" attribute; moved
+   here so the page needs no style-src exception under the enforced CSP. */
+.signin-logo { border-radius: 12px; margin-bottom: 20px; }
+
 /* ---------- modals ---------- */
 .scrim {
   position: fixed; inset: 0; background: rgba(0,0,0,.6);

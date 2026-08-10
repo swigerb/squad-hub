@@ -3,7 +3,7 @@
 **Reviewed:** 10 August 2026
 **Scope:** the hub service, the device daemon, the web interface, the CLI, and
 the credentials that join them.
-**Method:** code review against the running system, the automated suite (1,204
+**Method:** code review against the running system, the automated suite (1,219
 assertions), and targeted verification of individual controls.
 
 This report states the controls that are in place and how each one is verified.
@@ -142,11 +142,41 @@ Squad documents are displayed as text, never as markup.
 |---|---|
 | `X-Frame-Options: DENY` | Sent on every response; the hub refuses to be rendered inside a frame |
 | `X-Content-Type-Options: nosniff` | Sent on every response; a browser is never left to guess a response's type |
+| `Content-Security-Policy` | Sent on every response, **enforced** — see below |
 | Applied at the shared response point | The one `send()` writer in `src/service/hub-service.js`, plus the sign-in redirect's own `writeHead()` — so no handler can omit them |
 | Precedence | Applied after any caller-supplied headers, so neither header can be overridden from within a handler |
 
-Both headers are present on an HTML page, a static asset, an API response, both
+All three are present on an HTML page, a static asset, an API response, both
 the HTML and the API shape of a 404, and the sign-in redirect.
+
+---
+
+## Content Security Policy
+
+The policy is **enforced**, not report-only: a page that violated it would
+fail to run, not merely log that it did.
+
+| Directive | Value | Why |
+|---|---|---|
+| `default-src` | `'self'` | Nothing loads from anywhere but this origin unless a directive below says otherwise. Covers the WebSocket, the service worker, and the manifest, all of which are same-origin. |
+| `script-src` | `'self'` | Every handler is assigned in JavaScript, from a file this origin serves. No inline `<script>` anywhere, including the sign-in pages (below). |
+| `style-src` | `'self' 'sha256-…'` | One hash, for the 404 page's own stylesheet — kept inline so that page still renders if `web/` is missing or misdeployed. Everything else that once carried a `style=""` attribute moved to a stylesheet class or a JavaScript property assignment, neither of which needs an exception. `'unsafe-inline'` is never used. |
+| `img-src` | `'self' https://avatars.githubusercontent.com` | The one sanctioned external origin in the policy: the signed-in person's own GitHub avatar, fetched directly from GitHub's CDN. `auth.js` already validates a claimed avatar URL is on this exact host before trusting it; this only makes that same boundary visible to the browser. |
+| `object-src` | `'none'` | No plugin content of any kind. |
+| `base-uri` | `'none'` | Does not fall back to `default-src`; listed so a page's base cannot be redirected. |
+| `form-action` | `'self'` | Does not fall back to `default-src`; a form can only submit back to this origin. |
+| `frame-ancestors` | `'none'` | Does not fall back to `default-src`; matches `X-Frame-Options` above, enforced through the modern mechanism as well as the legacy one. |
+
+The sign-in completion and failure pages carried the two remaining inline
+hazards before this: a `<script>` writing the OAuth token to storage, and a
+`style=""` attribute on the failure page's logo. Both are gone rather than
+exempted — the token now travels in a `data-*` attribute read by an external
+script, and the logo takes a stylesheet class — so the policy needed no
+`'unsafe-inline'` to cover either.
+
+The browser suite drives a real Chromium with this policy enforced, including
+both sign-in pages by their real route, and asserts zero
+`securitypolicyviolation` events across the whole run.
 
 ---
 
@@ -191,7 +221,7 @@ name.
 daemon attached. A skipped suite is reported separately and never counted as a
 pass.
 
-Current state: **1,204 assertions passing**, on Node 18 and Node 24 in CI.
+Current state: **1,219 assertions passing**, on Node 18 and Node 24 in CI.
 
 ---
 
