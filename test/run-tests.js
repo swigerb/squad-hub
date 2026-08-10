@@ -754,6 +754,7 @@ async function suiteAccess() {
   console.log('\n[ACCESS] the allow-list is editable, and only by an owner');
   runChildSuite(path.join(__dirname, 'access-store-unit.js'), 'access-store');
   runChildSuite(path.join(__dirname, 'access-api-unit.js'), 'access-api');
+  runChildSuite(path.join(__dirname, 'people-list-unit.js'), 'people-list');
 }
 
 /**

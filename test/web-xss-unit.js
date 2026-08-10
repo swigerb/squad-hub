@@ -61,7 +61,7 @@ const XSS = '<img src=x onerror=alert(1)>';
 check('a hostile login renders as inert escaped text on the access screen', () => {
   // Of all the screens to get this wrong on, the one listing who may sign in
   // is the worst.
-  const html = peopleRows({ users: [{ login: XSS, source: 'added', removable: true }] });
+  const html = peopleRows({ users: [{ login: XSS, source: 'added', removable: true }] }, '', '');
   assert.ok(!html.includes('<img'), 'a hostile login survived unescaped into the access list');
   assert.ok(html.includes(esc(XSS)));
 });
@@ -71,14 +71,14 @@ check('a hostile note and a hostile "added by" render as inert text too', () => 
     users: [{
       login: 'someone', source: 'added', removable: true, addedBy: XSS, note: XSS,
     }],
-  });
+  }, '', '');
   assert.ok(!html.includes('<img'), 'a hostile note or actor survived unescaped');
 });
 
 check('a hostile login cannot break out of the remove button attribute', () => {
   const html = peopleRows({
     users: [{ login: '" onclick="alert(1)', source: 'added', removable: true }],
-  });
+  }, '', '');
   assert.ok(!html.includes('onclick="alert'), `the attribute was broken out of: ${html}`);
 });
 
