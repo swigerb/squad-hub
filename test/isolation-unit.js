@@ -696,6 +696,42 @@ function api(port, path, token, opts = {}) {
     } finally { await sw.close(); }
   });
 
+  // -- the two headers that belong on literally everything -----------------
+  // A framed page can be interacted with in ways the person did not intend,
+  // and the hub's primary control is an approval button that runs a command
+  // on somebody's machine. `X-Content-Type-Options` stops a browser from
+  // re-interpreting a response as something other than what it was served as.
+  // Checked on an HTML page, a static asset, both API response shapes, both
+  // 404 shapes, AND the sign-in redirect -- a header set in one handler and
+  // missed in another is the likely mistake, not a header missing everywhere.
+  await checkAsync('the two security headers land on every response, whatever the path or status', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const { GitHubOAuth } = require('../src/service/github-oauth');
+    const aw = new Authenticator({ mode: MODES.DEV, devSecret: 'hdr' });
+    const oauth = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    const sw = new HS({ auth: aw, serveWeb: true, oauth });
+    const adw = await sw.listen(0, '127.0.0.1');
+    const p = adw.port;
+    try {
+      const expectHeaders = (r, why) => {
+        assert.strictEqual(r.headers['x-frame-options'], 'DENY', `${why}: missing X-Frame-Options`);
+        assert.strictEqual(r.headers['x-content-type-options'], 'nosniff', `${why}: missing X-Content-Type-Options`);
+      };
+      const tokh = aw.mintDevToken('t1', 'u1', 'someone');
+
+      expectHeaders(await api(p, '/', null), 'the front page (HTML)');
+      expectHeaders(await api(p, '/app.js', null), 'a static asset');
+      expectHeaders(await api(p, '/api/auth-methods', null), 'an anonymous API response');
+      expectHeaders(await api(p, '/api/me', tokh), 'an authenticated API response');
+      expectHeaders(await api(p, '/no-such-page', null), 'the HTML-shaped 404');
+      expectHeaders(await api(p, '/api/nothing-here', tokh), 'the API-shaped 404');
+
+      const redirect = await api(p, '/auth/github/login', null);
+      assert.strictEqual(redirect.status, 302, 'precondition: OAuth is configured, so this is a real redirect');
+      expectHeaders(redirect, 'the sign-in redirect');
+    } finally { await sw.close(); }
+  });
+
   // -- ephemeral device retention -------------------------------------------
   // Every Container Apps job execution registers its own device, runs one
   // session and ends. Before retention existed that grew without bound:

@@ -3,7 +3,7 @@
 **Reviewed:** 10 August 2026
 **Scope:** the hub service, the device daemon, the web interface, the CLI, and
 the credentials that join them.
-**Method:** code review against the running system, the automated suite (1,203
+**Method:** code review against the running system, the automated suite (1,204
 assertions), and targeted verification of individual controls.
 
 This report states the controls that are in place and how each one is verified.
@@ -136,6 +136,20 @@ Squad documents are displayed as text, never as markup.
 
 ---
 
+## Response headers
+
+| Control | Behaviour |
+|---|---|
+| `X-Frame-Options: DENY` | Sent on every response; the hub refuses to be rendered inside a frame |
+| `X-Content-Type-Options: nosniff` | Sent on every response; a browser is never left to guess a response's type |
+| Applied at the shared response point | The one `send()` writer in `src/service/hub-service.js`, plus the sign-in redirect's own `writeHead()` — so no handler can omit them |
+| Precedence | Applied after any caller-supplied headers, so neither header can be overridden from within a handler |
+
+Both headers are present on an HTML page, a static asset, an API response, both
+the HTML and the API shape of a 404, and the sign-in redirect.
+
+---
+
 ## State and secrets
 
 | | |
@@ -177,7 +191,7 @@ name.
 daemon attached. A skipped suite is reported separately and never counted as a
 pass.
 
-Current state: **1,203 assertions passing**, on Node 18 and Node 24 in CI.
+Current state: **1,204 assertions passing**, on Node 18 and Node 24 in CI.
 
 ---
 

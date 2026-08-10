@@ -44,6 +44,24 @@ const MIME = {
 };
 
 /**
+ * Headers sent on EVERY response, no exceptions.
+ *
+ * `X-Frame-Options: DENY` matters because the hub's primary control is an
+ * approval button that runs a command on somebody's machine, and a page that
+ * can be framed can be interacted with in ways the person did not intend.
+ * `X-Content-Type-Options: nosniff` stops a browser from re-interpreting a
+ * response as something other than the type it was served as.
+ *
+ * Applied last -- after any caller-supplied headers -- in every place a
+ * response is written, so a handler cannot accidentally (or a bug cannot
+ * silently) override them.
+ */
+const SECURITY_HEADERS = {
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+};
+
+/**
  * The longest a device token may live.
  *
  * A lifetime is a security control: expiry is what makes a credential shipped
@@ -194,6 +212,9 @@ class HubService {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
         ...headers,
+        // Spread last: no caller-supplied header, present or future, can
+        // override the security headers.
+        ...SECURITY_HEADERS,
       });
       res.end(payload);
     };
@@ -206,7 +227,7 @@ class HubService {
         return send(404, { error: 'GitHub sign-in is not configured on this hub' });
       }
       const { url: authUrl } = this.oauth.authorizeUrl(req);
-      res.writeHead(302, { Location: authUrl, 'Cache-Control': 'no-store' });
+      res.writeHead(302, { Location: authUrl, 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
       return res.end();
     }
 
