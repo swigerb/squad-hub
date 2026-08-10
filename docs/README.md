@@ -6,6 +6,7 @@
 | [Command reference](commands.md) | Every command, flag, and environment variable |
 | [HTTP API](api.md) | Every endpoint, for scripting against a hub |
 | [Security](security.md) | Locking a hub down to just you |
+| [Security report](security-report.md) | The controls in place, and how each is verified |
 | [Squad views](squad-views.md) | Reading a Squad's charters and decisions from the hub |
 | [Running in the cloud](cloud.md) | App Service, Container Apps, and Kubernetes |
 | [Sessions on Container Apps](aca.md) | Supervising Squad on ACA runs, so a job can ask a human |

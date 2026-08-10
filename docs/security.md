@@ -3,6 +3,9 @@
 Squad Hub can start sessions and approve commands on your machines. Lock down
 any hub you expose to the internet.
 
+For the full posture and how each control is verified, see the
+[security report](security-report.md).
+
 ## Lock it to yourself
 
 ```powershell
