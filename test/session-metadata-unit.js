@@ -269,14 +269,24 @@ check('an unmapped status renders as inert escaped text in the badge', () => {
 // Rendering: badges
 // ---------------------------------------------------------------------------
 
-check('a session waiting for your reply reads as "Ready for review", not "Done"', () => {
+check('a session waiting for your reply says it is waiting for a reply, not "Done"', () => {
   // `idle` is where a finished turn lands: the agent is alive, there is output
-  // to read, and the conversation can continue. Calling that "Done" is what
-  // made people stop reading and stop replying.
+  // to read, and the conversation can continue. It is NOT blocking, which is
+  // why it must not read like the approval state.
   const html = statusBadge({ status: 'idle', pendingApprovals: [] });
-  assert.ok(html.includes('Ready for review'),
-    'nothing is done from the watcher\'s side -- the work is waiting to be looked at');
+  assert.ok(html.includes('Awaiting your reply'),
+    'nothing is done from the watcher\'s side -- the agent is waiting for them');
   assert.ok(!html.includes('>Done<'));
+});
+
+check('the two states that want a person are told apart by name', () => {
+  // Both used to read as a bare demand, so neither said WHAT it wanted. One
+  // blocks until somebody decides; the other can be left alone.
+  const blocked = statusBadge({ status: 'waiting_approval', pendingApprovals: [] });
+  const waiting = statusBadge({ status: 'idle', pendingApprovals: [] });
+  assert.match(blocked, /approval/i, 'the blocking state does not name the decision it needs');
+  assert.doesNotMatch(waiting, /approval/i, 'a non-blocking session claims to need approval');
+  assert.notStrictEqual(blocked, waiting);
 });
 
 check('a session that is genuinely over reads as "Finished", not as work to review', () => {
@@ -284,26 +294,26 @@ check('a session that is genuinely over reads as "Finished", not as work to revi
   // Offering it for review would invite a reply nothing can receive.
   const html = statusBadge({ status: 'done', pendingApprovals: [] });
   assert.ok(html.includes('Finished'), `a closed session reads as: ${html}`);
-  assert.ok(!html.includes('Ready for review'),
+  assert.ok(!html.includes('Awaiting your reply'),
     'a session with no agent behind it is still inviting a reply');
 });
 
 check('a pending approval outranks the status entirely', () => {
   const html = statusBadge({ status: 'active', pendingApprovals: [{ approvalId: 'a1' }] });
-  assert.ok(html.includes('Action needed'),
-    'a session blocked on a person must never be described as merely Active');
+  assert.ok(html.includes('Needs approval'),
+    'a session blocked on a person must never be described as merely working');
 });
 
 check('waiting_approval is a badge, not a raw status string', () => {
   // A lapsed approval can leave this status with nothing pending; before, the
   // row rendered the literal text "waiting_approval".
   const html = statusBadge({ status: 'waiting_approval', pendingApprovals: [] });
-  assert.ok(html.includes('Action needed'));
+  assert.ok(html.includes('Needs approval'));
   assert.ok(!html.includes('waiting_approval'), 'the raw status leaked into the UI');
 });
 
 check('active and failed still render as they did', () => {
-  assert.ok(statusBadge({ status: 'active', pendingApprovals: [] }).includes('Active'));
+  assert.ok(statusBadge({ status: 'active', pendingApprovals: [] }).includes('Working'));
   assert.ok(statusBadge({ status: 'failed', pendingApprovals: [] }).includes('Failed'));
 });
 
@@ -546,13 +556,13 @@ check('squad-hub status omits an empty branch rather than printing "()"', () => 
   assert.strictEqual(sessionWhere({ cwd: '/x', git: { repository: 'example/repo', branch: null } }), 'example/repo');
 });
 
-check('squad-hub status offers a finished session for review', () => {
-  assert.strictEqual(sessionBadge({ status: 'idle' }), 'Ready for review');
+check('squad-hub status says a session is waiting for a reply', () => {
+  assert.strictEqual(sessionBadge({ status: 'idle' }), 'Awaiting your reply');
   assert.strictEqual(sessionBadge({ status: 'done' }), 'Finished');
 });
 
 check('squad-hub status shouts about a session blocked on a person', () => {
-  assert.strictEqual(sessionBadge({ status: 'waiting_approval' }), 'ACTION NEEDED');
+  assert.strictEqual(sessionBadge({ status: 'waiting_approval' }), 'NEEDS APPROVAL');
 });
 
 check('the CLI and the web UI agree on what a session is called', () => {

@@ -202,6 +202,45 @@ check('stopping a session clears its idle timer', async () => {
   assert.strictEqual(s._idleTimer, null, 'a stopped session left a timer holding a reference');
 });
 
+check('an idle session is never described as running something', async () => {
+  // Observed live on two sessions: status `idle`, activity "Running <tool>".
+  // A trailing update arrives just after the turn ends and relabels a session
+  // that is in fact waiting for the person reading it.
+  const s = fakeSession();
+  s._goIdle();
+  const was = s.activity;
+  s._update({ update: { sessionUpdate: 'tool_call', title: 'Run full test suite' } });
+  s._update({ update: { sessionUpdate: 'agent_message_chunk', content: { text: 'x' } } });
+  assert.strictEqual(s.activity, was, `an idle session reads as: ${s.activity}`);
+  assert.doesNotMatch(s.activity, /Running|Processing/);
+  s.stop();
+});
+
+check('a session blocked on an approval is never described as running something', async () => {
+  const s = fakeSession();
+  s.status = STATUS.WAITING_APPROVAL;
+  s.activity = 'Waiting for approval';
+  s._update({ update: { sessionUpdate: 'tool_call', title: 'rm -rf /' } });
+  assert.strictEqual(s.activity, 'Waiting for approval');
+});
+
+check('a session that IS running still shows what it is running', async () => {
+  // The accepting direction. Without it, an activity line that never updated
+  // would satisfy both assertions above.
+  const s = fakeSession();
+  s.status = STATUS.ACTIVE;
+  s._update({ update: { sessionUpdate: 'tool_call', title: 'Run full test suite' } });
+  assert.strictEqual(s.activity, 'Running Run full test suite');
+});
+
+check('a stopped session is not relabelled by a late update', async () => {
+  const s = fakeSession();
+  s._goIdle();
+  s.stop();
+  s._update({ update: { sessionUpdate: 'tool_call', title: 'something' } });
+  assert.doesNotMatch(s.activity, /Running/);
+});
+
 (async () => {
   for (const { name, fn } of queue) {
     try {

@@ -279,11 +279,11 @@ function sessionWhere(s) {
 
 /** The badge `status` prints for a session. */
 function sessionBadge(s) {
-  if (s.status === 'waiting_approval') return 'ACTION NEEDED';
-  if (s.status === 'active') return 'Active';
-  // The agent finished a turn and is waiting for a reply -- there is something
-  // to read, and the conversation can carry on.
-  if (s.status === 'idle') return 'Ready for review';
+  if (s.status === 'waiting_approval') return 'NEEDS APPROVAL';
+  if (s.status === 'active') return 'Working';
+  // The agent finished a turn and is waiting for a reply. It is not blocking
+  // anything, which is why it does not shout like the line above.
+  if (s.status === 'idle') return 'Awaiting your reply';
   if (s.status === 'done') return 'Finished';
   return String(s.status).toUpperCase();
 }

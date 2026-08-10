@@ -49,7 +49,7 @@ const CHECKS = [
 
   ['S2', 'repository and branch', () => /git-context/.test(acp) && /git\.repository/.test(app), 'repository and branch appear'],
   ['S2', 'live activity line', () => /function activityLine/.test(app), 'Waiting for input'],
-  ['S2', 'status badges', () => /Ready for review/.test(app) && /Action needed/.test(app), 'Ready for review'],
+  ['S2', 'status badges', () => /Awaiting your reply/.test(app) && /Needs approval/.test(app), 'waiting for a reply'],
   ['S2', 'action-needed to top + coloured edge', () => /sessionSort/.test(app) && /row\.attention/.test(css), 'pulled to the top'],
 
   ['S3', 'time-window filter', () => /TIME_WINDOWS/.test(app), 'time window'],

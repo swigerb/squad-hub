@@ -833,8 +833,14 @@ button.sm { padding: 4px 10px; font-size: 12px; }
 .t-result pre {
   margin: 0; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--code-line);
   border-radius: 6px; color: var(--dim); white-space: pre-wrap; word-break: break-word;
-  max-height: 220px; overflow: auto;
 }
+/* No max-height here. The transcript already scrolls; a second scrollbar
+   inside it means a trapped wheel and a panel the reader cannot get past. */
+.t-result:has(details[open]) .t-clipped { display: none; }
+.t-result summary { cursor: pointer; list-style: none; }
+.t-result summary::-webkit-details-marker { display: none; }
+.t-result summary::before { content: '▸ '; }
+.t-result details[open] summary::before { content: '▾ '; }
 .t-more { display: block; color: var(--faint); font-size: 11px; margin-top: 4px; }
 .t-err .t-tool { color: var(--bad); }
 

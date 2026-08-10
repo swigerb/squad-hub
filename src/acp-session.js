@@ -184,17 +184,26 @@ class AcpSession extends EventEmitter {
   _update(params) {
     const u = (params && params.update) || {};
     this._pushTranscript(u);
+    /**
+     * A streaming update describes what the agent is DOING. It must not
+     * overwrite the activity line of a session that is not doing anything.
+     *
+     * Only a session that is genuinely running gets its activity from here.
+     * Written as "is it running" rather than "is it not waiting", so a state
+     * added later is excluded by default rather than included by omission --
+     * which is exactly how an idle session ended up reading "Running <tool>".
+     *
+     * A trailing update can arrive just after a turn ends, and relabelling an
+     * idle session as busy tells the watcher the agent is still working when it
+     * is in fact waiting for them. Observed live on two sessions.
+     */
+    const running = this.status === STATUS.ACTIVE || this.status === STATUS.STARTING;
     if (u.sessionUpdate === 'tool_call') {
       this.toolCallCount += 1;
-      // A session blocked on an approval is NOT running that tool -- it is
-      // waiting for a person. Letting a streaming update overwrite the
-      // activity line here made a blocked session read as "Running ..." or
-      // "Processing...", which is the one state a watcher most needs to spot,
-      // and the row would sit there looking busy while nothing happened.
-      if (this.status !== STATUS.WAITING_APPROVAL) {
+      if (running) {
         this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
       }
-    } else if (u.sessionUpdate === 'agent_message_chunk' && this.status !== STATUS.WAITING_APPROVAL) {
+    } else if (u.sessionUpdate === 'agent_message_chunk' && running) {
       this.activity = 'Processing...';
     }
     this.emit('update', u);

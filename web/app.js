@@ -126,32 +126,73 @@ async function api(path, opts = {}) {
 /**
  * The badge a row carries.
  *
- * `Action needed` outranks the status entirely: a session blocked on a person
+  * `Needs approval` outranks the status entirely: a session blocked on a person
  * is the only row that cannot make progress on its own, so it must never be
- * described as merely `Active`.
+  * described as merely working.
  *
- * A finished session reads as `Ready for review` rather than `Done`. Nothing
- * about it is done from the watcher's side -- the work is sitting there
- * waiting to be looked at, and a badge that says `Done` invites people to
- * scroll past it.
+  * The two states that want a person are named for the ACTION each one wants.
+  * `Needs approval` blocks until somebody decides. `Awaiting your reply` does
+  * not block anything -- the agent finished a turn and is alive, and the
+  * session can be left alone. Naming both of them as a bare demand made the
+  * pair indistinguishable, and a reader could not tell which one was holding
+  * work up.
+  */
+/**
+ * Cut text to a length without ending mid-word.
+ *
+ * A hard slice produced titles like "...as the Squad team, using y", which
+ * reads as a rendering fault rather than as a prompt that is simply long.
  */
+function truncateWords(text, max) {
+  const s = String(text == null ? '' : text).trim().replace(/\s+/g, ' ');
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  // Only back up to a word boundary if one is reasonably near the end;
+  // otherwise a single very long token would collapse the whole title.
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,.;:]+$/, '')}\u2026`;
+}
+
+/**
+ * What a session's state is CALLED.
+ *
+ * One source for the words, so a surface cannot invent its own name for a
+ * state or fall back to printing the internal one.
+ */
+function statusLabel(s) {
+  if ((s.pendingApprovals || []).length) return 'Needs approval';
+  return {
+    active: 'Working',
+    starting: 'Starting',
+    waiting_approval: 'Needs approval',
+    idle: 'Awaiting your reply',
+    done: 'Finished',
+    failed: 'Failed',
+    stopped: 'Stopped',
+  // A status this build does not know is shown as it came, rather than as
+  // "Unknown": the raw name at least says which state it is. Every caller
+  // escapes it.
+  }[s.status] || String(s.status == null ? '' : s.status);
+}
+
 function statusBadge(s) {
   const pending = (s.pendingApprovals || []).length > 0;
-  if (pending) return '<span class="status attention">Action needed</span>';
-  const map = {
-    active: ['active', 'Active'],
-    starting: ['active', 'Starting'],
-    waiting_approval: ['attention', 'Action needed'],
-    // The agent is alive and waiting for a reply. This is what "Ready for
-    // review" always meant -- there is output to read and the conversation can
-    // continue. `done` now means the session is genuinely over.
-    idle: ['review', 'Ready for review'],
-    done: ['', 'Finished'],
-    failed: ['failed', 'Failed'],
-    stopped: ['', 'Stopped'],
+  if (pending) return '<span class="status attention">Needs approval</span>';
+  // Named for the ACTION each one wants, because both of these used to read as
+  // a demand and neither said what it wanted. A session blocked on an approval
+  // cannot continue until somebody decides; a session waiting for a reply is
+  // not blocking anything and may be left alone.
+  const cls = {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: 'review',
+    done: '',
+    failed: 'failed',
+    stopped: '',
   };
-  const [cls, label] = map[s.status] || ['', s.status];
-  return `<span class="status ${cls}">${esc(label)}</span>`;
+  const label = statusLabel(s);
+  return `<span class="status ${cls[s.status] || ''}">${esc(label)}</span>`;
 }
 
 /**
@@ -1456,8 +1497,18 @@ async function openDetail(key) {
   const found = findSession(key);
   if (!found) return;
   state.currentSession = found;
-  $('dtTitle').textContent = (found.session.prompt || found.session.id).slice(0, 80);
-  $('dtMeta').textContent = `${found.device.name} · ${found.session.cwd || ''} · ${found.session.status}`;
+  // Cut at a word boundary. `slice(0, 80)` alone ended titles mid-word --
+  // "...as the Squad team, using y" -- which reads as a rendering fault rather
+  // than as a long prompt.
+  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  // The status is shown as its LABEL, never as its internal name. A raw `idle`
+  // or `waiting_approval` in the meta line is the same leak the badge already
+  // guards against.
+  $('dtMeta').textContent = [
+    found.device.name,
+    found.session.cwd || '',
+    statusLabel(found.session),
+  ].filter(Boolean).join(' · ');
   // Prefilled from the session when it is on GitHub. Shown either way now that
   // the dialog takes a repository: a run does not have to be about the
   // repository you happen to be looking at.
@@ -1820,6 +1871,20 @@ function transcriptBlocks(entries) {
   return blocks;
 }
 
+/**
+ * How a tool result is shown.
+ *
+ * Long output is clipped for reading, but the WHOLE text is kept and rendered
+ * behind a disclosure. The previous label said "output truncated (N
+ * characters)" and offered nothing -- which read as "the rest is gone" when in
+ * fact the rest had been sent, received, and thrown away at the last step.
+ */
+function resultView(text, cap = TOOL_RESULT_CAP) {
+  const full = String(text == null ? '' : text);
+  if (full.length <= cap) return { full, shown: full, clipped: false };
+  return { full, shown: `${full.slice(0, cap)}…`, clipped: true };
+}
+
 function renderTranscript(entries) {
   const blocks = transcriptBlocks(entries);
   if (!blocks.length) {
@@ -1831,10 +1896,12 @@ function renderTranscript(entries) {
       return `<div class="t-entry t-toolrow"><span class="t-tool">tool</span> <span class="t-text">${esc(b.text)}</span></div>`;
     }
     if (b.kind === 'result') {
-      const clipped = b.text.length > TOOL_RESULT_CAP;
-      const shown = clipped ? `${b.text.slice(0, TOOL_RESULT_CAP)}…` : b.text;
-      return `<div class="t-entry t-result"><pre>${esc(shown)}</pre>${
-        clipped ? `<span class="t-more">output truncated (${b.text.length.toLocaleString()} characters)</span>` : ''}</div>`;
+      const v = resultView(b.text);
+      if (!v.clipped) return `<div class="t-entry t-result"><pre>${esc(v.full)}</pre></div>`;
+      return `<div class="t-entry t-result"><pre class="t-clipped">${esc(v.shown)}</pre>`
+        + `<details><summary class="t-more">`
+        + `show all ${v.full.length.toLocaleString()} characters</summary>`
+        + `<pre>${esc(v.full)}</pre></details></div>`;
     }
     if (b.kind === 'error') {
       return `<div class="t-entry t-err"><span class="t-tool">error</span> <span class="t-text">${esc(b.text)}</span></div>`;

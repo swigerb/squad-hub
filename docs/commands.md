@@ -289,7 +289,7 @@ at a glance, in both `squad-hub status` and the web UI.
 | Repository | The `origin` remote in the session's checkout, as `owner/repo`. Falls back to the repository directory name when there is no remote. |
 | Branch | The checked-out branch, or the short commit when `HEAD` is detached. |
 | Activity | What the agent is doing right now — `Running <tool>`, `Processing…`, or `Waiting for input`. |
-| Badge | `Active`, `Action needed`, `Ready for review`, `Finished`, `Failed`, or `Stopped`. |
+| Badge | `Working`, `Needs approval`, `Awaiting your reply`, `Finished`, `Failed`, or `Stopped`. |
 
 Repository and branch are read directly from `.git`, never by running `git`.
 Linked worktrees and submodules (where `.git` is a *file*) are handled.
@@ -297,7 +297,7 @@ Linked worktrees and submodules (where `.git` is a *file*) are handled.
 A remote URL's credentials are discarded. Only the last two path segments are
 kept, so a token committed into a remote URL never reaches a web page.
 
-**`Action needed` outranks everything.** A session blocked on a person is pulled
+**`Needs approval` outranks everything.** A session blocked on a person is pulled
 to the top of its device's card and carries a coloured edge.
 
 Everything in a session row is escaped before it is rendered.
@@ -306,14 +306,14 @@ Everything in a session row is escaped before it is rendered.
 
 | State | Meaning |
 |---|---|
-| `Active` | The agent is working. |
-| `Action needed` | It is waiting for you to approve a tool. |
-| `Ready for review` | Its turn ended. The agent is still running and you can reply. |
+| `Working` | The agent is working. |
+| `Needs approval` | It is blocked until you approve or deny a tool. |
+| `Awaiting your reply` | Its turn ended. The agent is still running and you can reply. Nothing is blocked. |
 | `Finished` | The session is over and the agent has stopped. |
 | `Failed` | The agent exited unexpectedly. |
 | `Stopped` | You stopped it. |
 
-A session that reaches **Ready for review** stays there until you reply or
+A session that reaches **Awaiting your reply** stays there until you reply or
 `SQUAD_HUB_IDLE_MS` elapses (30 minutes by default), after which it becomes
 **Finished** and its agent is stopped. Replying resets the clock.
 
