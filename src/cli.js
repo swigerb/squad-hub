@@ -300,6 +300,32 @@ async function cmdStatus(argv) {
 
   out(`daemon: running (pid ${st.pid}, ${snap.device.beats} heartbeats)`);
   out(`device: ${snap.device.name}  ${snap.device.platform}  file access: ${snap.device.fileAccess}`);
+  /**
+   * Whether the hub can actually see this device.
+   *
+   * Without this line a daemon whose device token had expired reported nothing
+   * but good news -- running, heartbeating, sessions listed -- while the hub
+   * showed no devices at all. The refusal was in the log and nowhere a person
+   * would look.
+   */
+  const hub = snap.hub;
+  if (!hub) {
+    // A daemon started before this field existed. Saying "not connected" would
+    // be a guess, and the wrong one for a daemon that is connected.
+    out('hub:    unknown — this daemon predates hub reporting; restart it to see');
+  } else if (!hub.configured) {
+    out('hub:    not connected to one (run `squad-hub connect`)');
+  } else if (hub.connected) {
+    out(`hub:    connected  ${hub.url}`);
+  } else {
+    out(`hub:    NOT CONNECTED  ${hub.url}`);
+    if (hub.refusedReason) {
+      out(`        ${hub.refusedReason}`);
+      out('        A refusal is not an outage. Mint a new device token and run `squad-hub connect`.');
+    } else {
+      out('        retrying');
+    }
+  }
   out('');
   if (!snap.sessions.length) { out('no sessions'); return 0; }
   out(`${snap.sessions.length} session(s):`);

@@ -648,6 +648,21 @@ class Daemon extends EventEmitter {
     // offers none.
     const modes = (known.modes && known.modes.length) ? known.modes : null;
     return {
+      /**
+       * Whether this daemon is actually attached to its hub.
+       *
+       * Included because a daemon that cannot attach looks completely healthy
+       * from here: it keeps running, keeps heartbeating locally, and keeps
+       * accepting local commands. An expired device token therefore presented
+       * as "everything is fine" on the device and "no devices" on the hub, with
+       * nothing anywhere connecting the two.
+       */
+      hub: {
+        configured: !!(this.link && this.link.url),
+        connected: !!(this.link && this.link.connected),
+        url: this.link ? this.link.url : null,
+        refusedReason: this._hubRefusedReason || null,
+      },
       device: {
         name: this.deviceName,
         platform: process.platform,
