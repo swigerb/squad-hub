@@ -122,7 +122,11 @@ function statusBadge(s) {
     active: ['active', 'Active'],
     starting: ['active', 'Starting'],
     waiting_approval: ['attention', 'Action needed'],
-    done: ['review', 'Ready for review'],
+    // The agent is alive and waiting for a reply. This is what "Ready for
+    // review" always meant -- there is output to read and the conversation can
+    // continue. `done` now means the session is genuinely over.
+    idle: ['review', 'Ready for review'],
+    done: ['', 'Finished'],
     failed: ['failed', 'Failed'],
     stopped: ['', 'Stopped'],
   };
@@ -2788,7 +2792,7 @@ function updateAgentChoices(device) {
  * The link that replaces the launcher.
  *
  * Squad Hub cannot start a cloud job and deliberately holds no credential that
- * could -- see docs/launcher-assessment.md. What it can do is open the issue's
+ * could. What it can do is open the issue's
  * own comment box with `/squad-aca <instruction>` already in it, and let the
  * person send it as themselves. GitHub authenticates them, the existing
  * workflow starts the job with a federated short-lived credential, and the

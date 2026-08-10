@@ -195,10 +195,21 @@ d.deviceName = deviceName;
 
     const deadline = Date.now() + MAX_SESSION_MS;
     let last = null;
+    /**
+     * `idle` COUNTS AS FINISHED HERE, and getting this wrong costs money.
+     *
+     * An interactive session goes idle when its turn ends, so a person can
+     * reply -- the agent stays alive waiting. A one-shot cloud run has nobody
+     * to reply: it was dispatched with a prompt and nothing else. Without idle
+     * in this list the loop would spin until MAX_SESSION_MS (three hours by
+     * default), billing the whole time, for a session that finished in a
+     * minute.
+     */
+    const FINISHED = ['idle', 'done', 'failed', 'stopped'];
     while (Date.now() < deadline) {
       const st = await d.handle({ op: 'status' });
       last = (st.sessions || []).find((s) => s.id === started.id);
-      if (last && ['done', 'failed', 'stopped'].includes(last.status)) break;
+      if (last && FINISHED.includes(last.status)) break;
 
       /**
        * Waiting for an approval that nobody can give.
@@ -225,11 +236,18 @@ d.deviceName = deviceName;
     const status = last ? last.status : 'vanished';
     process.stdout.write(`session ${started.id} ${status}\n`);
 
+    // An idle session still holds a live agent. Stop it, or the process would
+    // outlive the job it belongs to and the container would not exit.
+    if (status === 'idle') {
+      try { await d.handle({ op: 'stop-session', sessionId: started.id }); } catch { /* going anyway */ }
+    }
+
     // Close everything explicitly. The daemon holds a listening server and its
     // hub socket open, and Node will not exit while they live -- which is
     // exactly how a finished job ends up billing to its timeout.
     try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
-    d.shutdown(status === 'done' ? 0 : 1);
+    // Idle and done are both "the work completed"; only a failure is a failure.
+    d.shutdown(status === 'done' || status === 'idle' ? 0 : 1);
   }
 
   // Keep the process in the foreground for the orchestrator.

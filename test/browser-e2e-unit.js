@@ -537,10 +537,10 @@ async function until(fn, what, budgetMs = 15000) {
           filter: state.filters.status,
           open: document.getElementById('statusFilter').closest('.selectpill').getAttribute('aria-expanded'),
         }));
-        return r.value === 'done' ? r : null;
+        return r.value === 'idle' ? r : null;
       }, 'the status filter to take the chosen value');
       assert.strictEqual(after.label, 'Ready for review', 'the pill still shows the old value');
-      assert.strictEqual(after.filter, 'done', 'the choice never reached the app state');
+      assert.strictEqual(after.filter, 'idle', 'the choice never reached the app state');
       assert.strictEqual(after.open, 'false', 'the list stayed open after a choice');
     });
 

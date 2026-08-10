@@ -806,6 +806,7 @@ platform's timeout while doing nothing.
 | `SQUAD_HUB_CWD` | Working directory for the session. |
 | `SQUAD_HUB_ATTACH_GRACE_MS` | How long to wait for the hub before starting anyway. Default 5000. |
 | `SQUAD_HUB_MAX_SESSION_MS` | Ceiling on one session, so a wedged agent cannot hold the job open. Default 3 hours. |
+| `SQUAD_HUB_IDLE_MS` | How long a session waits for your reply before it is closed and its agent stopped. Default 30 minutes. |
 
 The exit code carries the outcome, so the platform's own status means
 something: **0** when the session completed, **1** when it failed or was cut

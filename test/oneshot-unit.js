@@ -163,7 +163,7 @@ function runEntry(args, env, budgetMs) {
       FAKE_AGENT_MARKER: 'marker.txt',
     });
     assert.strictEqual(r.exited, true);
-    assert.match(r.out, /session .* done/, `no session completion reported: ${r.out.slice(-300)}`);
+    assert.match(r.out, /session .* (idle|done)/, `no session completion reported: ${r.out.slice(-300)}`);
   });
 
   await check('WITH NO HUB it still runs the work and still exits', async () => {
@@ -291,7 +291,7 @@ function runEntry(args, env, budgetMs) {
     const argvFile = path.join(work, 'argv.json');
     assert.ok(fs.existsSync(argvFile),
       `the verb exited ${r.code} after ${r.ms} ms without the agent ever launching. ${r.out.slice(-400)}`);
-    assert.match(r.out, /session .* done/, `no session completion reported: ${r.out.slice(-300)}`);
+    assert.match(r.out, /session .* (idle|done)/, `no session completion reported: ${r.out.slice(-300)}`);
   });
 
   await check('the policy passed to the verb reaches the agent whole, spaces and all', async () => {

@@ -204,9 +204,11 @@ async function suiteSessionRoundTrip() {
 
     const done = await waitFor(() => {
       const s = statusJson(env);
-      return s.sessions && s.sessions.some((x) => x.id === sess.id && x.status === 'done');
+      // `idle` is where a finished turn now lands: the agent is alive and
+      // waiting for a reply. `done` is still reached when it is not.
+      return s.sessions && s.sessions.some((x) => x.id === sess.id && ['idle', 'done'].includes(x.status));
     }, 15000);
-    check('the session reaches done', () => assert.ok(done, 'session never completed'));
+    check('the session finishes its turn', () => assert.ok(done, 'session never completed'));
 
     await stopDaemon(env);
   } finally { cleanup(home); cleanup(work); }
@@ -772,6 +774,14 @@ async function suiteDeployGuard() {
 }
 
 /**
+ * A session you can reply to: a finished turn is not a finished conversation.
+ */
+async function suiteConversation() {
+  console.log('\n[CONVERSATION] a finished turn leaves a session that still listens');
+  runChildSuite(path.join(__dirname, 'conversation-unit.js'), 'conversation');
+}
+
+/**
  * Session metadata: repository and branch read from the checkout, the live
  * activity line, the badge set, and the ordering that pulls a blocked session
  * to the top. Every new field reaching the DOM carries its own stored-XSS
@@ -913,6 +923,7 @@ async function suiteAgentApply() {
   await suiteAccess();
   await suiteGitHubLink();
   await suiteDeployGuard();
+  await suiteConversation();
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceRoster();

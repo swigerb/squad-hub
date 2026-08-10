@@ -281,7 +281,10 @@ function sessionWhere(s) {
 function sessionBadge(s) {
   if (s.status === 'waiting_approval') return 'ACTION NEEDED';
   if (s.status === 'active') return 'Active';
-  if (s.status === 'done') return 'Ready for review';
+  // The agent finished a turn and is waiting for a reply -- there is something
+  // to read, and the conversation can carry on.
+  if (s.status === 'idle') return 'Ready for review';
+  if (s.status === 'done') return 'Finished';
   return String(s.status).toUpperCase();
 }
 

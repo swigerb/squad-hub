@@ -24,10 +24,35 @@ const STATUS = Object.freeze({
   STARTING: 'starting',
   ACTIVE: 'active',
   WAITING_APPROVAL: 'waiting_approval',
+  /**
+   * The agent finished its turn and is waiting for you.
+   *
+   * NOT the same as DONE, and the difference is the whole point. ACP is a
+   * conversational protocol: `session/prompt` returning means THIS TURN ended,
+   * not that the conversation is over. The agent is alive and will answer a
+   * reply.
+   *
+   * This used to be reported as DONE with the process killed, so an agent that
+   * ended its turn by asking a question -- "4. Is that correct?" -- left a
+   * composer that looked usable and refused every message, because there was
+   * nothing on the other end any more.
+   */
+  IDLE: 'idle',
   DONE: 'done',
   FAILED: 'failed',
   STOPPED: 'stopped',
 });
+
+/**
+ * How long an idle session stays alive before it is reaped.
+ *
+ * A conversation you can return to is the point, but a process that lives
+ * forever because somebody closed a tab is a leak with a memory cost. Half an
+ * hour is long enough to make a cup of tea and come back, short enough that a
+ * forgotten session does not outlive the working day.
+ */
+const IDLE_TIMEOUT_MS = Number(process.env.SQUAD_HUB_IDLE_MS || 30 * 60 * 1000);
+
 
 class AcpSession extends EventEmitter {
   constructor({ id, cwd, prompt, agentCommand = 'copilot', agentArgs = ['--acp'], env }) {
@@ -213,10 +238,58 @@ class AcpSession extends EventEmitter {
       prompt: [{ type: 'text', text: this.prompt }],
     });
     this.stopReason = stop && stop.stopReason;
-    this._setStatus(STATUS.DONE, 'Finished');
-    this.endedAt = Date.now();
-    this.shutdown();
+    /**
+     * The turn ended. The CONVERSATION has not.
+     *
+     * Previously this marked the session DONE and killed the agent, which threw
+     * away the thing ACP exists for. An agent that ends its turn with a
+     * question left a session that displayed "Ready for review", offered a
+     * composer, and refused everything typed into it.
+     *
+     * So the session goes idle with the agent still running, and a reply picks
+     * the conversation straight back up. It is reaped after
+     * SQUAD_HUB_IDLE_MS if nobody comes back.
+     */
+    this._goIdle();
     return stop;
+  }
+
+  /**
+   * Finish a turn without ending the session.
+   *
+   * Separate from `run()` because `steer()` needs exactly the same thing when
+   * ITS turn completes -- a second reply must leave the session as steerable as
+   * the first did.
+   */
+  _goIdle() {
+    if (this.status === STATUS.STOPPED || this.status === STATUS.FAILED) return;
+    // An agent that has already exited cannot hold a conversation, whatever the
+    // protocol said. Reporting idle here would re-create the original bug in a
+    // narrower window.
+    if (this.isAgentDead()) {
+      this._setStatus(STATUS.DONE, 'Finished');
+      this.endedAt = Date.now();
+      return;
+    }
+    this._setStatus(STATUS.IDLE, 'Ready for your reply');
+    this._armIdleTimer();
+  }
+
+  _armIdleTimer() {
+    this._clearIdleTimer();
+    if (!Number.isFinite(IDLE_TIMEOUT_MS) || IDLE_TIMEOUT_MS <= 0) return;
+    this._idleTimer = setTimeout(() => {
+      if (this.status !== STATUS.IDLE) return;
+      this._setStatus(STATUS.DONE, 'Finished (idle)');
+      this.endedAt = Date.now();
+      this.shutdown();
+    }, IDLE_TIMEOUT_MS);
+    // Never hold the process open on account of a session nobody is watching.
+    if (this._idleTimer.unref) this._idleTimer.unref();
+  }
+
+  _clearIdleTimer() {
+    if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
   }
 
   /**
@@ -417,28 +490,43 @@ class AcpSession extends EventEmitter {
    * otherwise would be worse than saying so.
    */
   steer(text) {
-    if (!text || this.status === STATUS.DONE || this.status === STATUS.STOPPED || this.status === STATUS.FAILED) {
+    // DONE, STOPPED and FAILED are genuinely over. IDLE is not: the agent
+    // finished a turn and is waiting, which is exactly when a reply is most
+    // likely.
+    if (!text || this.status === STATUS.DONE || this.status === STATUS.STOPPED
+      || this.status === STATUS.FAILED) {
       return false;
     }
     if (!this.acpSessionId) return false;
+    // An agent that died between the check above and this line cannot be
+    // steered, and saying "sent" would be a lie the UI would then display.
+    if (this.isAgentDead()) return false;
+    this._clearIdleTimer();
     this._pushTranscript({ sessionUpdate: 'user_message', content: { text } });
     this._request('session/prompt', {
       sessionId: this.acpSessionId,
       prompt: [{ type: 'text', text }],
+    }).then(() => {
+      // The reply's turn ends the same way the first one does, so a
+      // conversation can carry on rather than working exactly once.
+      this._goIdle();
     }).catch((e) => {
       this._pushTranscript({ sessionUpdate: 'error', content: { text: e.message } });
+      this._goIdle();
     });
     this._setStatus(STATUS.ACTIVE, 'Processing...');
     return true;
   }
 
   stop() {
+    this._clearIdleTimer();
     this._setStatus(STATUS.STOPPED, 'Stopped');
     this.endedAt = Date.now();
     this.shutdown();
   }
 
   shutdown() {
+    this._clearIdleTimer();
     if (!this.proc || this.proc.killed) return;
     try { this.proc.kill(); } catch { /* gone */ }
   }

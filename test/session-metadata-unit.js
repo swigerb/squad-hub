@@ -269,11 +269,23 @@ check('an unmapped status renders as inert escaped text in the badge', () => {
 // Rendering: badges
 // ---------------------------------------------------------------------------
 
-check('a finished session reads as "Ready for review", not "Done"', () => {
-  const html = statusBadge({ status: 'done', pendingApprovals: [] });
+check('a session waiting for your reply reads as "Ready for review", not "Done"', () => {
+  // `idle` is where a finished turn lands: the agent is alive, there is output
+  // to read, and the conversation can continue. Calling that "Done" is what
+  // made people stop reading and stop replying.
+  const html = statusBadge({ status: 'idle', pendingApprovals: [] });
   assert.ok(html.includes('Ready for review'),
     'nothing is done from the watcher\'s side -- the work is waiting to be looked at');
   assert.ok(!html.includes('>Done<'));
+});
+
+check('a session that is genuinely over reads as "Finished", not as work to review', () => {
+  // `done` now means the agent is gone: the idle window lapsed, or it exited.
+  // Offering it for review would invite a reply nothing can receive.
+  const html = statusBadge({ status: 'done', pendingApprovals: [] });
+  assert.ok(html.includes('Finished'), `a closed session reads as: ${html}`);
+  assert.ok(!html.includes('Ready for review'),
+    'a session with no agent behind it is still inviting a reply');
 });
 
 check('a pending approval outranks the status entirely', () => {
@@ -535,7 +547,8 @@ check('squad-hub status omits an empty branch rather than printing "()"', () => 
 });
 
 check('squad-hub status offers a finished session for review', () => {
-  assert.strictEqual(sessionBadge({ status: 'done' }), 'Ready for review');
+  assert.strictEqual(sessionBadge({ status: 'idle' }), 'Ready for review');
+  assert.strictEqual(sessionBadge({ status: 'done' }), 'Finished');
 });
 
 check('squad-hub status shouts about a session blocked on a person', () => {
@@ -545,7 +558,7 @@ check('squad-hub status shouts about a session blocked on a person', () => {
 check('the CLI and the web UI agree on what a session is called', () => {
   // Two surfaces describing the same state differently is how a person learns
   // to distrust one of them.
-  for (const status of ['done', 'waiting_approval', 'active']) {
+  for (const status of ['idle', 'done', 'waiting_approval', 'active']) {
     const cli = sessionBadge({ status });
     const web = statusBadge({ status, pendingApprovals: [] });
     assert.ok(web.toLowerCase().includes(cli.toLowerCase()),
