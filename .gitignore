@@ -33,3 +33,7 @@ node_modules/
 .squad/rai/audit-trail.md
 .squad/fact-checker/audit-trail.md
 .squad/agents/*/history.md
+
+# Scratch files from agent sessions
+_tmp_*
+review-body.txt
