@@ -289,7 +289,12 @@ class AcpSession extends EventEmitter {
     if (!Number.isFinite(IDLE_TIMEOUT_MS) || IDLE_TIMEOUT_MS <= 0) return;
     this._idleTimer = setTimeout(() => {
       if (this.status !== STATUS.IDLE) return;
-      this._setStatus(STATUS.DONE, 'Finished (idle)');
+      // Say what happened, in the words a person would use. "Finished (idle)"
+      // named an internal state and read as though the work had completed --
+      // when in fact the agent was waiting for a reply that never came, and
+      // anything it had not committed was still uncommitted when it stopped.
+      const mins = Math.round(IDLE_TIMEOUT_MS / 60000);
+      this._setStatus(STATUS.DONE, `Stopped after ${mins} min with no reply`);
       this.endedAt = Date.now();
       this.shutdown();
     }, IDLE_TIMEOUT_MS);

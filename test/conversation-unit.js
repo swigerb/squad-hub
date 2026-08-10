@@ -180,6 +180,17 @@ check('an idle session is reaped, and its agent stopped, once nobody comes back'
   await wait(() => s.status === fresh.STATUS.DONE, 2000);
   assert.strictEqual(s.killed, true, 'the idle session was closed but its agent left running');
 
+  // ...and it says WHY it stopped. This mattered in practice: a Squad session
+  // was reaped mid-sprint with uncommitted work, and the row read
+  // "Finished (idle)" -- which names an internal state and reads as though the
+  // work had completed. Someone glancing at it has no reason to look again.
+  assert.ok(!/\bidle\b/i.test(s.activity),
+    `the row still shows the internal state name: "${s.activity}"`);
+  assert.ok(/no reply/i.test(s.activity),
+    `a reaped session must say it was waiting on a person, got "${s.activity}"`);
+  assert.ok(!/^Finished$/.test(s.activity),
+    'a session that timed out reads identically to one that completed');
+
   if (prior === undefined) delete process.env.SQUAD_HUB_IDLE_MS;
   else process.env.SQUAD_HUB_IDLE_MS = prior;
   delete require.cache[require.resolve('../src/acp-session')];
