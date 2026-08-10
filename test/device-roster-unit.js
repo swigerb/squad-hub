@@ -180,8 +180,12 @@ check('the first sample, with no CPU figure yet, renders RAM but not CPU', () =>
 });
 
 check('a meter fill never draws outside its own bar', () => {
-  assert.match(meter('CPU', 1.4), /width:100%/, 'a value above 1 must be clamped');
-  assert.match(meter('CPU', -0.3), /width:0%/, 'a value below 0 must be clamped');
+  // The width itself is carried as `data-pct`, not `style="width:…"` -- see
+  // the doc comment on `meter()` in web/app.js for why (the CSP enforced in
+  // H-2 does not allow an inline style attribute here). The clamping
+  // guarantee this test owns is unchanged; only where the number lands is.
+  assert.match(meter('CPU', 1.4), /data-pct="100"/, 'a value above 1 must be clamped');
+  assert.match(meter('CPU', -0.3), /data-pct="0"/, 'a value below 0 must be clamped');
 });
 
 check('a meter at 95% is marked hot, and at 75% warm', () => {

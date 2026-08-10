@@ -1126,6 +1126,12 @@ function humanBytes(n) {
  * A device that does not report telemetry renders NO meter, rather than an
  * empty bar at zero. "Not reporting" and "idle" look identical on a bar at
  * zero, and they are entirely different facts.
+ *
+ * The fill width is carried as `data-pct`, not a `style="width:…"` attribute:
+ * under the enforced CSP an inline style attribute written into markup like
+ * this needs a style-src exception, and `applyMeterFills` below sets it
+ * through the CSSOM instead -- a JavaScript property assignment, which is not
+ * inline style and needs none.
  */
 function meter(label, fraction, detail = '') {
   if (fraction == null || !Number.isFinite(fraction)) return '';
@@ -1134,9 +1140,22 @@ function meter(label, fraction, detail = '') {
   return `
     <div class="meter ${level}" title="${esc(label)} ${pct}%${detail ? ` (${esc(detail)})` : ''}">
       <span class="meter-label">${esc(label)}</span>
-      <span class="meter-track"><span class="meter-fill" style="width:${pct}%"></span></span>
+      <span class="meter-track"><span class="meter-fill" data-pct="${pct}"></span></span>
       <span class="meter-value">${pct}%</span>
     </div>`;
+}
+
+/**
+ * Give each meter-fill span the width its markup could not carry.
+ *
+ * Called once after `deviceList`'s markup is written, so it has to run AFTER
+ * `innerHTML` replaces the DOM -- a fill rendered before that point would
+ * only ever be thrown away with the nodes it was set on.
+ */
+function applyMeterFills(container) {
+  for (const el of container.querySelectorAll('.meter-fill[data-pct]')) {
+    el.style.width = `${el.getAttribute('data-pct')}%`;
+  }
 }
 
 function clamp01(n) {
@@ -1239,6 +1258,7 @@ function render() {
   const roster = deviceRoster(devices);
   $('deviceList').innerHTML = `<div class="card">${roster.map(deviceCard).join('')
     || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
+  applyMeterFills($('deviceList'));
   const availPill = $('deviceAvailable');
   if (availPill) {
     // The count badge beside "Connected devices" already says how many there

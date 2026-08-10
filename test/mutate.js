@@ -268,12 +268,27 @@ const MUTATIONS = [
     find: `const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
 };`,
     replace: `const SECURITY_HEADERS = process.env.MUTANT ? {} : { // MUTATION
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
 };`,
     mustFail: 'the two security headers land on every response, whatever the path or status',
+  },
+  {
+    // Scoped to ONLY the CSP entry, leaving the other two headers from the
+    // mutation above intact, so this proves the CSP specifically is
+    // load-bearing rather than riding along on a mutation that already
+    // removes the whole SECURITY_HEADERS object.
+    name: 'the Content-Security-Policy is never sent',
+    file: 'src/service/hub-service.js',
+    find: `  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+};`,
+    replace: `  'Content-Security-Policy': process.env.MUTANT ? '' : CONTENT_SECURITY_POLICY, // MUTATION
+};`,
+    mustFail: 'the Content-Security-Policy is present, enforced and carries only one external origin',
   },
   {
     name: 'the daemon reports a hub connection it does not have',

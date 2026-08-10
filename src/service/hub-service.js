@@ -44,6 +44,73 @@ const MIME = {
 };
 
 /**
+ * The 404 page's stylesheet, kept as its own constant rather than inline in
+ * the template so its exact bytes can be hashed for the CSP below -- a hash
+ * source lets this ONE static, unchanging `<style>` block run without
+ * `'unsafe-inline'` weakening style-src for every other response.
+ */
+const NOT_FOUND_STYLE = `
+  :root { --bg:#0b0d12; --text:#e6e9f2; --dim:#98a0b5; --faint:#6a7288;
+          --line:#232838; --panel:#12151d; --accent:#4c8dff; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+         font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
+  .wrap { max-width:520px; }
+  img { width:180px; border-radius:16px; margin-bottom:28px;
+        box-shadow:0 12px 40px rgba(0,0,0,.5); }
+  h1 { font-size:72px; margin:0; letter-spacing:-2px; line-height:1; }
+  h2 { font-size:22px; margin:10px 0 0; font-weight:600; color:var(--text); }
+  p  { color:var(--dim); margin:14px 0 0; }
+  .actions { margin-top:28px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  a.btn { text-decoration:none; padding:10px 20px; border-radius:8px; font-weight:600; font-size:14px; }
+  a.primary { background:var(--accent); color:#fff; }
+  a.primary:hover { filter:brightness(1.1); }
+  a.ghost { border:1px solid var(--line); color:var(--text); background:var(--panel); }
+  a.ghost:hover { background:#171b25; }
+  code { font-family:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+         background:var(--panel); border:1px solid var(--line);
+         padding:2px 6px; border-radius:4px; font-size:13px; color:var(--dim); }
+`;
+const NOT_FOUND_STYLE_HASH = crypto.createHash('sha256').update(NOT_FOUND_STYLE, 'utf8').digest('base64');
+
+/**
+ * The policy that fits this app: no build step, no third-party origin for
+ * anything the app runs, and every handler assigned in JavaScript rather than
+ * written into markup.
+ *
+ * ENFORCED, not report-only -- a report-only policy would have let the sign-in
+ * pages ship broken (see below) and nothing would have said so. Every
+ * directive that does not fall back to `default-src 'self'` is listed
+ * explicitly: `frame-ancestors`, `base-uri` and `form-action` are independent
+ * of it by spec, not defaulted.
+ *
+ * `style-src` carries exactly one hash, for the 404 page's own stylesheet
+ * (see NOT_FOUND_STYLE above) -- everything else, including the sign-in
+ * pages, was moved to an external file or a class rather than earning a
+ * second exception. `'unsafe-inline'` is deliberately never used: it would
+ * have made this policy pass while doing nothing.
+ *
+ * `img-src` carries ONE external host: the account menu shows the signed-in
+ * person's own GitHub avatar, fetched directly from GitHub's own CDN (see
+ * `avatar` in `src/service/auth.js`, which validates the URL is on this exact
+ * host before ever trusting it -- this is not a new trust boundary, only the
+ * same one made visible to the browser). Nothing else -- script, style,
+ * connect, everything else that falls back to `default-src` -- carries any
+ * external origin at all.
+ */
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  `style-src 'self' 'sha256-${NOT_FOUND_STYLE_HASH}'`,
+  "img-src 'self' https://avatars.githubusercontent.com",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+/**
  * Headers sent on EVERY response, no exceptions.
  *
  * `X-Frame-Options: DENY` matters because the hub's primary control is an
@@ -51,6 +118,8 @@ const MIME = {
  * can be framed can be interacted with in ways the person did not intend.
  * `X-Content-Type-Options: nosniff` stops a browser from re-interpreting a
  * response as something other than the type it was served as.
+ * `Content-Security-Policy` (above) constrains where script, style and every
+ * other resource a page loads may come from.
  *
  * Applied last -- after any caller-supplied headers -- in every place a
  * response is written, so a handler cannot accidentally (or a bug cannot
@@ -59,6 +128,7 @@ const MIME = {
 const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
 };
 
 /**
@@ -622,23 +692,26 @@ class HubService {
    * A redirect to `/?token=...` would write a live credential into browser
    * history, the Referer header, and every proxy log in between. This returns a
    * page that passes it to the app in script and then replaces itself.
+   *
+   * The handoff itself is a `data-*` attribute read by an EXTERNAL script
+   * (`/signin-complete.js`), not an inline `<script>` -- under an enforced
+   * `script-src 'self'` an inline block would simply not run, and the token
+   * would never reach `localStorage`. An HTML attribute is not script, so it
+   * is unaffected by that directive, and the token still never touches a URL,
+   * browser history or a Referer header.
    */
   _signinComplete(send, token) {
-    const safe = JSON.stringify(token);
     return send(200, `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Signing in…</title><link rel="stylesheet" href="/app.css"></head>
-<body><div class="empty"><h3>Signing you in…</h3></div>
-<script>
-  try { localStorage.setItem('squad-hub-token', ${safe}); } catch (e) {}
-  location.replace('/');
-</script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
+<body data-signin-token="${escapeHtml(token)}"><div class="empty"><h3>Signing you in…</h3></div>
+<script src="/signin-complete.js"></script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
   }
 
   _signinError(send, message) {
     return send(403, `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Sign-in failed</title><link rel="stylesheet" href="/app.css"></head>
 <body><div class="empty">
-  <img src="/logo.jpg" alt="Squad Hub" width="140" style="border-radius:12px;margin-bottom:20px">
+  <img class="signin-logo" src="/logo.jpg" alt="Squad Hub" width="140">
   <h3>Sign-in failed</h3>
   <p>${escapeHtml(message)}</p>
   <p><a href="/">Back to the hub</a></p>
@@ -874,29 +947,7 @@ function notFoundPage() {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>404 — Not Found | Squad Hub</title>
-<style>
-  :root { --bg:#0b0d12; --text:#e6e9f2; --dim:#98a0b5; --faint:#6a7288;
-          --line:#232838; --panel:#12151d; --accent:#4c8dff; }
-  * { box-sizing:border-box; }
-  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text);
-         font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-         display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
-  .wrap { max-width:520px; }
-  img { width:180px; border-radius:16px; margin-bottom:28px;
-        box-shadow:0 12px 40px rgba(0,0,0,.5); }
-  h1 { font-size:72px; margin:0; letter-spacing:-2px; line-height:1; }
-  h2 { font-size:22px; margin:10px 0 0; font-weight:600; color:var(--text); }
-  p  { color:var(--dim); margin:14px 0 0; }
-  .actions { margin-top:28px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
-  a.btn { text-decoration:none; padding:10px 20px; border-radius:8px; font-weight:600; font-size:14px; }
-  a.primary { background:var(--accent); color:#fff; }
-  a.primary:hover { filter:brightness(1.1); }
-  a.ghost { border:1px solid var(--line); color:var(--text); background:var(--panel); }
-  a.ghost:hover { background:#171b25; }
-  code { font-family:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
-         background:var(--panel); border:1px solid var(--line);
-         padding:2px 6px; border-radius:4px; font-size:13px; color:var(--dim); }
-</style>
+<style>${NOT_FOUND_STYLE}</style>
 </head>
 <body>
   <div class="wrap">

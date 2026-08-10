@@ -732,6 +732,113 @@ function api(port, path, token, opts = {}) {
     } finally { await sw.close(); }
   });
 
+  // -- Content-Security-Policy: enforced, present everywhere ----------------
+  // Same shape as the header check above, and deliberately separate from it:
+  // H-1's assertion must keep passing unchanged, and a header set in one
+  // handler and missed in another is the likely mistake here too.
+  await checkAsync('the Content-Security-Policy is present, enforced and carries only one external origin', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const { GitHubOAuth } = require('../src/service/github-oauth');
+    const aw = new Authenticator({ mode: MODES.DEV, devSecret: 'csp' });
+    const oauth = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    const sw = new HS({ auth: aw, serveWeb: true, oauth });
+    const adw = await sw.listen(0, '127.0.0.1');
+    const p = adw.port;
+    try {
+      const expectCsp = (r, why) => {
+        const csp = r.headers['content-security-policy'];
+        assert.ok(csp, `${why}: no Content-Security-Policy header at all`);
+        // Enforced, not report-only: the report-only variant would let a
+        // policy that broke the page ship silently, which is the exact
+        // failure this control exists to rule out.
+        assert.ok(!r.headers['content-security-policy-report-only'],
+          `${why}: sent as report-only instead of enforced`);
+        assert.match(csp, /(?:^|;\s*)default-src 'self'/, `${why}: does not restrict default-src to self`);
+        assert.ok(!/unsafe-inline/.test(csp), `${why}: allows 'unsafe-inline', which would let this pass while doing nothing`);
+        assert.ok(!/unsafe-eval/.test(csp), `${why}: allows 'unsafe-eval'`);
+        // Exactly one external origin is permitted anywhere in the policy:
+        // GitHub's own avatar CDN, and only inside img-src -- see the
+        // comment above CONTENT_SECURITY_POLICY and issue #84's comment
+        // thread. Every OTHER directive must carry no external origin at
+        // all, so this checks each directive on its own rather than the
+        // policy as a whole, which would let the exception smuggle itself
+        // into the wrong directive unnoticed.
+        for (const directive of csp.split(';').map((d) => d.trim()).filter(Boolean)) {
+          const [name] = directive.split(/\s+/);
+          const withoutKeywords = directive
+            .replace(/'(?:self|none|unsafe-inline|unsafe-eval|sha256-[^']+|nonce-[^']+)'/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (name === 'img-src') {
+            assert.strictEqual(withoutKeywords, 'img-src https://avatars.githubusercontent.com',
+              `${why}: img-src carries an origin other than the one sanctioned exception: ${directive}`);
+          } else {
+            assert.ok(!/[a-z]+:\/\//.test(withoutKeywords),
+              `${why}: ${name} references an external origin: ${directive}`);
+          }
+        }
+      };
+      const tokh = aw.mintDevToken('t1', 'u1', 'someone');
+
+      expectCsp(await api(p, '/', null), 'the front page (HTML)');
+      expectCsp(await api(p, '/app.js', null), 'a static asset');
+      expectCsp(await api(p, '/api/auth-methods', null), 'an anonymous API response');
+      expectCsp(await api(p, '/api/me', tokh), 'an authenticated API response');
+      expectCsp(await api(p, '/no-such-page', null), 'the HTML-shaped 404');
+      expectCsp(await api(p, '/api/nothing-here', tokh), 'the API-shaped 404');
+
+      const redirect = await api(p, '/auth/github/login', null);
+      assert.strictEqual(redirect.status, 302, 'precondition: OAuth is configured, so this is a real redirect');
+      expectCsp(redirect, 'the sign-in redirect');
+    } finally { await sw.close(); }
+  });
+
+  // -- the sign-in pages: proof the inline hazards are actually gone --------
+  // The lead's review of this sprint (issue #84) found that `_signinComplete`
+  // handed the token to an inline `<script>` and `_signinError` carried an
+  // inline `style=""` -- both invisible to a browser suite that only ever
+  // signs in via `/?token=`, and both dead under an enforced `script-src`/
+  // `style-src 'self'`. This drives the REAL callback route -- the one
+  // GitHub actually redirects to -- for both outcomes, and asserts the
+  // hazards are gone from the response body, not merely that the route
+  // still answers with a 200.
+  await checkAsync('the sign-in completion and failure pages carry no inline script or style', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const { GitHubOAuth } = require('../src/service/github-oauth');
+    const aw = new Authenticator({
+      mode: MODES.GITHUB,
+      allowedUsers: ['octocat'],
+      githubFetch: async () => ({ login: 'octocat', id: 1 }),
+    });
+    const oauth = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    // Stand-ins for the network calls to GitHub itself -- proven separately
+    // by github-auth-unit.js. What is under test here is the PAGE this route
+    // returns, not the OAuth exchange.
+    oauth.exchange = async () => 'gh-token-abc123';
+    oauth.checkState = () => true;
+    const sw = new HS({ auth: aw, serveWeb: true, oauth });
+    const adw = await sw.listen(0, '127.0.0.1');
+    const p = adw.port;
+    try {
+      const ok = await api(p, '/auth/github/callback?code=c&state=s', null);
+      assert.strictEqual(ok.status, 200, `precondition: the callback must actually succeed; got ${ok.raw.slice(0, 200)}`);
+      assert.ok(ok.headers['content-security-policy'], 'the completion page has no CSP at all');
+      assert.ok(!/<script>/.test(ok.raw), 'the completion page still carries an inline <script> block');
+      assert.match(ok.raw, /<script src="\/signin-complete\.js">/,
+        'the completion page does not load the external handoff script');
+      assert.match(ok.raw, /data-signin-token="gh-token-abc123"/,
+        'the token is not handed to the page at all, in any form');
+      assert.ok(!/style="/.test(ok.raw), 'an inline style="" attribute remains on the completion page');
+
+      oauth.checkState = () => false;
+      const bad = await api(p, '/auth/github/callback?code=c&state=s', null);
+      assert.strictEqual(bad.status, 403, 'a bad state must still be refused');
+      assert.ok(bad.headers['content-security-policy'], 'the failure page has no CSP at all');
+      assert.ok(!/style="/.test(bad.raw), 'an inline style="" attribute remains on the failure page');
+      assert.match(bad.raw, /class="signin-logo"/, 'the logo lost its styling entirely rather than moving to a class');
+    } finally { await sw.close(); }
+  });
+
   // -- ephemeral device retention -------------------------------------------
   // Every Container Apps job execution registers its own device, runs one
   // session and ends. Before retention existed that grew without bound:

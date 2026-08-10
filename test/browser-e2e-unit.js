@@ -38,6 +38,7 @@ if (!chromium) {
 
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
+const { GitHubOAuth } = require('../src/service/github-oauth');
 const { Daemon } = require('../src/daemon');
 const config = require('../src/config');
 
@@ -68,6 +69,34 @@ async function until(fn, what, budgetMs = 15000) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/**
+ * Wire a page to report every `securitypolicyviolation` it fires, into an
+ * array this process can read.
+ *
+ * The browser enforces the policy either way -- a blocked script simply does
+ * not run. What this adds is VISIBILITY: without it, a policy that silently
+ * broke a feature would look identical to a feature nobody exercised, and the
+ * only sign would be an assertion failing somewhere downstream with no
+ * mention of CSP at all. Installed via `addInitScript` so it is present
+ * before any script on the page runs, including the first navigation.
+ */
+async function watchCsp(pg) {
+  const violations = [];
+  await pg.exposeFunction('__reportCspViolation', (v) => violations.push(v));
+  await pg.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (e) => {
+      window.__reportCspViolation({
+        directive: e.violatedDirective,
+        blockedURI: e.blockedURI,
+        sourceFile: e.sourceFile,
+        lineNumber: e.lineNumber,
+        page: location.href,
+      });
+    });
+  });
+  return violations;
+}
+
 (async () => {
   console.log('browser end-to-end');
   console.log('='.repeat(60));
@@ -87,6 +116,11 @@ async function until(fn, what, budgetMs = 15000) {
   const consoleErrors = [];
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  // Watched from before the very first navigation, so this is evidence for
+  // the WHOLE suite below -- every session, approval, reconnect, theme
+  // change and service-worker interaction the rest of this file drives, all
+  // under the SAME enforced policy a real deployment sends.
+  const cspViolations = await watchCsp(page);
 
   let daemon = null;
   try {
@@ -311,6 +345,14 @@ async function until(fn, what, budgetMs = 15000) {
           'base64',
         ),
       }));
+      // GitHub's real CDN answers an unknown id with a 302 to github.com --
+      // a different origin the CSP's img-src rightly does not allow, so
+      // depending on that redirect would trip a violation for a reason that
+      // has nothing to do with the app under test. Fulfil the 404 locally,
+      // same as the valid image above, so this stays a same-origin-shaped
+      // failure the CSP has no opinion about.
+      await page.route('https://avatars.githubusercontent.com/u/definitely-not-real.png*',
+        (route) => route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' }));
       const cases = [
         { name: 'swigerb', avatar: 'https://avatars.githubusercontent.com/u/1630580?v=4', expectImage: true },
         { name: 'brswig', avatar: null, expectImage: false, expectText: 'B' },
@@ -1169,6 +1211,108 @@ async function until(fn, what, budgetMs = 15000) {
       await page.waitForSelector('.signin', { timeout: 10000 });
       const stored = await page.evaluate(() => localStorage.getItem('squad-hub-token'));
       assert.strictEqual(stored, null, 'the credential survived signing out');
+    });
+
+    // -------------------------------------------------------------------
+    // The OAuth sign-in completion and failure pages, driven for real.
+    //
+    // Flagged in the lead's review of this sprint (issue #84): every check
+    // above signs in through `/?token=`, and never once loads
+    // `/auth/github/callback` -- the route the inline-script hazard and the
+    // inline-style hazard actually lived on. A browser suite that stayed
+    // silent about both would be absence of coverage, not evidence the CSP
+    // is safe to enforce. This drives that exact route, for both outcomes,
+    // under the SAME enforced policy, and checks the property that matters:
+    // the token actually lands in storage and the browser actually ends up
+    // signed in -- not just that the response was 200.
+    // -------------------------------------------------------------------
+    let svcAuth = null;
+    await check('the OAuth completion page stores the token and signs in, with the CSP enforced', async () => {
+      const auth3 = new Authenticator({
+        mode: MODES.GITHUB,
+        allowedUsers: ['octocat'],
+        githubFetch: async () => ({ login: 'octocat', id: 42 }),
+      });
+      const oauth3 = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+      // Stand-ins for GitHub's own endpoints -- proven separately by
+      // github-auth-unit.js and spike/github-auth-probe.js. What this test
+      // owns is the PAGE this hub hands back, under a real browser.
+      oauth3.exchange = async () => 'e2e-oauth-token-abc';
+      // A real check, not a stub that always passes: the failure-page test
+      // below reaches _signinError by sending a state this rejects, and a
+      // fixed `true` would route it through the SUCCESS branch instead,
+      // proving nothing about the failure page at all.
+      oauth3.checkState = (state) => state === 's';
+      svcAuth = new HubService({ auth: auth3, serveWeb: true, oauth: oauth3, persistDeviceTokens: false });
+      const addrAuth = await svcAuth.listen(0, '127.0.0.1');
+      const originAuth = `http://127.0.0.1:${addrAuth.port}`;
+      const page3 = await browser.newPage();
+      const violations3 = await watchCsp(page3);
+      const errors3 = [];
+      page3.on('console', (m) => { if (m.type() === 'error') errors3.push(m.text()); });
+      page3.on('pageerror', (e) => errors3.push(`pageerror: ${e.message}`));
+      try {
+        await page3.goto(`${originAuth}/auth/github/callback?code=c&state=s`);
+        // The completion page's own script stores the token then calls
+        // location.replace('/'); this waits for THAT navigation to finish
+        // and actually land signed in, not merely for the callback response.
+        await page3.waitForSelector('#who', { timeout: 15000 });
+        assert.strictEqual(await page3.textContent('#who'), 'octocat',
+          'the completion page did not actually complete sign-in');
+        const stored = await page3.evaluate(() => localStorage.getItem('squad-hub-token'));
+        assert.strictEqual(stored, 'e2e-oauth-token-abc',
+          'the token never reached localStorage -- an enforced script-src blocked the handoff');
+        assert.deepStrictEqual(violations3, [],
+          `CSP violations on the completion page: ${JSON.stringify(violations3)}`);
+        const broken3 = errors3.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken3, [], `the completion page reported errors: ${broken3.join(' | ')}`);
+      } finally {
+        await page3.close();
+      }
+    });
+
+    await check('the OAuth failure page renders its message and its styled logo, with the CSP enforced', async () => {
+      // Re-uses svcAuth from the previous check; a bad state is this hub's
+      // one deterministic way to reach _signinError without a real GitHub.
+      const page4 = await browser.newPage();
+      const violations4 = await watchCsp(page4);
+      const errors4 = [];
+      page4.on('console', (m) => { if (m.type() === 'error') errors4.push(m.text()); });
+      page4.on('pageerror', (e) => errors4.push(`pageerror: ${e.message}`));
+      try {
+        await page4.goto(`http://127.0.0.1:${svcAuth.server.address().port}/auth/github/callback?code=c&state=bad`);
+        await page4.waitForSelector('.signin-logo', { timeout: 10000 });
+        const text = await page4.evaluate(() => document.body.innerText);
+        assert.match(text, /sign-in failed/i, 'the failure page did not render its message');
+        const decoded = await page4.evaluate(() => {
+          const img = document.querySelector('.signin-logo');
+          return img && { w: img.naturalWidth, radius: getComputedStyle(img).borderRadius };
+        });
+        assert.ok(decoded && decoded.w > 0, 'the logo on the failure page did not even load');
+        assert.notStrictEqual(decoded.radius, '0px',
+          'the logo lost its rounded corners -- the class-based style never applied');
+        assert.deepStrictEqual(violations4, [],
+          `CSP violations on the failure page: ${JSON.stringify(violations4)}`);
+        // The failure page is deliberately served with a 403 status (this
+        // route always has been -- see _signinError) so the browser logs
+        // that as a console error for the top-level navigation itself; that
+        // is the console reflecting an intentional response code, not a
+        // broken page, so it is excluded the same way the favicon noise is.
+        const broken4 = errors4.filter((e) => !/favicon/i.test(e) && !/403 \(Forbidden\)/.test(e));
+        assert.deepStrictEqual(broken4, [], `the failure page reported errors: ${broken4.join(' | ')}`);
+      } finally {
+        await page4.close();
+        await svcAuth.close();
+      }
+    });
+
+    await check('the whole suite ran under the enforced CSP with zero securitypolicyviolation events', async () => {
+      // The exit criterion from issue #84: a policy strict enough to matter
+      // and loose enough that nothing it actually touched -- sessions,
+      // approvals, reconnects, themes, the service worker, the manifest --
+      // ever tripped it. Checked LAST, so it covers every check above.
+      assert.deepStrictEqual(cspViolations, [],
+        `the main suite tripped the CSP: ${JSON.stringify(cspViolations)}`);
     });
   } finally {
     try { await browser.close(); } catch { /* closing */ }
