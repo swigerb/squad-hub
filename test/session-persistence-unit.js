@@ -118,6 +118,40 @@ check('the storage contract holds for the durable file backing, unchanged', () =
   assertPartitioningHolds('file', store);
 });
 
+// ---------------------------------------------------------------------------
+// The store says which of the two it is, and /healthz reports it.
+//
+// Both behave identically right up until a restart, at which point one of them
+// silently loses the record of every cloud job that has already finished. A
+// deployment that thinks it is durable and is not looks exactly like one that
+// is -- until the loss, which is the worst possible moment to find out. So the
+// answer has to be readable rather than inferred.
+// ---------------------------------------------------------------------------
+
+check('a store says whether it is durable, and says it correctly', () => {
+  assert.strictEqual(new Store({ backing: new MemoryBacking() }).durable, false);
+  assert.strictEqual(new Store({ backing: new FileBacking({ dir: tmpdir() }) }).durable, true);
+  // A file backing told NOT to persist is not durable either, whatever its
+  // class -- reporting on the class rather than the behaviour would say
+  // "durable" for a store that writes nothing.
+  assert.strictEqual(new Store({ backing: new FileBacking({ dir: tmpdir(), persist: false }) }).durable, false);
+});
+
+check('/healthz reports the session store, so durability can be read rather than assumed', () => {
+  // The detail block is built from `store.durable`; asserting the mapping here
+  // keeps the reported word and the actual behaviour from drifting apart.
+  const durable = new Store({ backing: new FileBacking({ dir: tmpdir() }) });
+  const memory = new Store({ backing: new MemoryBacking() });
+  assert.strictEqual(durable.durable ? 'durable' : 'memory', 'durable');
+  assert.strictEqual(memory.durable ? 'durable' : 'memory', 'memory');
+
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'service', 'hub-service.js'), 'utf8');
+  assert.ok(src.includes("sessionStore: this.store.durable ? 'durable' : 'memory'"),
+    '/healthz no longer reports sessionStore from the store itself');
+  assert.ok(!/State is held in memory/.test(src),
+    'the scale-out warning still claims all state is in memory, which is no longer true');
+});
+
 /**
  * A backing that shares one bucket object across two subjects -- the exact
  * mistake a hand-rolled durable backing could make (forgetting to give each
