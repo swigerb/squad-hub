@@ -268,17 +268,19 @@ const MUTATIONS = [
     find: `const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': CONTENT_SECURITY_POLICY,
 };`,
     replace: `const SECURITY_HEADERS = process.env.MUTANT ? {} : { // MUTATION
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': CONTENT_SECURITY_POLICY,
 };`,
     mustFail: 'the two security headers land on every response, whatever the path or status',
   },
   {
-    // Scoped to ONLY the CSP entry, leaving the other two headers from the
+    // Scoped to ONLY the CSP entry, leaving the other headers from the
     // mutation above intact, so this proves the CSP specifically is
     // load-bearing rather than riding along on a mutation that already
     // removes the whole SECURITY_HEADERS object.
@@ -289,6 +291,56 @@ const MUTATIONS = [
     replace: `  'Content-Security-Policy': process.env.MUTANT ? '' : CONTENT_SECURITY_POLICY, // MUTATION
 };`,
     mustFail: 'the Content-Security-Policy is present, enforced and carries only one external origin',
+  },
+  {
+    // Scoped to ONLY the Referrer-Policy entry, same reasoning as the CSP
+    // mutation above: this proves Referrer-Policy specifically is
+    // load-bearing, not riding along on the whole-object mutation. Spread
+    // rather than set-to-undefined: Node's `writeHead` throws on an
+    // `undefined` header value, which would make this mutation crash the
+    // server instead of omitting the header -- a different, uncaught failure.
+    name: 'the Referrer-Policy header is never sent',
+    file: 'src/service/hub-service.js',
+    find: `  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+};`,
+    replace: `  ...(process.env.MUTANT ? {} : { 'Referrer-Policy': 'no-referrer' }), // MUTATION
+  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+};`,
+    mustFail: 'the Referrer-Policy header lands on every response, whatever the path or status',
+  },
+  {
+    // Removes ONLY the TLS-conditional HSTS addition, leaving every other
+    // security header (including the base SECURITY_HEADERS mutated above)
+    // untouched -- so this proves HSTS specifically is sent when the request
+    // arrived over TLS, rather than riding along on some other mutation.
+    name: 'Strict-Transport-Security is never added, even behind a TLS-terminating proxy',
+    file: 'src/service/hub-service.js',
+    find: `function securityHeadersFor(req) {
+  if (!requestIsSecure(req)) return SECURITY_HEADERS;
+  return { ...SECURITY_HEADERS, 'Strict-Transport-Security': \`max-age=\${HSTS_MAX_AGE_SECONDS}\` };
+}`,
+    replace: `function securityHeadersFor(req) { // MUTATION
+  if (process.env.MUTANT) return SECURITY_HEADERS;
+  if (!requestIsSecure(req)) return SECURITY_HEADERS;
+  return { ...SECURITY_HEADERS, 'Strict-Transport-Security': \`max-age=\${HSTS_MAX_AGE_SECONDS}\` };
+}`,
+    mustFail: 'Strict-Transport-Security is sent only when the request arrived over TLS',
+  },
+  {
+    // A DIFFERENT failure mode from the one above: rather than never adding
+    // HSTS, this always adds it -- including on a plain HTTP request with no
+    // forwarded-proto signal at all. That is unsafe (an HSTS header sent over
+    // the very channel it condemns), and is the half of the same test the
+    // mutation above does not reach.
+    name: 'Strict-Transport-Security is sent even over plain HTTP with no TLS signal',
+    file: 'src/service/hub-service.js',
+    find: `function requestIsSecure(req) {
+  if (req.socket && req.socket.encrypted) return true;`,
+    replace: `function requestIsSecure(req) {
+  if (process.env.MUTANT) return true; // MUTATION
+  if (req.socket && req.socket.encrypted) return true;`,
+    mustFail: 'Strict-Transport-Security is sent only when the request arrived over TLS',
   },
   {
     name: 'the daemon reports a hub connection it does not have',
