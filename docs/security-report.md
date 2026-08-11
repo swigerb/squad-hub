@@ -3,7 +3,7 @@
 **Reviewed:** 10 August 2026
 **Scope:** the hub service, the device daemon, the web interface, the CLI, and
 the credentials that join them.
-**Method:** code review against the running system, the automated suite (1,219
+**Method:** code review against the running system, the automated suite (1,221
 assertions), and targeted verification of individual controls.
 
 This report states the controls that are in place and how each one is verified.
@@ -142,12 +142,16 @@ Squad documents are displayed as text, never as markup.
 |---|---|
 | `X-Frame-Options: DENY` | Sent on every response; the hub refuses to be rendered inside a frame |
 | `X-Content-Type-Options: nosniff` | Sent on every response; a browser is never left to guess a response's type |
+| `Referrer-Policy: no-referrer` | Sent on every response — see below |
 | `Content-Security-Policy` | Sent on every response, **enforced** — see below |
+| `Strict-Transport-Security` | Sent only on a request the hub can tell arrived over TLS — see below |
 | Applied at the shared response point | The one `send()` writer in `src/service/hub-service.js`, plus the sign-in redirect's own `writeHead()` — so no handler can omit them |
-| Precedence | Applied after any caller-supplied headers, so neither header can be overridden from within a handler |
+| Precedence | Applied after any caller-supplied headers, so no header can be overridden from within a handler |
 
-All three are present on an HTML page, a static asset, an API response, both
-the HTML and the API shape of a 404, and the sign-in redirect.
+All of the above (HSTS as described below) are present on an HTML page, a
+static asset, an API response, both the HTML and the API shape of a 404, the
+sign-in redirect, and the OAuth completion page that actually hands a token to
+the browser.
 
 ---
 
@@ -177,6 +181,43 @@ script, and the logo takes a stylesheet class — so the policy needed no
 The browser suite drives a real Chromium with this policy enforced, including
 both sign-in pages by their real route, and asserts zero
 `securitypolicyviolation` events across the whole run.
+
+---
+
+## Referrer and transport policy
+
+**`Referrer-Policy: no-referrer`** is sent on every response, unconditionally.
+The manual sign-in link carries a token as `/?token=...` (`web/app.js` reads
+it, then calls `history.replaceState` to strip it from the address bar) —
+until that removal runs, any request the page makes would otherwise hand the
+whole URL, token included, to whatever it requested, in a `Referer` header.
+`no-referrer` is the strictest value available: no referrer at all, to any
+origin, same-origin included.
+
+**`Strict-Transport-Security`** is sent only on a request the hub can tell
+arrived over TLS. The hub itself always listens on plain HTTP
+(`http.createServer` in `src/service/hub-service.js`) — every deployment this
+repo ships terminates TLS in front of it (Azure App Service, Container Apps,
+an AKS ingress) and forwards the original scheme in `X-Forwarded-Proto`. That
+is the same header `github-oauth.js` already trusts, on the same request, to
+build the OAuth redirect URI; the HSTS decision reads it the same way rather
+than inventing a second convention. A request carrying no such signal — a bare
+`curl` to a local `dev`-mode hub, or an in-cluster health check over plain
+HTTP — is treated as insecure, not assumed secure, and gets no HSTS header at
+all: sending one there would tell a browser to stop using the very channel
+that request just arrived on.
+
+The header carries `max-age=15552000` (180 days) only. Neither
+`includeSubDomains` nor `preload` is set: both extend the commitment past what
+was asked for, and both are a deployment- or DNS-level decision this handler
+cannot see far enough to make on its own.
+
+Both headers are checked on more than one response type — an HTML page, a
+static asset, an authenticated API response, and the OAuth completion page
+that hands a real token to the browser — and HSTS is checked both present
+(behind the `X-Forwarded-Proto: https` signal) and absent (plain HTTP, no
+signal), so the same test proves both halves of the design rather than only
+the one that is easy to assert.
 
 ---
 
@@ -221,7 +262,7 @@ name.
 daemon attached. A skipped suite is reported separately and never counted as a
 pass.
 
-Current state: **1,219 assertions passing**, on Node 18 and Node 24 in CI.
+Current state: **1,221 assertions passing**, on Node 18 and Node 24 in CI.
 
 ---
 

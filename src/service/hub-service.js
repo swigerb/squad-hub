@@ -120,6 +120,16 @@ const CONTENT_SECURITY_POLICY = [
  * response as something other than the type it was served as.
  * `Content-Security-Policy` (above) constrains where script, style and every
  * other resource a page loads may come from.
+ * `Referrer-Policy: no-referrer` stops a token EVER reaching a Referer header.
+ * The manual sign-in link carries a token as `/?token=...` (see `app.js`,
+ * which reads it and calls `history.replaceState` to remove it) -- until that
+ * removal runs, any request this page makes (a stylesheet, a script, the
+ * favicon) would otherwise hand the whole URL, token included, to whatever it
+ * requested. `no-referrer` is the strictest value: no referrer at all, to any
+ * origin, same-origin included, since this app has no use for one.
+ *
+ * `Strict-Transport-Security` is NOT here -- it is added per-request, only
+ * when the request actually arrived over TLS. See `securityHeadersFor` below.
  *
  * Applied last -- after any caller-supplied headers -- in every place a
  * response is written, so a handler cannot accidentally (or a bug cannot
@@ -128,8 +138,49 @@ const CONTENT_SECURITY_POLICY = [
 const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': CONTENT_SECURITY_POLICY,
 };
+
+/**
+ * How long a browser should remember to require HTTPS for this host, once it
+ * has seen one HTTPS response. Six months: long enough to be worth anything,
+ * short enough that a mistaken send is not a mistake for a year. Neither
+ * `includeSubDomains` nor `preload` is set -- both extend the commitment
+ * beyond what this issue asked for, and both are a `deploy-appservice.ps1`- or
+ * DNS-level decision, not one this handler can see far enough to make.
+ */
+const HSTS_MAX_AGE_SECONDS = 15552000;
+
+/**
+ * Was THIS request delivered over TLS?
+ *
+ * This process always listens on plain HTTP (`http.createServer` above) --
+ * every deployment this repo ships (App Service, Container Apps, an AKS
+ * ingress) terminates TLS in front of it and forwards the original scheme in
+ * `X-Forwarded-Proto`. `github-oauth.js` already trusts this same header, on
+ * the same request, to build the OAuth redirect URI -- this reads it the same
+ * way rather than inventing a second convention.
+ *
+ * `req.socket.encrypted` is checked too, in case that ever changes; it is
+ * always false today, since nothing here calls `https.createServer`.
+ *
+ * A request with NO forwarded-proto header (a bare `curl` to a local dev
+ * server, or a health check that talks plain HTTP inside a cluster) is
+ * treated as insecure, not assumed secure -- sending HSTS on that response
+ * would be sent over the very channel it tells a browser to stop using.
+ */
+function requestIsSecure(req) {
+  if (req.socket && req.socket.encrypted) return true;
+  const proto = String((req.headers['x-forwarded-proto'] || '')).split(',')[0].trim().toLowerCase();
+  return proto === 'https';
+}
+
+/** The full set of security headers for one request: the fixed set, plus HSTS iff this request arrived over TLS. */
+function securityHeadersFor(req) {
+  if (!requestIsSecure(req)) return SECURITY_HEADERS;
+  return { ...SECURITY_HEADERS, 'Strict-Transport-Security': `max-age=${HSTS_MAX_AGE_SECONDS}` };
+}
 
 /**
  * The longest a device token may live.
@@ -284,7 +335,7 @@ class HubService {
         ...headers,
         // Spread last: no caller-supplied header, present or future, can
         // override the security headers.
-        ...SECURITY_HEADERS,
+        ...securityHeadersFor(req),
       });
       res.end(payload);
     };
@@ -297,7 +348,7 @@ class HubService {
         return send(404, { error: 'GitHub sign-in is not configured on this hub' });
       }
       const { url: authUrl } = this.oauth.authorizeUrl(req);
-      res.writeHead(302, { Location: authUrl, 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
+      res.writeHead(302, { Location: authUrl, 'Cache-Control': 'no-store', ...securityHeadersFor(req) });
       return res.end();
     }
 

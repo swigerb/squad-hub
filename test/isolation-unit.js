@@ -64,6 +64,7 @@ function api(port, path, token, opts = {}) {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.headers || {}),
       },
     }, (res) => {
       let b = '';
@@ -836,6 +837,105 @@ function api(port, path, token, opts = {}) {
       assert.ok(bad.headers['content-security-policy'], 'the failure page has no CSP at all');
       assert.ok(!/style="/.test(bad.raw), 'an inline style="" attribute remains on the failure page');
       assert.match(bad.raw, /class="signin-logo"/, 'the logo lost its styling entirely rather than moving to a class');
+    } finally { await sw.close(); }
+  });
+
+  // -- Referrer-Policy: no-referrer, on literally everything ----------------
+  // Issue #84's own rationale: the manual sign-in link carries a token as
+  // `/?token=...` (`app.js` reads it, then calls `history.replaceState` to
+  // strip it) -- until that removal runs, ANY request the page makes would
+  // otherwise hand the whole URL, token included, to whatever it requested,
+  // via a Referer header. `no-referrer` rules that out regardless of timing.
+  // Same shape as the H-1 header check above, and deliberately covering the
+  // OAuth callback too -- the actual token-handoff response, not only the
+  // page that carries a token in its own address bar.
+  await checkAsync('the Referrer-Policy header lands on every response, whatever the path or status', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const { GitHubOAuth } = require('../src/service/github-oauth');
+    const aw = new Authenticator({ mode: MODES.DEV, devSecret: 'refp' });
+    const oauth = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    const sw = new HS({ auth: aw, serveWeb: true, oauth });
+    const adw = await sw.listen(0, '127.0.0.1');
+    const p = adw.port;
+    try {
+      const expectNoReferrer = (r, why) => {
+        assert.strictEqual(r.headers['referrer-policy'], 'no-referrer', `${why}: missing or wrong Referrer-Policy`);
+      };
+      const tokr = aw.mintDevToken('t1', 'u1', 'someone');
+
+      expectNoReferrer(await api(p, '/', null), 'the front page (HTML)');
+      expectNoReferrer(await api(p, '/app.js', null), 'a static asset');
+      expectNoReferrer(await api(p, '/api/auth-methods', null), 'an anonymous API response');
+      expectNoReferrer(await api(p, '/api/me', tokr), 'an authenticated API response');
+      expectNoReferrer(await api(p, '/no-such-page', null), 'the HTML-shaped 404');
+      expectNoReferrer(await api(p, '/api/nothing-here', tokr), 'the API-shaped 404');
+
+      const redirect = await api(p, '/auth/github/login', null);
+      assert.strictEqual(redirect.status, 302, 'precondition: OAuth is configured, so this is a real redirect');
+      expectNoReferrer(redirect, 'the sign-in redirect');
+
+      // The token-flow response itself: the OAuth callback that hands a real
+      // token to the page. This is the response the sprint's rationale names.
+      const cbAuth = new Authenticator({ mode: MODES.GITHUB, allowedUsers: ['octocat'], githubFetch: async () => ({ login: 'octocat', id: 1 }) });
+      const cbOauth = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+      cbOauth.exchange = async () => 'gh-token-xyz';
+      cbOauth.checkState = () => true;
+      const cbSvc = new HS({ auth: cbAuth, serveWeb: true, oauth: cbOauth });
+      const cbAddr = await cbSvc.listen(0, '127.0.0.1');
+      try {
+        const cb = await api(cbAddr.port, '/auth/github/callback?code=c&state=s', null);
+        assert.strictEqual(cb.status, 200, 'precondition: the callback must succeed');
+        expectNoReferrer(cb, 'the sign-in completion (token-handoff) page');
+      } finally { await cbSvc.close(); }
+    } finally { await sw.close(); }
+  });
+
+  // -- Strict-Transport-Security: only under a TLS-terminating proxy --------
+  // This process always listens on plain HTTP (`http.createServer` in
+  // hub-service.js); every real deployment (App Service, Container Apps, an
+  // AKS ingress) terminates TLS in front of it and forwards the original
+  // scheme via `X-Forwarded-Proto` -- the same header `github-oauth.js`
+  // already trusts to build the OAuth redirect URI. HSTS must appear when
+  // that signal says TLS, and must NOT appear on a plain local request: an
+  // HSTS header sent over the very channel it condemns is exactly wrong, and
+  // a `dev`-mode hub reached directly by `curl http://localhost:...` (no
+  // proxy at all) must keep working over plain HTTP indefinitely.
+  await checkAsync('Strict-Transport-Security is sent only when the request arrived over TLS', async () => {
+    const { HubService: HS } = require('../src/service/hub-service');
+    const { GitHubOAuth } = require('../src/service/github-oauth');
+    const aw = new Authenticator({ mode: MODES.DEV, devSecret: 'hsts' });
+    const oauth = new GitHubOAuth({ clientId: 'cid', clientSecret: 'sec' });
+    const sw = new HS({ auth: aw, serveWeb: true, oauth });
+    const adw = await sw.listen(0, '127.0.0.1');
+    const p = adw.port;
+    try {
+      const tokh = aw.mintDevToken('t1', 'u1', 'someone');
+      const httpsHeaders = { 'x-forwarded-proto': 'https' };
+
+      // Plain HTTP, no proxy signal at all -- what a local `dev`-mode hub, or
+      // a bare in-cluster health check, actually sees. Checked on more than
+      // one response type: the front page and an authenticated API response.
+      const plainHtml = await api(p, '/', null);
+      assert.strictEqual(plainHtml.headers['strict-transport-security'], undefined,
+        'HSTS sent on plain HTTP with no forwarded-proto signal (the front page) -- unsafe for local plain HTTP');
+      const plainApi = await api(p, '/api/me', tokh);
+      assert.strictEqual(plainApi.headers['strict-transport-security'], undefined,
+        'HSTS sent on plain HTTP with no forwarded-proto signal (an API response)');
+
+      // The proxy-forwarded signal present -- what a TLS-terminating
+      // deployment actually sends on every request. Same two response types.
+      const tlsHtml = await api(p, '/', null, { headers: httpsHeaders });
+      assert.strictEqual(tlsHtml.headers['strict-transport-security'], 'max-age=15552000',
+        'HSTS missing on an HTML response behind a TLS-terminating proxy');
+      const tlsApi = await api(p, '/api/me', tokh, { headers: httpsHeaders });
+      assert.strictEqual(tlsApi.headers['strict-transport-security'], 'max-age=15552000',
+        'HSTS missing on an API response behind a TLS-terminating proxy');
+
+      // `preload` is deliberately not required, or asserted here at all --
+      // issue #84 does not ask for it, and adding it commits this exact host
+      // to a browser-vendor list that is far harder to reverse than a header.
+      assert.ok(!/preload/.test(tlsHtml.headers['strict-transport-security']),
+        'HSTS carries preload, which was not asked for and is hard to undo');
     } finally { await sw.close(); }
   });
 
