@@ -155,6 +155,19 @@ const MUTATIONS = [
     mustFail: 'a device socket with no token is refused',
   },
   {
+    name: 'the websocket upgrade does not check the Origin header',
+    file: 'src/service/hub-service.js',
+    find: `    if (!originIsAllowed(req)) {
+      conn.close(1008, 'this origin is not allowed to open a socket on this hub');
+      return;
+    }`,
+    replace: `    if (!process.env.MUTANT && !originIsAllowed(req)) { // MUTATION
+      conn.close(1008, 'this origin is not allowed to open a socket on this hub');
+      return;
+    }`,
+    mustFail: 'a foreign Origin is refused, and the device it tried to register never appears in the roster',
+  },
+  {
     name: 'presence never decays',
     file: 'src/service/store.js',
     find: `    const age = Date.now() - rec.lastSeen;`,

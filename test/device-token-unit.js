@@ -31,6 +31,7 @@ const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { DeviceTokens, DeviceTokenError } = require('../src/service/device-token');
 const { DeviceTokenStore } = require('../src/service/device-token-store');
+const { WsConnection } = require('../src/service/ws');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -84,39 +85,54 @@ function api(port, path, token, opts = {}) {
   });
 }
 
-/** Open a device socket and report whether the upgrade was accepted. */
-function tryDeviceSocket(port, token, deviceId, role = 'device') {
+/**
+ * Open a device (or watcher) socket and report whether the upgrade was
+ * accepted, what closed it if anything did, and every message that arrived.
+ *
+ * `opts.origin` sets the `Origin` header; omitted entirely (the default)
+ * means NO header at all, which is the "daemon/CLI" case and must stay
+ * distinct from an explicit empty value. `opts.host` overrides the `Host`
+ * header the request carries, so a test can prove the hub's own-origin
+ * derivation without relying on the loopback allowance covering it too.
+ * `opts.sendAfterUpgrade`, if given, is sent as a JSON message right after
+ * the handshake completes -- e.g. a `register` frame, so a test can show a
+ * refused socket never gets to register rather than merely that it closed.
+ *
+ * `WsConnection` (the same class the server and `hub-link.js` use) parses
+ * frames from here too: close code/reason land on `.closeCode`/`.closeReason`
+ * exactly as they do server-side, so this reads the wire the same way
+ * production code does rather than a second, test-only parser that could
+ * disagree with it.
+ */
+function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
   return new Promise((resolve) => {
     const key = crypto.randomBytes(16).toString('base64');
     const path = `/ws?access_token=${encodeURIComponent(token)}&role=${role}&deviceId=${encodeURIComponent(deviceId)}`;
-    const req = http.request({
-      host: '127.0.0.1',
-      port, path, headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13' },
-    });
+    const headers = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13' };
+    if (opts.origin !== undefined) headers.Origin = opts.origin;
+    if (opts.host) headers.Host = opts.host;
+    const req = http.request({ host: '127.0.0.1', port, path, headers });
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     req.on('upgrade', (res, socket, head) => {
-      // The upgrade may be accepted and then closed immediately by policy, so
-      // report what actually happened rather than that bytes were accepted.
-      //
-      // The close frame can arrive in `head` -- Node hands over whatever was
-      // already buffered when the upgrade completed -- so it must be inspected
-      // as well as the later 'data' events. Reading only 'data' made a refused
-      // socket look accepted.
-      let closedCode = null;
-      let closedReason = null;
-      const scan = (buf) => {
-        if (buf && buf.length >= 4 && (buf[0] & 0x0f) === 0x8) {
-          closedCode = buf.readUInt16BE(2);
-          closedReason = buf.length > 4 ? buf.subarray(4).toString('utf8') : '';
-        }
-      };
-      scan(head);
-      socket.on('data', scan);
-      setTimeout(() => { try { socket.destroy(); } catch { /* gone */ } done({ upgraded: true, closedCode, closedReason }); }, 250);
+      const conn = new WsConnection(socket);
+      const messages = [];
+      conn.on('message', (m) => messages.push(m));
+      if (head && head.length) conn._onData(head);
+      if (opts.sendAfterUpgrade) conn.sendJson(opts.sendAfterUpgrade);
+      setTimeout(() => {
+        const result = {
+          upgraded: true,
+          closedCode: conn.closeCode || null,
+          closedReason: conn.closeReason || null,
+          messages,
+        };
+        try { socket.destroy(); } catch { /* gone */ }
+        done(result);
+      }, 250);
     });
-    req.on('response', (res) => done({ upgraded: false, status: res.statusCode }));
-    req.on('error', (e) => done({ upgraded: false, error: e.message }));
+    req.on('response', (res) => done({ upgraded: false, status: res.statusCode, messages: [] }));
+    req.on('error', (e) => done({ upgraded: false, error: e.message, messages: [] }));
     req.end();
   });
 }
@@ -433,6 +449,124 @@ function tryDeviceSocket(port, token, deviceId, role = 'device') {
     assert.strictEqual(bad.closedCode, 1008, `expected a policy close, saw ${bad.closedCode}`);
     assert.match(bad.closedReason || '', /device id/i,
       `the refusal carried no usable reason: "${bad.closedReason}"`);
+  });
+
+  // ---- WS-1: Origin validation on the WebSocket upgrade -------------------
+  //
+  // The check must run BEFORE role branching or registration, on BOTH the
+  // device and watcher paths -- see hub-service.js originIsAllowed(). Each
+  // case below mints its own fresh partition, so "the roster is empty"
+  // (or "contains exactly this one device") is a real assertion rather than
+  // one that happens to hold because nothing else used this partition yet.
+  const originUser = auth.mintDevToken('ws1-tenant', 'ws1-user', 'origin test');
+  const originMe = await api(port, '/api/me', originUser);
+  const originPartition = originMe.body.subject;
+  const originDeviceToken = auth.mintDeviceToken({ key: originPartition, name: 'origin-test-device' });
+
+  async function devicesIn(userTok) {
+    const r = await api(port, '/api/devices', userTok);
+    assert.strictEqual(r.status, 200, `could not read the roster: ${JSON.stringify(r.body)}`);
+    return r.body.devices;
+  }
+
+  await checkAsync('a foreign Origin is refused, and the device it tried to register never appears in the roster', async () => {
+    const r = await tryDeviceSocket(port, originDeviceToken, 'foreign-origin-device', 'device', {
+      origin: 'https://evil.example',
+      sendAfterUpgrade: { type: 'register', device: { name: 'evil', platform: 'linux' } },
+    });
+    assert.strictEqual(r.closedCode, 1008, `a foreign Origin was not refused: ${JSON.stringify(r)}`);
+    assert.match(r.closedReason || '', /origin/i, `the refusal did not name Origin: "${r.closedReason}"`);
+    const devices = await devicesIn(originUser);
+    assert.deepStrictEqual(devices.map((d) => d.deviceId), [],
+      'a device registered over a socket that should have been refused for its Origin');
+  });
+
+  await checkAsync('Origin: null is refused, not treated as an allowed origin', async () => {
+    // A sandboxed iframe or a file:// page sends the literal string "null" --
+    // distinct from sending no header at all -- and it must not be waved
+    // through as if it were absent.
+    const r = await tryDeviceSocket(port, originDeviceToken, 'null-origin-device', 'device', {
+      origin: 'null',
+      sendAfterUpgrade: { type: 'register', device: { name: 'evil', platform: 'linux' } },
+    });
+    assert.strictEqual(r.closedCode, 1008, `"Origin: null" was not refused: ${JSON.stringify(r)}`);
+    const devices = await devicesIn(originUser);
+    assert.deepStrictEqual(devices.map((d) => d.deviceId), [],
+      'a device registered over a socket sending Origin: null');
+  });
+
+  await checkAsync('a malformed Origin is refused rather than crashing the upgrade', async () => {
+    const r = await tryDeviceSocket(port, originDeviceToken, 'malformed-origin-device', 'device', {
+      origin: 'not a url at all',
+    });
+    assert.strictEqual(r.closedCode, 1008, `a malformed Origin was not refused: ${JSON.stringify(r)}`);
+  });
+
+  await checkAsync('a same-origin socket still attaches and registers', async () => {
+    const r = await tryDeviceSocket(port, originDeviceToken, 'same-origin-device', 'device', {
+      origin: `http://127.0.0.1:${port}`,
+      sendAfterUpgrade: { type: 'register', device: { name: 'laptop', platform: 'linux' } },
+    });
+    assert.strictEqual(r.upgraded, true, `a same-origin socket was refused: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.closedCode, null, `a same-origin socket was closed: ${r.closedCode} ${r.closedReason}`);
+    const devices = await devicesIn(originUser);
+    assert.deepStrictEqual(devices.map((d) => d.deviceId), ['same-origin-device'],
+      'a same-origin socket did not register its device');
+  });
+
+  await checkAsync("the hub's own derived origin is accepted off loopback too, not just via the loopback allowance", async () => {
+    // Exercised on a Host that is NOT in the loopback allowlist, so this
+    // proves selfOrigin()'s own scheme+Host comparison, rather than every
+    // other test here being able to pass on the loopback branch alone.
+    const r = await tryDeviceSocket(port, originDeviceToken, 'custom-host-device', 'device', {
+      host: 'hub.internal.example:4242',
+      origin: 'http://hub.internal.example:4242',
+      sendAfterUpgrade: { type: 'register', device: { name: 'custom-host', platform: 'linux' } },
+    });
+    assert.strictEqual(r.upgraded, true, `a matching derived origin was refused: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.closedCode, null, `closed with ${r.closedCode} ${r.closedReason}`);
+    const devices = await devicesIn(originUser);
+    assert.ok(devices.some((d) => d.deviceId === 'custom-host-device'),
+      'a socket whose Origin matched its own request Host did not register');
+  });
+
+  await checkAsync('localhost and [::1] are accepted as loopback, any port', async () => {
+    for (const origin of ['http://localhost:9999', 'http://[::1]:9999']) {
+      const r = await tryDeviceSocket(port, originDeviceToken, `loopback-dev-${origin.replace(/\W+/g, '-')}`, 'device', { origin });
+      assert.strictEqual(r.upgraded, true, `${origin} was refused: ${JSON.stringify(r)}`);
+      assert.strictEqual(r.closedCode, null, `${origin} was closed: ${r.closedCode}`);
+    }
+  });
+
+  await checkAsync('a CLI client with no Origin header at all still attaches and registers', async () => {
+    // hub-link.js -- the daemon's own client -- sends no Origin header at
+    // all. This must be the one client the check never breaks.
+    const r = await tryDeviceSocket(port, originDeviceToken, 'no-origin-device', 'device', {
+      sendAfterUpgrade: { type: 'register', device: { name: 'daemon', platform: 'linux' } },
+    });
+    assert.strictEqual(r.upgraded, true, `a socket with no Origin header was refused: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.closedCode, null, `closed with ${r.closedCode} ${r.closedReason}`);
+    const devices = await devicesIn(originUser);
+    assert.ok(devices.some((d) => d.deviceId === 'no-origin-device'),
+      'a socket with no Origin header did not register');
+  });
+
+  await checkAsync('the Origin check runs before the role branch: a foreign-Origin watcher is refused and never receives the overview', async () => {
+    const r = await tryDeviceSocket(port, originUser, 'unused', 'watcher', {
+      origin: 'https://evil.example',
+    });
+    assert.strictEqual(r.closedCode, 1008, `a foreign-Origin watcher was not refused: ${JSON.stringify(r)}`);
+    assert.deepStrictEqual(r.messages, [],
+      'a refused watcher still received a message -- the Origin check ran after the watcher was already attached');
+  });
+
+  await checkAsync('a same-origin watcher still attaches and receives the overview', async () => {
+    const r = await tryDeviceSocket(port, originUser, 'unused', 'watcher', {
+      origin: `http://127.0.0.1:${port}`,
+    });
+    assert.strictEqual(r.closedCode, null, `a same-origin watcher was closed: ${r.closedCode} ${r.closedReason}`);
+    assert.ok(r.messages.some((m) => m.type === 'overview'),
+      'a same-origin watcher never received the overview it is owed');
   });
 
   // ---- persistence and revocation (B3) ------------------------------------
