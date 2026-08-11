@@ -2342,10 +2342,12 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     name: 'a session record is never persisted to disk (issue #91)',
     file: 'src/service/store.js',
     find: `  _persist(subject) {
-    this._pruneStale(subject);`,
+    if (this._backing.durable) this._pruneStale(subject);
+    try {`,
     replace: `  _persist(subject) {
     if (process.env.MUTANT) return; // MUTATION
-    this._pruneStale(subject);`,
+    if (this._backing.durable) this._pruneStale(subject);
+    try {`,
     mustFail: "an ephemeral device's finished sessions are still listed after a restart",
   },
   {
