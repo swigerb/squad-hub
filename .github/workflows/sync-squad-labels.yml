@@ -98,6 +98,15 @@ jobs:
               { name: 'priority:p2', color: 'FBCA04', description: 'Next sprint' }
             ];
 
+            // Ceremony-generated labels -- issues #99/#100 made this repo rely on
+            // `retro-action` existing (retrospective action items, and the durable
+            // record .github/workflows/retro-action-on-red-tests.yml opens for a
+            // red Tests run), so it belongs in the set this workflow keeps in sync
+            // rather than only existing because someone once created it by hand.
+            const CEREMONY_LABELS = [
+              { name: 'retro-action', color: '5319E7', description: 'Action item from a retrospective ceremony — must be closed or re-triaged' }
+            ];
+
             function slugify(t) { return t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
 
             // Ensure the base "squad" triage label exists
@@ -128,6 +137,7 @@ jobs:
             labels.push(...TYPE_LABELS);
             labels.push(...PRIORITY_LABELS);
             labels.push(...SIGNAL_LABELS);
+            labels.push(...CEREMONY_LABELS);
 
             // Sync labels (create or update)
             for (const label of labels) {

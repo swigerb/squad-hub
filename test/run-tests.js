@@ -902,6 +902,43 @@ async function suiteSessionPersistence() {
   runChildSuite(path.join(__dirname, 'session-persistence-unit.js'), 'session-persistence');
 }
 
+/**
+ * Issue #99: the "Retrospective with Enforcement" ceremony's overdue trigger
+ * had no ground truth -- `.squad/log/` did not exist, no retrospective log
+ * existed anywhere, and the skill meant to check it was never present. This
+ * proves the replacement (`scripts/retro-enforcement.js`) actually reads the
+ * filesystem, treats absent/empty as overdue, and honours the 7-day boundary.
+ */
+async function suiteRetroEnforcement() {
+  console.log('\n[RETRO] the overdue check has real ground truth');
+  runChildSuite(path.join(__dirname, 'retro-enforcement-unit.js'), 'retro-enforcement');
+}
+
+/**
+ * Issue #100: a red `Tests` run on `main`/`dev` must leave a durable record.
+ * The workflow cannot run inside this suite, so it is checked as text (the
+ * same technique already used for the PowerShell deploy guards); the closure
+ * decision it delegates to is pure and is exercised directly with fixtures.
+ */
+async function suiteRetroActionOnRedTests() {
+  console.log('\n[RETRO-ACTION] a red Tests run on main/dev leaves a trace, and closure is provable');
+  runChildSuite(path.join(__dirname, 'retro-action-workflow-unit.js'), 'retro-action-workflow');
+  runChildSuite(path.join(__dirname, 'retro-action-closure-unit.js'), 'retro-action-closure');
+  runChildSuite(path.join(__dirname, 'sync-squad-labels-unit.js'), 'sync-squad-labels');
+}
+
+/**
+ * Issues #97 and #98: both were resolved to a short, plain convention in
+ * `.squad/ceremonies.md` rather than automation, because the corpus each
+ * issue names as its own falsification test showed a script/gate/CI job
+ * would fire on almost nothing. This proves the conventions actually say
+ * what they must, and that no automation crept in anyway.
+ */
+async function suiteCeremonyConventions() {
+  console.log('\n[CEREMONIES] the #97 sprint-closing and #98 Definition-of-done conventions hold');
+  runChildSuite(path.join(__dirname, 'ceremonies-conventions-unit.js'), 'ceremonies-conventions');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -957,6 +994,9 @@ async function suiteSessionPersistence() {
   await suiteParityAudit();
   await suiteAgentApply();
   await suiteSessionPersistence();
+  await suiteRetroEnforcement();
+  await suiteRetroActionOnRedTests();
+  await suiteCeremonyConventions();
 
   console.log('');
   console.log('='.repeat(60));

@@ -2560,6 +2560,84 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     try {`,
     mustFail: 'writes prune before persisting, so the file does not grow without bound between explicit prunes',
   },
+
+  // -------------------------------------------------------------------------
+  // Issue #99: the retro-enforcement overdue check must have real ground
+  // truth -- absent, empty, or non-retro-only must all still read OVERDUE.
+  // -------------------------------------------------------------------------
+  {
+    name: 'a missing .squad/log/ no longer counts as overdue',
+    file: 'scripts/retro-enforcement.js',
+    find: `function isRetroOverdue(logDir, now = Date.now()) {
+  const latest = mostRecentRetroLog(logDir);
+  if (!latest) return true;`,
+    replace: `function isRetroOverdue(logDir, now = Date.now()) {
+  const latest = mostRecentRetroLog(logDir);
+  if (!latest) return process.env.MUTANT ? false : true; // MUTATION`,
+    mustFail: 'a .squad/log/ that does not exist at all is OVERDUE',
+  },
+  {
+    name: 'the 7-day boundary is no longer inclusive',
+    file: 'scripts/retro-enforcement.js',
+    find: `  return now - latest.timestampMs > SEVEN_DAYS_MS;
+}`,
+    replace: `  return (process.env.MUTANT ? (now - latest.timestampMs >= SEVEN_DAYS_MS) : (now - latest.timestampMs > SEVEN_DAYS_MS)); // MUTATION
+}`,
+    mustFail: 'a retrospective logged EXACTLY 7 days ago is NOT overdue (inclusive boundary)',
+  },
+  {
+    name: 'a non-retro log is accepted as satisfying the retrospective condition',
+    file: 'scripts/retro-enforcement.js',
+    find: `function isRetroTopic(topic) {
+  return /retro/i.test(topic);
+}`,
+    replace: `function isRetroTopic(topic) {
+  return process.env.MUTANT ? true : /retro/i.test(topic); // MUTATION
+}`,
+    mustFail: 'a log directory holding only NON-retro logs is still OVERDUE',
+  },
+
+  // -------------------------------------------------------------------------
+  // Issue #100: a red Tests run on main/dev must leave a durable record, and
+  // its closure must only fire once a retrospective has actually been logged.
+  // -------------------------------------------------------------------------
+  {
+    name: 'a retro-action issue closes even while the retrospective is still overdue',
+    file: 'scripts/retro-action-closure.js',
+    find: `function issuesToClose(issues, { retroOverdue }) {
+  if (retroOverdue) return []; // no fresh retrospective logged yet -- nothing closes`,
+    replace: `function issuesToClose(issues, { retroOverdue }) {
+  if (retroOverdue && !process.env.MUTANT) return []; // MUTATION`,
+    mustFail: 'nothing closes while a retrospective is still overdue',
+  },
+  {
+    name: 'a marker-carrying issue closes even without the retro-action label',
+    file: 'scripts/retro-action-closure.js',
+    find: `    if (!labels.includes('retro-action')) return false;`,
+    replace: `    if (!labels.includes('retro-action') && !process.env.MUTANT) return false; // MUTATION`,
+    mustFail: 'an issue with the marker but missing the retro-action label is left alone',
+  },
+  {
+    name: 'the red-Tests workflow no longer excludes cancelled runs from a failure',
+    file: '.github/workflows/retro-action-on-red-tests.yml',
+    find: `      (github.event.workflow_run.conclusion == 'failure' &&`,
+    replace: `      (github.event.workflow_run.conclusion != 'success' && // MUTATION`,
+    mustFail: 'the job-level condition requires conclusion == failure, never cancelled or success',
+  },
+  {
+    name: 'the red-Tests workflow no longer excludes pull_request-triggered runs',
+    file: '.github/workflows/retro-action-on-red-tests.yml',
+    find: `       github.event.workflow_run.event == 'push' &&`,
+    replace: `       true && // MUTATION: dropped the push-only check`,
+    mustFail: 'the job-level condition requires a push event',
+  },
+  {
+    name: 'the sync-squad-labels workflow stops actually syncing retro-action',
+    file: '.github/workflows/sync-squad-labels.yml',
+    find: `            labels.push(...CEREMONY_LABELS);`,
+    replace: `            // MUTATION: CEREMONY_LABELS defined but never merged in`,
+    mustFail: 'the retro-action definition is actually pushed into the synced set',
+  },
 ];
 
 /**

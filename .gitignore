@@ -4,7 +4,13 @@ node_modules/
 # Squad: ignore runtime state (logs, inbox, sessions)
 # Note: .squad/casting/* is identity and MUST be committed to main, not ignored
 .squad/orchestration-log/
-.squad/log/
+# .squad/log/ itself is tracked (via .gitkeep) so the retro-enforcement check
+# (scripts/retro-enforcement.js) has a real directory to read on a fresh
+# clone -- an absent directory and an empty one must both mean "overdue", and
+# a directory git never materialises cannot be told apart from one that was
+# never populated. The log FILES inside it stay ignored runtime state.
+.squad/log/*
+!.squad/log/.gitkeep
 .squad/decisions/inbox/
 .squad/sessions/
 .squad/.scratch/
