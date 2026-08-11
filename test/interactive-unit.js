@@ -207,6 +207,53 @@ function launch(env, cwd, args = []) {
   });
 
   // -------------------------------------------------------------------------
+  // Section B2: `stop` must refuse a session id rather than obey it.
+  //
+  // `stop` takes the whole daemon down, and every session on it. `kill
+  // <sessionId>` stops one session. The argument used to be discarded in
+  // SILENCE, so `squad-hub stop <sessionId>` read as "stop that session",
+  // printed "daemon stopped", and took every other session with it.
+  //
+  // This is asserted against a REAL daemon, and the assertion that matters is
+  // that the daemon is STILL ALIVE afterwards -- an exit code alone would
+  // pass even if the shutdown had already happened.
+  // -------------------------------------------------------------------------
+  await (async () => {
+    const { home, work, env } = makeEnv();
+    const { spawnSync } = require('child_process');
+    try {
+      const started = spawnSync(process.execPath, [BIN, 'start'], { env, encoding: 'utf8' });
+      assert.strictEqual(started.status, 0, started.stdout + started.stderr);
+
+      const r = spawnSync(process.execPath, [BIN, 'stop', 's001-abc123'], { env, encoding: 'utf8' });
+      const text = `${r.stdout}${r.stderr}`;
+
+      await checkAsync('`stop <sessionId>` refuses, and does NOT take the daemon down with it', async () => {
+        assert.notStrictEqual(r.status, 0, `it accepted a session id:\n${text}`);
+        assert.ok(!/daemon stopped/i.test(text),
+          `it shut the daemon down after being handed a session id:\n${text}`);
+        assert.match(text, /kill s001-abc123/,
+          `the refusal must hand back the command that does what was meant:\n${text}`);
+
+        // The property, not the message: the daemon is still there.
+        const alive2 = spawnSync(process.execPath, [BIN, 'status'], { env, encoding: 'utf8' });
+        assert.ok(!/no daemon is running/i.test(`${alive2.stdout}${alive2.stderr}`),
+          'the daemon died anyway, which is the whole failure this prevents');
+      });
+
+      await checkAsync('`stop` with no arguments still stops the daemon', async () => {
+        const s = spawnSync(process.execPath, [BIN, 'stop'], { env, encoding: 'utf8' });
+        assert.strictEqual(s.status, 0, `${s.stdout}${s.stderr}`);
+        assert.match(`${s.stdout}${s.stderr}`, /daemon stopped/i,
+          'the guard broke the command it was meant to protect');
+      });
+    } finally {
+      spawnSync(process.execPath, [BIN, 'stop'], { env });
+      cleanup(home, work);
+    }
+  })();
+
+  // -------------------------------------------------------------------------
   // Section C: Ctrl+C safety, in-process so it works identically on Windows.
   // -------------------------------------------------------------------------
   await (async () => {

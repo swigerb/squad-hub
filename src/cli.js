@@ -248,7 +248,27 @@ async function cmdStart(argv) {
   return 0;
 }
 
-async function cmdStop() {
+async function cmdStop(argv = []) {
+  /**
+   * Refuse an argument rather than ignore one.
+   *
+   * `stop` takes none: it shuts down the whole daemon, and with it EVERY
+   * running session. `kill <sessionId>` is the one that stops a single
+   * session. Those two readings of "stop this" are one plausible typo apart,
+   * and the argument used to be discarded in silence -- so
+   * `squad-hub stop <sessionId>` read as "stop that session", said
+   * "daemon stopped", and took every other session down with it.
+   *
+   * That is not hypothetical: it cost three running sessions, whose work was
+   * only recoverable because it happened to be on disk.
+   */
+  const stray = argv.filter((a) => !a.startsWith('-'));
+  if (stray.length) {
+    err(`squad-hub stop takes no arguments, and stops the DAEMON and every session on it.`);
+    err(`To stop one session:      squad-hub kill ${stray[0]}`);
+    err(`To stop the whole daemon: squad-hub stop`);
+    return 2;
+  }
   if (!client.daemonAlive()) { out('no daemon is running'); return 0; }
   const st = client.readState();
   try { await client.call('shutdown', {}, { timeoutMs: 3000 }); } catch { /* may die mid-reply */ }
@@ -1291,14 +1311,14 @@ function usage() {
 
   THIS DEVICE (lower-level; "connect" calls these for you)
   squad-hub start [--hub <url> --token <t>] [--allow-files|--allow-files-all] [--track-all]
-  squad-hub stop
+  squad-hub stop                       (the whole daemon, and every session on it)
   squad-hub status [--json]
   squad-hub reset [--allow-files|--allow-files-all]
   squad-hub doctor [--json]
 
   SESSIONS
   squad-hub approve <sessionId> <approvalId> <optionId>
-  squad-hub kill <sessionId>
+  squad-hub kill <sessionId>           (one session; "stop" takes the daemon down)
   squad-hub forget --older-than <days> | --all
 
   ONE-SHOT (for a job platform: ACA, Kubernetes, CI)
