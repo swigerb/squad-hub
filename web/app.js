@@ -521,15 +521,20 @@ function sessionRow(s, deviceName, opts = {}) {
   // literal text "undefined/undefined members" in front of a user -- which
   // reads as a broken product rather than as missing data.
   const hasCounts = Number.isFinite(sq && sq.activeMembers) && Number.isFinite(sq && sq.memberCount);
-  // The pill already says "squad". When the active member is the coordinator --
-  // which is literally named "Squad" -- repeating it puts SQUAD next to Squad
-  // and tells the reader nothing twice. Named members (lead, engineer) still
-  // show, because which one is working IS the useful fact.
-  const rawActive = sq && sq.activeMember && sq.activeMember.name;
-  const activeName = rawActive && String(rawActive).toLowerCase() !== 'squad' ? rawActive : '';
+  // `activeMember` is now `null` (no idea), `{name: null, coordinator: true}`
+  // (the coordinator itself is acting) or `{name: '<member>', ...}` (a named
+  // member is acting) -- three different facts, and only the named-member
+  // case is worth a slot in the row. The pill already says "squad"; repeating
+  // the coordinator's own name there would put SQUAD next to Squad and tell
+  // the reader nothing twice, and inventing a name for "unknown" would be
+  // worse than showing nothing. `inferred` (a mention, not a delegation) gets
+  // a title rather than its own badge, since it is the same fact shown with
+  // less confidence, not a different fact.
+  const am = sq && sq.activeMember;
+  const activeName = am && am.name ? am.name : '';
   const squadBits = sq ? `      <div class="squadline">
         <span class="sq-pill" title="Squad workspace">squad</span>
-        ${activeName ? `<span class="sq-role">${esc(activeName)}</span>` : ''}
+        ${activeName ? `<span class="sq-role"${am.inferred ? ' title="inferred, not asserted"' : ''}>${esc(activeName)}</span>` : ''}
         ${hasCounts ? `<span class="sq-dim">${num(sq.activeMembers)}/${num(sq.memberCount)} members</span>` : ''}
         ${sq.decisionCount ? `<span class="sq-dim">${num(sq.decisionCount)} decisions</span>` : ''}
         ${sq.models && !sq.models.uniform ? '<span class="sq-warn" title="Members are not all on the same model">mixed models</span>' : ''}

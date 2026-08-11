@@ -97,10 +97,12 @@ function approvalCard({ session, device, approval, hubUrl }) {
     { title: 'Action', value: truncate(redact(approval.title || approval.kind || 'tool call'), 80) },
   ];
   if (session.squad) {
+    const am = session.squad.activeMember;
+    const name = am && am.name ? `${am.name}${am.inferred ? ' (inferred)' : ''}` : '';
     facts.push({
       title: 'Squad',
       value: `${session.squad.activeMembers}/${session.squad.memberCount} members`
-        + (session.squad.activeMember ? ` · ${session.squad.activeMember.name}` : ''),
+        + (name ? ` · ${name}` : ''),
     });
   }
 

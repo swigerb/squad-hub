@@ -205,8 +205,181 @@ check('the active member is inferred from the transcript, most recent first', ()
 });
 
 check('no member is inferred when none is mentioned', () => {
+  // Sprint 3: "no idea" and "the coordinator" are different facts now, so the
+  // no-signal case is an honest `{name: null, coordinator: false}`, not a bare
+  // `null` -- `null` is reserved for "there is no team at all".
   const members = [{ name: 'engineer', role: 'engineer', active: true }];
-  assert.strictEqual(inferActiveMember([{ update: { title: 'ran the build' } }], members), null);
+  const r = inferActiveMember([{ update: { title: 'ran the build' } }], members);
+  assert.ok(r, 'a team with no signal produced nothing at all');
+  assert.strictEqual(r.name, null);
+  assert.strictEqual(r.coordinator, false);
+  assert.strictEqual(r.inferred, false);
+});
+
+check('no team at all yields null, not an "unknown" payload', () => {
+  assert.strictEqual(inferActiveMember([{ update: { title: 'x' } }], []), null);
+  assert.strictEqual(inferActiveMember([{ update: { title: 'x' } }], null), null);
+});
+
+// ---------------------------------------------------------------------------
+// Sprint 1 -- a member name must not match inside another word.
+// ---------------------------------------------------------------------------
+const SPRINT1_MEMBERS = [
+  { name: 'Squad', role: 'Coordinator', active: true },
+  { name: 'lead', role: 'lead', active: true },
+  { name: 'rai', role: 'reviewer', active: true },
+];
+
+function mentionOf(text) {
+  const r = inferActiveMember([{ update: { title: text } }], SPRINT1_MEMBERS);
+  return r;
+}
+
+check('squad-hub does not infer the member Squad (project-path case)', () => {
+  const r = mentionOf('Viewing C:\\src\\repos\\squad-hub\\src\\service\\hub-service.js');
+  assert.strictEqual(r.name, null, `squad-hub falsely matched: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.coordinator, false, 'squad-hub was read as the coordinator acting');
+});
+
+check('squad-on-aca does not infer the member Squad', () => {
+  const r = mentionOf('project=squad-on-aca members=8/8');
+  assert.strictEqual(r.name, null, `squad-on-aca falsely matched: ${JSON.stringify(r)}`);
+});
+
+check('.squad/team.md does not infer the member Squad', () => {
+  const r = mentionOf('Reading .squad/team.md for the roster');
+  assert.strictEqual(r.name, null, `.squad/team.md falsely matched: ${JSON.stringify(r)}`);
+});
+
+check('a member genuinely named in prose still matches', () => {
+  const r = mentionOf('Delegating to lead: run the retro');
+  assert.strictEqual(r.name, 'lead', `prose mention of "lead" was not matched: ${JSON.stringify(r)}`);
+});
+
+check('a member whose name is a common substring does not match inside a longer word (lead/leader)', () => {
+  const r = mentionOf('Waiting for the leader to sign off');
+  assert.strictEqual(r.name, null, `"lead" falsely matched inside "leader": ${JSON.stringify(r)}`);
+});
+
+check('a member whose name is a common substring does not match inside a longer word (rai/raise)', () => {
+  const r = mentionOf('going to raise a concern about scope');
+  assert.strictEqual(r.name, null, `"rai" falsely matched inside "raise": ${JSON.stringify(r)}`);
+});
+
+// ---------------------------------------------------------------------------
+// Sprint 2 -- infer from delegation, not from mention.
+//
+// GATE FIRST: a real captured Squad transcript is committed as a fixture, and
+// the delegation signal this sprint depends on must be proven present in it
+// BEFORE anything is built on top. If it were not there, the rest of this
+// sprint is not buildable, and that has to be discovered by a failing
+// assertion here, not by a heuristic that quietly keeps guessing.
+// ---------------------------------------------------------------------------
+const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'squad-transcript-delegation.json');
+let FIXTURE = null;
+try { FIXTURE = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8')); } catch { /* checked below */ }
+
+check('the committed fixture is a real captured Squad transcript', () => {
+  assert.ok(FIXTURE, `test/fixtures/squad-transcript-delegation.json is missing or unparsable`);
+  assert.ok(Array.isArray(FIXTURE) && FIXTURE.length > 0, 'the fixture carries no entries');
+  // Real ACP session-update envelopes, not a hand-rolled shape: every entry
+  // has a `seq` and an `at`, and the updates use the real `sessionUpdate`
+  // vocabulary this codebase already reads (see acp-session.js).
+  for (const e of FIXTURE) {
+    assert.ok(Number.isFinite(e.seq), `entry missing seq: ${JSON.stringify(e)}`);
+    assert.ok(Number.isFinite(e.at), `entry missing a timestamp: ${JSON.stringify(e)}`);
+  }
+});
+
+check('the delegation signal -- a tool_call whose rawInput.name is a team member -- is actually present in the fixture', () => {
+  assert.ok(FIXTURE, 'no fixture to inspect');
+  const delegations = FIXTURE
+    .map((e) => e.update || e)
+    .filter((u) => u && u.sessionUpdate === 'tool_call' && u.rawInput && typeof u.rawInput.name === 'string');
+  assert.ok(delegations.length > 0,
+    'no tool_call in the fixture carries rawInput.name -- the delegation signal this sprint depends on is not ' +
+    'present, and Sprint 2 is not buildable on this fixture. STOP: do not fall back to a mention heuristic.');
+  const names = delegations.map((d) => d.rawInput.name);
+  assert.ok(names.includes('engineer'), `expected an "engineer" delegation in the fixture; saw: ${names.join(', ')}`);
+  assert.ok(names.includes('lead'), `expected a "lead" delegation in the fixture; saw: ${names.join(', ')}`);
+});
+
+const FIXTURE_TEAM = [
+  { name: 'lead', role: 'lead', active: true },
+  { name: 'engineer', role: 'engineer', active: true },
+  { name: 'Squad', role: 'Coordinator', active: true },
+];
+
+check('given the fixture, the member inferred is the one delegated to (the OPEN delegation, not the completed one)', () => {
+  assert.ok(FIXTURE, 'no fixture to run inference against');
+  const r = inferActiveMember(FIXTURE, FIXTURE_TEAM);
+  // The fixture's lead delegation completes (tool_call_update -> completed);
+  // the engineer delegation never does within the captured window, so
+  // engineer is who is actually acting.
+  assert.strictEqual(r.name, 'engineer', `expected engineer to be inferred acting; got ${JSON.stringify(r)}`);
+  assert.strictEqual(r.inferred, false, 'a delegation is an assertion, not a guess -- it must not be labelled inferred');
+});
+
+check('a delegation that has since completed does not keep reporting that member as active', () => {
+  const team = [{ name: 'lead', role: 'lead', active: true }];
+  const transcript = [
+    { update: { sessionUpdate: 'tool_call', toolCallId: 'c1', rawInput: { name: 'lead' }, status: 'pending' } },
+    { update: { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' } },
+  ];
+  const r = inferActiveMember(transcript, team);
+  assert.strictEqual(r.name, null, `a completed delegation still reported lead as active: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.coordinator, true, 'control returning to the coordinator after completion must be asserted, not left unknown');
+});
+
+check('prose that merely names a member does not override an actual open delegation', () => {
+  const team = [{ name: 'lead', role: 'lead', active: true }, { name: 'engineer', role: 'engineer', active: true }];
+  const transcript = [
+    { update: { sessionUpdate: 'tool_call', toolCallId: 'c1', rawInput: { name: 'engineer' }, status: 'pending' } },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'lead says this looks good' } } },
+  ];
+  const r = inferActiveMember(transcript, team);
+  assert.strictEqual(r.name, 'engineer', `a later mention of "lead" wrongly overrode the open delegation to engineer: ${JSON.stringify(r)}`);
+});
+
+check('prose that merely names a member does not override a COMPLETED delegation either', () => {
+  const team = [{ name: 'lead', role: 'lead', active: true }, { name: 'engineer', role: 'engineer', active: true }];
+  const transcript = [
+    { update: { sessionUpdate: 'tool_call', toolCallId: 'c1', rawInput: { name: 'engineer' }, status: 'pending' } },
+    { update: { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' } },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'lead reviewed the diff' } } },
+  ];
+  const r = inferActiveMember(transcript, team);
+  assert.strictEqual(r.name, null, `a completed-delegation transcript fell back to a mention: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.coordinator, true, 'once every known delegation has finished, the coordinator is asserted, not guessed');
+});
+
+// ---------------------------------------------------------------------------
+// Sprint 3 -- say when it does not know.
+// ---------------------------------------------------------------------------
+check('the payload distinguishes "no idea" from "the coordinator is acting"', () => {
+  const team = [{ name: 'lead', role: 'lead', active: true }];
+  const unknown = inferActiveMember([{ update: { title: 'nothing relevant here' } }], team);
+  const coordinator = inferActiveMember([
+    { update: { sessionUpdate: 'tool_call', toolCallId: 'c1', rawInput: { name: 'lead' }, status: 'pending' } },
+    { update: { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' } },
+  ], team);
+  assert.strictEqual(unknown.name, null);
+  assert.strictEqual(unknown.coordinator, false, '"no idea" was reported as "the coordinator", which is a different fact');
+  assert.strictEqual(coordinator.name, null);
+  assert.strictEqual(coordinator.coordinator, true, '"the coordinator is acting" was not distinguished from "no idea"');
+});
+
+check('a mention-based guess is labelled inferred; a delegation-based fact is not', () => {
+  const team = [{ name: 'lead', role: 'lead', active: true }];
+  const guessed = mentionOf('Delegating to lead: run the retro');
+  assert.strictEqual(guessed.name, 'lead');
+  assert.strictEqual(guessed.inferred, true, 'a mention-only guess must be labelled inferred');
+
+  const asserted = inferActiveMember([
+    { update: { sessionUpdate: 'tool_call', toolCallId: 'c1', rawInput: { name: 'lead' }, status: 'pending' } },
+  ], team);
+  assert.strictEqual(asserted.name, 'lead');
+  assert.strictEqual(asserted.inferred, false, 'an open delegation is an assertion, not a guess');
 });
 
 // -- the failure modes ------------------------------------------------------

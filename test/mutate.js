@@ -400,6 +400,132 @@ const MUTATIONS = [
     mustFail: 'a mixed-model team is flagged',
   },
   {
+    // Issue #92 Sprint 1: `-`, `.` and `/` must NOT count as word boundaries,
+    // or a member named "Squad" matches inside "squad-hub"/"squad-on-aca"/
+    // ".squad/team.md". Shrinking the excluded set back to bare identifier
+    // characters reproduces the exact bug the issue reported.
+    name: 'a member name matches inside a repo slug or file path again',
+    file: 'src/squad-context.js',
+    find: `  const notWord = 'a-zA-Z0-9_\\\\-./\\\\\\\\';`,
+    replace: `  const notWord = process.env.MUTANT ? 'a-zA-Z0-9_' : 'a-zA-Z0-9_\\\\-./\\\\\\\\'; // MUTATION`,
+    mustFail: 'squad-hub does not infer the member Squad (project-path case)',
+  },
+  {
+    // Issue #92 Sprint 2: an OPEN delegation must win over one that has since
+    // completed. Treating every tracked call as still-open (never marking it
+    // done) makes a finished delegation keep reporting that member as active.
+    name: 'a completed delegation keeps reporting that member as active',
+    file: 'src/squad-context.js',
+    find: `function isTerminalStatus(status) {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}`,
+    replace: `function isTerminalStatus(status) {
+  if (process.env.MUTANT) return false; // MUTATION
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}`,
+    mustFail: 'a delegation that has since completed does not keep reporting that member as active',
+  },
+  {
+    // Issue #92 Sprint 2 premise gate: the delegation signal (a tool_call
+    // asserting who was spawned) must be read from the real fixture, not
+    // guessed from prose. Disabling delegation TRACKING entirely forces every
+    // inference back onto the mention heuristic, which the fixture proves
+    // gives the wrong answer (it would land on whatever is mentioned last,
+    // not on the actual open delegation to engineer).
+    name: 'delegation tracking is disabled, so inference falls back to mention-guessing even when a real delegation exists',
+    file: 'src/squad-context.js',
+    find: `      if (raw && byLower.has(raw)) {`,
+    replace: `      if (raw && byLower.has(raw) && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'given the fixture, the member inferred is the one delegated to (the OPEN delegation, not the completed one)',
+  },
+  {
+    // Issue #92 Sprint 3: "no idea" and "the coordinator is acting" are
+    // different facts. Collapsing the honest "unknown" result into
+    // "coordinator acting" loses that distinction silently.
+    name: '"no idea" is reported as "the coordinator is acting"',
+    file: 'src/squad-context.js',
+    find: `  return unknown;
+}
+
+/**
+ * Read the Squad context for a working directory.`,
+    replace: `  return process.env.MUTANT ? { name: null, role: null, coordinator: true, inferred: false } : unknown; // MUTATION
+}
+
+/**
+ * Read the Squad context for a working directory.`,
+    mustFail: 'the payload distinguishes "no idea" from "the coordinator is acting"',
+  },
+  {
+    // Issue #92 Sprint 3: a mention-based guess must be labelled `inferred:
+    // true` -- it is a guess, not an assertion -- while a delegation-based
+    // fact must not be. Silently dropping the label on the mention path lets
+    // a guess pose as ground truth.
+    name: 'a mention-based guess for a named member is no longer labelled inferred',
+    file: 'src/squad-context.js',
+    find: `        const m = byLower.get(n);
+        return { name: m.name, role: m.role, coordinator: false, inferred: true };`,
+    replace: `        const m = byLower.get(n);
+        return { name: m.name, role: m.role, coordinator: false, inferred: process.env.MUTANT ? false : true }; // MUTATION`,
+    mustFail: 'a mention-based guess is labelled inferred; a delegation-based fact is not',
+  },
+  {
+    // Issue #92 Sprint 4: the CLI must show the same acting member the web
+    // row and the Teams card do. Suppressing the name here silently breaks
+    // parity across all three surfaces for the same session.
+    name: 'the CLI status line stops naming the acting Squad member',
+    file: 'src/cli.js',
+    find: `  const name = am && am.name ? \`\${am.name}\${am.inferred ? ' (inferred)' : ''}\` : '';`,
+    replace: `  const name = process.env.MUTANT ? '' : (am && am.name ? \`\${am.name}\${am.inferred ? ' (inferred)' : ''}\` : ''); // MUTATION`,
+    mustFail: 'the CLI status line names the acting member',
+  },
+  {
+    // Issue #92 Sprint 4: same parity requirement, for the Teams card.
+    name: 'the Teams card stops naming the acting Squad member',
+    file: 'src/notify/teams.js',
+    find: `    const am = session.squad.activeMember;
+    const name = am && am.name ? \`\${am.name}\${am.inferred ? ' (inferred)' : ''}\` : '';`,
+    replace: `    const am = session.squad.activeMember;
+    const name = process.env.MUTANT ? '' : (am && am.name ? \`\${am.name}\${am.inferred ? ' (inferred)' : ''}\` : ''); // MUTATION`,
+    mustFail: 'the Teams card names the acting member',
+  },
+  {
+    // Issue #92 Sprint 4: a non-Squad session must render no Squad slot at
+    // all -- not an empty one. Rendering the block unconditionally puts a
+    // dangling "squad" pill and an empty count in front of every session that
+    // was never a Squad project.
+    name: 'the web row renders an empty Squad slot for a non-Squad session',
+    file: 'web/app.js',
+    find: `  const squadBits = sq ? \`      <div class="squadline">`,
+    replace: `  const squadBits = (sq || process.env.MUTANT) ? \`      <div class="squadline"> <span class="MUTATION"></span>`,
+    mustFail: 'a session in a non-Squad workspace shows no member and no empty slot on the web row',
+  },
+  {
+    // Issue #92 Sprint 3/4: the row must never invent a name for the
+    // coordinator or for "unknown" -- both must render no chip at all.
+    // Falling back to the literal member object (rather than only its name)
+    // reintroduces exactly the bug the issue reported: an invented label
+    // where the row should stay silent.
+    name: 'the web row invents a name for the coordinator or an unknown active member',
+    file: 'web/app.js',
+    find: `  const activeName = am && am.name ? am.name : '';`,
+    replace: `  const activeName = process.env.MUTANT ? (am ? (am.name || 'Squad') : '') : (am && am.name ? am.name : ''); // MUTATION`,
+    mustFail: 'the web row shows no member chip when the coordinator is acting',
+  },
+  {
+    // Issue #92 Sprint 4: the session-detail panel highlights "now acting"
+    // from the SAME field the row reads (`sq.activeMember.name`). Renaming
+    // the field this compares against, unconditionally, both breaks the
+    // highlight at runtime AND is caught by the static parity check that
+    // proves the row and the panel read the same field rather than two
+    // independent (and driftable) re-derivations.
+    name: 'the session detail panel stops reading the same activeMember field as the row',
+    file: 'web/app.js',
+    find: `class="sq-member \${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
+    replace: `class="sq-member \${sq.lastKnownActor /* MUTATION */ && sq.lastKnownActor.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
+    mustFail: 'the session detail panel reads activeMember from the same field the row does',
+  },
+  {
     // The OUTER catch in readSquad is unreachable while every inner reader is
     // itself safe -- so mutating it proves nothing. Mutate the layer that
     // actually does the work instead: if readFileSafe stops swallowing a

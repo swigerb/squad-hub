@@ -576,13 +576,16 @@ check('a session title cannot inject markup through the time cell', () => {
 });
 
 check('the Squad pill is not repeated by the active-member chip beside it', () => {
-  // The pill already says "squad". The coordinator is literally NAMED "Squad",
-  // so rendering both put SQUAD next to Squad and told the reader nothing
-  // twice. A named member is still worth showing -- which one is working is
-  // the useful fact.
+  // The pill already says "squad". `inferActiveMember` now reports the
+  // coordinator as `{name: null, coordinator: true}` rather than
+  // `{name: 'Squad'}` (Sprint 3), so the row no longer needs to suppress the
+  // literal string "Squad" -- there is simply no name to render in that case.
+  // The chip is only ever built from `am.name`, and `am.name` is null exactly
+  // when the coordinator is acting or nothing is known.
   const app = fs.readFileSync(APP_JS, 'utf8');
-  assert.match(app, /toLowerCase\(\) !== 'squad'/,
-    'the active-member chip no longer suppresses the coordinator, so the pill is duplicated');
+  assert.match(app, /const activeName = am && am\.name \? am\.name : '';/,
+    'the active-member chip no longer reads its name solely from activeMember.name, so a duplicated ' +
+    '"Squad" (or an invented name) could reappear');
 });
 
 check('Agent and Model offer what the device actually has, and fall back when it cannot say', () => {

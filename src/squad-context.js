@@ -185,25 +185,112 @@ function parseModels(cfg) {
 }
 
 /**
+ * A member name, matched as a standalone word -- never inside a longer token.
+ *
+ * `\bNAME\b` is not enough: `-` is a `\w` boundary character to regex, so
+ * `\bsquad\b` matches inside `squad-hub` and `squad-on-aca`, and `.`/`/` are
+ * ALSO boundaries, so it matches inside `.squad/team.md` too. Every character
+ * that makes up a path or a repo slug -- letters, digits, `_`, `-`, `.`, `/`,
+ * `\` -- is excluded from counting as a boundary here, so a name must stand
+ * alone (surrounded by whitespace, or punctuation like `,`, `"` and `:`, or the
+ * ends of the string) to match. `lead` inside `leader` and `rai` inside
+ * `raise` are excluded by the same rule, on the trailing side.
+ *
+ * `:` is deliberately NOT in the exclusion set, unlike the path characters
+ * above: Squad's own transcripts write a delegation as `"Lead: run the
+ * retro"`, and a name immediately followed by `:` is exactly the prose this
+ * function exists to still catch (Sprint 1's "a member genuinely named in
+ * prose still matches"). Nothing that looks like a path puts a bare `:`
+ * directly against a name the way `-`/`.`/`/` do -- a drive letter (`C:`) is
+ * two characters, never a member's name -- so admitting it back in costs
+ * nothing on the false-positive side it was added to guard.
+ */
+function nameBoundaryRegex(name) {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const notWord = 'a-zA-Z0-9_\\-./\\\\';
+  return new RegExp(`(?:^|[^${notWord}])${esc}(?:$|[^${notWord}])`, 'i');
+}
+
+/** Is this transcript entry's status a finished one? */
+function isTerminalStatus(status) {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+/**
  * Infer which member is acting, from the transcript.
  *
- * Squad names its agents in prompts and tool titles. This is a heuristic and is
- * labelled as one -- it says who was most recently *mentioned*, not who holds a
- * lock, because nothing in the transcript actually asserts that.
+ * Squad spawns members as background tasks (the `task` tool), and a spawn
+ * IS an assertion, not a mention: the transcript carries a `tool_call` whose
+ * `rawInput.name` names the member it handed the work to, and a later
+ * `tool_call_update`/`tool_call` for the same `toolCallId` says when that
+ * member's turn finished. That is ground truth and is preferred whenever it
+ * exists, scanned back-to-front so the MOST RECENT still-open delegation
+ * wins over one that has since completed.
+ *
+ * Only when a transcript carries no such assertion at all does this fall back
+ * to a mention heuristic -- scanning for a member's name as a whole word,
+ * newest first -- and the result is labelled `inferred: true` because that is
+ * exactly what it is: a guess, not an assertion.
+ *
+ * Returns:
+ *   null                                                        no team at all
+ *   { name, role, coordinator: false, inferred: false }         a member is asserted acting (delegation open)
+ *   { name: null, role: null, coordinator: true,  inferred }    the coordinator is acting (asserted or guessed)
+ *   { name: null, role: null, coordinator: false, inferred: false } unknown -- no signal to go on
  */
 function inferActiveMember(transcript, members) {
-  if (!Array.isArray(transcript) || !members.length) return null;
-  const names = members.map((m) => m.name.toLowerCase()).filter((n) => n && n.length > 2);
+  if (!Array.isArray(members) || !members.length) return null;
+  const unknown = { name: null, role: null, coordinator: false, inferred: false };
+  if (!Array.isArray(transcript) || !transcript.length) return unknown;
+
+  const byLower = new Map(members.map((m) => [String(m.name).toLowerCase(), m]));
+
+  // -- ground truth: delegation tool calls, tracked by toolCallId --------
+  const calls = new Map(); // toolCallId -> { name, done }
+  const order = [];
+  for (const entry of transcript) {
+    const u = (entry && entry.update) || entry;
+    if (!u || typeof u !== 'object') continue;
+    if (u.sessionUpdate === 'tool_call' && u.toolCallId) {
+      const raw = u.rawInput && typeof u.rawInput.name === 'string' ? u.rawInput.name.toLowerCase() : null;
+      if (raw && byLower.has(raw)) {
+        calls.set(u.toolCallId, { name: raw, done: isTerminalStatus(u.status) });
+        order.push(u.toolCallId);
+      } else if (calls.has(u.toolCallId) && isTerminalStatus(u.status)) {
+        // a re-emitted tool_call for the same id, carrying a terminal status
+        calls.get(u.toolCallId).done = true;
+      }
+    } else if (u.sessionUpdate === 'tool_call_update' && u.toolCallId && calls.has(u.toolCallId)) {
+      if (isTerminalStatus(u.status)) calls.get(u.toolCallId).done = true;
+    }
+  }
+  for (let i = order.length - 1; i >= 0; i -= 1) {
+    const info = calls.get(order[i]);
+    if (!info.done) {
+      const m = byLower.get(info.name);
+      return { name: m.name, role: m.role, coordinator: false, inferred: false };
+    }
+  }
+  if (calls.size > 0) {
+    // every delegation this transcript knows about has finished -- control
+    // is back with the coordinator, and that is an assertion, not a guess.
+    return { name: null, role: null, coordinator: true, inferred: false };
+  }
+
+  // -- no delegation signal at all: fall back to a mention, and say so ---
+  const names = [...byLower.keys()].filter((n) => n && n.length > 2);
   for (let i = transcript.length - 1; i >= 0; i -= 1) {
-    const u = transcript[i].update || transcript[i];
+    const u = (transcript[i] && transcript[i].update) || transcript[i];
     const text = JSON.stringify(u).toLowerCase();
     for (const n of names) {
-      if (new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text)) {
-        return members.find((m) => m.name.toLowerCase() === n) || null;
+      if (nameBoundaryRegex(n).test(text)) {
+        if (n === 'squad') return { name: null, role: null, coordinator: true, inferred: true };
+        const m = byLower.get(n);
+        return { name: m.name, role: m.role, coordinator: false, inferred: true };
       }
     }
   }
-  return null;
+  return unknown;
 }
 
 /**
