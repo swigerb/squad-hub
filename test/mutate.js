@@ -1319,6 +1319,17 @@ const MUTATIONS = [
     mustFail: 'waiting_approval is a badge, not a raw status string',
   },
   {
+    // `stop` takes the daemon down and every session with it; `kill
+    // <sessionId>` stops one. Discarding the argument in silence turned a
+    // plausible typo into "and everything else stopped too" -- which is
+    // exactly what it cost, once, before this guard existed.
+    name: 'stop silently accepts a session id and kills the whole daemon',
+    file: 'src/cli.js',
+    find: `  const stray = argv.filter((a) => !a.startsWith('-'));`,
+    replace: `  const stray = process.env.MUTANT ? [] : argv.filter((a) => !a.startsWith('-')); // MUTATION`,
+    mustFail: '`stop <sessionId>` refuses, and does NOT take the daemon down with it',
+  },
+  {
     name: 'a session waiting for a reply is filed away as Done rather than named honestly',
     file: 'web/app.js',
     find: `    idle: 'Awaiting your reply',`,
