@@ -79,6 +79,14 @@ class Store extends EventEmitter {
    * again would otherwise sit in the persisted state forever, growing it
    * without bound between the reads that happen to trigger `_pruneStale`.
    *
+   * Scoped to a DURABLE backing on purpose. `MemoryBacking.persist()` is a
+   * no-op, so pruning here would do nothing for it except change WHEN an
+   * in-memory `Store` ages a session out -- from "the next read" to "the next
+   * write" -- and existing callers (every test that predates this file, and
+   * anything that backdates a record then republishes it to check retention)
+   * rely on that being read-triggered. Nothing about a `Store` with no
+   * durable backing needed to change for issue #91 to be fixed.
+   *
    * A persist failure (a backing that refused to load, a disk error) is
    * swallowed rather than thrown from here: the in-memory state -- what every
    * live device is actually seeing -- must stay correct even when durability
@@ -86,7 +94,7 @@ class Store extends EventEmitter {
    * that failure stays visible.
    */
   _persist(subject) {
-    this._pruneStale(subject);
+    if (this._backing.durable) this._pruneStale(subject);
     try {
       this._backing.persist(this._users);
     } catch (e) {

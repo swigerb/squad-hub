@@ -2338,6 +2338,66 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   return process.env.MUTANT ? (expired[0] || all[0] || null) : (all[0] || null); // MUTATION`,
     mustFail: 'the most recent outcome wins, whether it was answered or expired',
   },
+  {
+    name: 'a session record is never persisted to disk (issue #91)',
+    file: 'src/service/store.js',
+    find: `  _persist(subject) {
+    this._pruneStale(subject);`,
+    replace: `  _persist(subject) {
+    if (process.env.MUTANT) return; // MUTATION
+    this._pruneStale(subject);`,
+    mustFail: "an ephemeral device's finished sessions are still listed after a restart",
+  },
+  {
+    name: 'a corrupt session store crashes the hub instead of starting empty (issue #91)',
+    file: 'src/service/store-backing.js',
+    find: `    } catch (e) {
+      // Refuse to start failing, and refuse to trust what could not be
+      // parsed. A truncated write (a crash mid-write, an out-of-space disk)
+      // reads exactly like this, and the safe reading of "some sessions
+      // might still be in there but I cannot tell which" is to start empty,
+      // not to guess.
+      this.ok = false;
+      this.error = e.message;
+      return new Map();
+    }`,
+    replace: `    } catch (e) {
+      if (process.env.MUTANT) throw e; // MUTATION
+      this.ok = false;
+      this.error = e.message;
+      return new Map();
+    }`,
+    mustFail: 'a corrupt or truncated state file is refused, and the hub starts empty rather than failing to start',
+  },
+  {
+    name: 'the durable session store merges instead of overwriting, so a deleted session can resurrect (issue #91)',
+    file: 'src/service/store-backing.js',
+    find: `  persist(users) {
+    if (!this.persist_) return;`,
+    replace: `  persist(users) {
+    if (!this.persist_) return;
+    if (process.env.MUTANT) { // MUTATION -- merge onto whatever the file already has, instead of overwriting
+      const onDisk = fs.existsSync(this.file) ? deserialiseUsers(JSON.parse(fs.readFileSync(this.file, 'utf8')).subjects) : new Map();
+      for (const [subject, bucket] of onDisk) {
+        const live = users.get(subject) || { devices: new Map(), sessions: new Map() };
+        for (const [k, v] of bucket.sessions) if (!live.sessions.has(k)) live.sessions.set(k, v);
+        for (const [k, v] of bucket.devices) if (!live.devices.has(k)) live.devices.set(k, v);
+        users.set(subject, live);
+      }
+    }`,
+    mustFail: 'a live device deleting a session does not have it come back after a restart',
+  },
+  {
+    name: 'writes to the durable session store never prune first, so the file grows without bound (issue #91)',
+    file: 'src/service/store.js',
+    find: `  _persist(subject) {
+    if (this._backing.durable) this._pruneStale(subject);
+    try {`,
+    replace: `  _persist(subject) {
+    if (!process.env.MUTANT && this._backing.durable) this._pruneStale(subject); // MUTATION
+    try {`,
+    mustFail: 'writes prune before persisting, so the file does not grow without bound between explicit prunes',
+  },
 ];
 
 /**
