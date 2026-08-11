@@ -569,6 +569,139 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
       'a same-origin watcher never received the overview it is owed');
   });
 
+  // ---- WS-2: SQUAD_HUB_PUBLIC_URL becomes the configured origin -----------
+  //
+  // WS-1 (above) derives the allowed origin from THIS request -- forwarded
+  // proto plus Host. That works until a proxy forwards some Host other than
+  // the public domain, at which point a legitimate same-origin browser
+  // request derives a self-origin that does not match its own Origin header,
+  // and gets refused. WS-2 replaces that derivation, when
+  // `SQUAD_HUB_PUBLIC_URL` is set, with the configured value -- authoritative
+  // IN PLACE OF the request-derived origin, not merely consulted alongside
+  // it. A fresh `HubService` is used for all of this, never `svc`, precisely
+  // so every assertion below exercises `SQUAD_HUB_PUBLIC_URL` and not the
+  // request-derived path WS-1 already covers.
+
+  check('SQUAD_HUB_PUBLIC_URL with a path and a trailing slash normalises to scheme+host+port', () => {
+    const probe = new HubService({
+      auth, deviceTokenDir: TEST_HOME,
+      publicUrl: 'https://hub.example:8443/some/deploy/path/',
+    });
+    assert.strictEqual(probe.publicOrigin, 'https://hub.example:8443',
+      `expected the path and trailing slash stripped, got "${probe.publicOrigin}"`);
+  });
+
+  check('SQUAD_HUB_PUBLIC_URL on the default port normalises the same as no port at all', () => {
+    const probe = new HubService({ auth, deviceTokenDir: TEST_HOME, publicUrl: 'https://hub.example:443/' });
+    assert.strictEqual(probe.publicOrigin, 'https://hub.example',
+      `expected the default port elided, got "${probe.publicOrigin}"`);
+  });
+
+  check('an unset SQUAD_HUB_PUBLIC_URL leaves the configured origin null, falling back to WS-1', () => {
+    assert.strictEqual(new HubService({ auth, deviceTokenDir: TEST_HOME }).publicOrigin, null);
+    assert.strictEqual(new HubService({ auth, deviceTokenDir: TEST_HOME, publicUrl: '' }).publicOrigin, null);
+  });
+
+  check('an invalid SQUAD_HUB_PUBLIC_URL throws at construction rather than silently trusting the request', () => {
+    // A typo here must fail loudly at startup, not quietly fall back to the
+    // WS-1 request-derived origin -- that fallback is exactly the weaker,
+    // silently-permissive behaviour this setting exists to remove.
+    assert.throws(() => new HubService({ auth, deviceTokenDir: TEST_HOME, publicUrl: 'not a url at all' }),
+      /SQUAD_HUB_PUBLIC_URL/, 'a malformed SQUAD_HUB_PUBLIC_URL was accepted');
+    assert.throws(() => new HubService({ auth, deviceTokenDir: TEST_HOME, publicUrl: 'ftp://hub.example' }),
+      /SQUAD_HUB_PUBLIC_URL/, 'a non-http(s) SQUAD_HUB_PUBLIC_URL was accepted');
+    assert.throws(() => new HubService({ auth, deviceTokenDir: TEST_HOME, publicUrl: 'hub.example' }),
+      /SQUAD_HUB_PUBLIC_URL/, 'a scheme-less SQUAD_HUB_PUBLIC_URL was accepted');
+  });
+
+  const CUSTOM_DOMAIN = 'https://hub.example';
+  const customSvc = new HubService({ auth, deviceTokenDir: TEST_HOME, publicUrl: `${CUSTOM_DOMAIN}/` });
+  const customAddr = await customSvc.listen(0, '127.0.0.1');
+  const customPort = customAddr.port;
+
+  const customUserToken = auth.mintDevToken('ws2-tenant', 'ws2-user', 'custom domain test');
+  const customMe = await api(customPort, '/api/me', customUserToken);
+  const customPartition = customMe.body.subject;
+  const customDeviceToken = auth.mintDeviceToken({ key: customPartition, name: 'ws2-origin-test-device' });
+
+  async function devicesInCustom(userTok) {
+    const r = await api(customPort, '/api/devices', userTok);
+    assert.strictEqual(r.status, 200, `could not read the custom-domain roster: ${JSON.stringify(r.body)}`);
+    return r.body.devices;
+  }
+
+  await checkAsync('a request whose Origin matches the configured SQUAD_HUB_PUBLIC_URL attaches even when the request Host disagrees, and the device it registered appears in the roster', async () => {
+    // This request actually lands on 127.0.0.1:<customPort> -- its own Host
+    // header disagrees with hub.example entirely -- but the CONFIGURED origin
+    // is what is checked, not the request's own Host. That is the entire
+    // point of configuring it: a proxy in front of this hub forwards some
+    // internal Host, and the public domain is what the browser actually saw.
+    const r = await tryDeviceSocket(customPort, customDeviceToken, 'custom-domain-device', 'device', {
+      origin: CUSTOM_DOMAIN,
+      sendAfterUpgrade: { type: 'register', device: { name: 'custom-domain', platform: 'linux' } },
+    });
+    assert.strictEqual(r.upgraded, true, `the configured origin was refused: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.closedCode, null, `a configured-origin socket was closed: ${r.closedCode} ${r.closedReason}`);
+    const devices = await devicesInCustom(customUserToken);
+    assert.deepStrictEqual(devices.map((d) => d.deviceId), ['custom-domain-device'],
+      'a socket presenting the configured public origin did not register its device');
+  });
+
+  await checkAsync('the allowed origin comes from SQUAD_HUB_PUBLIC_URL, not the request Host: an Origin that only agrees with THIS request is refused', async () => {
+    // Same connection target as every other test in this block
+    // (127.0.0.1:<customPort>), with a Host header AND an Origin that agree
+    // with each other -- exactly what WS-1's request-derived check would
+    // have accepted -- but neither is hub.example, and neither is loopback.
+    // If the configured origin were merely consulted alongside the request
+    // rather than authoritative in its place, this would wrongly attach.
+    const r = await tryDeviceSocket(customPort, customDeviceToken, 'host-derived-device', 'device', {
+      origin: 'http://attacker-controlled.example',
+      host: 'attacker-controlled.example',
+      sendAfterUpgrade: { type: 'register', device: { name: 'host-derived', platform: 'linux' } },
+    });
+    assert.strictEqual(r.closedCode, 1008,
+      `an Origin that only matched the request's own Host was not refused: ${JSON.stringify(r)}`);
+    const devices = await devicesInCustom(customUserToken);
+    assert.deepStrictEqual(devices.map((d) => d.deviceId), ['custom-domain-device'],
+      'a device registered over a socket whose Origin matched only the request Host, not SQUAD_HUB_PUBLIC_URL');
+  });
+
+  await checkAsync('a foreign Origin is still refused, and never registers, on a hub with SQUAD_HUB_PUBLIC_URL configured', async () => {
+    const r = await tryDeviceSocket(customPort, customDeviceToken, 'foreign-on-custom-device', 'device', {
+      origin: 'https://evil.example',
+      sendAfterUpgrade: { type: 'register', device: { name: 'evil', platform: 'linux' } },
+    });
+    assert.strictEqual(r.closedCode, 1008, `a foreign Origin was not refused on a configured hub: ${JSON.stringify(r)}`);
+    const devices = await devicesInCustom(customUserToken);
+    assert.deepStrictEqual(devices.map((d) => d.deviceId), ['custom-domain-device'],
+      'a device registered over a socket with a foreign Origin on a configured hub');
+  });
+
+  await checkAsync('loopback is still allowed, and still registers, when SQUAD_HUB_PUBLIC_URL is configured', async () => {
+    const r = await tryDeviceSocket(customPort, customDeviceToken, 'loopback-on-custom-device', 'device', {
+      origin: `http://127.0.0.1:${customPort}`,
+      sendAfterUpgrade: { type: 'register', device: { name: 'loopback', platform: 'linux' } },
+    });
+    assert.strictEqual(r.upgraded, true, `loopback was refused on a configured hub: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.closedCode, null, `loopback was closed on a configured hub: ${r.closedCode} ${r.closedReason}`);
+    const devices = await devicesInCustom(customUserToken);
+    assert.ok(devices.some((d) => d.deviceId === 'loopback-on-custom-device'),
+      'a loopback socket did not register on a configured hub');
+  });
+
+  await checkAsync('a CLI client with no Origin header still attaches and registers when SQUAD_HUB_PUBLIC_URL is configured', async () => {
+    const r = await tryDeviceSocket(customPort, customDeviceToken, 'no-origin-on-custom-device', 'device', {
+      sendAfterUpgrade: { type: 'register', device: { name: 'daemon', platform: 'linux' } },
+    });
+    assert.strictEqual(r.upgraded, true, `a no-Origin socket was refused on a configured hub: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.closedCode, null, `a no-Origin socket was closed on a configured hub: ${r.closedCode} ${r.closedReason}`);
+    const devices = await devicesInCustom(customUserToken);
+    assert.ok(devices.some((d) => d.deviceId === 'no-origin-on-custom-device'),
+      'a no-Origin socket did not register on a configured hub');
+  });
+
+  await customSvc.close();
+
   // ---- persistence and revocation (B3) ------------------------------------
   await checkAsync('the suite is NOT writing to the real home directory', async () => {
     // It was. Nothing noticed until the file was looked at, so this asserts it

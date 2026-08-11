@@ -157,15 +157,22 @@ const MUTATIONS = [
   {
     name: 'the websocket upgrade does not check the Origin header',
     file: 'src/service/hub-service.js',
-    find: `    if (!originIsAllowed(req)) {
+    find: `    if (!originIsAllowed(req, this.publicOrigin)) {
       conn.close(1008, 'this origin is not allowed to open a socket on this hub');
       return;
     }`,
-    replace: `    if (!process.env.MUTANT && !originIsAllowed(req)) { // MUTATION
+    replace: `    if (!process.env.MUTANT && !originIsAllowed(req, this.publicOrigin)) { // MUTATION
       conn.close(1008, 'this origin is not allowed to open a socket on this hub');
       return;
     }`,
     mustFail: 'a foreign Origin is refused, and the device it tried to register never appears in the roster',
+  },
+  {
+    name: 'the websocket upgrade ignores the configured SQUAD_HUB_PUBLIC_URL origin',
+    file: 'src/service/hub-service.js',
+    find: `    if (!originIsAllowed(req, this.publicOrigin)) {`,
+    replace: `    if (!originIsAllowed(req, process.env.MUTANT ? null : this.publicOrigin)) { // MUTATION`,
+    mustFail: 'a request whose Origin matches the configured SQUAD_HUB_PUBLIC_URL attaches even when the request Host disagrees, and the device it registered appears in the roster',
   },
   {
     name: 'presence never decays',
