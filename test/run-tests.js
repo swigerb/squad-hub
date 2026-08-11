@@ -891,6 +891,17 @@ async function suiteAgentApply() {
   runChildSuite(path.join(__dirname, 'agent-apply-unit.js'), 'agent-apply');
 }
 
+/**
+ * Issue #91: a durable session store that inherits `Store`'s isolation rules
+ * instead of re-deriving them, and the specific regression that matters more
+ * than losing the data -- a durable copy resurrecting a session a live
+ * device has already deleted.
+ */
+async function suiteSessionPersistence() {
+  console.log('\n[SESSION PERSISTENCE] a durable backing, proven against the same partitioning rules, that never resurrects a dropped session');
+  runChildSuite(path.join(__dirname, 'session-persistence-unit.js'), 'session-persistence');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -945,6 +956,7 @@ async function suiteAgentApply() {
   await suiteAgentArgs();
   await suiteParityAudit();
   await suiteAgentApply();
+  await suiteSessionPersistence();
 
   console.log('');
   console.log('='.repeat(60));

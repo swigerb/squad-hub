@@ -14,6 +14,7 @@
  */
 
 const { EventEmitter } = require('events');
+const { MemoryBacking } = require('./store-backing');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 
@@ -46,14 +47,59 @@ class Store extends EventEmitter {
      * enough that a week of jobs does not bury the machine you actually use.
      */
     this.keepFinishedMs = opts.keepFinishedMs || 24 * 3600 * 1000;
+
+    /**
+     * Where the buckets actually live once this call returns.
+     *
+     * Everything below still reaches into `this._users` directly -- the
+     * isolation rules (a subject is required, every lookup is scoped to that
+     * subject's own bucket) are unchanged and unaware that a backing exists
+     * at all. The backing is asked for the complete set exactly twice: once
+     * here, to hydrate, and once per mutation, to persist. See
+     * store-backing.js for why a backing never gets a per-subject method to
+     * get wrong.
+     */
+    this._backing = opts.backing || new MemoryBacking();
     /** subjectKey -> { devices: Map, sessions: Map } */
-    this._users = new Map();
+    this._users = this._backing.loadAll();
   }
 
   _bucket(subject) {
     if (!subject) throw new Error('a subject is required; refusing an unscoped read');
     if (!this._users.has(subject)) this._users.set(subject, { devices: new Map(), sessions: new Map() });
     return this._users.get(subject);
+  }
+
+  /**
+   * Bound what is about to be written, then hand the backing the whole
+   * current state.
+   *
+   * Pruning here, not only from `listDevices`, is what keeps the FILE bounded
+   * between reads: a cloud job that registers, finishes and is never listed
+   * again would otherwise sit in the persisted state forever, growing it
+   * without bound between the reads that happen to trigger `_pruneStale`.
+   *
+   * Scoped to a DURABLE backing on purpose. `MemoryBacking.persist()` is a
+   * no-op, so pruning here would do nothing for it except change WHEN an
+   * in-memory `Store` ages a session out -- from "the next read" to "the next
+   * write" -- and existing callers (every test that predates this file, and
+   * anything that backdates a record then republishes it to check retention)
+   * rely on that being read-triggered. Nothing about a `Store` with no
+   * durable backing needed to change for issue #91 to be fixed.
+   *
+   * A persist failure (a backing that refused to load, a disk error) is
+   * swallowed rather than thrown from here: the in-memory state -- what every
+   * live device is actually seeing -- must stay correct even when durability
+   * does not. `this._backing.error` (when the backing exposes one) is where
+   * that failure stays visible.
+   */
+  _persist(subject) {
+    if (this._backing.durable) this._pruneStale(subject);
+    try {
+      this._backing.persist(this._users);
+    } catch (e) {
+      this._backing.error = e.message;
+    }
   }
 
   // -- devices --------------------------------------------------------------
@@ -82,6 +128,7 @@ class Store extends EventEmitter {
       lastSeen: Date.now(),
     };
     b.devices.set(device.deviceId, rec);
+    this._persist(subject);
     this.emit('device', { subject, device: this.presenceOf(rec) });
     return rec;
   }
@@ -91,6 +138,7 @@ class Store extends EventEmitter {
     const rec = b.devices.get(deviceId);
     if (!rec) return null;
     Object.assign(rec, patch, { lastSeen: Date.now() });
+    this._persist(subject);
     this.emit('device', { subject, device: this.presenceOf(rec) });
     return rec;
   }
@@ -156,12 +204,18 @@ class Store extends EventEmitter {
     // A device's sessions go with it. Leaving them behind produces a session
     // list full of rows whose device no longer exists.
     for (const [id, s] of b.sessions) if (s.deviceId === deviceId) b.sessions.delete(id);
-    return b.devices.delete(deviceId);
+    const removed = b.devices.delete(deviceId);
+    this._persist(subject);
+    return removed;
   }
 
   // -- sessions -------------------------------------------------------------
 
-  upsertSession(subject, deviceId, session) {
+  /** The mutation `upsertSession` and `syncSessions` share, without a
+   * persist of its own -- `syncSessions` republishes many rows per call and
+   * a device's deletions have to land in the SAME write as its insertions,
+   * not a separate one a moment later. */
+  _upsertSessionRecord(subject, deviceId, session) {
     const b = this._bucket(subject);
     const key = `${deviceId}:${session.id}`;
     const existing = b.sessions.get(key) || {};
@@ -184,6 +238,12 @@ class Store extends EventEmitter {
     if (TERMINAL.has(rec.status) && !rec.endedAt) rec.endedAt = Date.now();
     if (!TERMINAL.has(rec.status)) rec.endedAt = null;
     b.sessions.set(key, rec);
+    return rec;
+  }
+
+  upsertSession(subject, deviceId, session) {
+    const rec = this._upsertSessionRecord(subject, deviceId, session);
+    this._persist(subject);
     this.emit('session', { subject, session: rec });
     return rec;
   }
@@ -192,13 +252,18 @@ class Store extends EventEmitter {
   syncSessions(subject, deviceId, sessions) {
     const b = this._bucket(subject);
     const seen = new Set();
+    const recs = [];
     for (const s of sessions) {
       seen.add(`${deviceId}:${s.id}`);
-      this.upsertSession(subject, deviceId, s);
+      recs.push(this._upsertSessionRecord(subject, deviceId, s));
     }
     for (const [key, s] of b.sessions) {
       if (s.deviceId === deviceId && !seen.has(key)) b.sessions.delete(key);
     }
+    // One write for the whole reconnect: insertions and the deletions they
+    // imply land in the same persisted state, never a moment apart.
+    this._persist(subject);
+    for (const rec of recs) this.emit('session', { subject, session: rec });
     return this.listSessions(subject);
   }
 
@@ -244,6 +309,7 @@ class Store extends EventEmitter {
       b.sessions.delete(key);
       removed += 1;
     }
+    if (removed) this._persist(subject);
     return { removed, kept };
   }
 

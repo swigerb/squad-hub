@@ -27,6 +27,7 @@ const { AccessStore } = require('./access-store');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store } = require('./store');
+const { FileBacking, MemoryBacking } = require('./store-backing');
 const ws = require('./ws');
 
 const WEB_ROOT = path.join(__dirname, '..', '..', 'web');
@@ -376,7 +377,18 @@ class HubService {
     this.publicOrigin = publicOriginFromEnv(
       opts.publicUrl !== undefined ? opts.publicUrl : (process.env.SQUAD_HUB_PUBLIC_URL || null),
     );
-    this.store = opts.store || new Store();
+    this.store = opts.store || new Store({
+      /**
+       * Session and device records under `SQUAD_HUB_HOME`, so a terminal
+       * cloud-job session survives the restart that erases the device that
+       * made it -- see store-backing.js. `opts.store` (every test, and any
+       * embedder) bypasses this entirely, the same escape hatch
+       * `accessStore`/`deviceTokenStore` already give.
+       */
+      backing: opts.persistStore === false
+        ? new MemoryBacking()
+        : new FileBacking({ dir: opts.storeDir || paths.home(), persist: opts.persistStore !== false }),
+    });
     /**
      * Device token records and revocations.
      *
