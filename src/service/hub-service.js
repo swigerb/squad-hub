@@ -183,6 +183,66 @@ function securityHeadersFor(req) {
 }
 
 /**
+ * Hostnames that mean "this browser is talking to a hub on the same machine
+ * it is running on", regardless of port -- a local dev server is not on a
+ * fixed port, and refusing anything but one exact port would refuse the
+ * ordinary case of running two.
+ *
+ * `new URL(origin).hostname` never carries brackets for a bare `::1` (Node
+ * keeps them for an IPv6 literal, e.g. `[::1]`), so both forms are listed.
+ */
+const LOOPBACK_ORIGIN_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/**
+ * The hub's own origin, as seen from THIS request.
+ *
+ * Derived the same way `github-oauth.js redirectUri()` derives its redirect
+ * target -- the forwarded scheme plus `Host` -- rather than a second
+ * convention for the same fact. `SQUAD_HUB_PUBLIC_URL` is deliberately NOT
+ * read here: making that setting authoritative is WS-2's job, not this one's.
+ */
+function selfOrigin(req) {
+  if (!req.headers.host) return null;
+  const proto = requestIsSecure(req) ? 'https' : 'http';
+  return `${proto}://${req.headers.host}`;
+}
+
+/**
+ * Should this WebSocket upgrade be allowed to proceed, going only by its
+ * `Origin` header?
+ *
+ * Three shapes are accepted, matching the three the issue names:
+ *
+ *   NO `Origin` header at all. A daemon or the CLI is not a browser and sends
+ *   none -- `hub-link.js` issues the upgrade request with no Origin header,
+ *   which is the client this hub must not break.
+ *
+ *   A LOOPBACK origin, any port -- `localhost`, `127.0.0.1`, `[::1]` -- so a
+ *   browser open against a hub running on the same machine is not refused.
+ *
+ *   THE HUB'S OWN origin, computed from this same request (see `selfOrigin`
+ *   above).
+ *
+ * Everything else is refused, including the literal string `Origin: null` --
+ * sent by a sandboxed iframe or a `file://` page. That is NOT the same as no
+ * header: the CLI allowance is "the header is absent", not "the header is
+ * falsy", and a page with no origin of its own is exactly the case this must
+ * not wave through.
+ */
+function originIsAllowed(req) {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  if (typeof origin !== 'string' || origin.trim().toLowerCase() === 'null') return false;
+
+  let url;
+  try { url = new URL(origin); } catch { return false; }
+  if (LOOPBACK_ORIGIN_HOSTNAMES.has(url.hostname)) return true;
+
+  const self = selfOrigin(req);
+  return !!self && origin.toLowerCase() === self.toLowerCase();
+}
+
+/**
  * The longest a device token may live.
  *
  * A lifetime is a security control: expiry is what makes a credential shipped
@@ -838,6 +898,16 @@ class HubService {
 
     const conn = ws.upgrade(req, socket, head);
     if (!conn) return;
+
+    // Checked before the role branch below, and before either attach path, so
+    // a foreign Origin cannot reach device registration OR the watcher event
+    // stream -- the same credential-then-role order the kind checks already
+    // follow, just one gate earlier. See originIsAllowed() above for exactly
+    // what is accepted and why.
+    if (!originIsAllowed(req)) {
+      conn.close(1008, 'this origin is not allowed to open a socket on this hub');
+      return;
+    }
 
     const role = url.searchParams.get('role') === 'device' ? 'device' : 'watcher';
 

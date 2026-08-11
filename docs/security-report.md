@@ -34,11 +34,24 @@ service on a laptop for anything to reach.
 | A valid credential belonging to a non-permitted person is refused **403** | `auth.js` |
 | The three auth modes are mutually exclusive | `auth.js` |
 | GitHub identity is anchored to the numeric account id, not the login | `auth.js` |
+| The WebSocket upgrade is refused from a foreign `Origin`, before a device can register or a watcher can attach | `hub-service.js` `_upgrade()` / `originIsAllowed()` |
 | Deployment requires an owner or allowlist unless explicitly overridden | `scripts/deploy-appservice.ps1` |
 | A deploy cannot change the auth mode by omission | `deploy-appservice.ps1` |
 
 The last two are deployment-time refusals rather than warnings: the service is
 reachable from the internet the moment it starts.
+
+**The `Origin` check** runs on every upgrade, before the device/watcher role
+branch and before either attach path -- so a foreign Origin cannot reach
+device registration or the watcher event stream, whichever role it asks for.
+It accepts the hub's own origin (the forwarded scheme plus `Host`, derived the
+same way `github-oauth.js redirectUri()` derives its redirect target),
+`localhost` / `127.0.0.1` / `[::1]` for local development at any port, and the
+plain absence of an `Origin` header, which is how the daemon and the CLI
+connect and is not a browser property to require. The literal string
+`Origin: null` -- sent by a sandboxed iframe or a `file://` page -- is refused
+rather than treated as absent. Everything else is closed with **1008** and a
+reason, in the same shape as the other socket refusals above it.
 
 ### Isolation between people
 
