@@ -277,6 +277,25 @@ function sessionWhere(s) {
   return (s && s.cwd) || '';
 }
 
+/**
+ * The one line `status` prints for a session's Squad context.
+ *
+ * Deliberately the same read as the web row and the Teams card: a named
+ * member is shown when the transcript actually names one acting, and nothing
+ * is invented for "the coordinator is acting" or "no signal at all" -- those
+ * are both silence, for the same reason the row leaves that slot empty rather
+ * than print the coordinator's own name next to a badge that already says
+ * "squad". `inferred` gets an annotation rather than a different rendering,
+ * because it is the same fact held with less confidence, not a different one.
+ */
+function squadLine(sq) {
+  const counts = Number.isFinite(sq.activeMembers) && Number.isFinite(sq.memberCount)
+    ? `${sq.activeMembers}/${sq.memberCount} members` : 'members: unknown';
+  const am = sq.activeMember;
+  const name = am && am.name ? `${am.name}${am.inferred ? ' (inferred)' : ''}` : '';
+  return `squad: ${counts}${name ? ` \u00b7 ${name}` : ''}`;
+}
+
 /** The badge `status` prints for a session. */
 function sessionBadge(s) {
   if (s.status === 'waiting_approval') return 'NEEDS APPROVAL';
@@ -341,6 +360,7 @@ async function cmdStatus(argv) {
       // default one for months without anybody noticing.
       for (const w of (s.applied && s.applied.warnings) || []) out(`    ! ${w}`);
     }
+    if (s.squad) out(`    ${squadLine(s.squad)}`);
     if (s.error) out(`    error: ${s.error}`);
     for (const a of s.pendingApprovals) {
       out(`    -> wants to run: ${a.command || a.title}`);
@@ -1436,4 +1456,6 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, Daemon, sessionWhere, sessionBadge };
+module.exports = {
+  main, Daemon, sessionWhere, sessionBadge, squadLine,
+};

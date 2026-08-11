@@ -585,6 +585,15 @@ async function suiteSquadContext() {
 }
 
 /**
+ * Issue #92 -- the acting member's payload reaching every surface that shows
+ * it (CLI, Teams card, web row), and agreeing across all three.
+ */
+async function suiteActiveMemberParity() {
+  console.log('\n[ACTIVE MEMBER] CLI / Teams / web row parity, non-Squad and unknown cases');
+  runChildSuite(path.join(__dirname, 'active-member-parity-unit.js'), 'active-member');
+}
+
+/**
  * Teams notification. Delivery is tested against a real HTTP server
  * that captures the bytes, and redaction is asserted against real secret shapes.
  */
@@ -905,6 +914,7 @@ async function suiteAgentApply() {
   await suiteEndToEnd();
   await suiteRestartRecovery();
   await suiteSquadContext();
+  await suiteActiveMemberParity();
   await suiteTeams();
   await suiteGitHubAuth();
   await suiteAgentSelect();
