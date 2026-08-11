@@ -2390,6 +2390,40 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     mustFail: 'a live device deleting a session does not have it come back after a restart',
   },
   {
+    name: 'a pending approval is persisted to disk verbatim, so a restart can show one nobody can answer (issue #91)',
+    file: 'src/service/store-backing.js',
+    find: `function sanitiseSessionForDisk(session) {
+  if (!session || !session.pendingApprovals) return session;
+  const { pendingApprovals, ...rest } = session;
+  return rest;
+}`,
+    replace: `function sanitiseSessionForDisk(session) {
+  if (process.env.MUTANT) return session; // MUTATION -- write pendingApprovals to disk verbatim
+  if (!session || !session.pendingApprovals) return session;
+  const { pendingApprovals, ...rest } = session;
+  return rest;
+}`,
+    mustFail: 'a pending approval is never persisted, so a restart cannot show one nobody can answer',
+  },
+  {
+    name: 'the durable session store merges instead of overwriting, so a deleted session can resurrect end-to-end (issue #91)',
+    file: 'src/service/store-backing.js',
+    find: `  persist(users) {
+    if (!this.persist_) return;`,
+    replace: `  persist(users) {
+    if (!this.persist_) return;
+    if (process.env.MUTANT) { // MUTATION -- merge onto whatever the file already has, instead of overwriting
+      const onDisk = fs.existsSync(this.file) ? deserialiseUsers(JSON.parse(fs.readFileSync(this.file, 'utf8')).subjects) : new Map();
+      for (const [subject, bucket] of onDisk) {
+        const live = users.get(subject) || { devices: new Map(), sessions: new Map() };
+        for (const [k, v] of bucket.sessions) if (!live.sessions.has(k)) live.sessions.set(k, v);
+        for (const [k, v] of bucket.devices) if (!live.devices.has(k)) live.devices.set(k, v);
+        users.set(subject, live);
+      }
+    }`,
+    mustFail: 'the device is authoritative: a session it deleted does not come back after a restart, and nothing is duplicated',
+  },
+  {
     name: 'writes to the durable session store never prune first, so the file grows without bound (issue #91)',
     file: 'src/service/store.js',
     find: `  _persist(subject) {

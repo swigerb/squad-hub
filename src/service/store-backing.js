@@ -55,12 +55,36 @@ function atomicRename(from, to) {
   }
 }
 
+/**
+ * Strip what belongs to a PROCESS, not a record, before it touches disk.
+ *
+ * A pending approval is a request to a specific agent process for a specific
+ * running turn -- it is not data about the session, it is a handle into
+ * something alive right now. Persisting it verbatim means a restart can hand
+ * back a card that looks exactly like a live approval and does nothing when
+ * answered, because the process it would have to reach is gone. Issue #91
+ * named that precisely: "worse than losing it".
+ *
+ * The honest answer is not to persist it at all. A live device's own
+ * reconnect (`syncSessions`) republishes the REAL pending approval within
+ * seconds of the process actually restarting its link -- that is the one
+ * source of truth for "is this still answerable", and it is a genuine
+ * process, not a copy on disk pretending to be one.
+ */
+function sanitiseSessionForDisk(session) {
+  if (!session || !session.pendingApprovals) return session;
+  const { pendingApprovals, ...rest } = session;
+  return rest;
+}
+
 function serialiseUsers(users) {
   const subjects = {};
   for (const [subject, bucket] of users) {
+    const sessions = {};
+    for (const [key, session] of bucket.sessions) sessions[key] = sanitiseSessionForDisk(session);
     subjects[subject] = {
       devices: Object.fromEntries(bucket.devices),
-      sessions: Object.fromEntries(bucket.sessions),
+      sessions,
     };
   }
   return subjects;
@@ -97,6 +121,10 @@ class MemoryBacking {
  * metadata and session state. None of it is a transcript (the hub never
  * stores those, see hub-service.js) and none of it is a secret the way a
  * token is.
+ *
+ * WHAT DOES NOT: a session's `pendingApprovals`. That is a handle onto a
+ * specific agent process's specific outstanding request, not a fact about
+ * the session -- see `sanitiseSessionForDisk` below.
  */
 class FileBacking {
   /**

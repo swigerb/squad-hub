@@ -202,6 +202,32 @@ check('a live device deleting a session does not have it come back after a resta
   assert.strictEqual(sessions[0].id, 'keep', 'the wrong session survived');
 });
 
+check("a pending approval is never persisted, so a restart cannot show one nobody can answer", () => {
+  // THE OTHER REGRESSION TO FEAR. A pending approval is a handle onto a
+  // specific agent process's specific outstanding request -- not a fact
+  // about the session. Persisting it verbatim would let a restart hand back
+  // a card that looks answerable and silently does nothing when answered,
+  // because the process it would have to reach is already gone. Issue #91's
+  // own words: "worse than losing it".
+  const dir = tmpdir();
+  const s1 = new Store({ backing: new FileBacking({ dir }) });
+  s1.registerDevice('u', { deviceId: 'laptop-3', name: 'laptop', platform: 'darwin' });
+  s1.upsertSession('u', 'laptop-3', {
+    id: 'p',
+    status: 'waiting_approval',
+    pendingApprovals: [{ approvalId: 'a1', command: 'rm -rf /', options: [{ optionId: 'allow_once' }] }],
+  });
+
+  const onDisk = readFile(dir).subjects.u.sessions['laptop-3:p'];
+  assert.ok(!onDisk.pendingApprovals, 'the pending approval was written to disk verbatim');
+
+  // Restart: fresh Store, fresh FileBacking, same directory.
+  const s2 = new Store({ backing: new FileBacking({ dir }) });
+  const rec = s2.getSession('u', 'laptop-3:p');
+  assert.strictEqual((rec.pendingApprovals || []).length, 0,
+    'a pending approval reappeared for a process that a restart could not possibly have kept alive');
+});
+
 check('a corrupt or truncated state file is refused, and the hub starts empty rather than failing to start', () => {
   const dir = tmpdir();
   fs.writeFileSync(path.join(dir, 'sessions.json'), '{ this is not valid json, truncated mid-w');
