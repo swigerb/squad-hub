@@ -64,6 +64,15 @@ class Store extends EventEmitter {
     this._users = this._backing.loadAll();
   }
 
+  /**
+   * Do session records survive a restart?
+   *
+   * Asked of the store rather than reached out of its backing, so a caller
+   * that wants to REPORT this fact -- `/healthz` does -- cannot drift from the
+   * one that acts on it when deciding whether to prune before a write.
+   */
+  get durable() { return !!this._backing.durable; }
+
   _bucket(subject) {
     if (!subject) throw new Error('a subject is required; refusing an unscoped read');
     if (!this._users.has(subject)) this._users.set(subject, { devices: new Map(), sessions: new Map() });

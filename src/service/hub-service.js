@@ -532,12 +532,27 @@ class HubService {
         // knowing -- and guessing at it from behaviour wastes an afternoon.
         instance: (process.env.WEBSITE_INSTANCE_ID || process.env.HOSTNAME || 'local').slice(0, 12),
         instances,
+        /**
+         * Whether session records survive a restart.
+         *
+         * There is no way to tell from outside otherwise, and the two cases
+         * behave identically right up until a deploy -- at which point one of
+         * them silently loses the record of every cloud job that has already
+         * finished. Naming it here means the answer is a fact that can be read
+         * rather than a property that has to be inferred from a loss.
+         */
+        sessionStore: this.store.durable ? 'durable' : 'memory',
         // Named rather than implied, so it appears in the UI and in any log
         // scrape without the reader having to know the rule.
+        //
+        // Durability does NOT fix scale-out: two instances each hold their own
+        // live device connections, and a durable record of a session says
+        // nothing about which process can still reach the device that owns it.
         scaleOutWarning: instances && instances > 1
-          ? `This hub is running on ${instances} instances. State is held in memory, `
-            + 'so a device attached to one instance is invisible to the others and '
-            + 'commands will fail intermittently. Scale to a single instance.'
+          ? `This hub is running on ${instances} instances. A device attaches to `
+            + 'ONE of them, so it is invisible to the others and commands will fail '
+            + 'intermittently. Persisting session records does not change this. '
+            + 'Scale to a single instance.'
           : null,
         devices: this._devices.size,
         uptimeSeconds: Math.round(process.uptime()),
