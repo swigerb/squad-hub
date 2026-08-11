@@ -198,8 +198,11 @@ const LOOPBACK_ORIGIN_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::
  *
  * Derived the same way `github-oauth.js redirectUri()` derives its redirect
  * target -- the forwarded scheme plus `Host` -- rather than a second
- * convention for the same fact. `SQUAD_HUB_PUBLIC_URL` is deliberately NOT
- * read here: making that setting authoritative is WS-2's job, not this one's.
+ * convention for the same fact. This is the WS-1 fallback, used only when
+ * `SQUAD_HUB_PUBLIC_URL` is unset -- see `originIsAllowed()` and
+ * `publicOriginFromEnv()` below for the WS-2 case, where the configured
+ * value is authoritative instead of whatever `Host` a request happened to
+ * carry.
  */
 function selfOrigin(req) {
   if (!req.headers.host) return null;
@@ -208,20 +211,68 @@ function selfOrigin(req) {
 }
 
 /**
+ * Normalise `SQUAD_HUB_PUBLIC_URL` (or an injected override) to the origin
+ * the WebSocket check compares against: scheme + host + effective port, any
+ * path and trailing slash stripped.
+ *
+ * `URL#origin` already does exactly this normalisation -- it is the same
+ * constructor `github-oauth.js` uses, per the issue's own instruction to
+ * strip "trailing slash and any path... as that constructor already does" --
+ * so `https://hub.example/`, `https://hub.example` and
+ * `https://hub.example/some/path` all yield `https://hub.example`, and
+ * `https://hub.example:443/` yields `https://hub.example` (default port
+ * elided), matching the canonical form a browser's `Origin` header already
+ * carries.
+ *
+ * A value that is SET but does not parse as an absolute `http`/`https` URL
+ * throws rather than falling back to the WS-1 request-derived behaviour --
+ * a typo in this setting (`SQUAD_HUB_PUBLIC_URL=hub.example`, missing the
+ * scheme, say) must fail loudly at startup. Silently falling back to trusting
+ * whatever `Host` a request carries would be the exact silent-permissive
+ * behaviour this setting exists to remove: a misconfigured value would look
+ * configured while actually granting the OLD, weaker, request-derived trust.
+ */
+function publicOriginFromEnv(raw) {
+  if (!raw) return null;
+  let url;
+  try { url = new URL(raw); } catch {
+    throw new Error(`SQUAD_HUB_PUBLIC_URL is not a valid URL: "${raw}"`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`SQUAD_HUB_PUBLIC_URL must be an http or https URL, saw "${raw}"`);
+  }
+  return url.origin;
+}
+
+/**
  * Should this WebSocket upgrade be allowed to proceed, going only by its
  * `Origin` header?
  *
- * Three shapes are accepted, matching the three the issue names:
+ * `configuredOrigin` is `HubService#publicOrigin` -- the normalised
+ * `SQUAD_HUB_PUBLIC_URL`, or `null` when it is unset. Three shapes are
+ * accepted, matching the three the issue names:
  *
  *   NO `Origin` header at all. A daemon or the CLI is not a browser and sends
  *   none -- `hub-link.js` issues the upgrade request with no Origin header,
- *   which is the client this hub must not break.
+ *   which is the client this hub must not break. Preserved identically
+ *   whether or not `SQUAD_HUB_PUBLIC_URL` is set: a daemon does not become a
+ *   browser because the deploy configured a domain.
  *
  *   A LOOPBACK origin, any port -- `localhost`, `127.0.0.1`, `[::1]` -- so a
- *   browser open against a hub running on the same machine is not refused.
+ *   browser open against a hub running on the same machine is not refused,
+ *   even on a deployment that also has `SQUAD_HUB_PUBLIC_URL` configured (a
+ *   developer testing a container image built for that deployment, say).
  *
- *   THE HUB'S OWN origin, computed from this same request (see `selfOrigin`
- *   above).
+ *   THE HUB'S OWN origin -- `configuredOrigin` when set (WS-2: the deploy's
+ *   `SQUAD_HUB_PUBLIC_URL`), otherwise `selfOrigin(req)` computed from this
+ *   same request (WS-1: the forwarded scheme plus `Host`).
+ *
+ * When `configuredOrigin` is set it is authoritative, in place of, not in
+ * addition to, the request-derived origin: a request whose `Host` or
+ * forwarded proto disagrees with the configured domain no longer earns a
+ * match by agreeing with itself. That is the point of configuring it --
+ * a hub behind a proxy that forwards an unexpected `Host` should trust what
+ * the deploy says its domain is, not whatever `Host` the request carries.
  *
  * Everything else is refused, including the literal string `Origin: null` --
  * sent by a sandboxed iframe or a `file://` page. That is NOT the same as no
@@ -229,7 +280,7 @@ function selfOrigin(req) {
  * falsy", and a page with no origin of its own is exactly the case this must
  * not wave through.
  */
-function originIsAllowed(req) {
+function originIsAllowed(req, configuredOrigin) {
   const origin = req.headers.origin;
   if (origin === undefined) return true;
   if (typeof origin !== 'string' || origin.trim().toLowerCase() === 'null') return false;
@@ -238,8 +289,8 @@ function originIsAllowed(req) {
   try { url = new URL(origin); } catch { return false; }
   if (LOOPBACK_ORIGIN_HOSTNAMES.has(url.hostname)) return true;
 
-  const self = selfOrigin(req);
-  return !!self && origin.toLowerCase() === self.toLowerCase();
+  const allowed = configuredOrigin || selfOrigin(req);
+  return !!allowed && origin.toLowerCase() === allowed.toLowerCase();
 }
 
 /**
@@ -312,6 +363,19 @@ class HubService {
       owner: envOwner,
       audience: process.env.SQUAD_HUB_AUDIENCE || null,
     });
+
+    /**
+     * WS-2: the origin the WebSocket upgrade trusts as "this hub", taken
+     * from `SQUAD_HUB_PUBLIC_URL` -- the same setting `deploy-appservice.ps1`
+     * already writes and `github-oauth.js redirectUri()` already reads --
+     * rather than a new setting kept separately in step. `opts.publicUrl`
+     * overrides it the same way every other env-backed option here does, for
+     * tests and embedders. `null` when unset, which is what makes
+     * `originIsAllowed()` fall back to the WS-1 request-derived origin.
+     */
+    this.publicOrigin = publicOriginFromEnv(
+      opts.publicUrl !== undefined ? opts.publicUrl : (process.env.SQUAD_HUB_PUBLIC_URL || null),
+    );
     this.store = opts.store || new Store();
     /**
      * Device token records and revocations.
@@ -903,8 +967,10 @@ class HubService {
     // a foreign Origin cannot reach device registration OR the watcher event
     // stream -- the same credential-then-role order the kind checks already
     // follow, just one gate earlier. See originIsAllowed() above for exactly
-    // what is accepted and why.
-    if (!originIsAllowed(req)) {
+    // what is accepted and why. `this.publicOrigin` is `SQUAD_HUB_PUBLIC_URL`,
+    // normalised, or null -- passing it (rather than letting the check derive
+    // one from this request) is what makes a configured domain authoritative.
+    if (!originIsAllowed(req, this.publicOrigin)) {
       conn.close(1008, 'this origin is not allowed to open a socket on this hub');
       return;
     }

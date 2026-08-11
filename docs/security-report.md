@@ -3,7 +3,7 @@
 **Reviewed:** 10 August 2026
 **Scope:** the hub service, the device daemon, the web interface, the CLI, and
 the credentials that join them.
-**Method:** code review against the running system, the automated suite (1,221
+**Method:** code review against the running system, the automated suite (1,239
 assertions), and targeted verification of individual controls.
 
 This report states the controls that are in place and how each one is verified.
@@ -35,6 +35,7 @@ service on a laptop for anything to reach.
 | The three auth modes are mutually exclusive | `auth.js` |
 | GitHub identity is anchored to the numeric account id, not the login | `auth.js` |
 | The WebSocket upgrade is refused from a foreign `Origin`, before a device can register or a watcher can attach | `hub-service.js` `_upgrade()` / `originIsAllowed()` |
+| The origin a deployed hub trusts is its own configured `SQUAD_HUB_PUBLIC_URL`, not whatever `Host` a request happens to carry | `hub-service.js` `publicOriginFromEnv()` |
 | Deployment requires an owner or allowlist unless explicitly overridden | `scripts/deploy-appservice.ps1` |
 | A deploy cannot change the auth mode by omission | `deploy-appservice.ps1` |
 
@@ -44,14 +45,28 @@ reachable from the internet the moment it starts.
 **The `Origin` check** runs on every upgrade, before the device/watcher role
 branch and before either attach path -- so a foreign Origin cannot reach
 device registration or the watcher event stream, whichever role it asks for.
-It accepts the hub's own origin (the forwarded scheme plus `Host`, derived the
-same way `github-oauth.js redirectUri()` derives its redirect target),
-`localhost` / `127.0.0.1` / `[::1]` for local development at any port, and the
-plain absence of an `Origin` header, which is how the daemon and the CLI
-connect and is not a browser property to require. The literal string
-`Origin: null` -- sent by a sandboxed iframe or a `file://` page -- is refused
-rather than treated as absent. Everything else is closed with **1008** and a
-reason, in the same shape as the other socket refusals above it.
+It accepts the hub's own origin, `localhost` / `127.0.0.1` / `[::1]` for local
+development at any port, and the plain absence of an `Origin` header, which is
+how the daemon and the CLI connect and is not a browser property to require.
+The literal string `Origin: null` -- sent by a sandboxed iframe or a `file://`
+page -- is refused rather than treated as absent. Everything else is closed
+with **1008** and a reason, in the same shape as the other socket refusals
+above it.
+
+**The hub's own origin** is `SQUAD_HUB_PUBLIC_URL`, normalised to
+scheme+host+port with any path and trailing slash stripped, when that setting
+is configured -- the same setting `deploy-appservice.ps1` already writes and
+`github-oauth.js redirectUri()` already reads, rather than a second one kept
+separately in step. Configured, it is authoritative in place of the request:
+a hub behind a proxy that forwards some other `Host` still recognises its own
+public domain, and a request that merely agrees with itself no longer earns a
+match by doing so. Unset -- a local run, or a deployment from before this
+setting existed -- the origin falls back to the forwarded scheme plus `Host`
+of the request itself, derived the same way `github-oauth.js redirectUri()`
+falls back. A value that is set but does not parse as an absolute `http`/
+`https` URL is refused at startup rather than silently falling back to that
+request-derived behaviour, which would let a typo look configured while
+actually granting the weaker of the two.
 
 ### Isolation between people
 
