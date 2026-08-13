@@ -139,9 +139,11 @@ Agent and model resolve exactly as they do for a supervised session (same
 selection logic, same precedence), so `--agent`/`--model` behave the same way
 here. It takes no prompt: the TUI asks for one itself.
 
-**This session is not supervised by the hub.** Approvals appear in the TUI and
-are answered at that keyboard. It does not appear in `squad-hub status`, the
-web Hub cannot see or steer it, and closing the terminal ends it.
+**This session is not supervised by the hub** *yet*. Approvals appear in the TUI
+and are answered at that keyboard. It does not appear in `squad-hub status`, the
+web Hub cannot see or steer it, and closing the terminal ends it. That is a
+missing feature rather than a limit of the CLI — see "What supervision would
+take" below.
 
 |  | `squad-hub squad` | `squad-hub squad --tui` |
 |---|---|---|
@@ -154,28 +156,47 @@ web Hub cannot see or steer it, and closing the terminal ends it.
 That is why supervision is the default and `--tui` is opt-in: a session you
 cannot answer from a phone gives up the reason the hub exists.
 
-#### Why it cannot be both
+#### What supervision would take
 
 The hub supervises a session by speaking ACP over the agent's stdio. The
 Copilot TUI wants that same stdio for its own interface. One process cannot
 serve both, so `--acp` and the TUI are mutually exclusive — that part is
-structural.
+structural, and it is the only part that is.
 
-Less obvious is that the hub cannot *observe* a TUI session either, and this
-was measured against Copilot CLI 1.0.79 rather than assumed. A TUI session
-started with a caller-chosen `--session-id` left behind:
+It does **not** follow that a TUI session cannot be supervised, and an earlier
+version of this section said it did. That was wrong. Copilot CLI has a
+first-class, documented extension point that is entirely separate from stdio:
+[hooks](https://docs.github.com/en/copilot/concepts/agents/hooks). Measured
+against CLI 1.0.79, with hooks in `$COPILOT_HOME/hooks/*.json`:
 
-- no `~/.copilot/session-state/<id>/` directory, and
-- no row in `~/.copilot/session-store.db`.
+- `sessionStart` delivers `sessionId`, `cwd` and `source` — enough for a session
+  to **register itself** with the hub as it starts
+- `userPromptSubmitted` delivers each prompt
+- `preToolUse` delivers `toolName` and `toolArgs`, **blocks the agent while it
+  runs**, and its answer decides whether the tool executes
 
-Some sessions do leave a readable `events.jsonl`, but a minority of them (67 of
-214 on the machine this was measured on), and it is an undocumented internal
-artifact regardless. `--log-dir` produces diagnostics, not a transcript.
+That last one is approval routing. A hook that asks the hub and waits was
+observed holding each tool call for the full duration of the wait and then
+refusing it, with the reason surfaced in the TUI:
 
-So there is no dependable channel to relay a TUI session into the hub. Rather
-than ship a "connected" mode that silently shows nothing, `--tui` says what it
-is at launch, every time. If a supported channel appears in a later Copilot
-release, this is the paragraph to revisit.
+```
+✗ Create denied.txt with content nope (shell)                    9s
+  └ Denied by preToolUse hook: Squad Hub: denied by the human at the other end
+```
+
+The file was never created.
+
+So the honest statement is not "impossible" but **"not built yet"**. What
+`--tui` gives up today it gives up because the hook integration has not been
+written, and that work is tracked separately. Two things still need measuring
+before it can be: how long a `preToolUse` hook may block before the CLI gives up
+on it (the default is 30s, and a human reaching for a phone needs longer), and
+what happens to a session when the hub is unreachable — which must fail toward
+the local keyboard, never toward silently allowing a tool.
+
+Note also that only the user-level hooks directory was observed loading here; a
+`.github/hooks/*.json` in a freshly `git init`-ed directory did not fire, most
+likely folder trust.
 
 **There is no local reattach yet.** Every `squad-hub squad` (or `run`) with no
 prompt starts a **new** session — it never resumes a previous terminal's
