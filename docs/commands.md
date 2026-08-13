@@ -784,6 +784,33 @@ to put your credential on a command line where it lands in shell history.
 
 See [security.md](security.md#device-tokens).
 
+## Access list backup
+
+`squad-hub access export` / `squad-hub access import` back up and restore the
+access list directly against `SQUAD_HUB_HOME`, without going through the hub's
+HTTP API. That is deliberate: recovery has to work when the app or its file
+share has just been recreated and the hub may not be answering, and an
+authenticated `/api/access/export` route would make recovery depend on the
+thing being recovered.
+
+| | |
+|---|---|
+| `squad-hub access export <path>` | Write the access list to a file you choose. |
+| `squad-hub access import <path> [--apply-revocations]` | Restore it. Additive by default. |
+
+The export is a plain-text, line-oriented, diffable file — a header line
+followed by one JSON record per line, sorted by login — not a copy of
+`access.json`. Import is **additive**: it reports what it added and what was
+already present, and never removes anyone unless `--apply-revocations` is
+also passed. A malformed record refuses the **whole** import, names the line
+number, and changes nothing — a half-applied restore is worse than a refused
+one.
+
+Owners come from `SQUAD_HUB_OWNER` alone. An export naming an owner is refused
+outright on import, never silently skipped: import always goes through
+`AccessStore.add()`, the one place that rule is enforced, so a tampered file
+cannot mint an owner.
+
 ## Environment
 
 

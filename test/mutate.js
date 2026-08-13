@@ -2688,6 +2688,77 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `Fail "the running deployment reports its access store as '$($health.accessStore)', so every grant would be forgotten on the next deploy." # MUTATION: remediation stripped`,
     mustFail: 'the refusal names SQUAD_HUB_HOME and what to do about it',
   },
+
+  // -------------------------------------------------------------------------
+  // Issue #108, Sprint B: export, and restore. Additive, refuses rather than
+  // guesses, and cannot be used to mint an owner.
+  // -------------------------------------------------------------------------
+  {
+    name: 'import ignores the path argument and reads somewhere else instead',
+    file: 'src/cli.js',
+    find: `    text = fs.readFileSync(filePath, 'utf8');`,
+    replace: `    text = fs.readFileSync(path.join(os.tmpdir(), 'squad-hub-ignored-import-path.txt'), 'utf8'); // MUTATION: ignores the path argument`,
+    mustFail: 'export writes to the path given, and import restores from it',
+  },
+  {
+    name: 'the import report drops the already-present count',
+    file: 'src/cli.js',
+    find: `  out(\`added \${result.added.length}, already present \${result.alreadyPresent.length}\`
+    + \`\${applyRevocations ? \`, revoked \${result.revoked.length}\` : ''}\`);`,
+    replace: `  out(\`added \${result.added.length}\`); // MUTATION: dropped the skipped-count from the report`,
+    mustFail: 'an import says what it added and what was already present',
+  },
+  {
+    name: 'a malformed export line is skipped instead of refusing the whole import',
+    file: 'src/service/access-export.js',
+    find: `    let obj;
+    try {
+      obj = JSON.parse(raw);
+    } catch (e) {
+      return { ok: false, reason: \`line \${lineNo}: not valid JSON (\${e.message})\` };
+    }`,
+    replace: `    let obj;
+    try {
+      obj = JSON.parse(raw);
+    } catch (e) {
+      continue; // MUTATION: a malformed line is skipped instead of refusing the whole import
+    }`,
+    mustFail: 'a malformed record refuses the whole import and changes nothing',
+  },
+  {
+    name: 'the owner-claim refusal on import is bypassed',
+    file: 'src/service/access-export.js',
+    find: `function planImport(store, records) {
+  const claim = records.find((r) => r.kind === 'grant' && store.envOwner.includes(r.login));
+  if (claim) {`,
+    replace: `function planImport(store, records) {
+  const claim = process.env.MUTANT ? null : records.find((r) => r.kind === 'grant' && store.envOwner.includes(r.login)); // MUTATION
+  if (claim) {`,
+    mustFail: 'an export file naming an owner cannot make anybody an owner on import',
+  },
+  {
+    name: 'revocations are dropped from the export, so a round trip is not identical',
+    file: 'src/service/access-export.js',
+    find: `  for (const login of store._revoked) {
+    records.push({ login, kind: 'revoked' });
+  }`,
+    replace: `  for (const login of (process.env.MUTANT ? [] : store._revoked)) { // MUTATION: revocations dropped from the export
+    records.push({ login, kind: 'revoked' });
+  }`,
+    mustFail: 'a round trip through export and import leaves the list identical',
+  },
+  {
+    name: 'a token-shaped field is added to the export',
+    file: 'src/service/access-export.js',
+    find: `      ? JSON.stringify({
+        login: rec.login, kind: rec.kind, addedBy: rec.addedBy, addedAt: rec.addedAt, note: rec.note,
+      })`,
+    replace: `      ? JSON.stringify({
+        login: rec.login, kind: rec.kind, addedBy: rec.addedBy, addedAt: rec.addedAt, note: rec.note,
+        ...(process.env.MUTANT ? { token: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJlLWxvb2tpbmctc3VmZml4' } : {}), // MUTATION
+      })`,
+    mustFail: 'an export carries logins, notes and timestamps, and nothing that could be a credential',
+  },
 ];
 
 /**
