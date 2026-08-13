@@ -24,6 +24,7 @@ const { Authenticator, AuthError, MODES } = require('./auth');
 const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
 const { DeviceTokenStore } = require('./device-token-store');
 const { AccessStore } = require('./access-store');
+const { AccessAudit } = require('./access-audit');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store } = require('./store');
@@ -354,6 +355,13 @@ class HubService {
       persist: opts.persistAccess !== false,
       envAllowed,
       envOwner,
+      // Who was let in, and when. Kept beside the list rather than inside it,
+      // because the list is current state and this is history: the two answer
+      // different questions and only one of them may ever be rewritten.
+      audit: opts.accessAudit || new AccessAudit({
+        dir: opts.accessDir || paths.home(),
+        enabled: opts.persistAccess !== false,
+      }),
     });
 
     this.auth = opts.auth || new Authenticator({

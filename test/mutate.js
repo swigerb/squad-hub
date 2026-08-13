@@ -2709,6 +2709,49 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an import says what it added and what was already present',
   },
   {
+    name: 'an unrecordable grant is allowed through instead of refused',
+    file: 'src/service/access-store.js',
+    find: `    const rec = this._record({ action: 'grant', login, actor: addedBy, note: cleanNote });
+    if (rec) { this._added.delete(login); this._resave(); return rec; }`,
+    replace: `    const rec = this._record({ action: 'grant', login, actor: addedBy, note: cleanNote });
+    if (false && rec) { return rec; } // MUTATION: a grant nothing recorded still stands`,
+    mustFail: 'AN UNRECORDABLE GRANT IS REFUSED, not quietly allowed',
+  },
+  {
+    name: 'an unrecordable revocation is allowed through instead of refused',
+    file: 'src/service/access-store.js',
+    find: `    const rec = this._record({ action: 'revoke', login });
+    if (rec) {`,
+    replace: `    const rec = this._record({ action: 'revoke', login });
+    if (false && rec) { // MUTATION: a removal nothing recorded still stands`,
+    mustFail: 'AN UNRECORDABLE REVOCATION IS REFUSED, and the person keeps access',
+  },
+  {
+    name: 'a refused removal is not recorded, so the log holds only successes',
+    file: 'src/service/access-store.js',
+    find: `      try { this._audit({ action: 'revoke', login, ok: false, reason }); } catch { /* refusal stands regardless */ }`,
+    replace: `      // MUTATION: the attempt to remove an owner leaves no trace`,
+    mustFail: 'A REFUSED REMOVAL IS RECORDED TOO, not just successes',
+  },
+  {
+    name: 'the audit log is rewritten rather than appended to',
+    file: 'src/service/access-audit.js',
+    find: `    fs.appendFileSync(this.file, \`\${JSON.stringify(entry)}\\n\`, 'utf8');`,
+    replace: `    fs.writeFileSync(this.file, \`\${JSON.stringify(entry)}\\n\`, 'utf8'); // MUTATION: each entry replaces the last`,
+    mustFail: 'EARLIER ENTRIES SURVIVE EVERY LATER OPERATION, byte for byte',
+  },
+  {
+    name: 'a damaged log line is silently dropped instead of reported',
+    file: 'src/service/access-audit.js',
+    find: `      } catch {
+        damaged += 1;
+      }`,
+    replace: `      } catch {
+        /* MUTATION: tampering now looks like nothing more than a shorter file */
+      }`,
+    mustFail: 'a damaged line is REPORTED, because tampering just looks like a shorter file',
+  },
+  {
     name: 'a malformed export line is skipped instead of refusing the whole import',
     file: 'src/service/access-export.js',
     find: `    let obj;

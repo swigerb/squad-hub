@@ -66,13 +66,15 @@ class AccessStore {
    * @param {boolean} [opts.persist]       false to keep everything in memory
    * @param {string[]}[opts.envAllowed]    SQUAD_HUB_ALLOWED_USERS, the floor
    * @param {string[]}[opts.envOwner]      SQUAD_HUB_OWNER, never editable
+   * @param {object}  [opts.audit]         AccessAudit; omit to keep no record
    */
   constructor({
-    dir = null, persist = true, envAllowed = [], envOwner = [],
+    dir = null, persist = true, envAllowed = [], envOwner = [], audit = null,
   } = {}) {
     this.dir = dir;
     this.persist = persist && !!dir;
     this.file = dir ? path.join(dir, FILE) : null;
+    this.audit = audit;
 
     const clean = (list) => (list || [])
       .map((u) => String(u).trim().toLowerCase())
@@ -248,6 +250,8 @@ class AccessStore {
         this._revoked.add(login);
         return { ok: false, reason: `could not save the access list: ${e.message}` };
       }
+      const rec = this._record({ action: 'restore', login, actor: addedBy, note });
+      if (rec) { this._revoked.add(login); this._resave(); return rec; }
       return { ok: true, login, restored: true };
     }
 
@@ -263,6 +267,8 @@ class AccessStore {
       this._added.delete(login);
       return { ok: false, reason: `could not save the access list: ${e.message}` };
     }
+    const rec = this._record({ action: 'grant', login, actor: addedBy, note: cleanNote });
+    if (rec) { this._added.delete(login); this._resave(); return rec; }
     return { ok: true, login };
   }
 
@@ -283,7 +289,12 @@ class AccessStore {
     const login = n.value;
 
     if (this.envOwner.includes(login)) {
-      return { ok: false, reason: 'owners are set by the deployment (SQUAD_HUB_OWNER) and cannot be removed here' };
+      // Recorded even though it is refused. Somebody trying, repeatedly, to
+      // remove an owner is exactly the event worth finding later, and a log of
+      // successes alone cannot show it.
+      const reason = 'owners are set by the deployment (SQUAD_HUB_OWNER) and cannot be removed here';
+      try { this._audit({ action: 'revoke', login, ok: false, reason }); } catch { /* refusal stands regardless */ }
+      return { ok: false, reason };
     }
 
     const wasAdded = this._added.get(login);
@@ -299,7 +310,50 @@ class AccessStore {
       if (fromEnv) this._revoked.delete(login);
       return { ok: false, reason: `could not save the access list: ${e.message}` };
     }
+    const rec = this._record({ action: 'revoke', login });
+    if (rec) {
+      if (wasAdded) this._added.set(login, wasAdded);
+      if (fromEnv) this._revoked.delete(login);
+      this._resave();
+      return rec;
+    }
     return { ok: true, login, wasDeploymentEntry: fromEnv };
+  }
+
+  /**
+   * Append to the audit log, or explain why the change must not stand.
+   *
+   * Returns null on success and a refusal object on failure, so a caller reads
+   * as "if there is something here, undo what you just did". A change that
+   * cannot be recorded does not happen: given the choice between an unrecorded
+   * grant and no grant, the unrecorded one is what hurts during an incident.
+   */
+  _record(entry) {
+    if (!this.audit) return null;
+    try {
+      this.audit.record({ ...entry, ok: true });
+      return null;
+    } catch (e) {
+      return { ok: false, reason: `could not record this change in the access log (${e.message}); the change was not made` };
+    }
+  }
+
+  /** Record something that did NOT happen. Never affects the outcome. */
+  _audit(entry) {
+    if (this.audit) this.audit.record(entry);
+  }
+
+  /**
+   * Put the file back after an audit failure forced a rollback.
+   *
+   * Best effort by necessity: the in-memory state has already been restored,
+   * and if this write also fails the next load reads the file as it stands.
+   * Swallowing the error here is deliberate -- the caller is already returning
+   * a refusal, and a second error would replace an accurate message about the
+   * log with a confusing one about the list.
+   */
+  _resave() {
+    try { this._save(); } catch { /* the refusal has already been decided */ }
   }
 }
 
