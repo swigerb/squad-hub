@@ -646,6 +646,8 @@ async function suiteConnect() {
 async function suiteInteractive() {
   console.log('\n[INTERACTIVE] a plain terminal over the same session the Hub sees');
   runChildSuite(path.join(__dirname, 'interactive-unit.js'), 'interactive');
+  console.log('\n[TUI] the real Copilot interface, and the supervision it gives up');
+  runChildSuite(path.join(__dirname, 'tui-unit.js'), 'tui');
 }
 
 /**

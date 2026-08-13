@@ -79,6 +79,7 @@ into the one-time command the browser already showed you.
 
 ```
 squad-hub squad                          # interactive terminal
+squad-hub squad --tui                    # the real Copilot TUI (not supervised)
 squad-hub squad "<prompt>"               # start a session and return
 ```
 
@@ -121,6 +122,60 @@ Anything else is sent to the agent as the next line of conversation.
 never kills anything silently. A second press within two seconds detaches:
 the terminal exits, but the session keeps running and stays fully visible and
 controllable in the web Hub, exactly as if you had closed a browser tab.
+
+### `--tui`: the real Copilot interface
+
+```
+squad-hub squad --tui
+```
+
+Launches the genuine Copilot CLI TUI, with the project's agent already
+selected, in the directory you are standing in. This is the mode to use when
+you want Copilot's own interface rather than the hub's terminal — you get the
+real thing, because it *is* the real thing: `squad-hub` runs `copilot` with
+your terminal handed straight to it.
+
+Agent and model resolve exactly as they do for a supervised session (same
+selection logic, same precedence), so `--agent`/`--model` behave the same way
+here. It takes no prompt: the TUI asks for one itself.
+
+**This session is not supervised by the hub.** Approvals appear in the TUI and
+are answered at that keyboard. It does not appear in `squad-hub status`, the
+web Hub cannot see or steer it, and closing the terminal ends it.
+
+|  | `squad-hub squad` | `squad-hub squad --tui` |
+|---|---|---|
+| Copilot's own TUI | no | **yes** |
+| Visible in the web Hub | **yes** | no |
+| Approve from a phone | **yes** | no |
+| Steer from the Hub | **yes** | no |
+| Survives closing the terminal | **yes** | no |
+
+That is why supervision is the default and `--tui` is opt-in: a session you
+cannot answer from a phone gives up the reason the hub exists.
+
+#### Why it cannot be both
+
+The hub supervises a session by speaking ACP over the agent's stdio. The
+Copilot TUI wants that same stdio for its own interface. One process cannot
+serve both, so `--acp` and the TUI are mutually exclusive — that part is
+structural.
+
+Less obvious is that the hub cannot *observe* a TUI session either, and this
+was measured against Copilot CLI 1.0.79 rather than assumed. A TUI session
+started with a caller-chosen `--session-id` left behind:
+
+- no `~/.copilot/session-state/<id>/` directory, and
+- no row in `~/.copilot/session-store.db`.
+
+Some sessions do leave a readable `events.jsonl`, but a minority of them (67 of
+214 on the machine this was measured on), and it is an undocumented internal
+artifact regardless. `--log-dir` produces diagnostics, not a transcript.
+
+So there is no dependable channel to relay a TUI session into the hub. Rather
+than ship a "connected" mode that silently shows nothing, `--tui` says what it
+is at launch, every time. If a supported channel appears in a later Copilot
+release, this is the paragraph to revisit.
 
 **There is no local reattach yet.** Every `squad-hub squad` (or `run`) with no
 prompt starts a **new** session — it never resumes a previous terminal's

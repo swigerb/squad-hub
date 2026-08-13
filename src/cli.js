@@ -733,6 +733,20 @@ async function cmdSquad(argv) {
   const mode = value(argv, 'mode');
   const prompt = positionals(argv).join(' ');
 
+  // --tui hands this terminal to the real Copilot interface. It is checked
+  // before anything else because it is the one path that does NOT involve the
+  // daemon: starting one, only to leave the session unsupervised anyway, would
+  // be work done for nothing.
+  if (flag(argv, 'tui')) {
+    if (prompt) {
+      err('squad-hub squad --tui does not take a prompt -- the TUI asks for it itself.');
+      err('Drop the prompt to open the TUI, or drop --tui to start a supervised session with it.');
+      return 2;
+    }
+    const { runTui } = require('./tui');
+    return runTui({ cwd, agent, model });
+  }
+
   if (prompt) {
     return startSessionAndReport({
       prompt, cwd: explicitCwd, localCwd: cwd, agent, model, mode,
@@ -1319,6 +1333,7 @@ function usage() {
 
   EVERYDAY (after a one-time connect)
   squad-hub squad                      interactive terminal, in a Squad project this uses the squad agent
+  squad-hub squad --tui                the real Copilot TUI with the squad agent (NOT supervised by the hub)
   squad-hub squad "<prompt>"           start a session with a prompt and return
   squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]
 
@@ -1384,6 +1399,12 @@ created, against the list that session advertises: "copilot --acp" accepts
 --agent/--model and silently ignores both, so a flag alone is not enough. When
 the agent or model asked for is unavailable, the session runs with the default
 and SAYS SO, rather than quietly substituting.
+
+"squad-hub squad --tui" is the exception: it launches the Copilot TUI directly,
+so --agent/--model are passed on the command line and the TUI itself applies
+them. That session is NOT supervised -- approvals appear at that keyboard only,
+and it does not appear in "squad-hub status". The hub's terminal and the Copilot
+TUI both want the agent's stdio, and one process cannot serve both.
 
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. To name the root instead
