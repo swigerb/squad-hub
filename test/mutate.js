@@ -2638,6 +2638,56 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `            // MUTATION: CEREMONY_LABELS defined but never merged in`,
     mustFail: 'the retro-action definition is actually pushed into the synced set',
   },
+
+  // -------------------------------------------------------------------------
+  // Issue #108, Sprint A: a deploy proves the access store is durable rather
+  // than assuming it, reading the RUNNING deployment's own answer.
+  // -------------------------------------------------------------------------
+  {
+    name: 'the running hub no longer reports whether the access store is durable',
+    file: 'src/service/hub-service.js',
+    find: `        accessStore: this.accessStore.persist ? 'durable' : 'memory',`,
+    replace: `        // MUTATION: accessStore field removed from /healthz detail`,
+    mustFail: 'authenticated /healthz reports whether the access store is durable',
+  },
+  {
+    name: 'anonymous /healthz leaks the access store field',
+    file: 'src/service/hub-service.js',
+    find: `      return send(200, authed ? { ok: true, mode: this.auth.mode, ...detail } : { ok: true });`,
+    replace: `      return send(200, authed ? { ok: true, mode: this.auth.mode, ...detail } : { ok: true, accessStore: detail.accessStore }); // MUTATION`,
+    mustFail: 'anonymous /healthz does not volunteer the access store',
+  },
+  {
+    name: 'the deploy no longer refuses a non-durable access store',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `if ($health.accessStore -ne 'durable') {
+  Fail "the running deployment reports its access store as '$($health.accessStore)', so every grant would be forgotten on the next deploy. Set SQUAD_HUB_HOME=/home/data/squad-hub (scripts/deploy-appservice.ps1:222) and redeploy."
+}`,
+    replace: `# MUTATION: the accessStore refusal was removed`,
+    mustFail: 'the deploy refuses when the running hub reports a non-durable access store',
+  },
+  {
+    name: 'the durability check reads the app SETTING instead of the running deployment',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `if ($health.accessStore -ne 'durable') {`,
+    replace: `$liveHomeSetting = az webapp config appsettings list -n $Name -g $ResourceGroup --query "[?name=='SQUAD_HUB_HOME'].value | [0]" -o tsv 2>$null # MUTATION
+if ($health.accessStore -ne 'durable') {`,
+    mustFail: 'the durability check reads the LIVE healthz response, not the settings just written',
+  },
+  {
+    name: 'removing SQUAD_HUB_HOME from the deploy is undetected',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `$settings += 'SQUAD_HUB_HOME=/home/data/squad-hub'`,
+    replace: `# MUTATION: SQUAD_HUB_HOME is no longer set by this deploy`,
+    mustFail: 'the deploy sets SQUAD_HUB_HOME, without which every grant is lost on the next deploy',
+  },
+  {
+    name: 'the durability refusal stops naming SQUAD_HUB_HOME and what to do about it',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `Fail "the running deployment reports its access store as '$($health.accessStore)', so every grant would be forgotten on the next deploy. Set SQUAD_HUB_HOME=/home/data/squad-hub (scripts/deploy-appservice.ps1:222) and redeploy."`,
+    replace: `Fail "the running deployment reports its access store as '$($health.accessStore)', so every grant would be forgotten on the next deploy." # MUTATION: remediation stripped`,
+    mustFail: 'the refusal names SQUAD_HUB_HOME and what to do about it',
+  },
 ];
 
 /**

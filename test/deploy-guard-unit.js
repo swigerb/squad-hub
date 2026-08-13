@@ -104,6 +104,62 @@ check('the guards run BEFORE any setting is written', () => {
     'the OAuth guard runs after the settings are already written');
 });
 
+/**
+ * Sprint A of #108: a deploy proves the access store is durable rather than
+ * assuming it. `SQUAD_HUB_HOME` is set on every deploy already, but a setting
+ * can be written and still be ineffective -- unset by a typo, pointed at an
+ * unwritable share, or simply not yet picked up by a stale process -- and
+ * none of those look any different from success until the next redeploy
+ * silently forgets every grant. These checks are what makes the deploy read
+ * the running deployment's own answer instead of trusting the setting it just
+ * wrote.
+ */
+
+check('the deploy refuses when the running hub reports a non-durable access store', () => {
+  assert.match(src, /\$health\.accessStore -ne 'durable'/,
+    'no check compares the RUNNING deployment\'s accessStore field to \'durable\'');
+  const idx = src.indexOf("accessStore -ne 'durable'");
+  const block = src.slice(idx, idx + 200);
+  assert.match(block, /Fail /, 'the mismatch is detected but nothing refuses the deploy over it');
+});
+
+check('the durability check reads the LIVE healthz response, not the settings just written', () => {
+  const start = src.indexOf('$health.accessStore');
+  assert.ok(start > 0, 'no check reads $health.accessStore at all');
+  // It has to run after $health is actually fetched from the running app --
+  // reading it before that point would be reading nothing.
+  const healthFetch = src.indexOf('$health = $null');
+  assert.ok(healthFetch > 0 && start > healthFetch,
+    'the accessStore check runs before the running deployment is even asked');
+  // And it must not fall back to re-reading the app setting instead of the
+  // live answer -- that would satisfy the letter of "check the deployment"
+  // while missing the exact case this exists for: a setting present on the
+  // app but not actually taking effect in the running process.
+  const block = src.slice(start, start + 700);
+  assert.ok(!block.includes("SQUAD_HUB_HOME'].value"),
+    'the check reads the deploy-time SETTING instead of the running deployment\'s own answer');
+});
+
+check('the deploy sets SQUAD_HUB_HOME, without which every grant is lost on the next deploy', () => {
+  // Matched on the SETTINGS-LIST assignment specifically, not merely on the
+  // string appearing anywhere -- the durability refusal's own remediation
+  // text also names 'SQUAD_HUB_HOME=/home/data/squad-hub', and a looser match
+  // would stay green even after the actual setting was removed.
+  assert.match(src, /\$settings \+= 'SQUAD_HUB_HOME=\/home\/data\/squad-hub'/,
+    'the deploy no longer sets SQUAD_HUB_HOME; the access store falls back inside the app image '
+    + 'and every grant is lost on the next redeploy');
+});
+
+check('the refusal names SQUAD_HUB_HOME and what to do about it', () => {
+  const idx = src.indexOf("accessStore -ne 'durable'");
+  assert.ok(idx > 0, 'the durability refusal could not be found');
+  const block = src.slice(idx, idx + 400);
+  assert.match(block, /SQUAD_HUB_HOME=\/home\/data\/squad-hub/,
+    'the refusal does not name the setting to fix, unlike the rest of this script\'s Fail lines');
+  assert.match(block, /redeploy/i,
+    'the refusal says what is wrong but not what to do about it');
+});
+
 check('the script still parses', () => {
   // Every guard above is a string match, which would pass just as happily on a
   // file PowerShell cannot run.

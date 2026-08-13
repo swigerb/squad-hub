@@ -96,6 +96,36 @@ function api(port, p, token, opts = {}) {
     assert.strictEqual(seen.body.durable, true);
   });
 
+  // Sprint A (#108): a deploy has to be able to ASK the running hub whether
+  // the access store is durable, the same way it already asks about the
+  // session store. Read from the authenticated /healthz detail, which the
+  // deploy script already fetches when confirming the build that landed.
+  const healthAuthed = await api(port, '/healthz', ownerToken);
+  check('authenticated /healthz reports whether the access store is durable', () => {
+    assert.strictEqual(healthAuthed.status, 200, JSON.stringify(healthAuthed));
+    assert.strictEqual(healthAuthed.body.accessStore, 'durable',
+      'a store that persists to disk did not report as durable');
+  });
+
+  const healthAnon = await new Promise((resolve) => {
+    http.get({ host: '127.0.0.1', port, path: '/healthz' }, (res) => {
+      let b = '';
+      res.on('data', (d) => { b += d; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(b); } catch { /* not json */ }
+        resolve({ status: res.statusCode, body: json });
+      });
+    }).on('error', () => resolve({ status: 0, body: null }));
+  });
+  check('anonymous /healthz does not volunteer the access store', () => {
+    // A stranger has no business knowing how this hub is deployed. If this
+    // ever answers, the same field the deploy script relies on would also
+    // tell an unauthenticated caller a fact about the server's storage.
+    assert.strictEqual(healthAnon.status, 200, JSON.stringify(healthAnon));
+    assert.ok(healthAnon.body && !('accessStore' in healthAnon.body),
+      'an unauthenticated caller can read whether the access store is durable');
+  });
 
   const added = await api(port, '/api/access', ownerToken, {
     method: 'POST', body: { login: 'newperson', note: 'a colleague' },
