@@ -211,8 +211,16 @@ class AccessStore {
   /**
    * Add someone. Returns { ok, reason } rather than throwing, because every
    * refusal here is a message a person needs to read.
+   *
+   * `addedAt` defaults to now, as it always has -- but an import restoring a
+   * previously-exported record needs to write back the ORIGINAL timestamp, or
+   * a round trip through export and import could never be identical. Passing
+   * it through `add()` (rather than a second write path) keeps the ownership
+   * and duplicate checks in the one place that already enforces them.
    */
-  add(rawLogin, { addedBy = null, note = null } = {}) {
+  add(rawLogin, {
+    addedBy = null, note = null, addedAt = null,
+  } = {}) {
     if (!this.ok) return { ok: false, reason: `the access list could not be read (${this.error}); refusing to write over it` };
     const n = normalise(rawLogin);
     if (!n.ok) return { ok: false, reason: n.reason };
@@ -246,7 +254,7 @@ class AccessStore {
     const cleanNote = note == null ? null : String(note).trim().slice(0, 200) || null;
     this._added.set(login, {
       addedBy: addedBy ? String(addedBy).slice(0, MAX_LEN) : null,
-      addedAt: Date.now(),
+      addedAt: Number.isFinite(addedAt) ? addedAt : Date.now(),
       note: cleanNote,
     });
     try {

@@ -766,6 +766,7 @@ async function suiteAccess() {
   runChildSuite(path.join(__dirname, 'access-store-unit.js'), 'access-store');
   runChildSuite(path.join(__dirname, 'access-api-unit.js'), 'access-api');
   runChildSuite(path.join(__dirname, 'people-list-unit.js'), 'people-list');
+  runChildSuite(path.join(__dirname, 'access-export-import-unit.js'), 'access-export-import');
 }
 
 /**

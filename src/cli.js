@@ -1150,6 +1150,107 @@ function httpJson(url, { method = 'GET', headers = {}, body = null } = {}) {
 }
 
 /**
+ * Build the local access store directly over `SQUAD_HUB_HOME`, the same way
+ * `HubService` does (see hub-service.js). Export/import work against this
+ * store rather than an HTTP route: recovery has to work when the app or its
+ * file share has just been recreated and the hub may not be answering, and an
+ * authenticated `/api/access/export` would make recovery depend on the thing
+ * being recovered.
+ */
+function localAccessStore() {
+  const { AccessStore } = require('./service/access-store');
+  return new AccessStore({
+    dir: paths.home(),
+    persist: true,
+    envAllowed: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
+    envOwner: (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean),
+  });
+}
+
+/**
+ * `squad-hub access export <path>` / `squad-hub access import <path>
+ * [--apply-revocations]`.
+ *
+ * Export writes a plain-text, diffable file with no secrets -- the list holds
+ * none. Import is additive by default, refuses rather than guesses on a
+ * malformed record (nothing is written until the whole file has been parsed
+ * and checked), and cannot grant ownership: owners come from `SQUAD_HUB_OWNER`
+ * alone, and a file naming one is refused outright rather than skipped.
+ */
+async function cmdAccess(argv) {
+  const sub = argv[0];
+  const filePath = argv[1];
+  if ((sub !== 'export' && sub !== 'import') || !filePath) {
+    err('usage: squad-hub access export <path>');
+    err('       squad-hub access import <path> [--apply-revocations]');
+    err('');
+    err('export writes the access list to a file you choose; import restores');
+    err('it. Import is additive: it never removes anyone unless you also pass');
+    err('--apply-revocations, and it refuses the whole file rather than guess');
+    err('at an entry it cannot read.');
+    return 2;
+  }
+
+  const {
+    buildExportText, parseExportText, planImport, applyImport,
+  } = require('./service/access-export');
+
+  const store = localAccessStore();
+  if (!store.ok) {
+    err(`the access list could not be read (${store.error}); refusing to touch it`);
+    return 1;
+  }
+
+  if (sub === 'export') {
+    const text = buildExportText(store);
+    try {
+      fs.writeFileSync(filePath, text, { mode: 0o600 });
+    } catch (e) {
+      err(`could not write ${filePath}: ${e.message}`);
+      return 1;
+    }
+    const count = text.trim().split('\n').length - 1;
+    out(`exported ${count} record(s) to ${filePath}`);
+    return 0;
+  }
+
+  // import
+  const applyRevocations = flag(argv, 'apply-revocations');
+  let text;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch (e) {
+    err(`could not read ${filePath}: ${e.message}`);
+    return 1;
+  }
+
+  const parsed = parseExportText(text);
+  if (!parsed.ok) {
+    err(`refusing the import: ${parsed.reason}`);
+    err('Nothing was changed.');
+    return 1;
+  }
+
+  const plan = planImport(store, parsed.records);
+  if (!plan.ok) {
+    err(`refusing the import: ${plan.reason}`);
+    err('Nothing was changed.');
+    return 1;
+  }
+
+  const result = applyImport(store, parsed.records, { applyRevocations });
+  out(`added ${result.added.length}, already present ${result.alreadyPresent.length}`
+    + `${applyRevocations ? `, revoked ${result.revoked.length}` : ''}`);
+  for (const login of result.added) out(`  + ${login}`);
+  for (const login of result.alreadyPresent) out(`  = ${login} (already present)`);
+  if (result.pendingRevocations.length && !applyRevocations) {
+    out(`${result.pendingRevocations.length} revocation(s) in the file were not applied (pass --apply-revocations):`);
+    for (const login of result.pendingRevocations) out(`  - ${login}`);
+  }
+  return 0;
+}
+
+/**
  * Mint a device token against a running hub.
  *
  * Deliberately a call to the hub rather than local signing. Minting locally
@@ -1384,6 +1485,10 @@ function usage() {
   squad-hub device-token --hub <url> --token <your token> --list
   squad-hub device-token --hub <url> --token <your token> --revoke <id>
 
+  ACCESS LIST BACKUP (local; does not need the hub to be answering)
+  squad-hub access export <path>                       write the access list to a file you choose
+  squad-hub access import <path> [--apply-revocations]  restore it (additive by default)
+
 A device token can be a device and NOTHING else: it cannot read the API, start
 work on another device, or watch the event stream. Give one to a cloud device
 instead of your own credential. --prefix restricts which device ids it may
@@ -1484,6 +1589,7 @@ async function main(argv) {
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);
+    case 'access': return cmdAccess(rest);
     case 'autostart': return cmdAutostart(rest);
     // The pre-`autostart` spellings. Kept working forever: they are in scripts,
     // in login tasks, and in other people's notes.
