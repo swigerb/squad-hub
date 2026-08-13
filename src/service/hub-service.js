@@ -542,6 +542,17 @@ class HubService {
          * rather than a property that has to be inferred from a loss.
          */
         sessionStore: this.store.durable ? 'durable' : 'memory',
+        /**
+         * Whether a grant made through /api/access survives a restart.
+         *
+         * Same rule as `sessionStore` above, and for the same reason: without
+         * this, `SQUAD_HUB_HOME` being unset, mistyped, or pointed at an
+         * unwritable share looks identical to a working deployment right up
+         * until the next redeploy silently forgets every added user. Naming it
+         * here is what lets a deploy read the running fact instead of trusting
+         * the setting it just wrote.
+         */
+        accessStore: this.accessStore.persist ? 'durable' : 'memory',
         // Named rather than implied, so it appears in the UI and in any log
         // scrape without the reader having to know the rule.
         //

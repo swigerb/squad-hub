@@ -438,6 +438,25 @@ Write-Host "  healthz       ok"
 Write-Host "  build         $($health.build) (this deployment)"
 Write-Host "  instance      $($health.instance)"
 
+# The access list surviving a redeploy is the whole point of SQUAD_HUB_HOME
+# below -- and "the setting is present but not taking effect" is exactly the
+# failure this must catch. Read $health, the RUNNING deployment's own answer,
+# not the settings this script just wrote: a setting can be written and still
+# be ineffective (wrong path, an unwritable share, a process that has not
+# picked it up), and only the app itself can say which actually happened. An
+# older build that predates this field answers with no `accessStore` at all,
+# which is a different problem from a build that answers 'memory' -- one says
+# "cannot tell", the other says "confirmed, and it is wrong" -- so they get two
+# messages rather than one that would send the operator hunting the wrong
+# thing.
+if ($null -eq $health.accessStore) {
+  Fail "this build cannot say whether the access store is durable (it predates the field). Redeploy the current build before trusting this check."
+}
+if ($health.accessStore -ne 'durable') {
+  Fail "the running deployment reports its access store as '$($health.accessStore)', so every grant would be forgotten on the next deploy. Set SQUAD_HUB_HOME=/home/data/squad-hub (scripts/deploy-appservice.ps1:222) and redeploy."
+}
+Write-Host "  accessStore   durable"
+
 # What a stranger sees. Asserted rather than assumed, because this endpoint has
 # to stay public for a liveness probe and it would be easy to widen by accident.
 $anon = Invoke-RestMethod -Uri "https://$fqdn/healthz" -TimeoutSec 15
