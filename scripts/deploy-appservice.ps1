@@ -51,23 +51,50 @@ function Warn($m) { Write-Host $m -ForegroundColor Yellow }
 
 # Which subscription to deploy into.
 #
-# NOT left to whatever `az` happens to have active. The active subscription is
-# global machine state that anything else can change -- another terminal,
-# another tool, another task -- and a deploy that trusts it will one day create
-# a brand new app in somebody else's subscription and report success.
+# NOT silently left to whatever `az` happens to have active WITHOUT SAYING SO.
+# The active subscription is global machine state that anything else can change
+# -- another terminal, another tool, another task -- and a deploy that trusts it
+# blindly will one day create a brand new app in somebody else's subscription
+# and report success.
 #
 # Measured: this exact thing happened. The active subscription had moved, the
 # script reported "no existing app; will use plan 'asp-squad-hub'", and only the
 # settings step failing stopped it building a second hub somewhere nobody was
 # looking.
 #
-# So it is pinned to the subscription this hub actually lives in. Override with
-# -Subscription, or SQUAD_HUB_SUBSCRIPTION, for a genuinely different target.
+# The first version of this fix pinned a hard-coded subscription id -- which
+# made the script work for exactly one person and fail for everybody else, since
+# nobody can `az account set` to a subscription they cannot see (#119). The
+# safety was never in the constant; it was in KNOWING which subscription is
+# about to be used. So the id is resolved from what you passed, or the
+# environment, or the active account, and then said out loud before anything is
+# created.
 if (-not $Subscription) { $Subscription = $env:SQUAD_HUB_SUBSCRIPTION }
-if (-not $Subscription) { $Subscription = '44847a42-6b69-4e6c-b7e5-ce7140469dd6' }
+if (-not $Subscription) {
+  $Subscription = az account show --query id -o tsv 2>$null
+  if (-not $Subscription) {
+    Fail @"
+No subscription selected, and none given.
+
+  az login
+  az account set --subscription <name-or-id>
+
+or pass it explicitly:  -Subscription <name-or-id>
+(or set SQUAD_HUB_SUBSCRIPTION)
+"@
+  }
+  $usingActive = $true
+}
 az account set --subscription $Subscription | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "could not select subscription '$Subscription'. Run 'az login', or pass -Subscription." }
-Write-Host "subscription: $(az account show --query name -o tsv)"
+$subName = az account show --query name -o tsv
+$subId = az account show --query id -o tsv
+Write-Host "subscription: $subName ($subId)"
+if ($usingActive) {
+  # Said plainly, because this is the value that decides WHERE a new hub gets
+  # built, and it came from machine state rather than from anything typed here.
+  Warn "  (from your active az account -- pass -Subscription to pin it)"
+}
 
 # If the app already exists, use ITS plan. Guessing a name from a convention
 # creates a second plan, leaves the app on the first, and bills for both -- which
@@ -149,10 +176,51 @@ Use -AllowAnyone only if you genuinely intend a hub open to all comers.
 # ---------------------------------------------------------------------------
 Step 'Plan and app'
 if (-not $SkipCreate) {
+  # The resource group has to exist before anything can be put in it, and
+  # nothing here used to create one. What a person saw instead was the plan
+  # step failing with "regional quota is the usual cause" -- a confident
+  # diagnosis of the wrong problem, since az's real message
+  # (ResourceGroupNotFound) scrolled past above it (#120).
+  #
+  # Creating it is the right behaviour rather than a nicer error: every other
+  # thing this script needs, it makes. A group is the cheapest of them and the
+  # one that has to come first.
+  $rgExists = az group show -n $ResourceGroup --query name -o tsv 2>$null
+  if (-not $rgExists) {
+    az group create -n $ResourceGroup --location $Location | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Fail @"
+Resource group '$ResourceGroup' does not exist and could not be created in '$Location'.
+
+That usually means the account lacks permission to create one in subscription
+'$subName' ($subId), or the location name is wrong.
+
+  create it yourself:  az group create -n $ResourceGroup -l $Location
+  or deploy elsewhere: -ResourceGroup <an existing group>
+"@
+    }
+    Write-Host "created resource group $ResourceGroup ($Location)"
+  } else {
+    Write-Host "using existing resource group $ResourceGroup"
+  }
+
   $planExists = az appservice plan show -n $Plan -g $ResourceGroup --query name -o tsv 2>$null
   if (-not $planExists) {
-    az appservice plan create -n $Plan -g $ResourceGroup --location $Location --is-linux --sku $Sku | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "the '$Sku' plan could not be created (regional quota is the usual cause)" }
+    # az's own message is captured rather than discarded, so the reason given
+    # is the reason that happened. Quota is the USUAL cause, not the only one,
+    # and asserting it flatly sent somebody hunting a quota they had plenty of.
+    $planErr = az appservice plan create -n $Plan -g $ResourceGroup --location $Location --is-linux --sku $Sku 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      Fail @"
+the '$Sku' plan could not be created in '$Location'.
+
+Azure said:
+$($planErr.Trim())
+
+Regional quota is the usual cause -- try another region with -Location, or a
+smaller -Sku.
+"@
+    }
     Write-Host "created plan $Plan ($Sku, $Location)"
   } else {
     Write-Host "using existing plan $Plan"
@@ -160,8 +228,18 @@ if (-not $SkipCreate) {
 
   $appExists = az webapp show -n $Name -g $ResourceGroup --query name -o tsv 2>$null
   if (-not $appExists) {
-    az webapp create -g $ResourceGroup -p $Plan -n $Name --runtime $Runtime | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail 'the web app could not be created' }
+    $appErr = az webapp create -g $ResourceGroup -p $Plan -n $Name --runtime $Runtime 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      Fail @"
+the web app could not be created.
+
+Azure said:
+$($appErr.Trim())
+
+A name already taken by somebody else's app is the usual cause: '$Name' has to
+be unique across all of azurewebsites.net. Try -Name <something-more-specific>.
+"@
+    }
     Write-Host "created app $Name ($Runtime)"
   } else {
     Write-Host "using existing app $Name"
