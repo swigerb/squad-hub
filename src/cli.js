@@ -1159,11 +1159,16 @@ function httpJson(url, { method = 'GET', headers = {}, body = null } = {}) {
  */
 function localAccessStore() {
   const { AccessStore } = require('./service/access-store');
+  const { AccessAudit } = require('./service/access-audit');
   return new AccessStore({
     dir: paths.home(),
     persist: true,
     envAllowed: (process.env.SQUAD_HUB_ALLOWED_USERS || '').split(',').filter(Boolean),
     envOwner: (process.env.SQUAD_HUB_OWNER || '').split(',').filter(Boolean),
+    // An import grants people access, so it belongs in the same record as any
+    // other grant. Without this the one bulk operation on the whole list would
+    // be the only one that left no trace.
+    audit: new AccessAudit({ dir: paths.home() }),
   });
 }
 
@@ -1180,14 +1185,49 @@ function localAccessStore() {
 async function cmdAccess(argv) {
   const sub = argv[0];
   const filePath = argv[1];
+
+  // `access log` reads history rather than moving the list about, so it takes
+  // no path and returns before the export/import argument handling below.
+  if (sub === 'log') {
+    const { AccessAudit } = require('./service/access-audit');
+    const limitArg = value(argv.slice(1), 'limit');
+    const limit = limitArg ? Number(limitArg) : 50;
+    const audit = new AccessAudit({ dir: paths.home() });
+    const { entries, damaged, total } = audit.read({ limit: Number.isFinite(limit) ? limit : 50 });
+
+    if (!entries.length) {
+      out('no access changes have been recorded on this hub yet.');
+      return 0;
+    }
+    for (const e of entries) {
+      const mark = e.ok ? ' ' : '!';
+      const who = e.actor ? ` by ${e.actor}` : '';
+      const why = e.ok ? '' : `  -- refused: ${e.reason || 'no reason recorded'}`;
+      out(`${mark} ${e.at}  ${e.action.padEnd(7)} ${e.login}${who}${why}`);
+    }
+    if (total > entries.length) out(`\n(showing the last ${entries.length} of ${total}; use --limit 0 for all)`);
+    if (damaged) {
+      // Reported rather than skipped: a log that quietly drops unreadable
+      // lines makes tampering look like nothing more than a shorter file.
+      err(`\nWARNING: ${damaged} line(s) in the access log could not be read.`);
+      err('This log is only ever appended to, so unreadable lines are worth explaining.');
+      return 1;
+    }
+    return 0;
+  }
+
   if ((sub !== 'export' && sub !== 'import') || !filePath) {
     err('usage: squad-hub access export <path>');
     err('       squad-hub access import <path> [--apply-revocations]');
+    err('       squad-hub access log [--limit <n>]');
     err('');
     err('export writes the access list to a file you choose; import restores');
     err('it. Import is additive: it never removes anyone unless you also pass');
     err('--apply-revocations, and it refuses the whole file rather than guess');
     err('at an entry it cannot read.');
+    err('');
+    err('log shows who was granted or revoked access, and when. It is only');
+    err('ever appended to, and records refused attempts as well as successes.');
     return 2;
   }
 

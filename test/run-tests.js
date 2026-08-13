@@ -767,6 +767,8 @@ async function suiteAccess() {
   runChildSuite(path.join(__dirname, 'access-api-unit.js'), 'access-api');
   runChildSuite(path.join(__dirname, 'people-list-unit.js'), 'people-list');
   runChildSuite(path.join(__dirname, 'access-export-import-unit.js'), 'access-export-import');
+  console.log('\n[ACCESS LOG] who was let in and when, in a file only ever appended to');
+  runChildSuite(path.join(__dirname, 'access-audit-unit.js'), 'access-audit');
 }
 
 /**
