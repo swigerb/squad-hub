@@ -678,16 +678,41 @@ class HubService {
         return send(403, { error: 'only an owner of this hub can manage who has access' });
       }
       const target = accessMatch[1];
+      /**
+       * One shape for every access response.
+       *
+       * GET returned `{users, durable, ok, error}` while POST and DELETE
+       * returned `{ok, login, users}` -- and the web client REPLACES its state
+       * with whatever the last call returned. So after adding or removing
+       * anybody, `durable` was suddenly absent, `!data.durable` was true, and
+       * the screen announced:
+       *
+       *   "This hub cannot save its access list, so anyone added here is
+       *    forgotten when it restarts."
+       *
+       * That was false. Verified against a running deployment: the list
+       * survived a full restart intact. The message appeared the moment
+       * somebody added a colleague -- the exact moment they most need to trust
+       * it -- and told them their change would be lost.
+       *
+       * `ok` was overloaded too: on GET it means "the store is readable", on
+       * POST/DELETE it meant "the operation succeeded". Same field, same
+       * client code path, two meanings. Failure is already carried by the HTTP
+       * status (400 with a reason), so `ok` keeps the single meaning it has on
+       * GET, and every response is built here so the three cannot drift again.
+       */
+      const accessPayload = (extra = {}) => ({
+        ...extra,
+        users: this.accessStore.list(),
+        // A hub that cannot persist its list will forget every grant when it
+        // restarts. Saying so is the difference between "added" and "added
+        // until the next deploy".
+        durable: this.accessStore.persist,
+        ok: this.accessStore.ok,
+        error: this.accessStore.ok ? null : this.accessStore.error,
+      });
       if (req.method === 'GET' && !target) {
-        return send(200, {
-          users: this.accessStore.list(),
-          // A hub that cannot persist its list will forget every grant when it
-          // restarts. Saying so is the difference between "added" and "added
-          // until the next deploy".
-          durable: this.accessStore.persist,
-          ok: this.accessStore.ok,
-          error: this.accessStore.ok ? null : this.accessStore.error,
-        });
+        return send(200, accessPayload());
       }
       if (req.method === 'POST' && !target) {
         const body = await readJson(req);
@@ -700,7 +725,7 @@ class HubService {
         });
         if (!r.ok) return send(400, { error: r.reason });
         this._syncAllowedUsers();
-        return send(200, { ok: true, login: r.login, users: this.accessStore.list() });
+        return send(200, accessPayload({ login: r.login }));
       }
       if (req.method === 'DELETE' && target) {
         let login;
@@ -708,7 +733,7 @@ class HubService {
         const r = this.accessStore.remove(login);
         if (!r.ok) return send(400, { error: r.reason });
         this._syncAllowedUsers();
-        return send(200, { ok: true, login: r.login, users: this.accessStore.list() });
+        return send(200, accessPayload({ login: r.login }));
       }
       return send(405, { error: 'method not allowed' });
     }

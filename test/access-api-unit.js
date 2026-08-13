@@ -96,6 +96,7 @@ function api(port, p, token, opts = {}) {
     assert.strictEqual(seen.body.durable, true);
   });
 
+
   const added = await api(port, '/api/access', ownerToken, {
     method: 'POST', body: { login: 'newperson', note: 'a colleague' },
   });
@@ -131,6 +132,37 @@ function api(port, p, token, opts = {}) {
     assert.strictEqual(removed.status, 200, JSON.stringify(removed));
     assert.ok(!removed.body.users.some((u) => u.login === 'newperson'));
     assert.ok(!auth.allowedUsers.includes('newperson'), 'the revocation did not take effect');
+  });
+
+  // -- every response says the same things ----------------------------------
+  //
+  // The web client REPLACES its state with whatever the last call returned, so
+  // a field present on GET and absent on POST/DELETE does not degrade -- it
+  // inverts. `durable` was missing from both write responses, so `!durable`
+  // became true the instant somebody added a colleague and the screen said
+  // "This hub cannot save its access list, so anyone added here is forgotten
+  // when it restarts." That was false: the list survives a restart, verified
+  // against a running deployment.
+  //
+  // Asserted as a SHAPE across all three verbs rather than field by field, so
+  // a field added to one later cannot quietly go missing from the others.
+  check('add and remove answer with the same shape as a read, so the UI cannot be misled', () => {
+    const shape = (b) => Object.keys(b).filter((k) => k !== 'login').sort().join(',');
+    const want = shape(seen.body);
+    assert.strictEqual(want, 'durable,error,ok,users',
+      `the read shape changed; update this test deliberately (got ${want})`);
+    assert.strictEqual(shape(added.body), want,
+      'POST /api/access answers with a different shape from GET, so the UI renders from a partial payload');
+    assert.strictEqual(shape(removed.body), want,
+      'DELETE /api/access answers with a different shape from GET, so the UI renders from a partial payload');
+  });
+
+  check('a write never reports the list as non-durable when it is durable', () => {
+    // The specific lie: added someone, told they will be forgotten.
+    assert.strictEqual(added.body.durable, true,
+      'adding somebody reported the list as not durable');
+    assert.strictEqual(removed.body.durable, true,
+      'removing somebody reported the list as not durable');
   });
 
   // -- the refusals ---------------------------------------------------------
