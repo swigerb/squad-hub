@@ -199,6 +199,97 @@ function launch(env, cwd, args = []) {
   }
 
   // -------------------------------------------------------------------------
+  // Section A2: a streamed message is ONE message, not one line per token.
+  //
+  // The agent streams its prose token by token. Giving each chunk its own
+  // prefixed line turned one sentence into a column of fragments:
+  //
+  //     agent> Squ
+  //     agent> ad
+  //     agent>  v
+  //     agent> 0
+  //
+  // The web transcript already holds the same rule ("a streamed message is ONE
+  // block, not one row per token"), so this is the terminal agreeing with it
+  // rather than a new opinion.
+  // -------------------------------------------------------------------------
+  check('a streamed message is ONE message, not one line per token', () => {
+    const { renderUpdates } = require('../src/interactive');
+    const chunk = (t) => ({ update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } } });
+    const r = renderUpdates([chunk('Squ'), chunk('ad'), chunk(' v'), chunk('0'), chunk('.11')]);
+    assert.strictEqual(r.text, 'agent> Squad v0.11',
+      `a token stream was not joined into one message: ${JSON.stringify(r.text)}`);
+    assert.strictEqual((r.text.match(/agent> /g) || []).length, 1,
+      'the prefix was repeated per token, which is the defect this exists to stop');
+  });
+
+  check('a message spanning two polls continues, rather than starting again', () => {
+    // The daemon delivers the transcript in batches, so a sentence routinely
+    // arrives across several polls. Joining only WITHIN a batch would still
+    // break the line at every batch boundary.
+    const { renderUpdates } = require('../src/interactive');
+    const chunk = (t) => ({ update: { sessionUpdate: 'agent_message_chunk', content: { text: t } } });
+    const first = renderUpdates([chunk('Deploying ')]);
+    const second = renderUpdates([chunk('to centralus.')], first.state);
+    assert.strictEqual(first.text, 'agent> Deploying ');
+    assert.strictEqual(second.text, 'to centralus.',
+      'the second batch re-opened the message instead of continuing it');
+  });
+
+  check('a tool call ends the message in progress instead of landing inside it', () => {
+    const { renderUpdates } = require('../src/interactive');
+    const r = renderUpdates([
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Checking' } } },
+      { update: { sessionUpdate: 'tool_call', title: 'Running the tests' } },
+    ]);
+    assert.strictEqual(r.text, 'agent> Checking\ntool> Running the tests\n');
+    assert.strictEqual(r.state.streaming, false,
+      'the message was left open, so the next thing written would join a finished sentence');
+  });
+
+  check('a message still streaming is closed before anything else is written', () => {
+    // Approvals, status and errors all go through `write`. If one landed
+    // mid-sentence the terminal would read as corrupted at the exact moment
+    // somebody is being asked to approve something.
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'interactive.js'), 'utf8');
+    assert.match(src, /const write = \(s\) => \{[\s\S]*?streamState\.streaming[\s\S]*?\}/,
+      'write() no longer closes an open streamed message first');
+  });
+
+  // -------------------------------------------------------------------------
+  // Section A3: typing the wrong one of a sibling pair says which is which.
+  //
+  // `squad-hub` and `squad` sit next to each other in muscle memory. `squad
+  // hub squad` -- a real thing somebody typed -- gets "Unknown command: hub"
+  // from the OTHER CLI; the same shrug back from this one leaves a person
+  // with two tools and no idea which was wrong.
+  // -------------------------------------------------------------------------
+  await (async () => {
+    const { spawnSync } = require('child_process');
+    const { home, work, env } = makeEnv();
+    try {
+      const r = spawnSync(process.execPath, [BIN, 'hub', 'squad'], { env, encoding: 'utf8' });
+      const text = `${r.stdout}${r.stderr}`;
+      await checkAsync('`squad-hub hub squad` names the command that was meant', async () => {
+        assert.notStrictEqual(r.status, 0, 'a wrong command reported success');
+        assert.match(text, /squad-hub squad/,
+          `the correction was not offered:\n${text}`);
+        assert.ok(!/USAGE|COMMANDS/.test(text),
+          'the whole help was dumped instead of naming the one-word fix');
+      });
+
+      const unknown = spawnSync(process.execPath, [BIN, 'definitelynotacommand'], { env, encoding: 'utf8' });
+      await checkAsync('a genuinely unknown command still gets the full help', async () => {
+        const u = `${unknown.stdout}${unknown.stderr}`;
+        assert.match(u, /see and control your Squad sessions/,
+          'the guess-a-sibling path swallowed the help for a command with no sibling');
+      });
+    } finally {
+      cleanup(home, work);
+    }
+  })();
+
+  // -------------------------------------------------------------------------
   // Section B: this is NOT the Copilot TUI, and documents that boundary.
   // -------------------------------------------------------------------------
   check('docs/commands.md states plainly that the interactive terminal is not the Copilot TUI', () => {
