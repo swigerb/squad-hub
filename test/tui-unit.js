@@ -155,6 +155,36 @@ check('the notice names the agent actually being used', () => {
   assert.ok(/squad/.test(text), `notice never names the agent:\n${text}`);
 });
 
+check('WHEN SUPERVISED, THE NOTICE SAYS SO -- and does not still claim otherwise', () => {
+  // The mode changed under #114. A notice left saying "not supervised" while
+  // approvals really do reach a phone would train people to ignore it.
+  const text = tuiNotice(selectAgent({ cwd: squadProject() }), { supervised: true }).join('\n');
+  assert.ok(/IS supervised/.test(text), `supervised notice does not say so:\n${text}`);
+  assert.ok(!/NOT supervised/.test(text), `supervised notice still says NOT supervised:\n${text}`);
+  assert.ok(/phone/.test(text), `never mentions answering from a phone:\n${text}`);
+});
+
+check('A SUPERVISED SESSION STILL PROMISES NOTHING IS APPROVED FOR YOU', () => {
+  // The failure mode is the whole design. Someone reading this must understand
+  // that an unanswered approval comes back to them rather than proceeding.
+  const text = tuiNotice(selectAgent({ cwd: squadProject() }), { supervised: true }).join('\n');
+  assert.ok(/never approved on your behalf/i.test(text), `no promise about the failure mode:\n${text}`);
+  assert.ok(/comes back to this keyboard/i.test(text), `does not say where an unanswered decision goes:\n${text}`);
+});
+
+check('WHEN NOT SUPERVISED, THE NOTICE NAMES THE COMMAND THAT FIXES IT', () => {
+  const text = tuiNotice(selectAgent({ cwd: squadProject() })).join('\n');
+  assert.ok(/hooks install/.test(text), `no route to supervision is offered:\n${text}`);
+});
+
+checkAsync('the supervised state reaches the notice from the caller', async () => {
+  const lines = [];
+  await runTui({
+    cwd: squadProject(), supervised: true, spawnFn: fakeSpawn([]), write: (l) => lines.push(l),
+  });
+  assert.ok(/IS supervised/.test(lines.join('\n')), `runTui ignored supervised:\n${lines.join('\n')}`);
+});
+
 // ---------------------------------------------------------------------------
 // C. Running it
 // ---------------------------------------------------------------------------

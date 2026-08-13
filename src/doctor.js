@@ -202,6 +202,27 @@ async function runDoctor({ cwd = process.cwd(), explicitAgent = null, explicitMo
   add('copilot-cli', copilotPath ? 'ok' : 'fail',
     copilotPath ? `found at ${copilotPath}` : 'not found on PATH; install the Copilot CLI (https://github.com/github/copilot-cli)');
 
+  /**
+   * Whether a Copilot session started in a terminal will register with the hub.
+   *
+   * Reported at 'warn' when absent rather than 'fail': not installing it is a
+   * legitimate choice, since the hook applies to every Copilot session on the
+   * machine. A file that is present but STALE is different -- it is a setting
+   * somebody believes is working -- so that one is a failure.
+   */
+  const hookState = require('./hooks').status();
+  if (!hookState.installed) {
+    add('copilot-hooks', 'warn',
+      'not installed; Copilot sessions started in a terminal will not appear in the hub. Run `squad-hub hooks install` to change that.');
+  } else if (hookState.error) {
+    add('copilot-hooks', 'fail', `${hookState.path} could not be read: ${hookState.error}`);
+  } else if (!hookState.current) {
+    add('copilot-hooks', 'fail',
+      `${hookState.path} is missing ${(hookState.missing || []).join(', ')}; run \`squad-hub hooks install --force\` to update it`);
+  } else {
+    add('copilot-hooks', 'ok', `installed at ${hookState.path}`);
+  }
+
   // Neither signal below PROVES the Copilot CLI can authenticate right now --
   // an env var's value is never inspected, and a prior login can have
   // expired or been revoked since -- so this check can never honestly reach

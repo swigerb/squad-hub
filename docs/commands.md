@@ -139,64 +139,102 @@ Agent and model resolve exactly as they do for a supervised session (same
 selection logic, same precedence), so `--agent`/`--model` behave the same way
 here. It takes no prompt: the TUI asks for one itself.
 
-**This session is not supervised by the hub** *yet*. Approvals appear in the TUI
-and are answered at that keyboard. It does not appear in `squad-hub status`, the
-web Hub cannot see or steer it, and closing the terminal ends it. That is a
-missing feature rather than a limit of the CLI — see "What supervision would
-take" below.
+**This session is supervised when the hooks are installed.** With
+`squad-hub hooks install` done, it appears in `squad-hub status` and in the web
+Hub, and approvals can be answered from there or from a phone. Without them,
+approvals stay in that terminal and the hub never hears about the session. The
+notice printed at launch says which of the two you just got.
 
 |  | `squad-hub squad` | `squad-hub squad --tui` |
 |---|---|---|
 | Copilot's own TUI | no | **yes** |
-| Visible in the web Hub | **yes** | no |
-| Approve from a phone | **yes** | no |
+| Visible in the web Hub | **yes** | with hooks installed |
+| Approve from a phone | **yes** | with hooks installed |
 | Steer from the Hub | **yes** | no |
 | Survives closing the terminal | **yes** | no |
 
-That is why supervision is the default and `--tui` is opt-in: a session you
-cannot answer from a phone gives up the reason the hub exists.
+Steering is the one thing that does not come back: the daemon owns no process
+here, so it refuses with a reason rather than pretending.
+
+## `hooks`: let terminal sessions register themselves
+
+```
+squad-hub hooks install [--force]
+squad-hub hooks remove
+squad-hub hooks status
+```
+
+Writes a Copilot hook file (`$COPILOT_HOME/hooks/squad-hub.json`, or
+`~/.copilot/hooks/`) so Copilot sessions started in a terminal tell this hub
+about themselves.
+
+**This applies to every Copilot session on the machine**, not only ones in a
+Squad project — which is why it is never installed for you. `remove` undoes it
+completely, and `squad-hub doctor` reports whether it is present and current.
+
+There is also `squad-hub hook <event>`, which is the shim the hook file invokes.
+It is not meant to be typed; it is documented so that somebody who finds it in
+their Copilot configuration can tell what it is.
 
 #### What supervision would take
 
-The hub supervises a session by speaking ACP over the agent's stdio. The
-Copilot TUI wants that same stdio for its own interface. One process cannot
-serve both, so `--acp` and the TUI are mutually exclusive — that part is
-structural, and it is the only part that is.
+Nothing, now — it is built. `squad-hub hooks install` turns it on. What follows
+is why it works the way it does, and what it still cannot promise.
 
-It does **not** follow that a TUI session cannot be supervised, and an earlier
-version of this section said it did. That was wrong. Copilot CLI has a
-first-class, documented extension point that is entirely separate from stdio:
-[hooks](https://docs.github.com/en/copilot/concepts/agents/hooks). Measured
-against CLI 1.0.79, with hooks in `$COPILOT_HOME/hooks/*.json`:
+The hub supervises an ACP session by speaking over the agent's stdio, and the
+Copilot TUI wants that same stdio. One process cannot serve both, so `--acp` and
+the TUI remain mutually exclusive. Supervision arrives through a different
+channel entirely: [Copilot's hooks](https://docs.github.com/en/copilot/concepts/agents/hooks),
+which run a command of our choosing at points in a session's life.
 
-- `sessionStart` delivers `sessionId`, `cwd` and `source` — enough for a session
-  to **register itself** with the hub as it starts
-- `userPromptSubmitted` delivers each prompt
-- `preToolUse` delivers `toolName` and `toolArgs`, **blocks the agent while it
-  runs**, and its answer decides whether the tool executes
+- `sessionStart` / `sessionEnd` — the session registers and deregisters itself
+- `userPromptSubmitted` / `postToolUse` / `agentStop` — what it is doing
+- `preToolUse` — **blocks the agent** and decides whether the tool runs
 
-That last one is approval routing. A hook that asks the hub and waits was
-observed holding each tool call for the full duration of the wait and then
-refusing it, with the reason surfaced in the TUI:
+### The failure mode, which is the whole design
+
+Three things were measured against Copilot CLI 1.0.79 before any of this was
+built:
+
+| Measured | Result |
+|---|---|
+| How long may a `preToolUse` hook block? | 90s observed with `timeoutSec: 300`; the TUI shows it waiting |
+| What happens if the hook times out? | **Falls through** — under `--allow-all-tools`, the tool RUNS |
+| Does an explicit `ask` override `--allow-all-tools`? | **Yes** — the tool is refused |
+
+The second is the trap. A hook that stays silent when the hub is unreachable
+would turn an outage into permission. So every failure path answers `ask`
+instead, which puts the decision back at the keyboard whatever the session was
+launched with: an unregistered session, an ended one, an unrecognised answer, or
+nobody answering in time.
+
+That requires three timeouts nested in order, and the code says so where each is
+set:
 
 ```
-✗ Create denied.txt with content nope (shell)                    9s
-  └ Denied by preToolUse hook: Squad Hub: denied by the human at the other end
+Copilot's timeoutSec (300s, in the hook file)
+  > the hook's IPC wait (270s)
+    > the daemon's wait for a human (120s, SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS)
 ```
 
-The file was never created.
+If the daemon does not answer first, Copilot gives up, the hook prints nothing,
+and nothing is the one outcome that means "allow".
 
-So the honest statement is not "impossible" but **"not built yet"**. What
-`--tui` gives up today it gives up because the hook integration has not been
-written, and that work is tracked separately. Two things still need measuring
-before it can be: how long a `preToolUse` hook may block before the CLI gives up
-on it (the default is 30s, and a human reaching for a phone needs longer), and
-what happens to a session when the hub is unreachable — which must fail toward
-the local keyboard, never toward silently allowing a tool.
+### What it still does not do
 
-Note also that only the user-level hooks directory was observed loading here; a
-`.github/hooks/*.json` in a freshly `git init`-ed directory did not fire, most
-likely folder trust.
+The hub cannot steer a watched session or stop it — there is no process it owns.
+Both refuse with a reason rather than appearing to work. Sessions report
+`supervision: "hooks"` so a client can hide a Stop button instead of offering a
+broken one.
+
+### Installing is deliberate
+
+The hook file is user-level and applies to **every** Copilot session on the
+machine, including ones with nothing to do with Squad. So it is never installed
+silently: `squad-hub hooks install`, removable with `squad-hub hooks remove`, and
+reported by `squad-hub doctor` — which distinguishes "not installed" (a warning,
+and a legitimate choice) from "installed but stale" (a failure, because somebody
+believes it is working).
 
 **There is no local reattach yet.** Every `squad-hub squad` (or `run`) with no
 prompt starts a **new** session — it never resumes a previous terminal's
@@ -857,6 +895,8 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
 | `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
 | `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
+| `SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS` | How long a **watched** (hook-supervised) session's tool call waits for an answer. Default 120s — much shorter than the TTL above, because an agent is blocked in somebody's terminal for the whole of it. When it expires the answer is `ask`, never `allow`. Must stay below the `preToolUse` `timeoutSec` in the installed hook file (300s); if Copilot gives up first the hook prints nothing, and nothing falls through to the session's own permission handling. |
+| `SQUAD_HUB_HOOK_IPC_TIMEOUT_MS` | How long the `squad-hub hook` shim waits for the daemon to answer an approval. Default 270s. Sits between the two above: longer than the daemon's wait so the daemon answers first, shorter than Copilot's so the shim always gets to print something. |
 
 `--acp` is the protocol the daemon speaks to the agent, so the default argv is
 just that. `SQUAD_HUB_AGENT_ARGS` replaces it rather than adding to it, because
