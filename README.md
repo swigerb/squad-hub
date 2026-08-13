@@ -231,8 +231,18 @@ The full matrix of what survives what is in
 The simplest option is **Azure App Service** — native Node, no container:
 
 ```powershell
-./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-squad-hub
+./scripts/deploy-appservice.ps1 -ResourceGroup rg-my-hub -Name my-squad-hub `
+  -AuthMode github -Owner your-github-login
 ```
+
+`-Owner` is not optional in practice. A hub can start sessions and approve
+commands on your machines, so the script **refuses to deploy without one** (or
+`-AllowedUsers`, or an explicit `-AllowAnyone`) rather than putting an open hub
+on a public hostname.
+
+The resource group is created if it does not already exist. The deploy uses
+your active `az` subscription and prints which one; pass `-Subscription` to pin
+it.
 
 The script refuses to deploy a configuration that cannot carry a device, and
 verifies the build it pushed is the one serving.

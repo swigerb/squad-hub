@@ -171,5 +171,65 @@ check('the script still parses', () => {
   assert.strictEqual(ps.status, 0, `deploy-appservice.ps1 does not parse: ${ps.stdout || ps.stderr}`);
 });
 
+// ---------------------------------------------------------------------------
+// #119 / #120: the script works for somebody who is not its author
+// ---------------------------------------------------------------------------
+
+check('NO SUBSCRIPTION ID IS BAKED IN, or the script only works for one person', () => {
+  // A hard-coded subscription made this deploy fail for everybody else --
+  // nobody can `az account set` to a subscription they cannot see. The safety
+  // was never in the constant; it is in saying which subscription is about to
+  // be used.
+  const guids = src.match(/'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'/gi) || [];
+  assert.deepStrictEqual(guids, [], `a subscription/tenant id is hard-coded: ${guids.join(', ')}`);
+});
+
+check('with no subscription given, the active one is used AND named', () => {
+  assert.match(src, /az account show --query id -o tsv/,
+    'the script never falls back to the active subscription, so it cannot run without -Subscription');
+  assert.match(src, /subscription: \$subName \(\$subId\)/,
+    'the subscription in use is not printed, so a deploy into the wrong one looks identical to the right one');
+});
+
+check('being signed out is explained as being signed out', () => {
+  assert.match(src, /az login/, 'no subscription and no login produces no instruction to log in');
+});
+
+check('THE RESOURCE GROUP IS CREATED, rather than assumed to exist', () => {
+  // #120: nothing created it, so the plan step failed and blamed quota for a
+  // group that was simply not there.
+  assert.match(src, /az group show -n \$ResourceGroup/,
+    'the script never checks whether the resource group exists');
+  assert.match(src, /az group create -n \$ResourceGroup/,
+    'the script never creates the resource group');
+});
+
+check('A FAILING PLAN NO LONGER BLAMES QUOTA FOR EVERY CAUSE', () => {
+  // The message asserted "regional quota is the usual cause" flatly, which
+  // sent somebody hunting a quota they had plenty of while az's real answer
+  // (ResourceGroupNotFound) scrolled past above it.
+  assert.match(src, /\$planErr/, "az's own error is discarded, so the reason given cannot be the reason that happened");
+  const idx = src.indexOf('$planErr');
+  const block = src.slice(idx, idx + 900);
+  assert.match(block, /Azure said:/, 'the real Azure message is never shown');
+  assert.match(block, /-Location|-Sku/, 'the failure offers no way forward');
+});
+
+check('a name already taken is explained, since it is the usual cause', () => {
+  assert.match(src, /\$appErr/, "az's own error is discarded when the web app cannot be created");
+  assert.match(src, /unique across all of azurewebsites\.net/,
+    'a name collision -- the usual cause -- is not explained');
+});
+
+check('THE README EXAMPLE IS ONE THAT ACTUALLY DEPLOYS', () => {
+  // The first example was copied verbatim and refused, because -Owner is not
+  // optional in practice and the requirement was documented 45 lines further
+  // down.
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const first = readme.slice(readme.indexOf('deploy-appservice.ps1'));
+  const example = first.slice(0, first.indexOf('```'));
+  assert.match(example, /-Owner /, 'the first README example omits -Owner, which the script refuses without');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
