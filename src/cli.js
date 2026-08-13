@@ -1402,9 +1402,11 @@ and SAYS SO, rather than quietly substituting.
 
 "squad-hub squad --tui" is the exception: it launches the Copilot TUI directly,
 so --agent/--model are passed on the command line and the TUI itself applies
-them. That session is NOT supervised -- approvals appear at that keyboard only,
-and it does not appear in "squad-hub status". The hub's terminal and the Copilot
-TUI both want the agent's stdio, and one process cannot serve both.
+them. That session is NOT supervised yet -- approvals appear at that keyboard
+only, and it does not appear in "squad-hub status". The hub's terminal and the
+Copilot TUI both want the agent's stdio, and one process cannot serve both;
+supervising a TUI session needs Copilot's hooks instead, which is not built yet.
+See docs/commands.md.
 
 File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. To name the root instead

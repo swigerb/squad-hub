@@ -9,21 +9,20 @@
  * The hub's own terminal is a supervised session: it speaks ACP over the
  * agent's stdio, which is what lets an approval reach a phone. The Copilot TUI
  * wants that same stdio for its own interface. One process cannot be both, so
- * choosing the real TUI means giving up hub supervision for that session --
- * not as a temporary gap, but by construction.
+ * `--acp` and the TUI are mutually exclusive. That much is structural.
  *
- * That trade was measured rather than assumed. A TUI session started with a
- * caller-chosen `--session-id` was looked for afterwards in every place Copilot
- * CLI 1.0.79 keeps state, and found in none of them: no
- * `~/.copilot/session-state/<id>/`, and no row in `session-store.db`. Sessions
- * that DO leave a readable `events.jsonl` are a minority (67 of 214 on the
- * machine this was measured on), and that file is an undocumented internal
- * artifact besides. `--log-dir` yields diagnostics, not a transcript. So there
- * is no dependable way to show a TUI session in the hub, and this module does
- * not pretend otherwise -- it says so at launch instead.
+ * What does NOT follow -- and an earlier version of this comment claimed it did
+ * -- is that a TUI session can never be supervised. Copilot CLI has a
+ * documented extension point entirely separate from stdio: hooks. Measured
+ * against CLI 1.0.79, a `sessionStart` hook receives the sessionId and cwd, and
+ * a `preToolUse` hook receives the tool name and arguments, BLOCKS the agent
+ * while it runs, and decides whether the tool executes at all. A hook that asks
+ * the hub and waits is exactly the missing approval channel.
  *
- * The result is a real choice rather than a silent downgrade: supervised by
- * default, TUI when asked for, and each one honest about what it costs.
+ * So the accurate statement is "not built yet", not "impossible", and the
+ * notice below says so. Until that integration exists, this mode is honestly
+ * unsupervised, which is why supervision remains the default: a session you
+ * cannot answer from a phone gives up the reason the hub exists.
  */
 
 const { spawn } = require('child_process');
@@ -61,9 +60,9 @@ function tuiNotice(selection) {
   const lines = [
     `starting the Copilot TUI with the ${agent} agent`,
     '',
-    'This session is NOT supervised by the hub. Approvals appear here, at this',
-    'keyboard, and cannot be answered from the hub or a phone. It will not show',
-    'up in `squad-hub status`, and closing this terminal ends it.',
+    'This session is NOT supervised by the hub yet. Approvals appear here, at',
+    'this keyboard, and cannot be answered from the hub or a phone. It will not',
+    'show up in `squad-hub status`, and closing this terminal ends it.',
     '',
     'For a session you can watch and approve from anywhere, run `squad-hub squad`',
     'without --tui.',
