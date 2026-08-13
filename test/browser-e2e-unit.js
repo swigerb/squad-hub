@@ -70,6 +70,41 @@ async function until(fn, what, budgetMs = 15000) {
 }
 
 /**
+ * Wait until the page can genuinely reach the network again.
+ *
+ * `page.context().setOffline(false)` resolves before the browser can actually
+ * make a request, so a navigation issued immediately afterwards can die with
+ * net::ERR_ABORTED. That happened twice on CI, and it presents as a failure in
+ * whichever test navigates next -- which made it look like a service-worker
+ * caching bug rather than a leftover from the offline test above it.
+ *
+ * Proves the condition instead of sleeping through it: a sleep is a guess that
+ * gets tuned upward every time it flakes, while this returns the moment the
+ * network answers and says so plainly if it never does.
+ */
+async function waitUntilOnline(page, origin) {
+  await until(
+    async () => {
+      // The offline page has a retry control and reloads itself once the
+      // network returns, so the page can navigate WHILE this is asking. That
+      // destroys the execution context and rejects the evaluate -- which is
+      // not a failure, it is the very thing being waited for happening
+      // mid-question. Treated as "not ready yet" and asked again.
+      try {
+        return await page.evaluate(
+          (o) => fetch(`${o}/healthz`, { cache: 'no-store' }).then(() => true).catch(() => false),
+          origin,
+        );
+      } catch {
+        return false;
+      }
+    },
+    'the browser to be back online after the offline test',
+    15000,
+  );
+}
+
+/**
  * Wire a page to report every `securitypolicyviolation` it fires, into an
  * array this process can read.
  *
@@ -968,6 +1003,16 @@ async function watchCsp(pg) {
           'a failing dashboard must say the work it watches is still running');
       } finally {
         await page.context().setOffline(false);
+        // Coming back online is not instantaneous: `setOffline(false)` resolves
+        // before the page can actually reach anything. The next check navigates
+        // immediately, and twice on CI that navigation died with
+        // net::ERR_ABORTED -- a flake that reads exactly like a caching bug and
+        // is nothing of the sort.
+        //
+        // Waiting for a real request to succeed is deterministic where a sleep
+        // is a guess. If the network never returns this throws with a clear
+        // message, rather than handing its failure to whichever test ran next.
+        await waitUntilOnline(page, origin);
       }
     });
 
