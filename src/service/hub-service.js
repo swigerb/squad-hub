@@ -374,6 +374,26 @@ class HubService {
     });
 
     /**
+     * Load everyone who was granted access into the authenticator, NOW.
+     *
+     * The line above only reaches the store when this class builds its own
+     * Authenticator. `serve()` builds one first -- from SQUAD_HUB_ALLOWED_USERS
+     * alone -- and passes it in, so the injected path skipped the store
+     * entirely and only picked up a grant when the next add or remove happened
+     * to sync it.
+     *
+     * The effect in production: somebody added through the UI could sign in
+     * happily, and then be refused the moment the app restarted, while
+     * `/api/access` still listed them -- because that reads the store and
+     * sign-in reads this. Two answers to "who has access", disagreeing after
+     * every deploy.
+     *
+     * Syncing here rather than only on mutation means the store is the single
+     * source, whoever constructed the authenticator.
+     */
+    this._syncAllowedUsers();
+
+    /**
      * WS-2: the origin the WebSocket upgrade trusts as "this hub", taken
      * from `SQUAD_HUB_PUBLIC_URL` -- the same setting `deploy-appservice.ps1`
      * already writes and `github-oauth.js redirectUri()` already reads --
@@ -1001,7 +1021,16 @@ class HubService {
    * there; see access-store.js.
    */
   _syncAllowedUsers() {
-    if (this.auth) this.auth.allowedUsers = this.accessStore.allowedUsers();
+    if (!this.auth) return;
+    // Normalised the same way the Authenticator's constructor does. Assigning
+    // the field directly bypasses that, and sign-in compares lower-cased
+    // candidates -- so an entry that reached this list with any capital in it
+    // could never match, and the person would be refused while appearing in
+    // the list. The store lower-cases today; this makes the guarantee belong
+    // to the comparison rather than to a detail of another file.
+    this.auth.allowedUsers = this.accessStore.allowedUsers()
+      .map((u) => String(u).trim().toLowerCase())
+      .filter(Boolean);
   }
 
   /**

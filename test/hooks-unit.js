@@ -33,7 +33,11 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhooks-'));
 process.env.SQUAD_HUB_HOME = HOME;
 
 const hooks = require(path.join(__dirname, '..', 'src', 'hooks'));
-const { TuiSession, STATUS } = require(path.join(__dirname, '..', 'src', 'tui-session'));
+const { TuiSession } = require(path.join(__dirname, '..', 'src', 'tui-session'));
+// The ONE status vocabulary. Imported from the same place the daemon and the
+// hub read it, so this suite cannot quietly agree with a second one -- which is
+// precisely how a watched session reached production rendering as a blank row.
+const { STATUS } = require(path.join(__dirname, '..', 'src', 'acp-session'));
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -163,7 +167,7 @@ check('the first prompt becomes the session name, and later ones do not replace 
   s.notePrompt('fix the tests');
   s.notePrompt('now the docs');
   assert.strictEqual(s.prompt, 'fix the tests');
-  assert.strictEqual(s.status, STATUS.WORKING);
+  assert.strictEqual(s.status, STATUS.ACTIVE);
 });
 
 check('tool use is counted and named', () => {
@@ -183,11 +187,15 @@ check('AN UNKNOWN END REASON IS A FAILURE, not a clean finish', () => {
   assert.ok(s.error, 'no error recorded');
 });
 
-check('the ordinary endings are not failures', () => {
+check('the ordinary endings are terminal, and are not failures', () => {
+  // 'complete' is a clean finish; user_exit and abort are somebody closing the
+  // terminal. All three must be terminal so `forget` can tidy them, and none
+  // of them is an error worth showing.
   for (const reason of ['complete', 'user_exit', 'abort']) {
     const s = session();
     s.end(reason);
-    assert.strictEqual(s.status, STATUS.DONE, `${reason} was treated as a failure`);
+    assert.notStrictEqual(s.status, STATUS.FAILED, `${reason} was treated as a failure`);
+    assert.strictEqual(s.ended, true, `${reason} did not leave the session ended`);
   }
 });
 
@@ -198,7 +206,7 @@ check('the ordinary endings are not failures', () => {
 checkAsync('an approval answered in the hub allows the tool', async () => {
   const s = session();
   const p = s.requestApproval({ approvalId: 'a1', toolName: 'powershell', timeoutMs: 5000 });
-  assert.strictEqual(s.status, STATUS.WAITING);
+  assert.strictEqual(s.status, STATUS.WAITING_APPROVAL);
   assert.ok(s.answer('a1', 'allow_once', 'brian'), 'the answer was not accepted');
   assert.strictEqual(await p, 'allow');
   assert.strictEqual(s.answeredApprovals, 1);

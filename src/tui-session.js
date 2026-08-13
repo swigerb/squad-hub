@@ -19,19 +19,23 @@
  * the things that genuinely differ differ.
  */
 
-const STATUS = {
-  ACTIVE: 'Active',
-  WORKING: 'Working',
-  WAITING: 'Awaiting approval',
-  DONE: 'Finished',
-  FAILED: 'Failed',
-};
+/**
+ * THE SAME STATUS VOCABULARY AN ACP SESSION USES. Imported, not re-declared.
+ *
+ * This was originally a private set of prettier-looking strings ('Finished',
+ * 'Active'), and it broke production. The hub, the web UI and the daemon's own
+ * `forget` all match on the ACP values, so a watched session rendered as a
+ * blank row and could never be tidied away. A second vocabulary for the same
+ * concept is not a cosmetic choice -- everything downstream is written against
+ * one of them.
+ */
+const { STATUS } = require('./acp-session');
 
 /** How a session ended, in the words Copilot's sessionEnd hook uses. */
 const END_REASONS = {
   complete: STATUS.DONE,
-  user_exit: STATUS.DONE,
-  abort: STATUS.DONE,
+  user_exit: STATUS.STOPPED,
+  abort: STATUS.STOPPED,
   error: STATUS.FAILED,
   timeout: STATUS.FAILED,
 };
@@ -56,7 +60,7 @@ class TuiSession {
     // is a promise that something can be signalled, and nothing here can be.
     this.pid = null;
 
-    this.status = source === 'resume' ? STATUS.ACTIVE : STATUS.ACTIVE;
+    this.status = STATUS.ACTIVE;
     this.activity = 'Started in a terminal';
     this.prompt = null;
     this.startedAt = startedAt;
@@ -83,20 +87,20 @@ class TuiSession {
   notePrompt(text) {
     const clean = typeof text === 'string' ? text.trim() : '';
     if (!this.prompt && clean) this.prompt = clean.slice(0, 2000);
-    this.status = STATUS.WORKING;
+    this.status = STATUS.ACTIVE;
     this.touch(clean ? `Working on: ${clean.slice(0, 60)}` : 'Working');
   }
 
   /** A tool ran. */
   noteTool(toolName) {
     this.toolCallCount += 1;
-    this.status = STATUS.WORKING;
+    this.status = STATUS.ACTIVE;
     this.touch(toolName ? `Running ${toolName}` : 'Running a tool');
   }
 
   /** The agent finished a turn and is waiting for the human again. */
   noteIdle() {
-    if (this.status === STATUS.DONE || this.status === STATUS.FAILED) return;
+    if (this.ended) return;
     this.status = STATUS.ACTIVE;
     this.touch('Awaiting your reply');
   }
@@ -126,8 +130,19 @@ class TuiSession {
     this.pendingApprovals.clear();
   }
 
+  /**
+   * Has this session finished?
+   *
+   * Matches the daemon's own TERMINAL_STATUS set (done / failed / stopped). It
+   * used to check only DONE and FAILED, so a session that ended with
+   * `user_exit` -- somebody simply closing their terminal, which is the
+   * ordinary case -- was never terminal, never forgettable, and accumulated in
+   * the hub forever.
+   */
   get ended() {
-    return this.status === STATUS.DONE || this.status === STATUS.FAILED;
+    return this.status === STATUS.DONE
+      || this.status === STATUS.FAILED
+      || this.status === STATUS.STOPPED;
   }
 
   /**
@@ -209,7 +224,7 @@ class TuiSession {
         _settle: settle,
       });
 
-      this.status = STATUS.WAITING;
+      this.status = STATUS.WAITING_APPROVAL;
       this.touch(toolName ? `Waiting on approval: ${toolName}` : 'Waiting on approval');
     });
   }
@@ -228,7 +243,7 @@ class TuiSession {
     const decision = optionId === 'allow_once' || optionId === 'allow_always' ? 'allow' : 'deny';
     this.answeredApprovals += 1;
     this.lastAnsweredBy = answeredBy || null;
-    this.status = STATUS.WORKING;
+    this.status = STATUS.ACTIVE;
     this.touch(`${decision === 'allow' ? 'Allowed' : 'Denied'} ${pending.toolName || 'a tool'}`);
     pending._settle(decision);
     return true;

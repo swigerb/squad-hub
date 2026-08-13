@@ -650,6 +650,8 @@ async function suiteInteractive() {
   runChildSuite(path.join(__dirname, 'tui-unit.js'), 'tui');
   console.log('\n[HOOKS] a terminal Copilot session registers itself, and asks before it acts');
   runChildSuite(path.join(__dirname, 'hooks-unit.js'), 'hooks');
+  console.log('\n[REGRESSION] two failures found in production, and kept out');
+  runChildSuite(path.join(__dirname, 'prod-regression-unit.js'), 'prod-regression');
 }
 
 /**
