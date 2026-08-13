@@ -47,7 +47,13 @@ function parseCommand(line) {
   }
 }
 
-/** One line of transcript -> one printable line, or null to skip noise. */
+/**
+ * One line of transcript -> one printable line, or null to skip noise.
+ *
+ * A message CHUNK is deliberately not handled here. See `renderUpdates`: a
+ * chunk is a fragment of a token stream, not a line, and giving each one its
+ * own prefix produced a column of single words down the terminal.
+ */
 function formatUpdate(u) {
   if (!u) return null;
   const text = u.content && typeof u.content.text === 'string' ? u.content.text : null;
@@ -60,6 +66,62 @@ function formatUpdate(u) {
     case 'error': return `error: ${text || 'unknown error'}`;
     default: return text ? `${u.sessionUpdate}: ${text}` : null;
   }
+}
+
+/**
+ * Turn a batch of transcript entries into what a person should SEE.
+ *
+ * The agent streams its prose token by token. Rendering each chunk as its own
+ * prefixed line turned one sentence into a column of fragments:
+ *
+ *     agent> Squ
+ *     agent> ad
+ *     agent>  v
+ *     agent> 0
+ *
+ * The web transcript solved this already -- `transcriptBlocks` in web/app.js
+ * joins consecutive chunks into one block, and its test says why: "a streamed
+ * message is ONE block, not one row per token". This is the same rule for the
+ * terminal, so the two surfaces describe the same session the same way.
+ *
+ * It still streams. Chunks are appended to the line already on screen as they
+ * arrive rather than held back until the turn ends -- waiting for the end
+ * would trade one bad experience for a worse one, since watching the agent
+ * think is most of the value of sitting at the terminal.
+ *
+ * `state` carries the one thing that cannot be derived from a single batch:
+ * whether the last thing written was an unfinished agent message, which is
+ * what decides between continuing that line and starting a new one.
+ *
+ * @returns {{ text: string, state: object }} text to write with no trailing
+ *   newline of its own, and the state to pass to the next call.
+ */
+function renderUpdates(entries, state = { streaming: false }) {
+  let out = '';
+  let streaming = !!state.streaming;
+
+  for (const entry of entries || []) {
+    const u = entry && entry.update;
+    if (!u) continue;
+
+    if (u.sessionUpdate === 'agent_message_chunk') {
+      const text = u.content && typeof u.content.text === 'string' ? u.content.text : null;
+      if (!text) continue;
+      // Continue the message already on screen, or open a new one.
+      out += streaming ? text : `agent> ${text}`;
+      streaming = true;
+      continue;
+    }
+
+    const line = formatUpdate(u);
+    if (!line) continue;
+    // Anything that is not a chunk ends the message in progress, so a tool
+    // call or an error never lands in the middle of a sentence.
+    if (streaming) { out += '\n'; streaming = false; }
+    out += `${line}\n`;
+  }
+
+  return { text: out, state: { streaming } };
 }
 
 function formatApproval(a) {
@@ -124,8 +186,24 @@ async function runInteractive({
   let tick = 0;
   let sigintArmedAt = 0;
   let closed = false;
+  // Whether the last thing written was an agent message still being streamed.
+  // Carried across polls, because a message routinely spans several batches.
+  let streamState = { streaming: false };
 
-  const write = (s) => log(s);
+  /**
+   * Write a whole line, closing any message still being streamed first.
+   *
+   * Everything that is not agent prose -- approvals, status, errors, the
+   * prompt -- goes through here, so nothing can land in the middle of a
+   * half-written sentence.
+   */
+  const write = (s) => {
+    if (streamState.streaming) {
+      output.write('\n');
+      streamState = { streaming: false };
+    }
+    log(s);
+  };
 
   function stopPolling() {
     if (timer) { clearInterval(timer); timer = null; }
@@ -167,10 +245,11 @@ async function runInteractive({
       try {
         const tr = await client.call('transcript', { sessionId, since: lastSeq });
         const list = (tr && tr.transcript) || [];
-        for (const entry of list) {
-          const line = formatUpdate(entry.update);
-          if (line) write(line);
-        }
+        const rendered = renderUpdates(list, streamState);
+        streamState = rendered.state;
+        // `write` adds a newline; a message still streaming must not get one,
+        // or the join this exists to do is undone at the batch boundary.
+        if (rendered.text) output.write(rendered.text);
         if (tr && typeof tr.nextSince === 'number') lastSeq = tr.nextSince;
         if (tr && tr.gap && !warnedGap) {
           // Told once, not repeated every poll: the cursor has already caught
@@ -312,4 +391,4 @@ async function runInteractive({
   });
 }
 
-module.exports = { parseCommand, formatUpdate, formatApproval, runInteractive, HELP };
+module.exports = { parseCommand, formatUpdate, formatApproval, renderUpdates, runInteractive, HELP };

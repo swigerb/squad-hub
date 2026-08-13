@@ -1472,7 +1472,39 @@ async function main(argv) {
     case 'doctor': return cmdDoctor(rest);
     case '--version': case '-v': out(require('../package.json').version); return 0;
     case undefined: case 'help': case '--help': case '-h': usage(); return 0;
-    default: err(`unknown command: ${cmd}`); usage(); return 2;
+    default: {
+      /**
+       * Point at the sibling rather than dumping the whole help.
+       *
+       * `squad-hub` and `squad` sit next to each other in muscle memory, and
+       * `squad hub squad` -- a real thing somebody typed -- answers "Unknown
+       * command: hub" from the OTHER CLI. Getting the same unhelpful shrug
+       * back from this one leaves a person with two tools and no idea which
+       * was wrong.
+       */
+      const siblings = {
+        hub: 'squad-hub', 'squad-hub': 'squad-hub',
+        init: 'squad', doctor: 'squad', new: 'squad',
+      };
+      const sibling = siblings[cmd];
+      if (sibling === 'squad-hub') {
+        err(`unknown command: ${cmd}`);
+        err('');
+        err(`This IS squad-hub, so the "${cmd}" is one word too many. Try:`);
+        err(`  squad-hub ${rest.join(' ')}`.trimEnd());
+        return 2;
+      }
+      if (sibling === 'squad') {
+        err(`unknown command: ${cmd}`);
+        err('');
+        err(`"${cmd}" belongs to the Squad CLI, not squad-hub. Try:`);
+        err(`  squad ${cmd} ${rest.join(' ')}`.trimEnd());
+        return 2;
+      }
+      err(`unknown command: ${cmd}`);
+      usage();
+      return 2;
+    }
   }
 }
 
