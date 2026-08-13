@@ -2709,6 +2709,33 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an import says what it added and what was already present',
   },
   {
+    name: 'an unanswered approval becomes permission instead of asking locally',
+    file: 'src/tui-session.js',
+    find: `      const timer = setTimeout(() => {
+        this.expiredApprovals += 1;
+        settle('ask');
+      }, timeoutMs);`,
+    replace: `      const timer = setTimeout(() => {
+        this.expiredApprovals += 1;
+        settle('allow'); // MUTATION: a hub outage becomes permission
+      }, timeoutMs);`,
+    mustFail: 'NOBODY ANSWERING RESOLVES TO ask, NOT allow',
+  },
+  {
+    name: 'an unrecognised approval answer is treated as permission',
+    file: 'src/tui-session.js',
+    find: `    const decision = optionId === 'allow_once' || optionId === 'allow_always' ? 'allow' : 'deny';`,
+    replace: `    const decision = optionId === 'reject_once' ? 'deny' : 'allow'; // MUTATION: anything unknown now allows`,
+    mustFail: 'AN UNRECOGNISED ANSWER IS A DENY, never permission',
+  },
+  {
+    name: 'the PowerShell hook loses its call operator and silently never runs',
+    file: 'src/hooks.js',
+    find: `    powershell: \`& \${command} hook \${event}\`,`,
+    replace: `    powershell: \`\${command} hook \${event}\`, // MUTATION: evaluates to a string, runs nothing`,
+    mustFail: 'THE POWERSHELL FORM USES THE CALL OPERATOR, or the hook silently does nothing',
+  },
+  {
     name: 'an unrecordable grant is allowed through instead of refused',
     file: 'src/service/access-store.js',
     find: `    const rec = this._record({ action: 'grant', login, actor: addedBy, note: cleanNote });

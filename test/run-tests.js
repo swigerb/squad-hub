@@ -648,6 +648,8 @@ async function suiteInteractive() {
   runChildSuite(path.join(__dirname, 'interactive-unit.js'), 'interactive');
   console.log('\n[TUI] the real Copilot interface, and the supervision it gives up');
   runChildSuite(path.join(__dirname, 'tui-unit.js'), 'tui');
+  console.log('\n[HOOKS] a terminal Copilot session registers itself, and asks before it acts');
+  runChildSuite(path.join(__dirname, 'hooks-unit.js'), 'hooks');
 }
 
 /**

@@ -55,18 +55,30 @@ function buildTuiCommand(selection, { command } = {}) {
  * printed here is lost in the redraw. Says what is given up in plain terms, and
  * names the command that gives it back.
  */
-function tuiNotice(selection) {
+function tuiNotice(selection, { supervised = false } = {}) {
   const agent = (selection && selection.agent) || 'the default agent';
-  const lines = [
-    `starting the Copilot TUI with the ${agent} agent`,
-    '',
-    'This session is NOT supervised by the hub yet. Approvals appear here, at',
-    'this keyboard, and cannot be answered from the hub or a phone. It will not',
-    'show up in `squad-hub status`, and closing this terminal ends it.',
-    '',
-    'For a session you can watch and approve from anywhere, run `squad-hub squad`',
-    'without --tui.',
-  ];
+  const lines = [`starting the Copilot TUI with the ${agent} agent`, ''];
+
+  if (supervised) {
+    lines.push(
+      'This session IS supervised. It appears in `squad-hub status` and in the',
+      'web Hub, and approvals can be answered from there -- or from a phone.',
+      '',
+      'If nobody answers, the decision comes back to this keyboard.',
+      'It is never approved on your behalf. Closing this terminal ends it.',
+    );
+  } else {
+    lines.push(
+      'This session is NOT supervised by the hub. Approvals appear here, at this',
+      'keyboard, and cannot be answered from the hub or a phone. It will not show',
+      'up in `squad-hub status`, and closing this terminal ends it.',
+      '',
+      'To supervise sessions like this one, run `squad-hub hooks install`. For a',
+      'session you can watch and approve from anywhere today, run `squad-hub squad`',
+      'without --tui.',
+    );
+  }
+
   if (selection && selection.model) {
     lines.splice(1, 0, `model: ${selection.model}`);
   }
@@ -89,6 +101,7 @@ async function runTui({
   agent = null,
   model = null,
   command = null,
+  supervised = false,
   spawnFn = spawn,
   write = (line) => process.stdout.write(`${line}\n`),
 } = {}) {
@@ -96,7 +109,7 @@ async function runTui({
   for (const w of selection.warnings || []) write(`warning: ${w}`);
 
   const { command: cmd, args } = buildTuiCommand(selection, { command });
-  for (const line of tuiNotice(selection)) write(line);
+  for (const line of tuiNotice(selection, { supervised })) write(line);
 
   return new Promise((resolve) => {
     let child;

@@ -118,6 +118,22 @@ class Daemon extends EventEmitter {
     // deadline for someone who stepped away. Overridable so a test does not
     // have to wait half an hour to prove it.
     this.approvalTtlMs = Number(opts.approvalTtlMs || process.env.SQUAD_HUB_APPROVAL_TTL_MS || 30 * 60 * 1000);
+
+    /**
+     * How long a WATCHED session's tool call waits for an answer.
+     *
+     * Much shorter than `approvalTtlMs`, and for a different reason: an agent
+     * is blocked in somebody's terminal for the whole of it. It must also stay
+     * comfortably under the `timeoutSec` in the installed hook file, because if
+     * COPILOT gives up first the hook produces no output -- and no output falls
+     * through to the session's normal permission handling, which in a session
+     * started with --allow-all-tools means the tool simply runs. Answering
+     * 'ask' before that can happen is what keeps a hub outage from becoming
+     * permission.
+     */
+    this.hookApprovalTimeoutMs = Number(
+      opts.hookApprovalTimeoutMs || process.env.SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS || 120 * 1000,
+    );
     this.beats = 0;
     this.server = null;
     this._timer = null;
@@ -350,6 +366,45 @@ class Daemon extends EventEmitter {
     }).finally(() => { this._untrackChild(s.pid); this._persistSessions(); });
 
     return s;
+  }
+
+  /**
+   * Register a Copilot TUI session that told us about itself through a hook.
+   *
+   * The opposite direction from `startSession`: the daemon did not spawn this
+   * process and cannot drive it. It exists so a session a person started in
+   * their own terminal is still VISIBLE -- in `status`, and in the web Hub --
+   * rather than being work nobody else can see.
+   *
+   * Keyed by the id Copilot reports, so a repeated `sessionStart` (a resume, or
+   * a hook that ran twice) updates the session already known instead of
+   * accumulating duplicates for one terminal.
+   */
+  registerTuiSession({ copilotId, cwd, source = 'new' }) {
+    if (!copilotId) throw Object.assign(new Error('a session id is required'), { code: 'NO_SESSION_ID' });
+
+    const existing = this.tuiSessionByCopilotId(copilotId);
+    if (existing) {
+      existing.touch('Resumed in a terminal');
+      this._persistSessions();
+      return existing;
+    }
+
+    const { TuiSession } = require('./tui-session');
+    const id = `t${(++this._seq).toString().padStart(3, '0')}-${Date.now().toString(36)}`;
+    const s = new TuiSession({
+      id, copilotId, cwd: cwd || null, source,
+    });
+    this.sessions.set(id, s);
+    this.emit('session-status', { id, status: s.status });
+    this._persistSessions();
+    return s;
+  }
+
+  /** Find a registered TUI session by the id Copilot uses for it. */
+  tuiSessionByCopilotId(copilotId) {
+    if (!copilotId) return null;
+    return [...this.sessions.values()].find((s) => s.copilotId === copilotId) || null;
   }
 
   /**
@@ -886,6 +941,81 @@ class Daemon extends EventEmitter {
         const ok = s.answer(req.approvalId, req.optionId, req.answeredBy);
         if (!ok) throw Object.assign(new Error('no such pending approval, or unsupported option'), { code: 'NO_APPROVAL' });
         return { answered: true };
+      }
+      case 'hook-session-start': {
+        // Reached only over the local IPC socket, from the `squad-hub hook`
+        // shim that Copilot ran. `cwd` is the terminal's own directory and is
+        // recorded as reported: it is a fact about a session we do not own, not
+        // a path we are about to read from.
+        const s = this.registerTuiSession({
+          copilotId: req.sessionId, cwd: req.cwd, source: req.source,
+        });
+        return { id: s.id, registered: true };
+      }
+      case 'hook-session-end': {
+        const s = this.tuiSessionByCopilotId(req.sessionId);
+        // Not an error. A session that ends without ever having registered --
+        // because the hook was installed mid-session, say -- is a thing that
+        // simply happened, and failing here would put a scary message in
+        // somebody's terminal at the moment they quit.
+        if (!s) return { id: null, ended: false };
+        s.end(req.reason || 'complete');
+        this.emit('session-status', { id: s.id, status: s.status });
+        this._persistSessions();
+        return { id: s.id, ended: true };
+      }
+      case 'hook-approval': {
+        // A tool is about to run in a terminal, and the agent is BLOCKED until
+        // this returns. Everything here is written so the answer is never
+        // 'allow' by accident: an unknown session, an ended one, or nobody
+        // answering all resolve to 'ask', which puts the decision back at the
+        // keyboard rather than letting it default to permission.
+        const s = this.tuiSessionByCopilotId(req.sessionId);
+        if (!s || s.ended) return { decision: 'ask', reason: 'this session is not registered with the hub' };
+
+        const approvalId = `a${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const approval = {
+          id: approvalId, sessionId: s.id, toolName: req.toolName || null, detail: req.toolArgs || null,
+        };
+        this.emit('approval', approval);
+        this._persistSessions();
+
+        const decision = await s.requestApproval({
+          approvalId,
+          toolName: req.toolName,
+          toolArgs: req.toolArgs,
+          timeoutMs: Number(req.timeoutMs) || this.hookApprovalTimeoutMs,
+        });
+        this.emit('session-status', { id: s.id, status: s.status });
+        this._persistSessions();
+        return {
+          decision,
+          sessionId: s.id,
+          // "Nobody answered" and "the hub was unreachable" are different
+          // facts, and the person staring at their terminal is entitled to
+          // know which one just happened to them.
+          reason: decision === 'ask'
+            ? 'nobody answered in Squad Hub in time, so this decision stays here'
+            : null,
+        };
+      }
+      case 'hook-event': {
+        // What a watched session is DOING. Every one of these is
+        // fire-and-forget: an unregistered session is reported back as such
+        // rather than thrown, because the caller is a hook running inside
+        // somebody's terminal and an error there costs them, not us.
+        const s = this.tuiSessionByCopilotId(req.sessionId);
+        if (!s || s.ended) return { id: s ? s.id : null, noted: false };
+
+        switch (req.event) {
+          case 'userPromptSubmitted': s.notePrompt(req.prompt); break;
+          case 'postToolUse': s.noteTool(req.toolName); break;
+          case 'agentStop': s.noteIdle(); break;
+          default: s.touch(); break;
+        }
+        this.emit('session-status', { id: s.id, status: s.status });
+        this._persistSessions();
+        return { id: s.id, noted: true };
       }
       case 'stop-session': {
         const s = this.sessions.get(req.sessionId);

@@ -371,7 +371,11 @@ async function cmdStatus(argv) {
   for (const s of snap.sessions) {
     out(`  ${s.id}  ${sessionBadge(s)}`);
     out(`    ${s.activity}`);
-    out(`    ${sessionWhere(s)}  ${s.agent}  ${s.toolCallCount} tools  pid ${s.pid}`);
+    // A hook-registered session has no pid, because nothing here owns a
+    // process. Printing "pid null" would suggest something went wrong; naming
+    // the supervision instead says why there is nothing to print.
+    const how = s.supervision === 'hooks' ? 'watched (terminal)' : `pid ${s.pid}`;
+    out(`    ${sessionWhere(s)}  ${s.agent}  ${s.toolCallCount} tools  ${how}`);
     if (s.agentSelection) {
       const sel = s.agentSelection;
       out(`    squad agent: ${sel.agent}${sel.model ? `  model: ${sel.model}` : ''}  (${sel.source})`);
@@ -735,16 +739,30 @@ async function cmdSquad(argv) {
 
   // --tui hands this terminal to the real Copilot interface. It is checked
   // before anything else because it is the one path that does NOT involve the
-  // daemon: starting one, only to leave the session unsupervised anyway, would
-  // be work done for nothing.
+  // daemon in the way a supervised session does.
   if (flag(argv, 'tui')) {
     if (prompt) {
       err('squad-hub squad --tui does not take a prompt -- the TUI asks for it itself.');
       err('Drop the prompt to open the TUI, or drop --tui to start a supervised session with it.');
       return 2;
     }
+
+    // Sprint 4 of #114: if the hooks are installed, this session will register
+    // itself and its approvals will reach the hub. Starting the daemon first
+    // is what makes that true -- without it the hooks fire into nothing, and
+    // the user would get an unsupervised session while believing otherwise.
+    const hooks = require('./hooks');
+    const hookStatus = hooks.status();
+    if (hookStatus.installed && hookStatus.current) {
+      const ensured = await ensureDaemonRunning();
+      if (!ensured.ok) {
+        err(`warning: ${ensured.reason || 'the daemon could not be started'}`);
+        err('This session will run UNSUPERVISED -- approvals will stay in this terminal.');
+      }
+    }
+
     const { runTui } = require('./tui');
-    return runTui({ cwd, agent, model });
+    return runTui({ cwd, agent, model, supervised: hookStatus.installed && hookStatus.current });
   }
 
   if (prompt) {
@@ -761,6 +779,182 @@ async function cmdSquad(argv) {
   const { runInteractive } = require('./interactive');
   await runInteractive({ cwd, explicitCwd, agent, model });
   return 0;
+}
+
+/**
+ * `squad-hub hook <event>` -- the shim Copilot's hooks invoke.
+ *
+ * Reads the event payload on stdin and tells the local daemon about it. Not
+ * meant to be typed by a person; it is listed in the help so that somebody who
+ * finds it in their Copilot hook file can tell what it is rather than having to
+ * guess.
+ *
+ * THIS RUNS INSIDE SOMEBODY ELSE'S COPILOT SESSION, and Copilot runs hooks
+ * synchronously. So it must be fast, and it must never fail loudly: an
+ * unreachable daemon means the hub does not learn about a session, which is a
+ * shame, but printing an error into a stranger's terminal or stalling their
+ * agent is worse. Every failure here exits 0 and says nothing.
+ */
+async function cmdHook(argv) {
+  const [event] = positionals(argv);
+  const payload = await readStdinJson();
+
+  // No event, or nothing readable on stdin: nothing to report, and nothing
+  // worth interrupting the session over.
+  if (!event || !payload) return 0;
+
+  const sessionId = payload.sessionId || payload.session_id;
+
+  /**
+   * preToolUse is the one event whose ANSWER matters, and the only one that
+   * may not fail quietly.
+   *
+   * Measured against Copilot CLI 1.0.79: a hook that produces no output falls
+   * through to the session's normal permission handling, and in a session
+   * started with --allow-all-tools that means the tool runs. So staying silent
+   * when the hub cannot be reached would turn an outage into permission.
+   *
+   * An explicit "ask" does not have that problem. It overrides --allow-all-tools
+   * -- verified: with allow-all set and the hook answering ask, the tool was
+   * refused rather than run -- so it means "a human decides", whatever the
+   * session was launched with. Every failure path below therefore answers ask.
+   */
+  if (event === 'preToolUse') {
+    let decision = 'ask';
+    let reason = 'Squad Hub could not be reached, so this decision stays here';
+    try {
+      const r = await client.call('hook-approval', {
+        sessionId,
+        toolName: payload.toolName || payload.tool_name,
+        toolArgs: payload.toolArgs || payload.tool_args,
+      }, {
+        // Three timeouts sit in a row here, and each must outlast the one
+        // inside it or the wrong thing answers first:
+        //
+        //   Copilot's timeoutSec (300s, in the hook file)
+        //     > this IPC wait (270s)
+        //       > the daemon's own wait for a human (120s by default)
+        //
+        // The default 15s would expire long before anybody reached a phone,
+        // and the failure would read as "the hub could not be reached" when
+        // the hub was answering perfectly well.
+        timeoutMs: Number(process.env.SQUAD_HUB_HOOK_IPC_TIMEOUT_MS) || 270000,
+      });
+      if (r && (r.decision === 'allow' || r.decision === 'deny')) {
+        decision = r.decision;
+        reason = r.decision === 'allow' ? 'Approved in Squad Hub' : 'Denied in Squad Hub';
+      } else if (r && r.reason) {
+        reason = r.reason;
+      }
+    } catch {
+      // Keep the default. Nothing here may become 'allow'.
+    }
+    out(JSON.stringify({ permissionDecision: decision, permissionDecisionReason: reason }));
+    return 0;
+  }
+
+  try {
+    if (event === 'sessionStart') {
+      await client.call('hook-session-start', {
+        sessionId,
+        cwd: payload.cwd,
+        source: payload.source,
+      });
+    } else if (event === 'sessionEnd') {
+      await client.call('hook-session-end', {
+        sessionId,
+        reason: payload.reason,
+      });
+    } else {
+      // Everything else describes what the session is doing. One op rather
+      // than one per event, so adding an event to the hook file does not
+      // require a new IPC verb on both sides.
+      await client.call('hook-event', {
+        event,
+        sessionId,
+        prompt: payload.prompt,
+        toolName: payload.toolName || payload.tool_name,
+      });
+    }
+  } catch {
+    // Deliberately silent -- see above. The daemon not running is the ordinary
+    // case for anyone who has installed the hook and is not using the hub today.
+  }
+  return 0;
+}
+
+/** Read a JSON object from stdin, or null if there isn't one. */
+function readStdinJson() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) { resolve(null); return; }
+    let raw = '';
+    const done = () => {
+      try { resolve(raw.trim() ? JSON.parse(raw) : null); } catch { resolve(null); }
+    };
+    // A hook that never receives stdin must not hang the session waiting for it.
+    const timer = setTimeout(done, 2000);
+    timer.unref?.();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (d) => { raw += d; });
+    process.stdin.on('end', () => { clearTimeout(timer); done(); });
+    process.stdin.on('error', () => { clearTimeout(timer); resolve(null); });
+  });
+}
+
+/**
+ * `squad-hub hooks install|remove|status` -- let Copilot tell the hub about
+ * sessions started in a terminal.
+ *
+ * Installing is a deliberate act because the hook file applies to EVERY Copilot
+ * session on this machine, not only the ones that concern Squad.
+ */
+async function cmdHooks(argv) {
+  const hooks = require('./hooks');
+  const [sub] = positionals(argv);
+
+  if (sub === 'install') {
+    const r = hooks.install({ force: flag(argv, 'force') });
+    if (!r.ok) { err(r.reason); return 1; }
+    out(`installed ${r.path}`);
+    out(`events: ${r.events.join(', ')}`);
+    out('');
+    out('Copilot sessions started in a terminal will now appear in `squad-hub status`');
+    out('and in the web Hub. This applies to EVERY Copilot session on this machine,');
+    out('not only ones in a Squad project. Undo it with `squad-hub hooks remove`.');
+    return 0;
+  }
+
+  if (sub === 'remove') {
+    const r = hooks.remove();
+    out(r.removed ? `removed ${r.path}` : 'nothing to remove; the hook was not installed');
+    return 0;
+  }
+
+  if (sub === 'status' || !sub) {
+    const s = hooks.status();
+    if (!s.installed) {
+      out('not installed');
+      out(`would be written to: ${s.path}`);
+      out('');
+      out('Run `squad-hub hooks install` to have Copilot TUI sessions register');
+      out('themselves with this hub.');
+      return 0;
+    }
+    out(`installed: ${s.path}`);
+    out(`events:    ${s.events.join(', ') || '(none)'}`);
+    if (s.error) { err(`PROBLEM: ${s.error}`); return 1; }
+    if (!s.current) {
+      // "Installed" and "installed and doing what this build expects" are
+      // different facts, and only reporting the first would hide a stale file.
+      err(`PROBLEM: missing ${s.missing.join(', ')} -- run \`squad-hub hooks install --force\` to update it.`);
+      return 1;
+    }
+    out('up to date');
+    return 0;
+  }
+
+  err('usage: squad-hub hooks install [--force] | remove | status');
+  return 2;
 }
 
 async function cmdApprove(argv) {
@@ -1476,6 +1670,7 @@ function usage() {
   squad-hub squad                      interactive terminal, in a Squad project this uses the squad agent
   squad-hub squad --tui                the real Copilot TUI with the squad agent (NOT supervised by the hub)
   squad-hub squad "<prompt>"           start a session with a prompt and return
+  squad-hub hooks install|remove|status  let terminal Copilot sessions register with the hub
   squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]
 
   ONE-TIME PER MACHINE
@@ -1624,6 +1819,8 @@ async function main(argv) {
     case 'reset': return cmdReset(rest);
     case 'run': return cmdRun(rest);
     case 'squad': return cmdSquad(rest);
+    case 'hook': return cmdHook(rest);
+    case 'hooks': return cmdHooks(rest);
     case 'approve': return cmdApprove(rest);
     case 'kill': return cmdStopSession(rest);
     case 'forget': return cmdForget(rest);
