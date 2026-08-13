@@ -84,10 +84,21 @@ async function until(fn, what, budgetMs = 15000) {
  */
 async function waitUntilOnline(page, origin) {
   await until(
-    () => page.evaluate(
-      (o) => fetch(`${o}/healthz`, { cache: 'no-store' }).then(() => true).catch(() => false),
-      origin,
-    ),
+    async () => {
+      // The offline page has a retry control and reloads itself once the
+      // network returns, so the page can navigate WHILE this is asking. That
+      // destroys the execution context and rejects the evaluate -- which is
+      // not a failure, it is the very thing being waited for happening
+      // mid-question. Treated as "not ready yet" and asked again.
+      try {
+        return await page.evaluate(
+          (o) => fetch(`${o}/healthz`, { cache: 'no-store' }).then(() => true).catch(() => false),
+          origin,
+        );
+      } catch {
+        return false;
+      }
+    },
     'the browser to be back online after the offline test',
     15000,
   );
