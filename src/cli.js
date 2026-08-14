@@ -891,6 +891,25 @@ async function cmdHook(argv) {
    * decision at all -- never a hang, never a forced turn nobody can explain.
    */
   if (event === 'agentStop') {
+    /**
+     * GATED ON REGISTRATION BEFORE ANY IPC, unlike the generic branch below.
+     *
+     * Hooks are user-level: this fires at the end of EVERY turn of EVERY
+     * Copilot session on the machine, including ones that have nothing to do
+     * with the hub. An unregistered session can only ever be answered "let the
+     * turn end", so the round trip that produces that answer is pure cost --
+     * and worse than free when the daemon is up but wedged, because then every
+     * unrelated session on the machine waits out this timeout at the end of
+     * every turn.
+     *
+     * `isSupervised` is a local file check, and it is the same signal
+     * `preToolUse` already falls back to. A session the daemon never
+     * registered has no marker, so nothing that could have been steered is
+     * skipped here.
+     */
+    const hooks = require('./hooks');
+    if (!sessionId || !hooks.isSupervised(sessionId)) return 0;
+
     try {
       const r = await client.call('hook-agent-stop', {
         sessionId,

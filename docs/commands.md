@@ -258,8 +258,20 @@ steering, would make every session feel slower (measured: an unconditional
 took about seven seconds). So the hold is paid only on a session recently
 confirmed **watched** — today, "somebody's `control-check` landed in the last
 `SQUAD_HUB_STEER_WATCH_WINDOW_MS`" — and is `SQUAD_HUB_STEER_HOLD_MS` (default
-3s) at most. An unwatched session pays for one local IPC round trip and
-nothing else; see the PR that shipped this for the exact latency measurement.
+3s) at most.
+
+A session this daemon never registered is answered **without contacting the
+daemon at all** — the hook checks the local supervision marker first and
+returns. That matters more than the round trip it saves. Hooks are user-level,
+so `agentStop` fires at the end of every turn of *every* Copilot session on the
+machine, and a daemon that is up but wedged would otherwise make each of them
+wait out the IPC timeout: measured at **8067ms per turn** with the check
+removed, against **50ms** with it. An unrelated session must not pay for the
+hub's bad day.
+
+Measured cost of the hooks themselves (isolated `COPILOT_HOME`, CLI 1.0.80,
+5 runs each, same prompt): 7.72s with no hooks, 8.81s with hooks and a healthy
+daemon. That ~1.1s is process spawn for the hook events, not the steer path.
 
 **A runaway guard self-limits below Copilot's own.** Copilot gives up forcing
 turns after 8 consecutive `block` decisions; this self-limits at
@@ -780,6 +792,34 @@ sends them looking in the wrong place.
 **The draft survives everything except a successful send.** Someone typed it;
 clearing it in order to report a transport problem is the wrong trade in every
 case.
+
+### What an approval card shows
+
+The **command itself**, not just the tool that would run it.
+
+An agent's tool arguments arrive as a JSON blob, and the card used to show the
+tool name — "Run bash", "Run SQL" — with the statement withheld. That is not an
+approval control. Somebody asked to approve a command they have not been shown
+either refuses everything, or learns to click Allow without reading, and the
+second is what actually happens.
+
+So a card carries:
+
+| | |
+|---|---|
+| The command | `git status --short`, `SELECT * FROM users WHERE id = 1` — in full |
+| What it touches | Every path named in the request |
+| A reads/writes badge | Decided from the **command**, not the tool name |
+
+The badge is judged on the command because every shell call arrives under one
+tool name, so the name alone cannot tell `git status` from `rm -rf build`. The
+classifier is deliberately timid: it says "read-only" only when it recognises
+the whole line, and treats anything it cannot fully account for — a pipe, a
+redirect, a `&&` chain, an unfamiliar program, any SQL — as writing. A missed
+"read-only" costs a second look; a wrong one costs a repository.
+
+A shape it does not recognise is shown **as it arrived** rather than dropped.
+An ugly card beats a card that hides what is being approved.
 
 ### Approval expiry
 

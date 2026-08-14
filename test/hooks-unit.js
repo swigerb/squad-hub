@@ -265,6 +265,59 @@ check('answering an approval that does not exist is refused', () => {
   assert.strictEqual(session().answer('nope', 'allow_once'), false);
 });
 
+checkAsync('AN UNREGISTERED SESSION NEVER REACHES THE DAEMON, so a wedged hub cannot tax it', async () => {
+  /**
+   * Hooks are USER-LEVEL. `agentStop` fires at the end of every turn of every
+   * Copilot session on the machine, including sessions that have nothing to do
+   * with the hub -- and an unregistered session can only ever be answered "let
+   * the turn end". Making that answer cost a round trip is bad enough; making
+   * it cost a TIMEOUT is a hub outage spreading to unrelated work.
+   *
+   * A wedged daemon is the case that matters, and it is not the same as a dead
+   * one: a dead daemon refuses the connection and the shim gives up at once,
+   * while a wedged one accepts and never answers. Measured with the check
+   * removed: 8067ms per turn. With it: 50ms.
+   */
+  const net = require('net');
+  const { spawn } = require('child_process');
+  const paths = require(path.join(__dirname, '..', 'src', 'paths'));
+
+  // Every accepted socket is kept so it can be destroyed at the end.
+  // `server.close()` waits for open connections, and the whole point of this
+  // server is that it never closes one -- so without this the suite hangs
+  // here, silently, exactly in the case the mutation is meant to expose.
+  const sockets = [];
+  const server = net.createServer((s) => { sockets.push(s); });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(paths.ipc(), resolve);
+  });
+
+  try {
+    const started = Date.now();
+    const child = spawn(
+      process.execPath,
+      [path.join(__dirname, '..', 'bin', 'squad-hub.js'), 'hook', 'agentStop'],
+      { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, SQUAD_HUB_HOME: HOME } },
+    );
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stdin.end(JSON.stringify({ sessionId: 'never-registered-with-this-daemon', cwd: HOME }));
+
+    const code = await new Promise((r) => child.on('close', r));
+    const elapsed = Date.now() - started;
+
+    assert.strictEqual(code, 0, 'the hook shim failed rather than getting out of the way');
+    assert.strictEqual(out.trim(), '',
+      'an unregistered session was given a decision, which is not the hook\'s to make');
+    assert.ok(elapsed < 4000,
+      `an unrelated session waited ${elapsed}ms on a wedged daemon at the end of its turn`);
+  } finally {
+    for (const s of sockets) { try { s.destroy(); } catch { /* already gone */ } }
+    await new Promise((r) => server.close(r));
+  }
+});
+
 checkAsync('THE PAYLOAD NEVER CARRIES THE WAITING PROMISE', async () => {
   // pendingApprovals is handed to code that inspects the object directly, not
   // only to JSON.stringify.

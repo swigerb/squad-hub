@@ -1038,8 +1038,17 @@ class Daemon extends EventEmitter {
         }
 
         const approvalId = `a${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        // The same description the card gets. A notification that says only
+        // "Run powershell" makes somebody open the hub to find out what it
+        // wants, which is the moment the notification stopped being useful.
+        const described = require('./tui-session').describeHookTool(req.toolName, req.toolArgs);
         const approval = {
-          id: approvalId, sessionId: s.id, toolName: req.toolName || null, detail: req.toolArgs || null,
+          id: approvalId,
+          sessionId: s.id,
+          toolName: req.toolName || null,
+          command: described.command,
+          readOnly: described.readOnly,
+          detail: described.detail,
         };
         this.emit('approval', approval);
         this._persistSessions();
