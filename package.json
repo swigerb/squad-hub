@@ -1,6 +1,6 @@
 {
   "name": "squad-hub",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "One place to see and control your Squad sessions, across every substrate.",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/swigerb/squad-hub.git" },
