@@ -1022,6 +1022,34 @@ class HubService {
         // `forget` is rebuilt field by field rather than spread, so no request
         // body can smuggle its own actor past this line and write a name of
         // its choosing into somebody else's device log.
+        // `steer` is narrowed the same way `squad-doc` is, and for the same
+        // reason (F-1 of the design review, .squad/decisions/inbox/
+        // lead-130-steer-design-review.md): the daemon's own switch is what
+        // decides which op runs, keyed on `op` from THIS route -- but a route
+        // that then relays the request body wholesale lets that body's own
+        // `op`/`correlationId` reach `command()` and be sent to the device
+        // instead of the ones this line just checked. `steer` is the first op
+        // here whose body is caller-controlled free text, so it is also the
+        // first to prove that: `{ text: "...", op: "approve", ... }` must not
+        // become an approve on the wire. Bounded length/type checks live here
+        // too, at the API boundary, in addition to the device's own checks --
+        // defence in depth is one line, and a hub that only ever trusted the
+        // device's validation is one refactor away from trusting neither.
+        if (op === 'steer') {
+          const sessionId = body && body.sessionId;
+          const text = body && body.text;
+          if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 200) {
+            return send(400, { error: 'sessionId must be a non-empty string' });
+          }
+          if (typeof text !== 'string' || !text.trim()) {
+            return send(400, { error: 'text must be a non-empty string' });
+          }
+          if (text.length > 4000) {
+            // Refused, not truncated: a half-sentence executed by an agent is
+            // an instruction nobody wrote.
+            return send(400, { error: 'text may not exceed 4000 characters' });
+          }
+        }
         const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
           : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }
             // Narrowed here as well as at the device. The daemon rebuilds this
@@ -1031,7 +1059,8 @@ class HubService {
             // is one line.
             : op === 'squad-doc' ? { sessionId: body ? body.sessionId : undefined, doc: body ? body.doc : undefined }
               : op === 'squad-docs' ? { sessionId: body ? body.sessionId : undefined }
-                : body;
+                : op === 'steer' ? { sessionId: body.sessionId, text: body.text }
+                  : body;
         const result = await this.command(me.key, deviceId, op, withActor);
         return send(200, result);
       } catch (e) {
@@ -1308,7 +1337,12 @@ class HubService {
         reject(Object.assign(new Error(`the device did not answer '${op}' in time`), { status: 504 }));
       }, timeoutMs);
       this._pending.set(correlationId, { resolve, reject, timer });
-      conn.sendJson({ type: 'command', op, correlationId, ...body });
+      // `op` and `correlationId` are spread LAST, so nothing a caller's body
+      // carries under those same keys can override which op the device runs
+      // or which reply it is answering (F-1 of the design review). Every
+      // caller here already narrows its own body before this point -- this is
+      // the second layer, for the op that has not been added yet.
+      conn.sendJson({ type: 'command', ...body, op, correlationId });
     });
   }
 }

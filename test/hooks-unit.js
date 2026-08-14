@@ -153,18 +153,21 @@ check('a watched session says so, rather than leaving it to be inferred', () => 
   assert.strictEqual(j.pid, null, 'a pid promises something can be signalled');
 });
 
-check('STEER AND STOP REFUSE WITH A REASON, instead of appearing to work', () => {
+check('STOP REFUSES WITH A REASON, instead of appearing to work', () => {
   // A button that lies is worse than an absent one.
   //
-  // The reason must also say what to do INSTEAD. "Cannot steer" alone reads as
-  // a fault; "type in that terminal" reads as a boundary. Matched on the
+  // The reason must also say what to do INSTEAD. "Cannot stop" alone reads as
+  // a fault; "close that terminal" reads as a boundary. Matched on the
   // redirection rather than the phrasing, so improving the wording does not
   // fail a correct file.
+  //
+  // `steer()` is deliberately NOT covered here any more -- Sprint 2 (#130)
+  // built it. See steer-unit.js for what it does now: queue, never appear to
+  // send.
   const s = session();
-  for (const r of [s.steer(), s.stop()]) {
-    assert.strictEqual(r.ok, false);
-    assert.ok(/that terminal/.test(r.reason), r.reason);
-  }
+  const r = s.stop();
+  assert.strictEqual(r.ok, false);
+  assert.ok(/that terminal/.test(r.reason), r.reason);
 });
 
 check('the first prompt becomes the session name, and later ones do not replace it', () => {

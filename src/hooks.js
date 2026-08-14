@@ -81,7 +81,15 @@ const EVENTS = [
  * own wait (SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS, 120s by default), leaving the
  * daemon to answer "ask" first. 300s was measured as honoured.
  */
-const TIMEOUTS = { preToolUse: 300, default: 5 };
+const TIMEOUTS = {
+  preToolUse: 300,
+  // Must exceed the hook shim's own IPC timeout for this event (8s, see
+  // cli.js's `cmdHook`), which itself must exceed the daemon's bounded steer
+  // hold (3s default, paid only on a watched session). 15s leaves comfortable
+  // room above both without approaching preToolUse's budget.
+  agentStop: 15,
+  default: 5,
+};
 
 /**
  * Build the hook configuration.

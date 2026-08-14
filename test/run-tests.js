@@ -950,6 +950,20 @@ async function suiteCeremonyConventions() {
   runChildSuite(path.join(__dirname, 'ceremonies-conventions-unit.js'), 'ceremonies-conventions');
 }
 
+/**
+ * #130 Sprint 2: steering a watched Copilot TUI session.
+ *
+ * A steer is queued, never sent, until an agentStop hook actually pops it;
+ * exactly one message is delivered per turn; the runaway guard self-limits
+ * below Copilot's own 8-block ceiling; a watched session may hold briefly for
+ * a steer but an unwatched one never pays that cost; and a payload cannot
+ * cross into another session's queue.
+ */
+async function suiteSteer() {
+  console.log('\n[STEER] queued != sent, FIFO, the runaway guard, and no flat latency tax');
+  runChildSuite(path.join(__dirname, 'steer-unit.js'), 'steer');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1008,6 +1022,7 @@ async function suiteCeremonyConventions() {
   await suiteRetroEnforcement();
   await suiteRetroActionOnRedTests();
   await suiteCeremonyConventions();
+  await suiteSteer();
 
   console.log('');
   console.log('='.repeat(60));

@@ -40,6 +40,39 @@ const END_REASONS = {
   timeout: STATUS.FAILED,
 };
 
+/**
+ * How long a queued steer waits before it is stale.
+ *
+ * D-130-10: a message queued at 09:00 and delivered at 17:00 into a session
+ * that has since changed branch is not the instruction anyone authorised.
+ * Overridable per-session (tests use a short one) but never per-request --
+ * a caller does not get to extend how long their own message stays live.
+ */
+const DEFAULT_STEER_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Refused, never truncated (D-130-10). A half-sentence executed by an agent
+ * is an instruction nobody wrote, and hand-formatting a long steer down to
+ * size would produce exactly that.
+ */
+const STEER_TEXT_MAX_LEN = 4000;
+
+/**
+ * `\t` and `\n` are ordinary in a message; every other C0 control character
+ * and DEL is refused outright. `\r` is explicitly among them: it is how a log
+ * line is made to say something that never happened, and this text is later
+ * rendered into `activity` and a hook's own log.
+ */
+const STEER_CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F]/;
+
+/**
+ * How many messages one session may hold before a caller has to wait for the
+ * daemon to work through what is already queued. A bound, not a promise that
+ * this many will ever be delivered -- the runaway guard (see daemon.js) can
+ * still refuse to force a turn while items remain.
+ */
+const STEER_QUEUE_MAX = 20;
+
 class TuiSession {
   /**
    * @param {object} opts
@@ -49,12 +82,36 @@ class TuiSession {
    * @param {string} [opts.source]    "new", "startup" or "resume"
    */
   constructor({
-    id, copilotId, cwd, source = 'new', startedAt = Date.now(),
+    id, copilotId, cwd, source = 'new', startedAt = Date.now(), steerTtlMs = DEFAULT_STEER_TTL_MS,
   }) {
     this.id = id;
     this.copilotId = copilotId;
     this.cwd = cwd;
     this.source = source;
+
+    // FIFO queue of steers accepted but not yet consumed by an agentStop hook.
+    // A steer is "queued" the moment it lands here; it becomes "sent" only
+    // when `popSteer()` hands it to the caller that will put it in a hook's
+    // `reason` field -- never before, and this object has no way to know it
+    // was actually delivered, only that it was handed over.
+    this.steerQueue = [];
+    this._steerSeq = 0;
+    this.steerTtlMs = Number(steerTtlMs) || DEFAULT_STEER_TTL_MS;
+
+    // How many turns in a row THIS daemon has forced by returning `block`.
+    // Reset whenever an agentStop fires that was not itself a forced
+    // continuation -- see daemon.js's `_handleAgentStop`.
+    this.consecutiveForcedTurns = 0;
+    // Set when the runaway guard refused to force another turn while the
+    // queue still held something. Observable rather than silent: a queue that
+    // never drains and never says why is indistinguishable from one that is
+    // working normally.
+    this.steerGuardTripped = false;
+    // Last time somebody was confirmed to be looking at this session (a
+    // `control-check`, today -- see daemon.js). Used to decide whether an
+    // agentStop may hold briefly for a steer that has not arrived yet, so
+    // that cost is not paid by sessions nobody is watching.
+    this.lastWatchedAt = 0;
 
     // There is no process to report. Left null rather than faked, because a pid
     // is a promise that something can be signalled, and nothing here can be.
@@ -228,20 +285,76 @@ class TuiSession {
   }
 
   /**
-   * Steering is not available YET, and says so rather than failing silently.
+   * Queue a message for the next `agentStop` this session fires.
    *
-   * "Not built" rather than "impossible": `agentStop` can return
-   * `{ decision: "block", reason }`, which forces another agent turn using
-   * `reason` as the prompt -- measured against Copilot CLI 1.0.79, and the
-   * basis for real steering. Until that is built, a refusal with a reason means
-   * the UI can say why, instead of a request that appears to work and does
-   * nothing.
+   * Never "sent". The daemon does not own this process -- there is no stdio
+   * to write into -- so the only honest claim here is that the message was
+   * accepted. It becomes real only when `popSteer()` hands it to a hook that
+   * Copilot is actually blocked waiting on, and callers must not report
+   * `sent` before that happens (D-130-10, and the `{sent:true}` bug this
+   * project has already made once).
    */
-  steer() {
-    return {
-      ok: false,
-      reason: 'the hub cannot steer a Copilot TUI session yet; type in that terminal instead',
-    };
+  steer(text) {
+    if (this.ended) {
+      return { ok: false, reason: 'this session has ended' };
+    }
+    if (typeof text !== 'string') {
+      return { ok: false, reason: 'steer text must be a string' };
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return { ok: false, reason: 'steer text is empty' };
+    }
+    if (trimmed.length > STEER_TEXT_MAX_LEN) {
+      // Refused, not truncated -- see STEER_TEXT_MAX_LEN above.
+      return { ok: false, reason: `steer text may not exceed ${STEER_TEXT_MAX_LEN} characters` };
+    }
+    if (STEER_CONTROL_CHAR_RE.test(trimmed)) {
+      return { ok: false, reason: 'steer text may not contain control characters' };
+    }
+    this._dropExpiredSteers();
+    if (this.steerQueue.length >= STEER_QUEUE_MAX) {
+      return { ok: false, reason: `this session already has ${STEER_QUEUE_MAX} messages queued` };
+    }
+    this._steerSeq += 1;
+    this.steerQueue.push({ id: this._steerSeq, text: trimmed, queuedAt: Date.now() });
+    this.touch(`Queued: ${trimmed.slice(0, 60)}`);
+    return { ok: true, queued: true, position: this.steerQueue.length };
+  }
+
+  /** Drop anything queued long enough to be stale. See DEFAULT_STEER_TTL_MS. */
+  _dropExpiredSteers(now = Date.now()) {
+    while (this.steerQueue.length && now - this.steerQueue[0].queuedAt > this.steerTtlMs) {
+      this.steerQueue.shift();
+    }
+  }
+
+  /** Is there a message this session's next `agentStop` could deliver? */
+  hasQueuedSteer() {
+    this._dropExpiredSteers();
+    return this.steerQueue.length > 0;
+  }
+
+  /**
+   * Take exactly one message off the front of the queue, FIFO.
+   *
+   * Exactly one -- never a join of several -- because one `block` decision
+   * forces exactly one turn, and merging queued messages would let a second
+   * steer silently ride in on the back of the first.
+   */
+  popSteer() {
+    this._dropExpiredSteers();
+    return this.steerQueue.shift() || null;
+  }
+
+  /** Record that somebody was just confirmed to be looking at this session. */
+  markWatched(now = Date.now()) {
+    this.lastWatchedAt = now;
+  }
+
+  /** Was this session recently confirmed watched, within `windowMs`? */
+  isWatched(windowMs, now = Date.now()) {
+    return !!this.lastWatchedAt && (now - this.lastWatchedAt) < windowMs;
   }
 
   stop() {
@@ -398,6 +511,14 @@ class TuiSession {
       supervision: 'hooks',
       copilotId: this.copilotId,
       lastSeen: this.lastSeen,
+      /**
+       * Honest steer state, so a client can say "queued" without implying
+       * "delivered". Sprint 2 does not add a Stop button or hide a broken
+       * control -- see D-130-8 -- but a steer's own lifecycle has to be
+       * stated somewhere, and it is the one new fact this sprint adds.
+       */
+      steerQueueLength: this.steerQueue.length,
+      steerGuardTripped: this.steerGuardTripped,
     };
   }
 }

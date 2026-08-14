@@ -2733,8 +2733,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a control refusal from a watched session is read as success',
     file: 'src/daemon.js',
-    find: `    return { ok: !!result.ok, reason: result.reason || null };`,
-    replace: `    return process.env.MUTANT ? { ok: true, reason: null } : { ok: !!result.ok, reason: result.reason || null }; // MUTATION`,
+    find: `    return { ...result, ok: !!result.ok, reason: result.reason || null };`,
+    replace: `    return process.env.MUTANT ? { ...result, ok: true, reason: null } : { ...result, ok: !!result.ok, reason: result.reason || null }; // MUTATION`,
     mustFail: 'A CONTROL RESULT IS READ THE SAME WHICHEVER SHAPE IT ARRIVES IN',
   },
   {
