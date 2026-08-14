@@ -39,7 +39,15 @@ function hasTestsFailureMarker(body) {
 function issuesToClose(issues, { retroOverdue }) {
   if (retroOverdue) return []; // no fresh retrospective logged yet -- nothing closes
   return (issues || []).filter((issue) => {
-    if (issue.state && issue.state !== 'open') return false;
+    // Compared case-INSENSITIVELY. `gh issue list --json state` returns "OPEN",
+    // uppercase, so an exact match against 'open' rejected every real issue and
+    // this closed nothing at all -- silently, and exiting 0, which is why it
+    // looked like it was working. The mechanism issue #100 asked for had never
+    // once run to completion.
+    //
+    // Every test fed it lowercase, which is how a suite can be green while the
+    // thing it covers has never worked. The suite now uses what gh returns.
+    if (issue.state && String(issue.state).toLowerCase() !== 'open') return false;
     const labels = (issue.labels || []).map((l) => (typeof l === 'string' ? l : l.name));
     if (!labels.includes('retro-action')) return false;
     return hasTestsFailureMarker(issue.body);
