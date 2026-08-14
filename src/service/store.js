@@ -26,6 +26,52 @@ const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'off
  */
 const TERMINAL = new Set(['done', 'failed', 'stopped']);
 
+/**
+ * The list fields the web UI iterates on every render.
+ *
+ * Kept as a named list rather than inlined, so adding a field to the payload
+ * and forgetting to defend it is a visible omission rather than a silent one.
+ */
+const SESSION_LIST_FIELDS = ['pendingApprovals', 'expiredApprovals', 'answeredApprovals'];
+
+/**
+ * Coerce a session published BY A DEVICE into the shape this hub's clients
+ * expect.
+ *
+ * A DEVICE IS NOT THIS PROCESS. It runs whatever version of squad-hub was
+ * installed on that machine or baked into that image, it is upgraded on its
+ * owner's schedule rather than ours, and it may be older than the hub for
+ * months. So its payload is INPUT, not an invariant, and the hub is the only
+ * place that can make it safe for everyone reading it.
+ *
+ * This was learned the hard way. squad-hub 0.4.1 published `expiredApprovals`
+ * and `answeredApprovals` as COUNTERS for hooks-supervised sessions. The web UI
+ * does `((s && s.expiredApprovals) || []).map(...)` -- and a number is TRUTHY,
+ * so `|| []` never fires and `.map` throws. That happens inside `render()`, so
+ * one session published by one out-of-date device stopped the ENTIRE UI from
+ * drawing: no session list, and a connection indicator stuck on "connecting"
+ * forever because the render that would have cleared it never completed.
+ *
+ * Fixing the class that produced it (0.4.2) was necessary and nowhere near
+ * sufficient: every device already deployed still sends the old shape, and a
+ * hub that only works with current devices is not a hub.
+ */
+function normaliseSession(session) {
+  const s = { ...session };
+  for (const f of SESSION_LIST_FIELDS) {
+    if (f in s && !Array.isArray(s[f])) {
+      // A count is not nothing -- it says approvals happened -- but there is no
+      // honest way to reconstruct the entries it stood for. An empty list is
+      // the truthful answer to "which ones", and the count survives beside it
+      // for anything that wants to say "3 earlier approvals".
+      const n = Number(s[f]);
+      s[`${f}Count`] = Number.isFinite(n) ? n : 0;
+      s[f] = [];
+    }
+  }
+  return s;
+}
+
 class Store extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -230,7 +276,7 @@ class Store extends EventEmitter {
     const existing = b.sessions.get(key) || {};
     const rec = {
       ...existing,
-      ...session,
+      ...normaliseSession(session),
       key,
       deviceId,
       updatedAt: Date.now(),
