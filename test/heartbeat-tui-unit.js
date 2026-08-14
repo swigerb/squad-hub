@@ -251,5 +251,108 @@ check('the answer counts what was stuck, so a caller can tell why nothing happen
   assert.strictEqual(s.forgetDeviceSessions('me', 'dev1', {}).stuck, 1);
 });
 
+// ---------------------------------------------------------------------------
+// 5. THE CONTRACT. Four separate breakages came from one cause: this class
+//    publishing a shape of its own invention instead of the one the collection
+//    already agreed on. Compared field by field so a fifth cannot happen.
+// ---------------------------------------------------------------------------
+
+const { AcpSession } = require(path.join(__dirname, '..', 'src', 'acp-session'));
+
+/** An AcpSession payload, without spawning an agent. */
+function acpPayload() {
+  const a = Object.create(AcpSession.prototype);
+  Object.assign(a, {
+    id: 'a1',
+    pid: 1,
+    status: STATUS.ACTIVE,
+    activity: '',
+    cwd: '/x',
+    prompt: null,
+    startedAt: 0,
+    endedAt: null,
+    error: null,
+    agentInfo: null,
+    agentSelection: null,
+    applied: null,
+    toolCallCount: 0,
+    pendingApprovals: new Map(),
+    expiredApprovals: [],
+    answeredApprovals: [],
+    resyncCount: 0,
+    _stderr: '',
+    squadContext: () => null,
+    gitContext: () => null,
+  });
+  return a.toJSON();
+}
+
+function shapeOf(v) {
+  if (Array.isArray(v)) return 'array';
+  if (v === null) return 'null';
+  return typeof v;
+}
+
+check('A WATCHED SESSION PUBLISHES THE SAME SHAPE AS EVERY OTHER SESSION', () => {
+  // Each mismatch below was a real, separate outage:
+  //   expiredApprovals as a number -> `.map is not a function` inside render(),
+  //     which stopped the WHOLE session list from drawing
+  //   transcript missing         -> "could not load the transcript"
+  //   squad/git missing          -> read on every row
+  const a = acpPayload();
+  const t = tui().toJSON();
+  const wrong = [];
+  for (const k of Object.keys(a)) {
+    if (!(k in t)) {
+      if (a[k] === undefined) continue; // optional on both
+      wrong.push(`${k}: MISSING (Acp publishes ${shapeOf(a[k])})`);
+      continue;
+    }
+    const sa = shapeOf(a[k]);
+    const st = shapeOf(t[k]);
+    // null on either side is "absent-ish" and fine; a TYPE difference is not.
+    if (sa !== st && sa !== 'null' && st !== 'null') {
+      wrong.push(`${k}: Acp=${sa} Tui=${st}`);
+    }
+  }
+  assert.deepStrictEqual(wrong, [], `the payloads disagree:\n  ${wrong.join('\n  ')}`);
+});
+
+check('THE APPROVAL CARD USES THE FIELD NAMES THE UI ACTUALLY READS', () => {
+  // The UI renders `o.name || APPROVAL_LABEL[o.optionId] || o.optionId` and
+  // keys the button on optionId. A card using id/label rendered
+  // `<button data-answer="">` with NO TEXT -- and since `answer()` treats
+  // anything unrecognised as a deny, CLICKING "ALLOW" DENIED THE TOOL.
+  const s = tui();
+  const p = s.requestApproval({ approvalId: 'a1', toolName: 'bash', timeoutMs: 5000 });
+  const [card] = s.toJSON().pendingApprovals;
+  assert.ok(card.approvalId, 'the card has no approvalId, which /api/approve keys on');
+  for (const o of card.options) {
+    assert.ok(o.optionId, `an option has no optionId: ${JSON.stringify(o)}`);
+    assert.ok(o.name, `option ${o.optionId} has no name, so its button renders blank`);
+  }
+  const allow = card.options.find((o) => /allow/.test(o.optionId));
+  assert.ok(allow, 'there is no allow option at all');
+  s.answer('a1', allow.optionId);
+  return p.then((d) => {
+    assert.strictEqual(d, 'allow', 'CLICKING THE ALLOW BUTTON DID NOT ALLOW');
+  });
+});
+
+check('A WATCHED SESSION HAS A TRANSCRIPT THE HUB CAN READ', () => {
+  const s = tui();
+  s.notePrompt('do a thing');
+  s.noteTool('bash');
+  assert.ok(Array.isArray(s.transcript), 'no transcript array; the hub cannot open this session');
+  assert.ok(s.transcript.length >= 2, 'nothing was recorded');
+  for (const e of s.transcript) {
+    assert.ok(Number.isInteger(e.seq), `transcript entry has no seq: ${JSON.stringify(e)}`);
+    assert.ok(e.update, 'transcript entry has no update');
+  }
+  // The daemon reads it by seq. Proven here rather than assumed.
+  const since = s.transcript[0].seq;
+  assert.strictEqual(s.transcript.filter((e) => e.seq > since).length, s.transcript.length - 1);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

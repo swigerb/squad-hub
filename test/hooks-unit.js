@@ -214,7 +214,7 @@ checkAsync('an approval answered in the hub allows the tool', async () => {
   assert.strictEqual(s.status, STATUS.WAITING_APPROVAL);
   assert.ok(s.answer('a1', 'allow_once', 'brian'), 'the answer was not accepted');
   assert.strictEqual(await p, 'allow');
-  assert.strictEqual(s.answeredApprovals, 1);
+  assert.strictEqual(s.answeredApprovals.length, 1);
 });
 
 checkAsync('a refusal in the hub denies the tool', async () => {
@@ -238,7 +238,7 @@ checkAsync('NOBODY ANSWERING RESOLVES TO ask, NOT allow', async () => {
   const s = session();
   const decision = await s.requestApproval({ approvalId: 'a1', timeoutMs: 60 });
   assert.strictEqual(decision, 'ask', 'an unanswered approval became permission');
-  assert.strictEqual(s.expiredApprovals, 1);
+  assert.strictEqual(s.expiredApprovals.length, 1);
 });
 
 checkAsync('A SESSION ENDING RELEASES ANYONE WAITING, with ask', async () => {
@@ -270,7 +270,7 @@ checkAsync('THE PAYLOAD NEVER CARRIES THE WAITING PROMISE', async () => {
   const [card] = s.toJSON().pendingApprovals;
   assert.ok(card, 'the approval is not visible to the hub at all');
   assert.strictEqual(card._settle, undefined, 'the internal resolver leaked into the payload');
-  assert.ok(card.options.some((o) => o.id === 'allow_once'), 'the hub is offered no way to allow');
+  assert.ok(card.options.some((o) => o.optionId === 'allow_once'), 'the hub is offered no way to allow');
   s.answer('a1', 'reject_once');
   await p;
 });
