@@ -254,17 +254,34 @@ class Daemon extends EventEmitter {
     this.beats += 1;
     const transitions = [];
     for (const s of this.sessions.values()) {
-      const live = s.status === STATUS.ACTIVE || s.status === STATUS.WAITING_APPROVAL || s.status === STATUS.STARTING;
-      if (live && s.isAgentDead()) {
-        s.error = s.error || 'agent process disappeared';
-        s.endedAt = Date.now();
-        s._setStatus(STATUS.FAILED, 'Failed');
-        this._untrackChild(s.pid);
-        transitions.push(s.id);
-        this.log(`heartbeat: session ${s.id} marked failed (agent pid ${s.pid} is gone)`);
+      // ONE SESSION MAY NOT TAKE DOWN THE DEVICE.
+      //
+      // This loop runs inside a setInterval, so anything thrown here is an
+      // uncaught exception and the daemon exits -- taking every other session,
+      // the hub connection, and the device itself with it. That happened: a
+      // session type that did not implement `isAgentDead()` killed a daemon
+      // that was otherwise perfectly healthy, and the symptom appeared as a
+      // device going offline for no visible reason.
+      //
+      // Caught per session rather than around the loop, so one bad session
+      // does not stop the others from being swept either.
+      try {
+        const live = s.status === STATUS.ACTIVE || s.status === STATUS.WAITING_APPROVAL || s.status === STATUS.STARTING;
+        if (live && s.isAgentDead()) {
+          s.error = s.error || 'agent process disappeared';
+          s.endedAt = Date.now();
+          s._setStatus(STATUS.FAILED, 'Failed');
+          this._untrackChild(s.pid);
+          transitions.push(s.id);
+          this.log(`heartbeat: session ${s.id} marked failed (agent pid ${s.pid} is gone)`);
+        }
+        if (!live) this._untrackChild(s.pid);
+        if (this._expireStaleApprovals(s)) transitions.push(s.id);
+      } catch (e) {
+        // Logged loudly. A session the heartbeat cannot sweep is a real defect
+        // -- it just is not one worth losing the device over.
+        this.log(`heartbeat: session ${s.id} could not be swept: ${e && e.message}`);
       }
-      if (!live) this._untrackChild(s.pid);
-      if (this._expireStaleApprovals(s)) transitions.push(s.id);
     }
     this.emit('heartbeat', { beats: this.beats, at: Date.now(), transitions });
     this._persistSessions();
@@ -971,7 +988,13 @@ class Daemon extends EventEmitter {
         // answering all resolve to 'ask', which puts the decision back at the
         // keyboard rather than letting it default to permission.
         const s = this.tuiSessionByCopilotId(req.sessionId);
-        if (!s || s.ended) return { decision: 'ask', reason: 'this session is not registered with the hub' };
+        // `supervised: false` is not the same as "denied". It means the hub is
+        // not watching this session at all, and the caller should get out of
+        // the way rather than interpose a prompt on a session nobody agreed to
+        // supervise. See hooks.js for why that distinction matters.
+        if (!s || s.ended) {
+          return { decision: 'ask', supervised: false, reason: 'this session is not registered with the hub' };
+        }
 
         const approvalId = `a${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         const approval = {
@@ -991,6 +1014,7 @@ class Daemon extends EventEmitter {
         return {
           decision,
           sessionId: s.id,
+          supervised: true,
           // "Nobody answered" and "the hub was unreachable" are different
           // facts, and the person staring at their terminal is entitled to
           // know which one just happened to them.

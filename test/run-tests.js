@@ -652,6 +652,8 @@ async function suiteInteractive() {
   runChildSuite(path.join(__dirname, 'hooks-unit.js'), 'hooks');
   console.log('\n[REGRESSION] two failures found in production, and kept out');
   runChildSuite(path.join(__dirname, 'prod-regression-unit.js'), 'prod-regression');
+  console.log('\n[HEARTBEAT/TUI] one session may not take down the device');
+  runChildSuite(path.join(__dirname, 'heartbeat-tui-unit.js'), 'heartbeat-tui');
 }
 
 /**
