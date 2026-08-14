@@ -1044,7 +1044,10 @@ class Daemon extends EventEmitter {
       case 'stop-session': {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
-        s.stop();
+        const r = normaliseControl(s.stop());
+        if (!r.ok) {
+          throw Object.assign(new Error(r.reason || 'this session cannot be stopped from here'), { code: 'NOT_STOPPABLE' });
+        }
         this._untrackChild(s.pid);
         return { stopped: true };
       }
@@ -1091,8 +1094,10 @@ class Daemon extends EventEmitter {
       case 'steer': {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
-        const ok = s.steer(req.text);
-        if (!ok) throw Object.assign(new Error('this session is not accepting input'), { code: 'NOT_STEERABLE' });
+        const r = normaliseControl(s.steer(req.text));
+        if (!r.ok) {
+          throw Object.assign(new Error(r.reason || 'this session is not accepting input'), { code: 'NOT_STEERABLE' });
+        }
         return { sent: true };
       }
       case 'shutdown':
@@ -1106,9 +1111,35 @@ class Daemon extends EventEmitter {
   }
 }
 
-function alive(pid) {
-  if (!pid) return false;
+/**
+ * Read a control result, whichever shape the session type answers in.
+ *
+ * `AcpSession.steer()` returns a boolean. `TuiSession.steer()` returns
+ * `{ ok: false, reason }` so the UI can say WHY -- and an object is truthy, so
+ * `if (!ok)` read that refusal as success. Steering a watched session answered
+ * `{ sent: true }` and sent nothing; stopping one answered `{ stopped: true }`
+ * and stopped nothing.
+ *
+ * That is the same defect as the heartbeat crash, in a politer costume: a
+ * session type was added to a collection whose contract it did not quite meet,
+ * and the collection did not notice. A button that lies is worse than an absent
+ * one, and this made every button lie for exactly the sessions that cannot
+ * honour them.
+ *
+ * Normalised in one place so a third session type cannot reintroduce it by
+ * picking either shape.
+ */
+function normaliseControl(result) {
+  if (result && typeof result === 'object') {
+    return { ok: !!result.ok, reason: result.reason || null };
+  }
+  // A bare `undefined` from a void method (AcpSession.stop) means "done".
+  if (result === undefined) return { ok: true, reason: null };
+  return { ok: !!result, reason: null };
+}
+
+function alive(pid) {  if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
-module.exports = { Daemon, alive, resolveAgentArgs };
+module.exports = { Daemon, alive, resolveAgentArgs, normaliseControl };

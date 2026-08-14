@@ -903,6 +903,12 @@ class HubService {
         if (op !== 'forget') return send(409, { error: 'device is offline' });
         const r = this.store.forgetDeviceSessions(me.key, deviceId, {
           olderThanMs: body ? body.olderThanMs : undefined,
+          // `force` clears sessions still marked running. Only reachable here,
+          // where the device has no live socket and so cannot be running
+          // anything -- and where a hooks-supervised session that outlived its
+          // daemon can never end itself. If the device does come back, it
+          // republishes its list and anything genuinely live returns.
+          force: !!(body && body.force),
         });
         /**
          * Once its last session is gone, the device goes too.
