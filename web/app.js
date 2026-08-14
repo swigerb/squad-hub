@@ -1208,6 +1208,8 @@ function deviceCard(d) {
         ${meters}
       </div>
       <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
+      <button class="add danger" data-remove-device="${esc(d.deviceId)}"
+              title="Remove this device: revoke its token and disconnect it">&times;</button>
     </div>`;
 }
 
@@ -2382,6 +2384,8 @@ function wire() {
   };
 
   $('deviceList').onclick = (e) => {
+    const rm = e.target.closest('[data-remove-device]');
+    if (rm) { removeDevice(rm.dataset.removeDevice); return; }
     const b = e.target.closest('[data-spawn]');
     if (b) openNew(b.dataset.spawn);
   };
@@ -2858,8 +2862,40 @@ function openConnect() {
   $('cnLabel').focus();
 }
 
-async function createDeviceToken() {
-  const btn = $('cnCreate');
+/**
+ * Remove a device: revoke the credential it is using, and cut it off.
+ *
+ * Confirmed first, and the confirmation says what is irreversible. Unlike
+ * "forget", which only removes a record and lets a live device republish
+ * itself, this destroys the credential -- the device cannot come back without
+ * being given a new token by hand, on the machine.
+ *
+ * That is the point: it exists for the laptop you cannot reach, the colleague
+ * who has left, the container that will not stop. But it is also why a
+ * mis-click here costs a trip to the machine, so it asks.
+ */
+async function removeDevice(deviceId) {
+  const d = (state.overview.devices || []).find((x) => x.deviceId === deviceId);
+  const name = (d && d.name) || deviceId;
+  if (!confirm(
+    `Remove "${name}" from this hub?\n\n`
+    + 'Its device token is revoked and the connection is dropped immediately.\n'
+    + 'It cannot reconnect: someone has to run `squad-hub connect` on that '
+    + 'machine with a new token.',
+  )) return;
+
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, { method: 'POST' });
+    // Reported from the ANSWER, never from the request. A device that could not
+    // be revoked must not be announced as removed.
+    toast(r && r.removed ? `Removed ${name}` : `${name} was disconnected, but its record is still here`);
+  } catch (e) {
+    toast(`Could not remove ${name}: ${e.message}`);
+  }
+  refresh();
+}
+
+async function createDeviceToken() {  const btn = $('cnCreate');
   btn.disabled = true;
   btn.textContent = 'Creating…';
   $('cnErr').hidden = true;

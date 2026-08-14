@@ -894,6 +894,59 @@ class HubService {
       return send(200, { revoked: jti, dropped });
     }
 
+    /**
+     * Remove a device: revoke the credential it is using, and cut it off.
+     *
+     * A hub-side action, so it is routed BEFORE the relay pattern below --
+     * everything there tells a running daemon to do something, and the whole
+     * point of this is that the device does not get a say.
+     *
+     * Keyed on the DEVICE, not on a token id. That is the question a person
+     * actually has ("remove my gaming PC"), and it means the hub never has to
+     * publish a `jti` on the device record to make the UI work -- the socket
+     * already knows which credential it is holding.
+     */
+    const rm = p.match(/^\/api\/devices\/([^/]+)\/revoke$/);
+    if (rm && req.method === 'POST') {
+      const deviceId = decodeURIComponent(rm[1]);
+      const device = this.store.getDevice(me.key, deviceId);
+      // Not 403: revealing the difference between "not yours" and "does not
+      // exist" is itself a disclosure.
+      if (!device) return send(404, { error: 'no such device' });
+
+      const conn = (this._devices.get(me.key) || new Map()).get(deviceId);
+      const jti = conn && conn.deviceTokenJti;
+      if (!jti) {
+        // Either it is not connected, or it attached before this hub started
+        // recording which credential each socket holds. Both are honest
+        // outcomes and neither is a failure -- but neither is a revocation
+        // either, so say which rather than reporting success.
+        return send(409, {
+          error: conn
+            ? 'this device attached before the hub recorded which token it is using; restart it, or revoke the token from the device list'
+            : 'this device is not connected, so there is no credential to revoke here',
+        });
+      }
+
+      try {
+        this.deviceTokenStore.revoke(me.key, jti);
+      } catch (e) {
+        // The store could not be read, so it must not be written either.
+        return send(503, { error: e.message });
+      }
+
+      try { conn.close(1008, 'this device has been removed from the hub'); } catch { /* already gone */ }
+      (this._devices.get(me.key) || new Map()).delete(deviceId);
+      this._broadcast(me.key, { type: 'device-disconnected', deviceId });
+
+      // The record goes too. A device that has been removed should not linger
+      // in the list looking merely offline, which is what a person would read
+      // as "it might come back".
+      this.store.forgetDeviceSessions(me.key, deviceId, { force: true });
+      const removed = this.store.removeDevice(me.key, deviceId);
+      return send(200, { revoked: jti, deviceId, removed });
+    }
+
     // Control operations, all routed to a device the caller owns.
     //
     // The op list is an ALLOW-LIST in the pattern itself, so a new verb reaches
