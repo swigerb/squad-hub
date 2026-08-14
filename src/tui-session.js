@@ -185,23 +185,26 @@ class TuiSession {
   }
 
   /**
-   * Steering is not available, and says so rather than failing silently.
+   * Steering is not available YET, and says so rather than failing silently.
    *
-   * The hub calls this on whatever session it is given. Returning a refusal
-   * with a reason means the UI can show why, instead of a request that appears
-   * to work and then does nothing.
+   * "Not built" rather than "impossible": `agentStop` can return
+   * `{ decision: "block", reason }`, which forces another agent turn using
+   * `reason` as the prompt -- measured against Copilot CLI 1.0.79, and the
+   * basis for real steering. Until that is built, a refusal with a reason means
+   * the UI can say why, instead of a request that appears to work and does
+   * nothing.
    */
   steer() {
     return {
       ok: false,
-      reason: 'this session is a Copilot TUI the hub is watching, not driving; type in that terminal to steer it',
+      reason: 'the hub cannot steer a Copilot TUI session yet; type in that terminal instead',
     };
   }
 
   stop() {
     return {
       ok: false,
-      reason: 'this session is a Copilot TUI the hub is watching, not driving; close that terminal to stop it',
+      reason: 'the hub cannot stop a Copilot TUI session; close that terminal instead',
     };
   }
 
