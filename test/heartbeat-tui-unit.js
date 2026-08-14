@@ -354,5 +354,61 @@ check('A WATCHED SESSION HAS A TRANSCRIPT THE HUB CAN READ', () => {
   assert.strictEqual(s.transcript.filter((e) => e.seq > since).length, s.transcript.length - 1);
 });
 
+check('AN OUT-OF-DATE DEVICE CANNOT TAKE DOWN THE WHOLE UI', () => {
+  // Reported live: every session stuck, and the connection indicator stuck on
+  // "connecting". Cause: squad-hub 0.4.1 published expiredApprovals /
+  // answeredApprovals as COUNTERS for hooks sessions, and the web UI does
+  // `((s && s.expiredApprovals) || []).map(...)`. A number is TRUTHY, so
+  // `|| []` never fires and `.map` throws -- inside render(), so nothing drew
+  // at all, and the indicator never cleared because the render that clears it
+  // never finished.
+  //
+  // Fixing the class that produced it was not enough: every device already
+  // deployed still sends the old shape. A hub that only works with current
+  // devices is not a hub.
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqold-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'an old ACA worker' });
+  s.syncSessions('me', 'dev1', [{
+    id: 'from-0-4-1',
+    status: 'active',
+    supervision: 'hooks',
+    // Exactly what squad-hub 0.4.1 publishes.
+    expiredApprovals: 3,
+    answeredApprovals: 2,
+    pendingApprovals: [],
+  }]);
+
+  const [rec] = s.listSessions('me', { deviceId: 'dev1' });
+  for (const f of ['expiredApprovals', 'answeredApprovals', 'pendingApprovals']) {
+    assert.ok(Array.isArray(rec[f]), `${f} reached a client as ${typeof rec[f]}; .map would throw in render()`);
+  }
+  // The count is not thrown away -- there is no honest way to rebuild the
+  // entries, but "3 earlier approvals" is still true and worth keeping.
+  assert.strictEqual(rec.expiredApprovalsCount, 3);
+  assert.strictEqual(rec.answeredApprovalsCount, 2);
+});
+
+check('a device sending the CURRENT shape is passed through untouched', () => {
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqnew-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'a current device' });
+  const answered = [{ approvalId: 'a1', answeredAt: 123 }];
+  s.syncSessions('me', 'dev1', [{ id: 'ok', status: 'active', answeredApprovals: answered, expiredApprovals: [] }]);
+  const [rec] = s.listSessions('me', { deviceId: 'dev1' });
+  assert.deepStrictEqual(rec.answeredApprovals, answered, 'a correct payload was altered');
+  assert.strictEqual(rec.answeredApprovalsCount, undefined, 'a count was invented for a device that sent a list');
+});
+
+check('THE UI ITSELF SURVIVES A NUMBER, so no single device can blank the page', () => {
+  // Belt and braces on purpose. The store normalises on ingest now, but a
+  // viewer that cannot survive one odd field from one device is a viewer any
+  // device can take down.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  assert.match(src, /function asList\(v\) \{\s*return Array\.isArray\(v\) \? v : \[\];/,
+    'web/app.js has no list coercion helper');
+  const risky = src.match(/\((?:s && s\.|s\.|a\.|b\.)(?:pending|expired|answered)Approvals \|\| \[\]\)\.(map|some|filter|forEach)\(/g);
+  assert.deepStrictEqual(risky || [], [],
+    `these still trust the device's shape and would throw on a count: ${(risky || []).join(', ')}`);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -215,9 +215,25 @@ function activityLine(s) {
  * question -- "what happened to that card?" -- and showing both at once would
  * be two answers to it. The newest wins.
  */
+/**
+ * A list field from a session, whatever the device actually sent.
+ *
+ * `|| []` is not enough and that is the whole point: a COUNT is truthy, so an
+ * older device publishing `expiredApprovals: 3` sailed past the guard and threw
+ * `.map is not a function` -- inside render(), which stopped the entire UI from
+ * drawing and left the connection indicator stuck on "connecting".
+ *
+ * The store normalises this on ingest now. This stays anyway: a viewer that
+ * cannot survive one odd field from one device is a viewer that any device can
+ * take down.
+ */
+function asList(v) {
+  return Array.isArray(v) ? v : [];
+}
+
 function lastApprovalOutcome(s) {
-  const answered = ((s && s.answeredApprovals) || []).map((a) => ({ ...a, kind: 'answered', at: a.answeredAt }));
-  const expired = ((s && s.expiredApprovals) || []).map((a) => ({ ...a, kind: 'expired', at: a.expiredAt }));
+  const answered = asList(s && s.answeredApprovals).map((a) => ({ ...a, kind: 'answered', at: a.answeredAt }));
+  const expired = asList(s && s.expiredApprovals).map((a) => ({ ...a, kind: 'expired', at: a.expiredAt }));
   const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
   return all[0] || null;
 }
@@ -1409,10 +1425,10 @@ function maybePromptApproval() {
   const open = state.openApproval;
   if (open && !$('approvalScrim').hidden) {
     const stillPending = state.overview.groups.some((g) => g.sessions.some(
-      (s) => (s.pendingApprovals || []).some((a) => a.approvalId === open),
+      (s) => asList(s.pendingApprovals).some((a) => a.approvalId === open),
     ));
     const nowExpired = state.overview.groups.some((g) => g.sessions.some(
-      (s) => (s.expiredApprovals || []).some((a) => a.approvalId === open),
+      (s) => asList(s.expiredApprovals).some((a) => a.approvalId === open),
     ));
     // Answered somewhere else -- another browser, a phone, the CLI. The card
     // has to close and say who, or two people both think it is theirs to
