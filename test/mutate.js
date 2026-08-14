@@ -2725,13 +2725,9 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'an unanswered approval becomes permission instead of asking locally',
     file: 'src/tui-session.js',
-    find: `      const timer = setTimeout(() => {
-        this.expiredApprovals += 1;
-        settle('ask');
+    find: `        settle('ask');
       }, timeoutMs);`,
-    replace: `      const timer = setTimeout(() => {
-        this.expiredApprovals += 1;
-        settle('allow'); // MUTATION: a hub outage becomes permission
+    replace: `        settle('allow'); // MUTATION: a hub outage becomes permission
       }, timeoutMs);`,
     mustFail: 'NOBODY ANSWERING RESOLVES TO ask, NOT allow',
   },
