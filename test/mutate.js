@@ -125,6 +125,29 @@ const MUTATIONS = [
     mustFail: 'the refusal does not reveal that the device exists',
   },
   {
+    // A card that names the tool but withholds the command is not an approval
+    // control. It is a prompt people learn to click through, which is worse
+    // than no prompt at all because it looks like oversight.
+    name: 'the approval card falls back to the tool name instead of the command',
+    file: 'src/tui-session.js',
+    find: `        command: described.command,
+        paths: described.paths,`,
+    replace: `        command: process.env.MUTANT ? null : described.command, // MUTATION
+        paths: described.paths,`,
+    mustFail: 'A SHELL COMMAND IS SHOWN IN FULL, not summarised as its tool name',
+  },
+  {
+    // Hooks are user-level, so this fires for EVERY Copilot session on the
+    // machine. Without the check, a daemon that is up but wedged makes every
+    // unrelated session wait out the IPC timeout at the end of every turn --
+    // measured at 8067ms per turn versus 50ms with it.
+    name: 'agentStop calls the daemon even for a session it never registered',
+    file: 'src/cli.js',
+    find: `    if (!sessionId || !hooks.isSupervised(sessionId)) return 0;`,
+    replace: `    if (!process.env.MUTANT && (!sessionId || !hooks.isSupervised(sessionId))) return 0; // MUTATION`,
+    mustFail: 'AN UNREGISTERED SESSION NEVER REACHES THE DAEMON, so a wedged hub cannot tax it',
+  },
+  {
     // Removing a device is the answer to "I cannot reach that machine". A
     // revocation the live socket never hears is a record, not an enforcement:
     // the device would keep heartbeating and accepting commands until it

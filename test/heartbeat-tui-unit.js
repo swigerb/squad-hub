@@ -39,20 +39,41 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sqbeat-'));
 process.env.SQUAD_HUB_HOME = HOME;
 
 const { Daemon } = require(path.join(__dirname, '..', 'src', 'daemon'));
-const { TuiSession } = require(path.join(__dirname, '..', 'src', 'tui-session'));
+const { TuiSession, describeHookTool } = require(path.join(__dirname, '..', 'src', 'tui-session'));
 const { STATUS } = require(path.join(__dirname, '..', 'src', 'acp-session'));
 const hooks = require(path.join(__dirname, '..', 'src', 'hooks'));
 
 let pass = 0; let fail = 0;
+/**
+ * Run one check.
+ *
+ * Handles a check that returns a PROMISE as well as a synchronous one. It used
+ * to only call `fn()` and catch a throw, which meant an async check reported
+ * "ok" the instant it started and any assertion inside it became an unhandled
+ * rejection -- a test that cannot fail, printed as a pass. Deferred checks are
+ * collected and settled before the summary is printed.
+ */
+const pending = [];
 function check(name, fn) {
-  try {
-    fn(); pass += 1;
+  const ok = () => {
+    pass += 1;
     console.log(`  ok   ${name}`);
     console.log(`RESULT\tok\t${name}`);
-  } catch (e) {
+  };
+  const bad = (e) => {
     fail += 1;
     console.log(`  FAIL ${name}\n         ${e.message}`);
     console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  };
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(ok, bad));
+      return;
+    }
+    ok();
+  } catch (e) {
+    bad(e);
   }
 }
 
@@ -454,5 +475,104 @@ check('THE UI READS BOTH SPELLINGS, so no single device can render a dead button
     'web/app.js reads only the current label spelling');
 });
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// ---------------------------------------------------------------------------
+// AN APPROVAL CARD MUST SAY WHAT RUNS
+//
+// Reported from production: cards showed "Run SQL" or "Run bash" and withheld
+// the statement. Approving a command you have not been shown is not approval,
+// and a card that trains people to click Allow without reading is worse than
+// no card.
+//
+// The payloads below are CAPTURED from Copilot CLI 1.0.80, not invented --
+// toolArgs arrives as a JSON-ENCODED STRING, which is why storing it verbatim
+// produced either a raw blob or nothing.
+// ---------------------------------------------------------------------------
+
+check('A SHELL COMMAND IS SHOWN IN FULL, not summarised as its tool name', () => {
+  const s = new TuiSession({ id: 't1', copilotId: 'c1', cwd: '/w' });
+  s.requestApproval({
+    approvalId: 'a1',
+    toolName: 'powershell',
+    toolArgs: JSON.stringify({ command: 'echo hello-from-probe', description: 'Echo test string' }),
+    timeoutMs: 60000,
+  });
+  const card = s.toJSON().pendingApprovals[0];
+  assert.ok(card, 'no card was published at all');
+  assert.strictEqual(card.command, 'echo hello-from-probe',
+    'the card does not carry the command, so it cannot be read before approving');
+  assert.ok(!/^\s*\{/.test(card.command),
+    'the card shows raw JSON, which is the same withholding in a different costume');
+});
+
+check('a SQL statement is shown, which is the case that was reported', () => {
+  const s = new TuiSession({ id: 't2', copilotId: 'c2', cwd: '/w' });
+  s.requestApproval({
+    approvalId: 'a2',
+    toolName: 'sql',
+    toolArgs: JSON.stringify({ query: 'SELECT * FROM users WHERE id = 1' }),
+    timeoutMs: 60000,
+  });
+  const card = s.toJSON().pendingApprovals[0];
+  assert.strictEqual(card.command, 'SELECT * FROM users WHERE id = 1');
+});
+
+check('a file tool names the file, and the paths reach the card', () => {
+  const s = new TuiSession({ id: 't3', copilotId: 'c3', cwd: '/w' });
+  s.requestApproval({
+    approvalId: 'a3',
+    toolName: 'create',
+    toolArgs: JSON.stringify({ path: '/w/out.txt', file_text: 'banana' }),
+    timeoutMs: 60000,
+  });
+  const card = s.toJSON().pendingApprovals[0];
+  assert.match(card.command, /out\.txt/, 'the card does not say which file is being written');
+  assert.deepStrictEqual(card.paths, ['/w/out.txt'],
+    'the "what it touches" rows are empty, so the card understates the request');
+});
+
+check('THE READ-ONLY BADGE IS DECIDED BY THE COMMAND, not the tool name', () => {
+  // Every shell call arrives under one tool name, so the name alone cannot
+  // tell these apart -- and a badge that is wrong here is one people learn to
+  // ignore.
+  const read = describeHookTool('bash', JSON.stringify({ command: 'git status --short' }));
+  const write = describeHookTool('bash', JSON.stringify({ command: 'rm -rf build' }));
+  assert.strictEqual(read.readOnly, true, 'git status was flagged as writing');
+  assert.strictEqual(write.readOnly, false, 'rm -rf was flagged as read-only, which is the dangerous direction');
+});
+
+check('an unrecognised shape is shown as it arrived, never dropped', () => {
+  // The failure mode this replaces was silence. Anything is better than a card
+  // that will not say what it is asking for.
+  const mcp = describeHookTool('mcp_thing', JSON.stringify({ owner: 'squad', repo: 'hub', pull_number: 12 }));
+  assert.match(mcp.command, /owner=squad/, 'the arguments were dropped rather than shown');
+
+  const junk = describeHookTool('weird', 'not json at all');
+  assert.match(junk.command, /not json at all/);
+
+  const nothing = describeHookTool('bare', null);
+  assert.ok(nothing.command, 'a tool with no arguments still has to name itself');
+});
+
+check('an approval that EXPIRES still says what expired', async () => {
+  const s = new TuiSession({ id: 't4', copilotId: 'c4', cwd: '/w' });
+  s.requestApproval({
+    approvalId: 'a4',
+    toolName: 'bash',
+    toolArgs: JSON.stringify({ command: 'rm -rf build' }),
+    timeoutMs: 1,
+  });
+  // Asserted AFTER awaiting, not inside a setTimeout callback: a throw in a
+  // timer escapes the surrounding promise entirely and lands as an uncaught
+  // exception, which the harness cannot count. An async function's throw
+  // rejects, and a rejection is a countable failure.
+  await new Promise((r) => setTimeout(r, 40));
+  const expired = s.toJSON().expiredApprovals[0];
+  assert.ok(expired, 'nothing was recorded as expired');
+  assert.strictEqual(expired.command, 'rm -rf build',
+    'the expiry notice names no command, so nobody can tell what they missed');
+});
+
+Promise.all(pending).then(() => {
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+});

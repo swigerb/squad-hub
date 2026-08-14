@@ -29,7 +29,121 @@
  * concept is not a cosmetic choice -- everything downstream is written against
  * one of them.
  */
-const { STATUS } = require('./acp-session');
+const { STATUS, extractPaths, isReadOnlyCommand } = require('./acp-session');
+
+/**
+ * Turn Copilot's `preToolUse` arguments into something a person can decide on.
+ *
+ * MEASURED, not assumed (Copilot CLI 1.0.80): `toolArgs` arrives as a
+ * JSON-ENCODED STRING, not an object --
+ *
+ *   toolName "powershell", toolArgs '{"command":"echo hi","description":"..."}'
+ *   toolName "view",       toolArgs '{"path":"C:\\\\work\\\\notes.txt"}'
+ *   toolName "create",     toolArgs '{"path":"...","file_text":"banana"}'
+ *
+ * This used to be stored verbatim, so the card offered either a raw JSON blob
+ * or, when the string was absent, nothing at all beyond "Run powershell". Both
+ * are the same failure: the person is asked to approve a command they cannot
+ * read. An approval card that will not say what runs is not a safety control,
+ * it is a habit of clicking Allow.
+ *
+ * Never returns an empty command. If the shape is unrecognised the arguments
+ * are shown as they arrived -- an ugly card beats a card that hides the thing
+ * being approved.
+ */
+function describeHookTool(toolName, toolArgs) {
+  const args = parseToolArgs(toolArgs);
+  const name = toolName || 'a tool';
+
+  // The command-shaped fields, in the order a shell tool, a database tool and
+  // a script runner respectively use. `query` and `sql` matter because "Run
+  // SQL" with the statement withheld is exactly the report that prompted this.
+  const spoken = firstString(args, ['command', 'query', 'sql', 'script', 'cmd', 'expression']);
+  const paths = args && typeof args === 'object' ? extractPaths(args) : [];
+
+  let command = spoken;
+  if (!command) {
+    // No command field. A file tool is best described by what it touches; a
+    // tool we do not recognise is described by its arguments, verbatim.
+    if (paths.length) command = `${name} ${paths.join(' ')}`;
+    else if (args && typeof args === 'object') command = `${name} ${compactJson(args)}`;
+    else command = typeof toolArgs === 'string' && toolArgs.trim() ? `${name} ${toolArgs.trim()}` : name;
+  }
+
+  return {
+    command: clamp(command),
+    paths,
+    readOnly: isReadOnlyHookTool(name, spoken, args),
+    // The full arguments stay available even when `command` is a summary, so
+    // nothing the agent asked for is hidden behind our idea of a good label.
+    detail: clamp(args && typeof args === 'object' ? prettyJson(args) : String(toolArgs == null ? '' : toolArgs)),
+  };
+}
+
+/** `toolArgs` as an object when it can be, whatever it arrived as. */
+function parseToolArgs(toolArgs) {
+  if (toolArgs && typeof toolArgs === 'object') return toolArgs;
+  if (typeof toolArgs !== 'string') return null;
+  const text = toolArgs.trim();
+  if (!text.startsWith('{') && !text.startsWith('[')) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    // Not JSON after all. The caller falls back to showing the raw string,
+    // which is still more than the tool name on its own.
+    return null;
+  }
+}
+
+/**
+ * Tools whose name alone proves they only look. Deliberately short: the
+ * classifier this feeds is timid by design, and a name we do not recognise is
+ * treated as writing. A missed "read-only" costs a second look; a wrong one
+ * costs a repository.
+ */
+const READ_ONLY_HOOK_TOOLS = new Set(['view', 'read', 'grep', 'glob', 'search', 'list', 'fetch', 'ls']);
+
+function isReadOnlyHookTool(toolName, command, args) {
+  const name = String(toolName || '').toLowerCase();
+  if (READ_ONLY_HOOK_TOOLS.has(name)) return true;
+  // A shell-shaped tool is judged by the command itself, exactly as an ACP
+  // session judges one -- every shell call arrives under one tool name, so the
+  // name alone cannot tell `git status` from `rm -rf`.
+  if (command) return isReadOnlyCommand(command);
+  // A tool with no command and no recognised name: if it names a file it is
+  // almost certainly touching it, and we cannot show otherwise.
+  return args && typeof args === 'object' && Object.keys(args).length === 0;
+}
+
+function firstString(obj, keys) {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const k of keys) {
+    if (typeof obj[k] === 'string' && obj[k].trim()) return obj[k].trim();
+  }
+  return null;
+}
+
+const APPROVAL_TEXT_MAX = 2000;
+const clamp = (s) => (typeof s === 'string' && s.length > APPROVAL_TEXT_MAX
+  ? `${s.slice(0, APPROVAL_TEXT_MAX)}\n... (truncated)` : s || null);
+
+/* One line, for a label. Long values are elided rather than dropped, so the
+   card never implies the agent asked for less than it did. */
+function compactJson(obj) {
+  try {
+    return Object.entries(obj)
+      .map(([k, v]) => {
+        const text = typeof v === 'string' ? v : JSON.stringify(v);
+        return `${k}=${text && text.length > 120 ? `${text.slice(0, 120)}…` : text}`;
+      })
+      .join(' ');
+  } catch { return ''; }
+}
+
+function prettyJson(obj) {
+  try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
+}
 
 /** How a session ended, in the words Copilot's sessionEnd hook uses. */
 const END_REASONS = {
@@ -380,6 +494,7 @@ class TuiSession {
   requestApproval({
     approvalId, toolName, toolArgs, timeoutMs = 120000, now = Date.now(),
   }) {
+    const described = describeHookTool(toolName, toolArgs);
     return new Promise((resolve) => {
       let settled = false;
       const settle = (decision) => {
@@ -404,6 +519,9 @@ class TuiSession {
         this.expiredApprovals.push({
           approvalId,
           title: toolName ? `Run ${toolName}` : 'a tool call',
+          // What expired, not merely that something did. An expiry notice that
+          // will not name the command is the same withholding as the card.
+          command: described.command,
           requestedAt: now,
           expiredAt: Date.now(),
         });
@@ -421,8 +539,16 @@ class TuiSession {
         sessionId: this.id,
         title: toolName ? `Run ${toolName}` : 'Run a tool',
         toolName: toolName || null,
-        command: typeof toolArgs === 'string' ? toolArgs.slice(0, 2000) : null,
-        detail: typeof toolArgs === 'string' ? toolArgs.slice(0, 2000) : null,
+        // The command, the paths and the read-only badge, on the same fields an
+        // ACP approval publishes, so `approvalRows()` in the web app renders a
+        // watched session's card the same way it renders an owned one. Before
+        // this, `command` was set only when `toolArgs` was a string and was the
+        // raw JSON when it was -- so the card said "Run powershell" and left
+        // the person to approve a command they had never been shown.
+        command: described.command,
+        paths: described.paths,
+        readOnly: described.readOnly,
+        detail: described.detail,
         requestedAt: now,
         createdAt: now,
         expiresAt: now + timeoutMs,
@@ -523,4 +649,6 @@ class TuiSession {
   }
 }
 
-module.exports = { TuiSession, STATUS, END_REASONS };
+module.exports = {
+  TuiSession, STATUS, END_REASONS, describeHookTool,
+};
