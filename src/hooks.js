@@ -26,6 +26,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const paths = require('./paths');
 
 /** Our file, named so it is obvious who owns it and safe to delete. */
 const HOOK_FILE = 'squad-hub.json';
@@ -201,6 +202,83 @@ function remove(env = process.env) {
   return { ok: true, removed: true, path: file };
 }
 
+/**
+ * Sessions this hub is actually supervising, recorded on disk.
+ *
+ * WHY THIS EXISTS. The hook file is user-level: it runs for EVERY Copilot
+ * session on the machine, including ones that have nothing to do with Squad.
+ * When the daemon cannot be reached, `preToolUse` has to answer something, and
+ * answering "ask" for a session nobody was ever watching is the worst of both
+ * worlds -- it adds a permission prompt to every tool call in every project,
+ * forever, while supervising precisely nothing. It is MORE restrictive than not
+ * installing the hooks at all, which is not a trade anybody agreed to.
+ *
+ * So the rule is: interpose only on sessions the hub is genuinely supervising.
+ *
+ *   supervised, daemon reachable    -> the hub decides
+ *   supervised, daemon unreachable  -> "ask", because supervision was expected
+ *                                      and is now gone; never "allow"
+ *   not supervised                  -> say nothing, and let Copilot's own
+ *                                      permission handling do its job
+ *
+ * The marker is written only when registration actually succeeded, so "was
+ * this supervised" is answered by evidence rather than by assuming the daemon
+ * that is currently unreachable was once up.
+ */
+
+/** Where the markers live -- squad-hub's own directory, not Copilot's. */
+function supervisedDir() {
+  return path.join(paths.home(), 'supervised');
+}
+
+function supervisedPath(sessionId) {
+  // Session ids come from Copilot and are uuids, but this value reaches a file
+  // path, so anything that is not plainly safe is refused rather than escaped.
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(String(sessionId || ''))) return null;
+  return path.join(supervisedDir(), String(sessionId));
+}
+
+/** Record that the hub accepted responsibility for this session. */
+function markSupervised(sessionId) {
+  const file = supervisedPath(sessionId);
+  if (!file) return false;
+  try {
+    fs.mkdirSync(supervisedDir(), { recursive: true });
+    fs.writeFileSync(file, new Date().toISOString(), 'utf8');
+    return true;
+  } catch {
+    // Best effort. A marker that could not be written means the next tool call
+    // falls through to Copilot's own handling, which is the safe direction:
+    // it does not invent supervision that is not there.
+    return false;
+  }
+}
+
+function isSupervised(sessionId) {
+  const file = supervisedPath(sessionId);
+  if (!file) return false;
+  try { return fs.existsSync(file); } catch { return false; }
+}
+
+function clearSupervised(sessionId) {
+  const file = supervisedPath(sessionId);
+  if (!file) return;
+  try { fs.unlinkSync(file); } catch { /* already gone */ }
+}
+
 module.exports = {
-  HOOK_FILE, EVENTS, hooksDir, hookPath, buildHookConfig, selfCommand, status, install, remove,
+  HOOK_FILE,
+  EVENTS,
+  TIMEOUTS,
+  hooksDir,
+  hookPath,
+  buildHookConfig,
+  selfCommand,
+  status,
+  install,
+  remove,
+  supervisedDir,
+  markSupervised,
+  isSupervised,
+  clearSupervised,
 };

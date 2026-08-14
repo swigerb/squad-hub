@@ -77,6 +77,45 @@ class TuiSession {
     this.answeredApprovals = 0;
   }
 
+  /**
+   * THE HEARTBEAT CONTRACT. Every session in the daemon's map must answer
+   * these, whoever started it.
+   *
+   * `beat()` calls `isAgentDead()` on every live session and `_setStatus()` on
+   * any that has died. This class had neither, so the first heartbeat after a
+   * terminal session registered threw `TypeError: s.isAgentDead is not a
+   * function` inside a `setInterval` callback -- an uncaught exception, which
+   * killed the whole daemon.
+   *
+   * What a person saw: the device went offline seconds after starting a
+   * supervised TUI session, the session froze at "Working" forever, and every
+   * subsequent tool call turned into a local approval prompt because the hooks
+   * had nothing left to talk to. None of which points anywhere near a
+   * heartbeat.
+   */
+
+  /**
+   * There is no agent process here, so it cannot be dead.
+   *
+   * Answering `false` is the honest answer rather than a convenient one: the
+   * daemon did not start this process and cannot signal it, so "is it dead" is
+   * a question this class has no way to answer. A session that really has ended
+   * says so through the `sessionEnd` hook, which is the only source that knows.
+   */
+  isAgentDead() {
+    return false;
+  }
+
+  /**
+   * Set the status, matching AcpSession's shape so the daemon can drive either
+   * kind without asking which it has.
+   */
+  _setStatus(status, activity = null) {
+    this.status = status;
+    if (activity) this.activity = activity;
+    this.lastSeen = Date.now();
+  }
+
   /** Note that the session is still alive, whatever else just happened. */
   touch(activity = null) {
     this.lastSeen = Date.now();

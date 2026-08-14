@@ -820,8 +820,7 @@ async function cmdHook(argv) {
    * session was launched with. Every failure path below therefore answers ask.
    */
   if (event === 'preToolUse') {
-    let decision = 'ask';
-    let reason = 'Squad Hub could not be reached, so this decision stays here';
+    const hooks = require('./hooks');
     try {
       const r = await client.call('hook-approval', {
         sessionId,
@@ -840,27 +839,60 @@ async function cmdHook(argv) {
         // the hub was answering perfectly well.
         timeoutMs: Number(process.env.SQUAD_HUB_HOOK_IPC_TIMEOUT_MS) || 270000,
       });
+
+      // The hub is not watching this session, so it has no business adding a
+      // prompt to it. Saying nothing lets Copilot's own permission handling
+      // decide, exactly as it would if these hooks were not installed.
+      if (r && r.supervised === false) { hooks.clearSupervised(sessionId); return 0; }
+
       if (r && (r.decision === 'allow' || r.decision === 'deny')) {
-        decision = r.decision;
-        reason = r.decision === 'allow' ? 'Approved in Squad Hub' : 'Denied in Squad Hub';
-      } else if (r && r.reason) {
-        reason = r.reason;
+        out(JSON.stringify({
+          permissionDecision: r.decision,
+          permissionDecisionReason: r.decision === 'allow' ? 'Approved in Squad Hub' : 'Denied in Squad Hub',
+        }));
+        return 0;
       }
+      out(JSON.stringify({
+        permissionDecision: 'ask',
+        permissionDecisionReason: (r && r.reason) || 'Squad Hub did not answer, so this decision stays here',
+      }));
+      return 0;
     } catch {
-      // Keep the default. Nothing here may become 'allow'.
+      // The daemon could not be reached at all.
+      //
+      // If this session was never registered, the hub was never supervising it
+      // -- so interposing here would put a prompt on every tool call of every
+      // Copilot session on this machine, which is worse than not installing
+      // the hooks. Say nothing.
+      if (!hooks.isSupervised(sessionId)) return 0;
+
+      // It WAS supervised, and now it is not. Never 'allow': a hub outage must
+      // not become permission. The reason names the fix, because a wall of
+      // approval prompts with no explanation is how somebody learns to approve
+      // without reading.
+      out(JSON.stringify({
+        permissionDecision: 'ask',
+        permissionDecisionReason: 'Squad Hub is not running on this device, so it cannot approve this. '
+          + 'Run `squad-hub start` to restore remote approval, or `squad-hub hooks remove` to stop asking.',
+      }));
+      return 0;
     }
-    out(JSON.stringify({ permissionDecision: decision, permissionDecisionReason: reason }));
-    return 0;
   }
 
   try {
     if (event === 'sessionStart') {
-      await client.call('hook-session-start', {
+      const r = await client.call('hook-session-start', {
         sessionId,
         cwd: payload.cwd,
         source: payload.source,
       });
+      // Recorded ONLY on a registration that actually succeeded. This is what
+      // later tells a tool call whether the hub was ever watching this session
+      // -- see hooks.js. Assuming it instead would put an approval prompt on
+      // every Copilot session on this machine the moment the daemon stopped.
+      if (r && r.registered) require('./hooks').markSupervised(sessionId);
     } else if (event === 'sessionEnd') {
+      require('./hooks').clearSupervised(sessionId);
       await client.call('hook-session-end', {
         sessionId,
         reason: payload.reason,
