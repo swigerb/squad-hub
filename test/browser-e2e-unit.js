@@ -81,16 +81,24 @@ async function until(fn, what, budgetMs = 15000) {
  *
  * Retried rather than slept through: the second attempt runs once the page has
  * stopped moving, and a genuine failure still fails, with its own message.
+ *
+ * USED FOR EVERY NAVIGATION IN THIS SUITE, deliberately. It was first applied
+ * only where a failure had actually been observed, and the flake came back a
+ * third time at a `goto` two lines away that had never been seen to fail. The
+ * property is "this app navigates on its own, so any navigation can be
+ * interrupted" -- it is not a property of whichever call site happened to lose
+ * the race that week. A plain `page.goto` in this file is a bug waiting for a
+ * slow CI runner.
  */
-async function gotoSettled(page, url) {
+async function gotoSettled(page, url, opts) {
   try {
-    return await page.goto(url);
+    return await page.goto(url, opts);
   } catch (e) {
     if (!/interrupted by another navigation|Execution context was destroyed/i.test(String(e && e.message))) {
       throw e;
     }
     try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch { /* busy is fine */ }
-    return page.goto(url);
+    return page.goto(url, opts);
   }
 }
 
@@ -204,7 +212,7 @@ async function watchCsp(pg) {
   try {
     // ---- signing in ------------------------------------------------------
     await check('the app loads and signs in with a token in the URL', async () => {
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('#who', { timeout: 15000 });
       assert.strictEqual(await page.textContent('#who'), 'test person');
     });
@@ -443,7 +451,7 @@ async function watchCsp(pg) {
           contentType: 'application/json',
           body: JSON.stringify({ name: c.name, tenantId: 't', subject: 's', avatar: c.avatar, warning: null }),
         }));
-        await page.goto(origin);
+        await gotoSettled(page, origin);
         await page.waitForSelector('#avatar', { timeout: 10000 });
         if (c.expectImage) {
           await page.waitForFunction(
@@ -478,7 +486,7 @@ async function watchCsp(pg) {
     // page instead of the app.
     // -----------------------------------------------------------------------
     await check('the palette comes from tokens that are actually applied', async () => {
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
       const tokens = await page.evaluate(() => {
         const cs = getComputedStyle(document.documentElement);
@@ -494,7 +502,7 @@ async function watchCsp(pg) {
     });
 
     await check('the theme toggle cycles system, dark and light, and sticks', async () => {
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('#themeBtn', { timeout: 10000 });
       const seen = [];
       for (let i = 0; i < 3; i += 1) {
@@ -626,7 +634,7 @@ async function watchCsp(pg) {
     // name the browser used to provide for free, and every one of those is a
     // thing that can silently stop working.
     // -----------------------------------------------------------------------
-    await page.goto(`${origin}/?token=${userToken}`);
+    await gotoSettled(page, `${origin}/?token=${userToken}`);
     await page.waitForSelector('.selectpill', { timeout: 10000 });
 
     await check('a dropdown opens on click and lists exactly the options its select holds', async () => {
@@ -984,7 +992,7 @@ async function watchCsp(pg) {
     // the source, and only going offline tells the two apart.
     // -----------------------------------------------------------------------
     await check('the service worker registers and takes control', async () => {
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
       const active = await page.evaluate(async () => {
         const reg = await navigator.serviceWorker.ready;
@@ -1005,12 +1013,12 @@ async function watchCsp(pg) {
        * weaker still, since the fallback page says that too. An earlier
        * version of this check did both and passed with caching disabled.
        */
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
 
       await page.context().setOffline(true);
       try {
-        const res = await page.goto(`${origin}/`, { waitUntil: 'domcontentloaded' });
+        const res = await gotoSettled(page, `${origin}/`, { waitUntil: 'domcontentloaded' });
         assert.ok(res, 'the navigation produced no response at all');
         const served = await res.text();
         assert.match(served, /id="deviceRail"/,
@@ -1035,7 +1043,7 @@ async function watchCsp(pg) {
        */
       await page.context().setOffline(true);
       try {
-        await page.goto(`${origin}/`, { waitUntil: 'domcontentloaded' });
+        await gotoSettled(page, `${origin}/`, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('#offlineRetry', { timeout: 10000 });
         const text = await page.evaluate(() => document.body.innerText);
         assert.ok(!/could not sign in/i.test(text),
@@ -1115,7 +1123,7 @@ async function watchCsp(pg) {
       const count = (req) => { if (req.url && req.url.split('?')[0] === '/app.js') hits += 1; };
       svc.server.on('request', count);
       try {
-        await page.goto(`${origin}/?token=${userToken}`);
+        await gotoSettled(page, `${origin}/?token=${userToken}`);
         await page.waitForSelector('.topbar', { timeout: 10000 });
         // Give the worker's fetch handler a moment to reach the server.
         await new Promise((r) => setTimeout(r, 500));
@@ -1140,7 +1148,7 @@ async function watchCsp(pg) {
        * so this asserts the file is genuinely renderable rather than merely
        * present and non-empty.
        */
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
 
       const link = await page.evaluate(() => {
@@ -1205,7 +1213,7 @@ async function watchCsp(pg) {
       process.env.FAKE_AGENT_MODE = 'no-permission';
       await daemon.handle({ op: 'start-session', prompt: 'squad doc view', cwd: work });
 
-      await page.goto(origin);
+      await gotoSettled(page, origin);
       await page.waitForSelector('[data-session]', { timeout: 20000 });
       // Open the session whose workspace is the one just built.
       await page.click('[data-session]');
@@ -1248,7 +1256,7 @@ async function watchCsp(pg) {
        * a browser can answer -- it is a fact about computed layout, not about
        * the source string.
        */
-      await page.goto(origin);
+      await gotoSettled(page, origin);
       // The transcript lives inside the session detail, which is hidden until
       // a session is opened -- and a hidden box has no layout to measure.
       await page.waitForSelector('[data-session]', { timeout: 20000 });
@@ -1292,7 +1300,7 @@ async function watchCsp(pg) {
         'precondition: the transcript itself must be the scroller, or this proves nothing');
     });
 
-    await check('signing out returns to a usable sign-in page', async () => {      await page.goto(origin);
+    await check('signing out returns to a usable sign-in page', async () => {      await gotoSettled(page, origin);
       await page.waitForSelector('#menuBtn', { timeout: 10000 });
       await page.click('#menuBtn');
       await page.click('[data-menu="signout"]');

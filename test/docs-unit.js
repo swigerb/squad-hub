@@ -612,5 +612,35 @@ check('the Teams webhook variable is explained where it is set', () => {
   assert.match(commands, /Workflows/);
 });
 
+check('every navigation in the browser suite tolerates being interrupted', () => {
+  /**
+   * The PWA cache checks have gone red on CI three times, always with
+   * "Navigation to X is interrupted by another navigation to X", and twice I
+   * fixed only the call site that had been seen to fail. It came back at a
+   * `goto` two lines away.
+   *
+   * The property is that THIS APP NAVIGATES ON ITS OWN -- the offline page
+   * reloads itself when the network returns, and a token in the URL is
+   * stripped by a replace -- so any navigation can lose that race on a slow
+   * runner. `gotoSettled` is the only navigation that survives it.
+   *
+   * Asserted on the source, not on behaviour, deliberately: a timing flake
+   * cannot be caught reliably by running the thing that flakes. This check
+   * cannot itself flake, and it fails the moment someone reintroduces the
+   * shape rather than the moment CI happens to lose the race again.
+   */
+  const suite = read('test/browser-e2e-unit.js');
+  const offenders = suite
+    .split('\n')
+    .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+    // Inside gotoSettled itself the bare call is the implementation.
+    .filter(({ line }) => /\bpage\.goto\(/.test(line) && !/^return (await )?page\.goto\(/.test(line))
+    .map(({ line, n }) => `line ${n}: ${line}`);
+
+  assert.deepStrictEqual(offenders, [],
+    'these navigations bypass gotoSettled and will flake on a slow runner:\n  '
+    + `${offenders.join('\n  ')}`);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
