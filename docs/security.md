@@ -398,6 +398,43 @@ failure.
 
 Use this rather than sharing your own sign-in credential.
 
+### Revoking one, and getting the machine off
+
+Revocation **disconnects**. A device holding a revoked token is closed with
+`1008` and a reason, not left running until it next reconnects.
+
+That distinction is the whole point. A socket is authorised once, at the
+upgrade, and is never re-checked afterwards — so a revocation that only updated
+a record would leave the revoked device heartbeating, publishing its sessions
+and accepting commands indefinitely. And the reasons to revoke a device token
+are precisely the cases where you cannot walk over and stop the process: a lost
+laptop, a departed colleague, a container that will not stop, a token that
+reached a log.
+
+Two ways to do it:
+
+```bash
+squad-hub device-token --hub <url> --token <yours> --revoke <id>
+```
+
+Revokes one credential. The response names the devices that were dropped, not
+just how many — "nothing was connected" and "I cut one off" are different
+answers.
+
+Or the **×** on a device in the web app, which revokes the credential that
+device is holding, drops the connection, and deletes the record in one action.
+It asks first: it cannot be undone from the hub, and the machine returns only
+when somebody runs `squad-hub connect` there with a new token.
+
+Neither is `forget`, which removes the hub's record of ended sessions and
+deliberately refuses a device that is still reachable.
+
+**What revocation does not do.** It ends the device's access to the hub. It does
+not reach into that machine — an agent already running there keeps running,
+under whatever policy that machine applies locally. Removing a device removes
+supervision, so an unattended machine you no longer trust needs stopping at the
+machine as well.
+
 ### Revoking one
 
 ```bash

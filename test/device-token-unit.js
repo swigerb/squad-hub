@@ -931,6 +931,67 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
       'a token nobody was using reported dropping something');
   });
 
+  await checkAsync('REMOVING A DEVICE REVOKES ITS TOKEN AND DROPS IT, in one action', async () => {
+    // The question a person actually has is "remove my gaming PC", not "revoke
+    // token abc123". Keying on the device also means the hub never has to
+    // publish a jti on the device record to make a UI control work.
+    const minted = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'ui removal', ttlHours: 1 },
+    });
+    const conn = await new Promise((resolve) => {
+      const key = crypto.randomBytes(16).toString('base64');
+      const req = http.request({
+        host: '127.0.0.1',
+        port,
+        path: `/ws?access_token=${encodeURIComponent(minted.body.token)}&role=device&deviceId=to-remove`,
+        headers: {
+          Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13',
+        },
+      });
+      req.on('upgrade', (res, socket, head) => {
+        const c = new WsConnection(socket);
+        if (head && head.length) c._onData(head);
+        resolve(c);
+      });
+      req.on('response', () => resolve(null));
+      req.on('error', () => resolve(null));
+      req.end();
+    });
+    assert.ok(conn, 'the device could not attach, so this proves nothing');
+    // A real device registers itself after attaching; without that the hub has
+    // a socket but no device record, which is a different state entirely.
+    conn.sendJson({ type: 'register', device: { name: 'a device to remove', platform: 'linux' } });
+    await new Promise((r) => setTimeout(r, 250));
+
+    const r = await api(port, '/api/devices/to-remove/revoke', userToken, { method: 'POST' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.revoked, minted.body.jti, 'a different token was revoked');
+    assert.strictEqual(r.body.removed, true, 'the device record survived its own removal');
+
+    await new Promise((r2) => setTimeout(r2, 200));
+    assert.strictEqual(conn.closeCode, 1008, `the socket stayed open (code ${conn.closeCode})`);
+
+    // And the credential really is dead, not merely disconnected.
+    const again = await tryDeviceSocket(port, minted.body.token, 'to-remove');
+    assert.notStrictEqual(again.upgraded && !again.closedCode, true,
+      'the removed device could attach again with the same token');
+    try { conn.socket && conn.socket.destroy(); } catch { /* gone */ }
+  });
+
+  await checkAsync('removing a device that is not connected explains itself, rather than lying', async () => {
+    // There is no credential to revoke, so reporting success would be a
+    // removal that removed nothing.
+    const r = await api(port, '/api/devices/never-here/revoke', userToken, { method: 'POST' });
+    assert.ok(r.status === 404 || r.status === 409, `expected a refusal, got ${r.status}`);
+    assert.ok(r.body.error, 'refused with no explanation');
+  });
+
+  await checkAsync('one person cannot remove another person\'s device', async () => {
+    const other = auth.mintDevToken('t9', 'u9', 'somebody else');
+    const r = await api(port, '/api/devices/to-remove/revoke', other, { method: 'POST' });
+    assert.strictEqual(r.status, 404, 'a device was removable from outside its own partition');
+  });
+
   await svc.close();
   fs.rmSync(TEST_HOME, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);

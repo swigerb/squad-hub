@@ -118,9 +118,23 @@ const MUTATIONS = [
     // such rather than claimed as a single check.
     name: 'a control route trusts the device id without checking ownership',
     file: 'src/service/hub-service.js',
-    find: `      const device = this.store.getDevice(me.key, deviceId);`,
-    replace: `      const device = process.env.MUTANT ? { presence: 'online' } : this.store.getDevice(me.key, deviceId); // MUTATION`,
+    find: `      const body = await readJson(req);
+      const device = this.store.getDevice(me.key, deviceId);`,
+    replace: `      const body = await readJson(req);
+      const device = process.env.MUTANT ? { presence: 'online' } : this.store.getDevice(me.key, deviceId); // MUTATION`,
     mustFail: 'the refusal does not reveal that the device exists',
+  },
+  {
+    // Removing a device is the answer to "I cannot reach that machine". A
+    // revocation the live socket never hears is a record, not an enforcement:
+    // the device would keep heartbeating and accepting commands until it
+    // happened to reconnect, which is exactly the case that does not arise for
+    // a machine you have lost.
+    name: 'removing a device revokes the credential but leaves the socket up',
+    file: 'src/service/hub-service.js',
+    find: `      try { conn.close(1008, 'this device has been removed from the hub'); } catch { /* already gone */ }`,
+    replace: `      if (!process.env.MUTANT) { try { conn.close(1008, 'this device has been removed from the hub'); } catch { /* already gone */ } } // MUTATION`,
+    mustFail: 'REMOVING A DEVICE REVOKES ITS TOKEN AND DROPS IT, in one action',
   },
   {
     // The second layer. Breaking BOTH is what an actual cross-user breach
@@ -2414,8 +2428,16 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // person erase another's record of what ran.
     name: 'forget skips the device-ownership check',
     file: 'src/service/hub-service.js',
-    find: `      if (!device) return send(404, { error: 'no such device' });`,
-    replace: `      if (!device && !(process.env.MUTANT && op === 'forget')) return send(404, { error: 'no such device' }); // MUTATION`,
+    find: `      const body = await readJson(req);
+      const device = this.store.getDevice(me.key, deviceId);
+      // Not 403: revealing the difference between "not yours" and "does not
+      // exist" is itself a disclosure.
+      if (!device) return send(404, { error: 'no such device' });`,
+    replace: `      const body = await readJson(req);
+      const device = this.store.getDevice(me.key, deviceId);
+      // Not 403: revealing the difference between "not yours" and "does not
+      // exist" is itself a disclosure.
+      if (!device && !(process.env.MUTANT && op === 'forget')) return send(404, { error: 'no such device' }); // MUTATION`,
     mustFail: "forgetting sessions on another user's device is refused",
   },
   {

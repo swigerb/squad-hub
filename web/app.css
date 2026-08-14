@@ -548,6 +548,9 @@ select option:checked {
 .device-meta { color: var(--faint); font-size: 12px; }
 .add { background: transparent; border: 1px solid var(--line); color: var(--dim);
   border-radius: 8px; width: 28px; height: 28px; cursor: pointer; }
+/* Removing a device revokes its credential and cannot be undone from here, so
+   it does not look like the button beside it that merely starts a session. */
+.add.danger:hover { border-color: var(--danger, #f85149); color: var(--danger, #f85149); }
 .add:hover { color: var(--text); background: var(--panel-2); }
 
 /* A cloud device is on-demand and always available, so it is marked as such

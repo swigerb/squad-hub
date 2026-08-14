@@ -191,6 +191,46 @@ and whether it is revoked. There is no endpoint that returns a token.
 
 Revoke one, immediately and for every purpose. `404` if it is not in your view.
 
+**Any device currently holding that token is disconnected**, with a `1008` close
+and a reason it can log. Recording a revocation is not enforcing one: a socket is
+authorised at the upgrade and never re-checked, so without this a revoked device
+would keep heartbeating, publishing sessions and accepting commands until it
+happened to reconnect — and the reasons to revoke a token are exactly the reasons
+you cannot go and stop the machine yourself.
+
+The response reports **which** devices were dropped, rather than a count:
+
+```json
+{ "revoked": "zs-AFWvlSQJrnhMT", "dropped": ["gaming-pc"] }
+```
+
+"Revoked, and nothing was connected" and "revoked, and I cut it off" are
+different answers to the question being asked.
+
+### `POST /api/devices/{id}/revoke`
+
+Remove a device: revoke the credential it is using, drop the connection, and
+delete its record — in one action. This is what the **×** on a device in the web
+app calls.
+
+Keyed on the device rather than on a token id, because that is the question
+somebody actually has ("remove my gaming PC"), and it means the hub never has to
+publish a `jti` on the device record for a UI control to work.
+
+```json
+{ "revoked": "zs-AFWvlSQJrnhMT", "deviceId": "gaming-pc", "removed": true }
+```
+
+- `404` — no such device in your view.
+- `409` — the device is not connected, so there is no credential to revoke here;
+  or it attached before this hub recorded which token each socket holds. Both
+  are honest outcomes and neither is a revocation, so neither reports success.
+
+**This is not `forget`.** `forget` removes the hub's *record* of ended sessions
+and a live device simply republishes itself. This destroys the credential: the
+device cannot come back until somebody runs `squad-hub connect` on that machine
+with a new token.
+
 ## WebSocket
 
 `GET /ws?access_token=<token>&role=<watcher|device>`
