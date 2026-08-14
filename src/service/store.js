@@ -35,6 +35,40 @@ const TERMINAL = new Set(['done', 'failed', 'stopped']);
 const SESSION_LIST_FIELDS = ['pendingApprovals', 'expiredApprovals', 'answeredApprovals'];
 
 /**
+ * Bring one approval card up to the shape this hub's clients read.
+ *
+ * squad-hub 0.4.1 published a hooks approval as `{ id, options: [{ id, label }] }`.
+ * The UI keys the card on `approvalId` and each button on `optionId`, rendering
+ * `o.name || APPROVAL_LABEL[o.optionId] || o.optionId`. Against the older shape
+ * every one of those is undefined, so the card arrives as
+ * `<button data-answer=""></button>` -- no text and NO VALUE.
+ *
+ * The empty value is the dangerous half. `answer()` treats anything it does not
+ * recognise as a deny, so pressing the allow button on a card from an older
+ * device DENIES the tool. It fails in the safe direction, which is precisely
+ * why it survived a release.
+ *
+ * Renamed rather than dropped: the ids themselves ('allow_once', 'reject_once')
+ * are identical across versions, so the old card carries everything needed --
+ * it simply spells the keys differently.
+ */
+function normaliseApproval(card) {
+  if (!card || typeof card !== 'object') return card;
+  const c = { ...card };
+  if (!c.approvalId && c.id) c.approvalId = c.id;
+  if (Array.isArray(c.options)) {
+    c.options = c.options.map((o) => {
+      if (!o || typeof o !== 'object') return o;
+      const opt = { ...o };
+      if (!opt.optionId && opt.id) opt.optionId = opt.id;
+      if (!opt.name && opt.label) opt.name = opt.label;
+      return opt;
+    });
+  }
+  return c;
+}
+
+/**
  * Coerce a session published BY A DEVICE into the shape this hub's clients
  * expect.
  *
@@ -68,6 +102,12 @@ function normaliseSession(session) {
       s[`${f}Count`] = Number.isFinite(n) ? n : 0;
       s[f] = [];
     }
+  }
+  // The cards INSIDE those lists need the same treatment. Normalising the list
+  // and not its contents is how a fix for the shape of a payload misses the
+  // shape of the things in it -- which is exactly what shipped last time.
+  for (const f of SESSION_LIST_FIELDS) {
+    if (Array.isArray(s[f])) s[f] = s[f].map(normaliseApproval);
   }
   return s;
 }

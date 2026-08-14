@@ -904,12 +904,20 @@ const APPROVAL_LABEL = {
  */
 function approvalOptions(approval) {
   const offered = (approval && approval.options) || [];
-  return offered.map((o) => ({
-    optionId: o.optionId,
-    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,
-    danger: o.optionId === 'reject_once',
-    standing: o.optionId === 'allow_always',
-  }));
+  return offered.map((o) => {
+    // An older device spells these `id`/`label`. The store normalises on
+    // ingest, but reading both here means one out-of-date device cannot render
+    // a card with no text and -- worse -- no VALUE, which `answer()` would
+    // treat as a deny. A button that denies when it says allow is the failure
+    // mode worth two lines of defence.
+    const optionId = o.optionId || o.id;
+    return {
+      optionId,
+      label: o.name || o.label || APPROVAL_LABEL[optionId] || optionId,
+      danger: optionId === 'reject_once',
+      standing: optionId === 'allow_always',
+    };
+  });
 }
 
 /**

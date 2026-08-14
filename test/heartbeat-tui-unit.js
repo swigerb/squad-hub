@@ -410,5 +410,49 @@ check('THE UI ITSELF SURVIVES A NUMBER, so no single device can blank the page',
     `these still trust the device's shape and would throw on a count: ${(risky || []).join(', ')}`);
 });
 
+check('AN OLD DEVICE\'S APPROVAL CARD STILL RENDERS A WORKING BUTTON', () => {
+  // squad-hub 0.4.1 published `{ id, options: [{ id, label }] }`. The UI keys
+  // the card on approvalId and each button on optionId, rendering
+  // `o.name || APPROVAL_LABEL[o.optionId] || o.optionId` -- all undefined
+  // against the old shape, so the card arrived as
+  // `<button data-answer=""></button>`: no text, and NO VALUE.
+  //
+  // The empty value is the dangerous half. `answer()` treats anything it does
+  // not recognise as a deny, so pressing ALLOW on a card from an older device
+  // DENIED the tool. Safe direction, which is why it survived a release.
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqcard-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'an ACA watcher on 0.4.1' });
+  s.syncSessions('me', 'dev1', [{
+    id: 't002',
+    status: 'waiting_approval',
+    supervision: 'hooks',
+    pendingApprovals: [{
+      id: 'a-123',
+      title: 'Run bash',
+      toolName: 'bash',
+      options: [{ id: 'allow_once', label: 'Allow once' }, { id: 'reject_once', label: 'Deny' }],
+    }],
+  }]);
+
+  const [rec] = s.listSessions('me', { deviceId: 'dev1' });
+  const [card] = rec.pendingApprovals;
+  assert.strictEqual(card.approvalId, 'a-123', 'the card has no approvalId, so /api/approve cannot key on it');
+  for (const o of card.options) {
+    assert.ok(o.optionId, `an option reached the UI with no optionId: ${JSON.stringify(o)}`);
+    assert.ok(o.name, `option ${o.optionId} reached the UI with no name, so its button renders blank`);
+  }
+  const allow = card.options.find((o) => o.optionId === 'allow_once');
+  assert.ok(allow, 'there is no allow option, so the card cannot be approved at all');
+  assert.strictEqual(allow.name, 'Allow once');
+});
+
+check('THE UI READS BOTH SPELLINGS, so no single device can render a dead button', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  assert.match(src, /const optionId = o\.optionId \|\| o\.id;/,
+    'web/app.js reads only the current option spelling');
+  assert.match(src, /o\.name \|\| o\.label \|\|/,
+    'web/app.js reads only the current label spelling');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

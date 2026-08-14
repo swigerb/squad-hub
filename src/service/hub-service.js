@@ -860,7 +860,38 @@ class HubService {
       // Not 403: revealing the difference between "not yours" and "does not
       // exist" is itself a disclosure.
       if (!done) return send(404, { error: 'no such device token' });
-      return send(200, { revoked: jti });
+
+      /**
+       * Now DISCONNECT whatever is holding it.
+       *
+       * Recording the revocation is not enforcing it. `auth.verify()` is called
+       * once, at the WebSocket upgrade, so without this a revoked device stays
+       * connected until it happens to reconnect -- and the reasons to revoke a
+       * token are exactly the reasons you cannot go and stop the machine
+       * yourself.
+       *
+       * Scoped to the caller's own partition, like the revoke above: dropping
+       * sockets across partitions would let one person kill another person's
+       * devices.
+       */
+      const dropped = [];
+      const mine = this._devices.get(me.key);
+      if (mine) {
+        for (const [deviceId, conn] of [...mine]) {
+          if (!conn || conn.deviceTokenJti !== jti) continue;
+          // 1008 (policy violation) with a reason the device will log, so it
+          // reports why it was refused instead of retrying in silence.
+          try { conn.close(1008, 'this device token has been revoked'); } catch { /* already gone */ }
+          mine.delete(deviceId);
+          dropped.push(deviceId);
+          this._broadcast(me.key, { type: 'device-disconnected', deviceId });
+        }
+      }
+      // `dropped` is reported, not inferred from a count. A caller who revokes
+      // a token wants to know whether anything was actually disconnected --
+      // "revoked, and nothing was connected" and "revoked, and I cut it off"
+      // are different answers to the question they were asking.
+      return send(200, { revoked: jti, dropped });
     }
 
     // Control operations, all routed to a device the caller owns.
@@ -1120,6 +1151,15 @@ class HubService {
     if (!this._devices.has(me.key)) this._devices.set(me.key, new Map());
     const existing = this._devices.get(me.key).get(deviceId);
     if (existing && existing !== conn) existing.close(1000);
+    // Remember WHICH credential this socket is holding.
+    //
+    // Without it, revoking a device token recorded the revocation and did
+    // nothing else: `auth.verify()` runs once, at this upgrade, and a live
+    // socket is never re-checked. A revoked device kept heartbeating,
+    // publishing sessions and accepting commands until it happened to
+    // reconnect -- which for a lost laptop or a runaway container is the one
+    // case where revoking is the only thing you can do.
+    conn.deviceTokenJti = me.jti || null;
     this._devices.get(me.key).set(deviceId, conn);
 
     conn.on('message', (msg) => this._fromDevice(me, deviceId, msg));
