@@ -42,6 +42,13 @@ const { resolveSquadDoc, listSquadDocs, readFileSafe } = require('./squad-contex
  */
 const SQUAD_DOC_LIMIT = 256 * 1024;
 
+/** A promise-based wait, used only by the (bounded, watched-only) steer hold.
+ * NOT unref'd, matching `requestApproval`'s timer -- the process must stay
+ * alive for as long as somebody is waiting on this promise to settle. */
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
 /**
  * The statuses a session never comes back from.
  *
@@ -134,6 +141,34 @@ class Daemon extends EventEmitter {
     this.hookApprovalTimeoutMs = Number(
       opts.hookApprovalTimeoutMs || process.env.SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS || 120 * 1000,
     );
+
+    /**
+     * `agentStop`'s hold, paid ONLY on a session someone was recently
+     * confirmed to be watching -- see `_handleAgentStop` and
+     * `TuiSession.isWatched()`. Measured (see the PR this shipped in): a flat
+     * hold on every turn end is a tax charged to sessions nobody is steering,
+     * which is the regression the owner's review named. Short by design: this
+     * is the window that turns "the steer arrived after the turn ended" into
+     * "the steer arrived during the wait", not a general-purpose delay.
+     */
+    this.steerHoldMs = Number(opts.steerHoldMs || process.env.SQUAD_HUB_STEER_HOLD_MS || 3000);
+    this.steerPollMs = Number(opts.steerPollMs || process.env.SQUAD_HUB_STEER_POLL_MS || 200);
+    /** How recent a `control-check` has to be to count as "being watched". */
+    this.steerWatchWindowMs = Number(
+      opts.steerWatchWindowMs || process.env.SQUAD_HUB_STEER_WATCH_WINDOW_MS || 30 * 1000,
+    );
+    /**
+     * The runaway guard. Copilot's OWN guard gives up after 8 consecutive
+     * forced turns; this must self-limit BELOW that, so the product's own
+     * ceiling is what a person sees, never the CLI's. Clamped rather than
+     * merely defaulted -- an operator setting this above 7 is one deploy away
+     * from re-creating exactly the runaway the CLI's own guard exists to stop.
+     */
+    this.steerMaxForcedTurns = Math.min(
+      7,
+      Number(opts.steerMaxForcedTurns || process.env.SQUAD_HUB_STEER_MAX_FORCED_TURNS || 7) || 7,
+    );
+
     this.beats = 0;
     this.server = null;
     this._timer = null;
@@ -935,6 +970,12 @@ class Daemon extends EventEmitter {
         if (terminal.includes(s.status)) {
           return { controllable: false, sessionId: s.id, status: s.status, reason: `the session is ${s.status}` };
         }
+        // A confirmed "somebody is looking at this session right now" signal
+        // -- the composer calls this when its detail panel opens. Used only
+        // to decide whether `agentStop` may hold briefly for a steer that has
+        // not arrived yet (see `_handleAgentStop`); it is never a promise of
+        // continuous watching, only the most recent proof the hub has.
+        if (typeof s.markWatched === 'function') s.markWatched();
         return { controllable: true, sessionId: s.id, status: s.status, pid: s.pid };
       }
       case 'resync': {
@@ -1028,19 +1069,42 @@ class Daemon extends EventEmitter {
         // fire-and-forget: an unregistered session is reported back as such
         // rather than thrown, because the caller is a hook running inside
         // somebody's terminal and an error there costs them, not us.
+        //
+        // `agentStop` is deliberately NOT one of these any more -- it is
+        // carved out into its own op, `hook-agent-stop`, because it is the
+        // one event whose answer can force another turn (see
+        // `_handleAgentStop`). `noteIdle()` moved with it rather than being
+        // dropped; see the ceremony log (D-130-3) for why that distinction
+        // mattered enough to write down.
         const s = this.tuiSessionByCopilotId(req.sessionId);
         if (!s || s.ended) return { id: s ? s.id : null, noted: false };
 
         switch (req.event) {
           case 'userPromptSubmitted': s.notePrompt(req.prompt); break;
           case 'postToolUse': s.noteTool(req.toolName); break;
-          case 'agentStop': s.noteIdle(); break;
           default: s.touch(); break;
         }
         this.emit('session-status', { id: s.id, status: s.status });
         this._persistSessions();
         return { id: s.id, noted: true };
       }
+      /**
+       * `agentStop` fires when a watched session's turn ends. Copilot BLOCKS
+       * the session for as long as this takes, and returning
+       * `{ decision: "block", reason }` forces another turn using `reason` as
+       * the prompt -- measured against Copilot CLI 1.0.80 (see the Sprint 1
+       * findings on #130). That is the entire mechanism steering rests on.
+       *
+       * The hold below is the answer to the question Sprint 1 raised but did
+       * not have an environment to measure: is a steer that arrives AFTER a
+       * turn has already ended ever delivered? Yes, if this hook waits for it
+       * -- so it waits, but ONLY on a session recently confirmed to be
+       * watched (`TuiSession.isWatched`), never as a flat tax on every turn
+       * end. A plain session nobody is steering pays for exactly one local
+       * IPC round trip and nothing else.
+       */
+      case 'hook-agent-stop':
+        return this._handleAgentStop(req);
       case 'stop-session': {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
@@ -1098,7 +1162,16 @@ class Daemon extends EventEmitter {
         if (!r.ok) {
           throw Object.assign(new Error(r.reason || 'this session is not accepting input'), { code: 'NOT_STEERABLE' });
         }
-        return { sent: true };
+        this.emit('session-status', { id: s.id, status: s.status });
+        this._persistSessions();
+        // `queued` never becomes `sent` here. `AcpSession.steer()` owns the
+        // process and has already written the prompt over ACP by the time
+        // this resolves -- `sent` is true. `TuiSession.steer()` only ever
+        // enqueues; `sent` would be exactly the bug this sprint exists to fix
+        // (D-130-10, the `{sent:true}` bug in better wording) until an
+        // `agentStop` hook actually pops this entry -- see
+        // `_handleAgentStop`.
+        return r.queued ? { queued: true, position: r.position } : { sent: true };
       }
       case 'shutdown':
         setTimeout(() => this.shutdown(0), 20);
@@ -1108,6 +1181,82 @@ class Daemon extends EventEmitter {
       default:
         throw Object.assign(new Error(`unknown op: ${req.op}`), { code: 'UNKNOWN_OP' });
     }
+  }
+
+  /**
+   * `agentStop` fired. Decide, in one place, whether to force another turn.
+   *
+   * SESSION ISOLATION. `req.sessionId` is Copilot's own session id, and
+   * `tuiSessionByCopilotId` is a strict lookup against sessions THIS daemon
+   * registered through `sessionStart` -- there is no path from a payload to a
+   * queue entry that did not go through that registration first. `req.cwd` is
+   * checked against the cwd recorded at registration as a second, independent
+   * signal: a payload whose cwd does not match the session it claims to be
+   * cannot dequeue anything, so a sessionId collision or a tampered payload
+   * gains nothing.
+   *
+   * FAIL TOWARD THE HUMAN. Any failure to obtain a steer ends the turn --
+   * this method returns `{ decision: null }` in every case where forcing
+   * another turn is not clearly correct, and the CALLER (`cmdHook`) turns
+   * `decision: null` into no stdout at all, exactly as an unreachable daemon
+   * would. Ending a turn is not a grant.
+   */
+  async _handleAgentStop(req) {
+    const s = this.tuiSessionByCopilotId(req.sessionId);
+    if (!s || s.ended) return { decision: null };
+    if (s.cwd && req.cwd && s.cwd !== req.cwd) {
+      // The payload claims a session this daemon knows, but not the directory
+      // it was registered from. Treat it exactly like an unknown session --
+      // note nothing, dequeue nothing.
+      return { decision: null, mismatch: true };
+    }
+
+    s.noteIdle();
+    this.emit('session-status', { id: s.id, status: s.status });
+
+    // The runaway guard resets on an ordinary boundary: an agentStop that was
+    // NOT itself a continuation this daemon forced. `stop_hook_active` is
+    // Copilot's own signal for "this turn was already forced once" -- see the
+    // Sprint 1 findings on #130. Without this reset, one long-forced chain
+    // that legitimately ended would leave the counter primed against the
+    // NEXT, unrelated chain.
+    if (!req.stop_hook_active) s.consecutiveForcedTurns = 0;
+
+    // The cheap check the review asked for, before paying for a wait: only a
+    // session recently confirmed watched gets a hold at all. Everyone else is
+    // answered as fast as `hasQueuedSteer()` resolves -- one queue read, no
+    // sleep.
+    const watched = s.isWatched(this.steerWatchWindowMs);
+    const deadline = Date.now() + (watched ? this.steerHoldMs : 0);
+
+    for (;;) {
+      if (s.hasQueuedSteer()) {
+        if (s.consecutiveForcedTurns >= this.steerMaxForcedTurns) {
+          // The guard bites BELOW Copilot's own 8-block ceiling. This is an
+          // observable failure, not a silent stall: the session says why it
+          // stopped forcing turns, and how much is still queued.
+          s.steerGuardTripped = true;
+          s.touch(`steer paused: the runaway guard (max ${this.steerMaxForcedTurns}) was reached; `
+            + `${s.steerQueue.length} message(s) still queued`);
+          this.emit('session-status', { id: s.id, status: s.status });
+          this._persistSessions();
+          return { decision: null, guardTripped: true, queueLength: s.steerQueue.length };
+        }
+        const item = s.popSteer();
+        if (!item) break; // expired between hasQueuedSteer() and here -- fall through and end the turn
+        s.consecutiveForcedTurns += 1;
+        s.steerGuardTripped = false;
+        s.touch(`Steering: ${item.text.slice(0, 60)}`);
+        this.emit('session-status', { id: s.id, status: s.status });
+        this._persistSessions();
+        return { decision: 'block', reason: item.text };
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(Math.min(this.steerPollMs, deadline - Date.now()));
+    }
+
+    this._persistSessions();
+    return { decision: null };
   }
 }
 
@@ -1131,7 +1280,11 @@ class Daemon extends EventEmitter {
  */
 function normaliseControl(result) {
   if (result && typeof result === 'object') {
-    return { ok: !!result.ok, reason: result.reason || null };
+    // Spread first, then force `ok`/`reason` to the normalised shape: a
+    // steer's `queued`/`position` ride along so callers can tell an
+    // acceptance from an actual send, without every OTHER control result
+    // needing to know those keys exist.
+    return { ...result, ok: !!result.ok, reason: result.reason || null };
   }
   // A bare `undefined` from a void method (AcpSession.stop) means "done".
   if (result === undefined) return { ok: true, reason: null };

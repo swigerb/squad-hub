@@ -148,6 +148,25 @@ function withFakeGitHub(auth, port) {
     assert.strictEqual(p.isOwner, true);
   });
 
+  await checkAsync('the owner list also admits the numeric github:<id> form (F-2)', async () => {
+    // A login can be changed or reused by someone else; the numeric id
+    // cannot. `github:<id>` must be accepted as an alias for the same
+    // identity, and it must keep working across a rename -- the whole point
+    // of anchoring to the id instead of the mutable name.
+    const a = make({ owner: [`github:111`] });
+    const p = await a.verify(['Bear', 'er tok-owner'].join(''));
+    assert.strictEqual(p.isOwner, true, 'the numeric github:<id> owner form was not recognised');
+  });
+
+  await checkAsync('the github:<id> owner form survives a login rename', async () => {
+    const a = make({ owner: ['github:111'] });
+    const before = await a.verify(['Bear', 'er tok-owner'].join(''));
+    const after = await a.verify(['Bear', 'er tok-renamed'].join(''));
+    assert.strictEqual(before.isOwner, true);
+    assert.strictEqual(after.isOwner, true,
+      'renaming the GitHub account dropped ownership pinned by id (F-2)');
+  });
+
   await checkAsync('a GitHub identity NOT on the list is refused with 403', async () => {
     const a = make({ owner: ['owner-login'] });
     let err = null;

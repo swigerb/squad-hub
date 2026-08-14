@@ -879,6 +879,45 @@ async function cmdHook(argv) {
     }
   }
 
+  /**
+   * `agentStop` fired: the current turn just ended, and Copilot is BLOCKED
+   * on this hook's answer. This is the one event carved out of the generic
+   * branch below (D-130-3) because its answer can force another turn.
+   *
+   * Silent on EVERY failure path, deliberately unlike `preToolUse`: ending a
+   * turn is not a grant of anything, it just returns control to the person at
+   * the keyboard, which is where an unanswerable decision already goes. So a
+   * daemon that is unreachable, slow, or errors produces no stdout and no
+   * decision at all -- never a hang, never a forced turn nobody can explain.
+   */
+  if (event === 'agentStop') {
+    try {
+      const r = await client.call('hook-agent-stop', {
+        sessionId,
+        cwd: payload.cwd,
+        stop_hook_active: payload.stop_hook_active,
+      }, {
+        // Must comfortably exceed the daemon's own steer hold (3s default),
+        // which is only ever paid on a session recently confirmed watched --
+        // see daemon.js's `steerHoldMs`. An unwatched session answers almost
+        // immediately; this timeout exists for the watched case, not the
+        // common one.
+        timeoutMs: Number(process.env.SQUAD_HUB_STEER_IPC_TIMEOUT_MS) || 8000,
+      });
+      if (r && r.decision === 'block' && typeof r.reason === 'string' && r.reason) {
+        out(JSON.stringify({ decision: 'block', reason: r.reason }));
+      }
+      // Anything else -- no queued steer, a guard trip, a session mismatch --
+      // says nothing. No output is "let the turn end", the same answer an
+      // unreachable daemon gives.
+    } catch {
+      // The daemon could not be reached, timed out, or errored. No output:
+      // an unreachable daemon must not hold a session open, and it must not
+      // force a turn nobody can explain.
+    }
+    return 0;
+  }
+
   try {
     if (event === 'sessionStart') {
       const r = await client.call('hook-session-start', {
@@ -1111,6 +1150,27 @@ async function cmdServe(argv) {
     }
     err('Set SQUAD_HUB_OWNER to your own identities (object id, UPN or email).');
     err('');
+  }
+
+  // F-2 of the design review (.squad/decisions/inbox/lead-130-steer-design-
+  // review.md): in github mode, ownership was matched on a GitHub LOGIN --
+  // mutable, and reusable by someone else after it is freed -- while the
+  // partition itself is anchored to the numeric id, on the theory that an id
+  // cannot be taken over. Steering makes that gap worth closing: a login
+  // takeover used to buy someone else's session list, and now buys
+  // prompt-level control of the owner's machine. Not a breaking change --
+  // a login entry still works -- but worth a loud nudge toward the form that
+  // survives a login being freed and re-registered.
+  if (mode === MODES.GITHUB && auth.owner.length) {
+    const bareLogins = auth.owner.filter((o) => !/^(github:)?\d+$/.test(o) && !o.includes('@'));
+    if (bareLogins.length) {
+      err('');
+      err('*** WARNING: SQUAD_HUB_OWNER names a GitHub LOGIN, not a numeric id: ' + `${bareLogins.join(', ')} ***`);
+      err('A login can be changed, and a freed login can be claimed by someone else.');
+      err('The numeric id cannot. Prefer "github:<id>" (see docs/security.md), and');
+      err('keep the login only if you need this to keep working during a rename.');
+      err('');
+    }
   }
 
   // Loudly, at startup, because the symptom (devices appearing and vanishing)

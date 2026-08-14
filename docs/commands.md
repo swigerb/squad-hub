@@ -150,11 +150,15 @@ notice printed at launch says which of the two you just got.
 | Copilot's own TUI | no | **yes** |
 | Visible in the web Hub | **yes** | with hooks installed |
 | Approve from a phone | **yes** | with hooks installed |
-| Steer from the Hub | **yes** | no |
+| Steer from the Hub | **yes** | with hooks installed — **queued**, not sent |
 | Survives closing the terminal | **yes** | no |
 
-Steering is the one thing that does not come back: the daemon owns no process
-here, so it refuses with a reason rather than pretending.
+**Steering a `--tui` session is queued, not sent.** The daemon owns no process
+here, so it cannot write into the session directly — a steer is accepted onto
+a FIFO queue and reported `{"queued":true}`, and it becomes real only when the
+session's own `agentStop` hook consumes it and forces another turn. `{"sent"}`
+is never returned for this kind of session; see "Steering a watched session"
+below.
 
 ## `hooks`: let terminal sessions register themselves
 
@@ -222,10 +226,58 @@ and nothing is the one outcome that means "allow".
 
 ### What it still does not do
 
-The hub cannot steer a watched session or stop it — there is no process it owns.
-Both refuse with a reason rather than appearing to work. Sessions report
+The hub cannot **stop** a watched session — there is no process it owns, and
+it refuses with a reason rather than appearing to work. Sessions report
 `supervision: "hooks"` so a client can hide a Stop button instead of offering a
-broken one.
+broken one. That is unchanged by steering (see below): stopping a session is
+Sprint 3's problem, and building it is out of scope here.
+
+### Steering a watched session (#130)
+
+`agentStop` fires when a watched session's turn ends, and Copilot **blocks the
+session** for as long as the hook takes to answer — the same shape as
+`preToolUse`. Returning `{"decision":"block","reason":"..."}` forces another
+turn using `reason` as the prompt; this was measured live against Copilot CLI
+1.0.80 (see the findings on #130) and is the entire mechanism steering rests
+on.
+
+**A steer is `queued`, never `sent`, until a hook actually consumes it.**
+`POST /api/devices/{id}/steer` against a watched `--tui` session enqueues one
+message onto a FIFO queue the daemon holds per session and answers
+`{"queued":true,"position":n}`. It becomes `{"sent":true}` from nowhere — that
+status is never returned for a hooks-supervised session, because the daemon
+has no way to confirm delivery beyond "an `agentStop` hook popped this exact
+entry". Exactly one message is popped per turn; queued messages are never
+joined into one.
+
+**The hold is conditional, not a flat tax.** A steer that arrives after a turn
+has already ended can still be delivered — but only if the `agentStop` hook
+*waits* for it, and waiting on every turn end, whether or not anyone is
+steering, would make every session feel slower (measured: an unconditional
+25s poll added roughly that much wall-clock time to a task that otherwise
+took about seven seconds). So the hold is paid only on a session recently
+confirmed **watched** — today, "somebody's `control-check` landed in the last
+`SQUAD_HUB_STEER_WATCH_WINDOW_MS`" — and is `SQUAD_HUB_STEER_HOLD_MS` (default
+3s) at most. An unwatched session pays for one local IPC round trip and
+nothing else; see the PR that shipped this for the exact latency measurement.
+
+**A runaway guard self-limits below Copilot's own.** Copilot gives up forcing
+turns after 8 consecutive `block` decisions; this self-limits at
+`SQUAD_HUB_STEER_MAX_FORCED_TURNS` (default, and maximum, 7) so the product's
+own ceiling is what a person sees. Hitting it does not lose the remaining
+queued messages — they stay queued, the session's activity says so
+(`steerGuardTripped`, `steerQueueLength` in its JSON), and the next ordinary
+(unforced) turn boundary resets the count so a later, unrelated chain is not
+penalised for one that already ended.
+
+**Queued messages expire.** A message queued a long time ago, into a session
+that has since moved on, is not an instruction anyone still means — stale
+entries are dropped rather than delivered late.
+
+**On any failure to obtain a steer, the turn simply ends** — an unreachable
+daemon, a timeout, or a session/cwd mismatch all produce no hook output at
+all, identically to a plain session nobody is watching. Ending a turn is not a
+grant of anything.
 
 ### Installing is deliberate
 
@@ -897,6 +949,11 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
 | `SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS` | How long a **watched** (hook-supervised) session's tool call waits for an answer. Default 120s — much shorter than the TTL above, because an agent is blocked in somebody's terminal for the whole of it. When it expires the answer is `ask`, never `allow`. Must stay below the `preToolUse` `timeoutSec` in the installed hook file (300s); if Copilot gives up first the hook prints nothing, and nothing falls through to the session's own permission handling. |
 | `SQUAD_HUB_HOOK_IPC_TIMEOUT_MS` | How long the `squad-hub hook` shim waits for the daemon to answer an approval. Default 270s. Sits between the two above: longer than the daemon's wait so the daemon answers first, shorter than Copilot's so the shim always gets to print something. |
+| `SQUAD_HUB_STEER_HOLD_MS` | How long `agentStop` may hold a **watched** session (see "Steering a watched session" above) waiting for a queued steer to arrive. Default 3000ms. Paid only when the session was recently confirmed watched — never a flat cost on every turn end. |
+| `SQUAD_HUB_STEER_POLL_MS` | How often the hold above re-checks the queue while waiting. Default 200ms. |
+| `SQUAD_HUB_STEER_WATCH_WINDOW_MS` | How recent a `control-check` has to be for a session to count as "watched" and be eligible for the hold above. Default 30000ms. |
+| `SQUAD_HUB_STEER_MAX_FORCED_TURNS` | The runaway guard: the most consecutive turns the daemon will force by returning `block`. Clamped to at most 7 — strictly below Copilot's own 8-block guard — regardless of what this is set to. |
+| `SQUAD_HUB_STEER_IPC_TIMEOUT_MS` | How long the `squad-hub hook agentStop` shim waits for the daemon to answer. Default 8000ms; must exceed `SQUAD_HUB_STEER_HOLD_MS` with room to spare. |
 
 `--acp` is the protocol the daemon speaks to the agent, so the default argv is
 just that. `SQUAD_HUB_AGENT_ARGS` replaces it rather than adding to it, because

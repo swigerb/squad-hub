@@ -324,6 +324,15 @@ class Authenticator {
     // Entra returns.
     const candidates = [claims.oid, claims.sub, name, claims.preferred_username, claims.upn, claims.email]
       .filter(Boolean).map((c) => String(c).toLowerCase());
+    // The stable form, alongside whatever a login-based entry already matches
+    // (F-2 of the design review): a GitHub login can be changed or reused by
+    // someone else, the numeric id cannot, so `SQUAD_HUB_OWNER=github:12345`
+    // is accepted as an alias for the same identity even while a login is
+    // also listed for backward compatibility. This does not remove the login
+    // match -- see "the owner list admits by GitHub login" -- it gives anyone
+    // configuring a hub today a way to anchor ownership to something a login
+    // takeover cannot buy.
+    if (claims.tid === 'github' && claims.oid) candidates.push(`github:${claims.oid}`.toLowerCase());
 
     const isOwner = this.owner.length > 0 && candidates.some((c) => this.owner.includes(c));
 
