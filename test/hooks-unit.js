@@ -155,10 +155,15 @@ check('a watched session says so, rather than leaving it to be inferred', () => 
 
 check('STEER AND STOP REFUSE WITH A REASON, instead of appearing to work', () => {
   // A button that lies is worse than an absent one.
+  //
+  // The reason must also say what to do INSTEAD. "Cannot steer" alone reads as
+  // a fault; "type in that terminal" reads as a boundary. Matched on the
+  // redirection rather than the phrasing, so improving the wording does not
+  // fail a correct file.
   const s = session();
   for (const r of [s.steer(), s.stop()]) {
     assert.strictEqual(r.ok, false);
-    assert.ok(/watching, not driving/.test(r.reason), r.reason);
+    assert.ok(/that terminal/.test(r.reason), r.reason);
   }
 });
 

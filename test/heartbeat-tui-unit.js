@@ -190,5 +190,66 @@ check('a supervised session with no hub still never resolves to allow', () => {
     'the unreachable path can answer allow');
 });
 
+// ---------------------------------------------------------------------------
+// 3. A control that cannot work must SAY SO, not report success
+// ---------------------------------------------------------------------------
+
+const { normaliseControl } = require(path.join(__dirname, '..', 'src', 'daemon'));
+const { Store } = require(path.join(__dirname, '..', 'src', 'service', 'store'));
+
+check('A CONTROL RESULT IS READ THE SAME WHICHEVER SHAPE IT ARRIVES IN', () => {
+  // AcpSession.steer() returns a boolean; AcpSession.stop() returns nothing;
+  // TuiSession returns { ok: false, reason } so the UI can say WHY. An object
+  // is truthy, so `if (!ok)` read that refusal as SUCCESS -- steering a watched
+  // session answered { sent: true } and sent nothing.
+  assert.strictEqual(normaliseControl(true).ok, true, 'a boolean success became a refusal');
+  assert.strictEqual(normaliseControl(false).ok, false, 'a boolean refusal became a success');
+  assert.strictEqual(normaliseControl(undefined).ok, true, 'a void method became a refusal');
+  assert.strictEqual(normaliseControl({ ok: true }).ok, true);
+  assert.strictEqual(normaliseControl({ ok: false, reason: 'no' }).ok, false,
+    'AN OBJECT REFUSAL WAS READ AS SUCCESS -- every control on a watched session would lie');
+  assert.strictEqual(normaliseControl({ ok: false, reason: 'no' }).reason, 'no',
+    'the reason is dropped, so the UI can only say "failed"');
+});
+
+// ---------------------------------------------------------------------------
+// 4. A session that outlived its daemon can be cleared
+// ---------------------------------------------------------------------------
+
+function storeWithStuckSession() {
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqstore-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'Gaming PC' });
+  s.syncSessions('me', 'dev1', [
+    // The ghost: registered through hooks, then its daemon died. No sessionEnd
+    // ever arrives, so it stays "active" forever.
+    { id: 'ghost', status: 'active', supervision: 'hooks', cwd: 'C:\\work' },
+    { id: 'done', status: 'done', endedAt: Date.now() - 60000 },
+  ]);
+  return s;
+}
+
+check('an ordinary forget still leaves a running session alone', () => {
+  const s = storeWithStuckSession();
+  const r = s.forgetDeviceSessions('me', 'dev1', {});
+  assert.strictEqual(r.removed, 1, 'the finished session was not removed');
+  assert.strictEqual(r.kept, 1, 'a running session was removed without being asked');
+  assert.strictEqual(r.stuck, 1, 'the answer does not say a session was left behind');
+});
+
+check('A SESSION THAT OUTLIVED ITS DAEMON CAN BE CLEARED, when asked for', () => {
+  // Before this there was no way at all: forget skipped every non-terminal
+  // session, and a hooks session can only be ended by the daemon that
+  // registered it -- which is the thing that died.
+  const s = storeWithStuckSession();
+  const r = s.forgetDeviceSessions('me', 'dev1', { force: true });
+  assert.strictEqual(r.removed, 2, `a stuck session survived a forced forget: ${JSON.stringify(r)}`);
+  assert.strictEqual(s.listSessions('me', { deviceId: 'dev1' }).length, 0);
+});
+
+check('the answer counts what was stuck, so a caller can tell why nothing happened', () => {
+  const s = storeWithStuckSession();
+  assert.strictEqual(s.forgetDeviceSessions('me', 'dev1', {}).stuck, 1);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

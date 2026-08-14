@@ -303,14 +303,39 @@ class Store extends EventEmitter {
    *
    * @returns {{removed: number, kept: number}}
    */
-  forgetDeviceSessions(subject, deviceId, { olderThanMs } = {}) {
+  /**
+   * Remove the hub's record of a device's sessions.
+   *
+   * `force` also removes sessions that are still marked running. Normally that
+   * would be wrong -- a running session is not litter -- but a device with no
+   * live socket cannot be running anything, and a hooks-supervised session can
+   * only be ended by the daemon that registered it. When that daemon dies, no
+   * `sessionEnd` ever arrives and the row stays "active" forever, unforgettable
+   * and unfixable. That happened, and there was no way to clear it.
+   *
+   * Safe because removal is not authoritative: a device republishes its whole
+   * session list on every heartbeat. If the device was merely unreachable for a
+   * moment and the work is genuinely live, the row comes straight back. If it
+   * is really gone, it stays gone. The caller only has to be right about intent,
+   * not about the state of a machine they cannot see.
+   */
+  forgetDeviceSessions(subject, deviceId, { olderThanMs, force = false } = {}) {
     const b = this._bucket(subject);
     const now = Date.now();
     let removed = 0;
     let kept = 0;
+    let stuck = 0;
     for (const [key, s] of b.sessions) {
       if (s.deviceId !== deviceId) continue;
-      if (!TERMINAL.has(s.status)) { kept += 1; continue; }
+      if (!TERMINAL.has(s.status)) {
+        if (!force) { kept += 1; stuck += 1; continue; }
+        // Counted as well as removed, so the answer can say what it did rather
+        // than leaving a caller to infer it from a total.
+        stuck += 1;
+        b.sessions.delete(key);
+        removed += 1;
+        continue;
+      }
       if (Number.isFinite(olderThanMs) && olderThanMs > 0) {
         const at = s.endedAt || 0;
         if (!at || at > now - olderThanMs) { kept += 1; continue; }
@@ -319,7 +344,7 @@ class Store extends EventEmitter {
       removed += 1;
     }
     if (removed) this._persist(subject);
-    return { removed, kept };
+    return { removed, kept, stuck };
   }
 
   listSessions(subject, filter = {}) {
