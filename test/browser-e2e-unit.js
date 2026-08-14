@@ -70,6 +70,31 @@ async function until(fn, what, budgetMs = 15000) {
 }
 
 /**
+ * Navigate, tolerating a navigation that is already in flight.
+ *
+ * Playwright fails a `goto` that is "interrupted by another navigation", and
+ * the app legitimately navigates on its own -- the offline page reloads itself
+ * when the network returns, and a token in the URL is stripped by a replace.
+ * A test that lands mid-way through one of those fails describing a symptom
+ * belonging to the check before it, which is how two cache checks went red on
+ * main having passed on dev three seconds earlier.
+ *
+ * Retried rather than slept through: the second attempt runs once the page has
+ * stopped moving, and a genuine failure still fails, with its own message.
+ */
+async function gotoSettled(page, url) {
+  try {
+    return await page.goto(url);
+  } catch (e) {
+    if (!/interrupted by another navigation|Execution context was destroyed/i.test(String(e && e.message))) {
+      throw e;
+    }
+    try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch { /* busy is fine */ }
+    return page.goto(url);
+  }
+}
+
+/**
  * Wait until the page can genuinely reach the network again.
  *
  * `page.context().setOffline(false)` resolves before the browser can actually
@@ -102,6 +127,24 @@ async function waitUntilOnline(page, origin) {
     'the browser to be back online after the offline test',
     15000,
   );
+
+  // ...and then wait for the page to STOP moving.
+  //
+  // Reachable is not the same as settled. The offline page reloads itself the
+  // moment the network returns, so this could answer true while that reload was
+  // still in flight -- and the next check's `page.goto` was then "interrupted by
+  // another navigation", exactly the flake this helper was written to remove.
+  // It went red on main having passed on dev three seconds earlier.
+  //
+  // Waiting for the network to go idle is the difference between "the browser
+  // can reach the server" and "the browser is finished with what it was doing".
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 10000 });
+  } catch {
+    // A page that never reaches idle is not itself a failure -- a long-poll or
+    // an open socket will keep it busy forever. The check that follows will say
+    // so far more usefully than a timeout here.
+  }
 }
 
 /**
@@ -1023,7 +1066,7 @@ async function watchCsp(pg) {
        * while an agent sits blocked -- and on a shared hub it would be one
        * user's data outliving another's sign-out.
        */
-      await page.goto(`${origin}/?token=${userToken}`);
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
       await page.evaluate(() => fetch('/api/overview', { headers: { Authorization: 'Bearer x' } }).catch(() => null));
 

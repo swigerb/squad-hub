@@ -866,6 +866,132 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
       'existing deployments would break on upgrade');
   });
 
+  // ---- #138: revoking must DISCONNECT, not merely record -------------------
+  await checkAsync('REVOKING A DEVICE TOKEN DROPS THE SOCKET HOLDING IT', async () => {
+    // Recording a revocation is not enforcing one. `auth.verify()` runs once,
+    // at the upgrade, and a live socket was never re-checked -- so a revoked
+    // device kept heartbeating, publishing sessions and accepting commands
+    // until it happened to reconnect. The reasons to revoke a token (a lost
+    // laptop, a departed colleague, a runaway container, a token in a log) are
+    // exactly the reasons you cannot go and stop the machine yourself.
+    const minted = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'to be revoked', ttlHours: 1 },
+    });
+    assert.strictEqual(minted.status, 201, JSON.stringify(minted.body));
+
+    // Attach a real device socket and leave it open.
+    const live = await new Promise((resolve) => {
+      const key = crypto.randomBytes(16).toString('base64');
+      const p = `/ws?access_token=${encodeURIComponent(minted.body.token)}&role=device&deviceId=doomed`;
+      const req = http.request({
+        host: '127.0.0.1',
+        port,
+        path: p,
+        headers: {
+          Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13',
+        },
+      });
+      req.on('upgrade', (res, socket, head) => {
+        const conn = new WsConnection(socket);
+        if (head && head.length) conn._onData(head);
+        resolve(conn);
+      });
+      req.on('response', () => resolve(null));
+      req.on('error', () => resolve(null));
+      req.end();
+    });
+    assert.ok(live, 'the device could not attach, so this proves nothing');
+
+    // Give the hub a moment to record the attachment.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const revoked = await api(port, `/api/device-tokens/${encodeURIComponent(minted.body.jti)}`, userToken, {
+      method: 'DELETE',
+    });
+    assert.strictEqual(revoked.status, 200, JSON.stringify(revoked.body));
+    assert.deepStrictEqual(revoked.body.dropped, ['doomed'],
+      `revoking recorded the revocation but left the device connected: ${JSON.stringify(revoked.body)}`);
+
+    // And the socket really closed, with a reason the device can log.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(live.closeCode, 1008, `the socket was not closed (code ${live.closeCode})`);
+    assert.match(String(live.closeReason || ''), /revoked/i, `no usable reason: ${live.closeReason}`);
+    try { live.socket && live.socket.destroy(); } catch { /* gone */ }
+  });
+
+  await checkAsync('revoking a token nothing is holding says so, rather than pretending', async () => {
+    const minted = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'never used', ttlHours: 1 },
+    });
+    const revoked = await api(port, `/api/device-tokens/${encodeURIComponent(minted.body.jti)}`, userToken, {
+      method: 'DELETE',
+    });
+    assert.strictEqual(revoked.status, 200);
+    assert.deepStrictEqual(revoked.body.dropped, [],
+      'a token nobody was using reported dropping something');
+  });
+
+  await checkAsync('REMOVING A DEVICE REVOKES ITS TOKEN AND DROPS IT, in one action', async () => {
+    // The question a person actually has is "remove my gaming PC", not "revoke
+    // token abc123". Keying on the device also means the hub never has to
+    // publish a jti on the device record to make a UI control work.
+    const minted = await api(port, '/api/device-tokens', userToken, {
+      method: 'POST', body: { label: 'ui removal', ttlHours: 1 },
+    });
+    const conn = await new Promise((resolve) => {
+      const key = crypto.randomBytes(16).toString('base64');
+      const req = http.request({
+        host: '127.0.0.1',
+        port,
+        path: `/ws?access_token=${encodeURIComponent(minted.body.token)}&role=device&deviceId=to-remove`,
+        headers: {
+          Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13',
+        },
+      });
+      req.on('upgrade', (res, socket, head) => {
+        const c = new WsConnection(socket);
+        if (head && head.length) c._onData(head);
+        resolve(c);
+      });
+      req.on('response', () => resolve(null));
+      req.on('error', () => resolve(null));
+      req.end();
+    });
+    assert.ok(conn, 'the device could not attach, so this proves nothing');
+    // A real device registers itself after attaching; without that the hub has
+    // a socket but no device record, which is a different state entirely.
+    conn.sendJson({ type: 'register', device: { name: 'a device to remove', platform: 'linux' } });
+    await new Promise((r) => setTimeout(r, 250));
+
+    const r = await api(port, '/api/devices/to-remove/revoke', userToken, { method: 'POST' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.revoked, minted.body.jti, 'a different token was revoked');
+    assert.strictEqual(r.body.removed, true, 'the device record survived its own removal');
+
+    await new Promise((r2) => setTimeout(r2, 200));
+    assert.strictEqual(conn.closeCode, 1008, `the socket stayed open (code ${conn.closeCode})`);
+
+    // And the credential really is dead, not merely disconnected.
+    const again = await tryDeviceSocket(port, minted.body.token, 'to-remove');
+    assert.notStrictEqual(again.upgraded && !again.closedCode, true,
+      'the removed device could attach again with the same token');
+    try { conn.socket && conn.socket.destroy(); } catch { /* gone */ }
+  });
+
+  await checkAsync('removing a device that is not connected explains itself, rather than lying', async () => {
+    // There is no credential to revoke, so reporting success would be a
+    // removal that removed nothing.
+    const r = await api(port, '/api/devices/never-here/revoke', userToken, { method: 'POST' });
+    assert.ok(r.status === 404 || r.status === 409, `expected a refusal, got ${r.status}`);
+    assert.ok(r.body.error, 'refused with no explanation');
+  });
+
+  await checkAsync('one person cannot remove another person\'s device', async () => {
+    const other = auth.mintDevToken('t9', 'u9', 'somebody else');
+    const r = await api(port, '/api/devices/to-remove/revoke', other, { method: 'POST' });
+    assert.strictEqual(r.status, 404, 'a device was removable from outside its own partition');
+  });
+
   await svc.close();
   fs.rmSync(TEST_HOME, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);

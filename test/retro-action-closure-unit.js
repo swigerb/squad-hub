@@ -34,7 +34,17 @@ function check(name, fn) {
 function issueOpenedForRun(runId, overrides = {}) {
   return {
     number: 1,
-    state: 'open',
+    // WHAT `gh issue list --json state` ACTUALLY RETURNS: "OPEN", uppercase.
+    //
+    // This fixture said 'open', and so did every other case here. The filter
+    // compared exactly against 'open', so it rejected every real issue and
+    // closed nothing -- silently, exiting 0. The suite was green throughout,
+    // because the suite was the only place lowercase ever appeared.
+    //
+    // A fixture that does not match the source it stands in for is not a test
+    // of anything. Left uppercase deliberately: if the comparison is ever made
+    // exact again, these go red.
+    state: 'OPEN',
     labels: ['retro-action'],
     body: [`some report body`, '', `Record: ${markerFor(runId)}`].join('\n'),
     ...overrides,

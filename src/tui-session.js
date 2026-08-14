@@ -130,8 +130,40 @@ class TuiSession {
     this.applied = null;
 
     this.pendingApprovals = new Map();
-    this.expiredApprovals = 0;
-    this.answeredApprovals = 0;
+    /**
+     * ARRAYS, because that is what `AcpSession` publishes and what everything
+     * downstream expects. These were counters, and the difference broke the web
+     * UI outright: `lastApprovalOutcome` does `(s.expiredApprovals || []).map`,
+     * which on a number throws `.map is not a function` -- inside `render()`,
+     * so the WHOLE session list stopped drawing, not just this row.
+     *
+     * That is the fourth thing this class has broken by publishing a shape of
+     * its own invention rather than the one the collection already agreed on.
+     * See the contract test in test/heartbeat-tui-unit.js, which now compares
+     * the two payloads field by field so a fifth cannot happen quietly.
+     */
+    this.expiredApprovals = [];
+    this.answeredApprovals = [];
+
+    /**
+     * What this session has been seen doing, in the same shape the daemon's
+     * transcript reader expects: `{ seq, at, update }`, oldest first.
+     *
+     * Without it, opening a watched session in the hub answered "could not load
+     * the transcript: Cannot read properties of undefined (reading 'filter')" --
+     * `_transcriptSince` reads `s.transcript` and there was none.
+     */
+    this.transcript = [];
+    this._nextSeq = 1;
+    this._transcriptCap = 500;
+  }
+
+  /** Record one line of what happened, for the hub to show. */
+  _note(update) {
+    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update });
+    if (this.transcript.length > this._transcriptCap) {
+      this.transcript.splice(0, this.transcript.length - this._transcriptCap);
+    }
   }
 
   /**
@@ -184,6 +216,7 @@ class TuiSession {
     const clean = typeof text === 'string' ? text.trim() : '';
     if (!this.prompt && clean) this.prompt = clean.slice(0, 2000);
     this.status = STATUS.ACTIVE;
+    this._note({ kind: 'user', text: clean.slice(0, 2000) });
     this.touch(clean ? `Working on: ${clean.slice(0, 60)}` : 'Working');
   }
 
@@ -191,6 +224,7 @@ class TuiSession {
   noteTool(toolName) {
     this.toolCallCount += 1;
     this.status = STATUS.ACTIVE;
+    this._note({ kind: 'tool', text: toolName ? `ran ${toolName}` : 'ran a tool' });
     this.touch(toolName ? `Running ${toolName}` : 'Running a tool');
   }
 
@@ -198,6 +232,7 @@ class TuiSession {
   noteIdle() {
     if (this.ended) return;
     this.status = STATUS.ACTIVE;
+    this._note({ kind: 'agent', text: 'finished a turn' });
     this.touch('Awaiting your reply');
   }
 
@@ -219,9 +254,17 @@ class TuiSession {
     // 'ask' rather than left to time out: the agent is blocked in a terminal
     // that is closing, and the local keyboard is the only place a decision can
     // still come from.
-    this.expiredApprovals += this.pendingApprovals.size;
     for (const p of this.pendingApprovals.values()) {
+      this.expiredApprovals.push({
+        approvalId: p.approvalId,
+        title: p.title || 'a tool call',
+        requestedAt: p.requestedAt || null,
+        expiredAt: Date.now(),
+      });
       if (typeof p._settle === 'function') p._settle('ask');
+    }
+    if (this.expiredApprovals.length > 20) {
+      this.expiredApprovals.splice(0, this.expiredApprovals.length - 20);
     }
     this.pendingApprovals.clear();
   }
@@ -358,23 +401,37 @@ class TuiSession {
       // answer, and no answer is the one outcome that falls through to
       // permission. The wait must be something that keeps the process alive.
       const timer = setTimeout(() => {
-        this.expiredApprovals += 1;
+        this.expiredApprovals.push({
+          approvalId,
+          title: toolName ? `Run ${toolName}` : 'a tool call',
+          requestedAt: now,
+          expiredAt: Date.now(),
+        });
+        if (this.expiredApprovals.length > 20) this.expiredApprovals.shift();
         settle('ask');
       }, timeoutMs);
 
       this.pendingApprovals.set(approvalId, {
-        id: approvalId,
+        // `approvalId`, not `id`. The web UI and /api/approve both key on
+        // approvalId; `id` meant the buttons rendered with data-answer="" and
+        // an empty label -- and because `answer()` treats anything that is not
+        // recognisably an allow as a deny, CLICKING "ALLOW" DENIED THE TOOL.
+        // It failed in the safe direction, which is why nobody noticed sooner.
+        approvalId,
         sessionId: this.id,
         title: toolName ? `Run ${toolName}` : 'Run a tool',
         toolName: toolName || null,
+        command: typeof toolArgs === 'string' ? toolArgs.slice(0, 2000) : null,
         detail: typeof toolArgs === 'string' ? toolArgs.slice(0, 2000) : null,
+        requestedAt: now,
         createdAt: now,
         expiresAt: now + timeoutMs,
-        // The same option ids an ACP session offers, so the hub's existing
-        // approval UI and its /api/approve path work here with no special case.
+        // `optionId` and `name`, matching what AcpSession publishes: the UI
+        // renders `o.name || APPROVAL_LABEL[o.optionId] || o.optionId`, so a
+        // card using `id`/`label` produces a button with no text and no value.
         options: [
-          { id: 'allow_once', label: 'Allow once' },
-          { id: 'reject_once', label: 'Deny' },
+          { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'reject_once', name: 'Deny', kind: 'reject_once' },
         ],
         _settle: settle,
       });
@@ -396,9 +453,17 @@ class TuiSession {
     if (!pending) return false;
 
     const decision = optionId === 'allow_once' || optionId === 'allow_always' ? 'allow' : 'deny';
-    this.answeredApprovals += 1;
+    this.answeredApprovals.push({
+      approvalId,
+      title: pending.title || 'a tool call',
+      optionId,
+      answeredBy: answeredBy || 'someone',
+      answeredAt: Date.now(),
+    });
+    if (this.answeredApprovals.length > 20) this.answeredApprovals.shift();
     this.lastAnsweredBy = answeredBy || null;
     this.status = STATUS.ACTIVE;
+    this._note({ kind: 'agent', text: `${decision === 'allow' ? 'allowed' : 'denied'} ${pending.toolName || 'a tool'}` });
     this.touch(`${decision === 'allow' ? 'Allowed' : 'Denied'} ${pending.toolName || 'a tool'}`);
     pending._settle(decision);
     return true;
@@ -426,6 +491,12 @@ class TuiSession {
       expiredApprovals: this.expiredApprovals,
       answeredApprovals: this.answeredApprovals,
       resyncCount: 0,
+      // Present and null, not absent. The UI reads these on every session; a
+      // missing key and a null one are the same to JavaScript here, but the
+      // contract test compares field by field and an absent key is how the
+      // other four mismatches started.
+      squad: null,
+      git: null,
 
       /**
        * WHAT THE HUB MAY DO WITH THIS SESSION.

@@ -215,9 +215,25 @@ function activityLine(s) {
  * question -- "what happened to that card?" -- and showing both at once would
  * be two answers to it. The newest wins.
  */
+/**
+ * A list field from a session, whatever the device actually sent.
+ *
+ * `|| []` is not enough and that is the whole point: a COUNT is truthy, so an
+ * older device publishing `expiredApprovals: 3` sailed past the guard and threw
+ * `.map is not a function` -- inside render(), which stopped the entire UI from
+ * drawing and left the connection indicator stuck on "connecting".
+ *
+ * The store normalises this on ingest now. This stays anyway: a viewer that
+ * cannot survive one odd field from one device is a viewer that any device can
+ * take down.
+ */
+function asList(v) {
+  return Array.isArray(v) ? v : [];
+}
+
 function lastApprovalOutcome(s) {
-  const answered = ((s && s.answeredApprovals) || []).map((a) => ({ ...a, kind: 'answered', at: a.answeredAt }));
-  const expired = ((s && s.expiredApprovals) || []).map((a) => ({ ...a, kind: 'expired', at: a.expiredAt }));
+  const answered = asList(s && s.answeredApprovals).map((a) => ({ ...a, kind: 'answered', at: a.answeredAt }));
+  const expired = asList(s && s.expiredApprovals).map((a) => ({ ...a, kind: 'expired', at: a.expiredAt }));
   const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
   return all[0] || null;
 }
@@ -888,12 +904,20 @@ const APPROVAL_LABEL = {
  */
 function approvalOptions(approval) {
   const offered = (approval && approval.options) || [];
-  return offered.map((o) => ({
-    optionId: o.optionId,
-    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,
-    danger: o.optionId === 'reject_once',
-    standing: o.optionId === 'allow_always',
-  }));
+  return offered.map((o) => {
+    // An older device spells these `id`/`label`. The store normalises on
+    // ingest, but reading both here means one out-of-date device cannot render
+    // a card with no text and -- worse -- no VALUE, which `answer()` would
+    // treat as a deny. A button that denies when it says allow is the failure
+    // mode worth two lines of defence.
+    const optionId = o.optionId || o.id;
+    return {
+      optionId,
+      label: o.name || o.label || APPROVAL_LABEL[optionId] || optionId,
+      danger: optionId === 'reject_once',
+      standing: optionId === 'allow_always',
+    };
+  });
 }
 
 /**
@@ -1184,6 +1208,8 @@ function deviceCard(d) {
         ${meters}
       </div>
       <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
+      <button class="add danger" data-remove-device="${esc(d.deviceId)}"
+              title="Remove this device: revoke its token and disconnect it">&times;</button>
     </div>`;
 }
 
@@ -1409,10 +1435,10 @@ function maybePromptApproval() {
   const open = state.openApproval;
   if (open && !$('approvalScrim').hidden) {
     const stillPending = state.overview.groups.some((g) => g.sessions.some(
-      (s) => (s.pendingApprovals || []).some((a) => a.approvalId === open),
+      (s) => asList(s.pendingApprovals).some((a) => a.approvalId === open),
     ));
     const nowExpired = state.overview.groups.some((g) => g.sessions.some(
-      (s) => (s.expiredApprovals || []).some((a) => a.approvalId === open),
+      (s) => asList(s.expiredApprovals).some((a) => a.approvalId === open),
     ));
     // Answered somewhere else -- another browser, a phone, the CLI. The card
     // has to close and say who, or two people both think it is theirs to
@@ -2358,6 +2384,8 @@ function wire() {
   };
 
   $('deviceList').onclick = (e) => {
+    const rm = e.target.closest('[data-remove-device]');
+    if (rm) { removeDevice(rm.dataset.removeDevice); return; }
     const b = e.target.closest('[data-spawn]');
     if (b) openNew(b.dataset.spawn);
   };
@@ -2834,8 +2862,40 @@ function openConnect() {
   $('cnLabel').focus();
 }
 
-async function createDeviceToken() {
-  const btn = $('cnCreate');
+/**
+ * Remove a device: revoke the credential it is using, and cut it off.
+ *
+ * Confirmed first, and the confirmation says what is irreversible. Unlike
+ * "forget", which only removes a record and lets a live device republish
+ * itself, this destroys the credential -- the device cannot come back without
+ * being given a new token by hand, on the machine.
+ *
+ * That is the point: it exists for the laptop you cannot reach, the colleague
+ * who has left, the container that will not stop. But it is also why a
+ * mis-click here costs a trip to the machine, so it asks.
+ */
+async function removeDevice(deviceId) {
+  const d = (state.overview.devices || []).find((x) => x.deviceId === deviceId);
+  const name = (d && d.name) || deviceId;
+  if (!confirm(
+    `Remove "${name}" from this hub?\n\n`
+    + 'Its device token is revoked and the connection is dropped immediately.\n'
+    + 'It cannot reconnect: someone has to run `squad-hub connect` on that '
+    + 'machine with a new token.',
+  )) return;
+
+  try {
+    const r = await api(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, { method: 'POST' });
+    // Reported from the ANSWER, never from the request. A device that could not
+    // be revoked must not be announced as removed.
+    toast(r && r.removed ? `Removed ${name}` : `${name} was disconnected, but its record is still here`);
+  } catch (e) {
+    toast(`Could not remove ${name}: ${e.message}`);
+  }
+  refresh();
+}
+
+async function createDeviceToken() {  const btn = $('cnCreate');
   btn.disabled = true;
   btn.textContent = 'Creating…';
   $('cnErr').hidden = true;

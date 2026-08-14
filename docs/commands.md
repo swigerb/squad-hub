@@ -872,7 +872,35 @@ jobs cannot claim to be your laptop. Lifetimes are capped at 90 days.
 `SQUAD_HUB_USER_TOKEN` supplies `--token` when set, so a script does not have
 to put your credential on a command line where it lands in shell history.
 
+**Revoking disconnects.** A device holding a revoked token is dropped
+immediately, with a reason it logs — it does not stay connected until it happens
+to reconnect. That matters because the reasons to revoke a token are the reasons
+you cannot go and stop the machine: the laptop is lost, the colleague has left,
+the container will not stop, the token reached a log.
+
 See [security.md](security.md#device-tokens).
+
+## Removing a device
+
+Three different things, and it is worth knowing which one you want.
+
+| You want | Do this |
+|---|---|
+| Stop the daemon on a machine you can reach | `squad-hub stop`, on that machine |
+| Tidy away the record of sessions that have ended | The **⋯** menu in the web app, or `squad-hub forget` |
+| **Remove a device you cannot reach** | The **×** on the device in the web app |
+
+The **×** revokes the credential that device is using, drops the connection, and
+deletes its record — in one action. It asks first, because it cannot be undone
+from the hub: the device comes back only when somebody runs `squad-hub connect`
+on that machine with a new token.
+
+`forget` is not a substitute. It removes the hub's *record* of ended sessions,
+and it correctly refuses a device that is still reachable — a live device would
+simply republish itself on its next heartbeat. Running `squad-hub start` is not
+one either: that starts a daemon, it does not remove one. (It does clear a
+*ghost* — a session left behind by a daemon that died — because a fresh daemon
+publishes an empty list.)
 
 ## Access list backup
 

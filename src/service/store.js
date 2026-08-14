@@ -26,6 +26,92 @@ const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'off
  */
 const TERMINAL = new Set(['done', 'failed', 'stopped']);
 
+/**
+ * The list fields the web UI iterates on every render.
+ *
+ * Kept as a named list rather than inlined, so adding a field to the payload
+ * and forgetting to defend it is a visible omission rather than a silent one.
+ */
+const SESSION_LIST_FIELDS = ['pendingApprovals', 'expiredApprovals', 'answeredApprovals'];
+
+/**
+ * Bring one approval card up to the shape this hub's clients read.
+ *
+ * squad-hub 0.4.1 published a hooks approval as `{ id, options: [{ id, label }] }`.
+ * The UI keys the card on `approvalId` and each button on `optionId`, rendering
+ * `o.name || APPROVAL_LABEL[o.optionId] || o.optionId`. Against the older shape
+ * every one of those is undefined, so the card arrives as
+ * `<button data-answer=""></button>` -- no text and NO VALUE.
+ *
+ * The empty value is the dangerous half. `answer()` treats anything it does not
+ * recognise as a deny, so pressing the allow button on a card from an older
+ * device DENIES the tool. It fails in the safe direction, which is precisely
+ * why it survived a release.
+ *
+ * Renamed rather than dropped: the ids themselves ('allow_once', 'reject_once')
+ * are identical across versions, so the old card carries everything needed --
+ * it simply spells the keys differently.
+ */
+function normaliseApproval(card) {
+  if (!card || typeof card !== 'object') return card;
+  const c = { ...card };
+  if (!c.approvalId && c.id) c.approvalId = c.id;
+  if (Array.isArray(c.options)) {
+    c.options = c.options.map((o) => {
+      if (!o || typeof o !== 'object') return o;
+      const opt = { ...o };
+      if (!opt.optionId && opt.id) opt.optionId = opt.id;
+      if (!opt.name && opt.label) opt.name = opt.label;
+      return opt;
+    });
+  }
+  return c;
+}
+
+/**
+ * Coerce a session published BY A DEVICE into the shape this hub's clients
+ * expect.
+ *
+ * A DEVICE IS NOT THIS PROCESS. It runs whatever version of squad-hub was
+ * installed on that machine or baked into that image, it is upgraded on its
+ * owner's schedule rather than ours, and it may be older than the hub for
+ * months. So its payload is INPUT, not an invariant, and the hub is the only
+ * place that can make it safe for everyone reading it.
+ *
+ * This was learned the hard way. squad-hub 0.4.1 published `expiredApprovals`
+ * and `answeredApprovals` as COUNTERS for hooks-supervised sessions. The web UI
+ * does `((s && s.expiredApprovals) || []).map(...)` -- and a number is TRUTHY,
+ * so `|| []` never fires and `.map` throws. That happens inside `render()`, so
+ * one session published by one out-of-date device stopped the ENTIRE UI from
+ * drawing: no session list, and a connection indicator stuck on "connecting"
+ * forever because the render that would have cleared it never completed.
+ *
+ * Fixing the class that produced it (0.4.2) was necessary and nowhere near
+ * sufficient: every device already deployed still sends the old shape, and a
+ * hub that only works with current devices is not a hub.
+ */
+function normaliseSession(session) {
+  const s = { ...session };
+  for (const f of SESSION_LIST_FIELDS) {
+    if (f in s && !Array.isArray(s[f])) {
+      // A count is not nothing -- it says approvals happened -- but there is no
+      // honest way to reconstruct the entries it stood for. An empty list is
+      // the truthful answer to "which ones", and the count survives beside it
+      // for anything that wants to say "3 earlier approvals".
+      const n = Number(s[f]);
+      s[`${f}Count`] = Number.isFinite(n) ? n : 0;
+      s[f] = [];
+    }
+  }
+  // The cards INSIDE those lists need the same treatment. Normalising the list
+  // and not its contents is how a fix for the shape of a payload misses the
+  // shape of the things in it -- which is exactly what shipped last time.
+  for (const f of SESSION_LIST_FIELDS) {
+    if (Array.isArray(s[f])) s[f] = s[f].map(normaliseApproval);
+  }
+  return s;
+}
+
 class Store extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -230,7 +316,7 @@ class Store extends EventEmitter {
     const existing = b.sessions.get(key) || {};
     const rec = {
       ...existing,
-      ...session,
+      ...normaliseSession(session),
       key,
       deviceId,
       updatedAt: Date.now(),

@@ -251,5 +251,208 @@ check('the answer counts what was stuck, so a caller can tell why nothing happen
   assert.strictEqual(s.forgetDeviceSessions('me', 'dev1', {}).stuck, 1);
 });
 
+// ---------------------------------------------------------------------------
+// 5. THE CONTRACT. Four separate breakages came from one cause: this class
+//    publishing a shape of its own invention instead of the one the collection
+//    already agreed on. Compared field by field so a fifth cannot happen.
+// ---------------------------------------------------------------------------
+
+const { AcpSession } = require(path.join(__dirname, '..', 'src', 'acp-session'));
+
+/** An AcpSession payload, without spawning an agent. */
+function acpPayload() {
+  const a = Object.create(AcpSession.prototype);
+  Object.assign(a, {
+    id: 'a1',
+    pid: 1,
+    status: STATUS.ACTIVE,
+    activity: '',
+    cwd: '/x',
+    prompt: null,
+    startedAt: 0,
+    endedAt: null,
+    error: null,
+    agentInfo: null,
+    agentSelection: null,
+    applied: null,
+    toolCallCount: 0,
+    pendingApprovals: new Map(),
+    expiredApprovals: [],
+    answeredApprovals: [],
+    resyncCount: 0,
+    _stderr: '',
+    squadContext: () => null,
+    gitContext: () => null,
+  });
+  return a.toJSON();
+}
+
+function shapeOf(v) {
+  if (Array.isArray(v)) return 'array';
+  if (v === null) return 'null';
+  return typeof v;
+}
+
+check('A WATCHED SESSION PUBLISHES THE SAME SHAPE AS EVERY OTHER SESSION', () => {
+  // Each mismatch below was a real, separate outage:
+  //   expiredApprovals as a number -> `.map is not a function` inside render(),
+  //     which stopped the WHOLE session list from drawing
+  //   transcript missing         -> "could not load the transcript"
+  //   squad/git missing          -> read on every row
+  const a = acpPayload();
+  const t = tui().toJSON();
+  const wrong = [];
+  for (const k of Object.keys(a)) {
+    if (!(k in t)) {
+      if (a[k] === undefined) continue; // optional on both
+      wrong.push(`${k}: MISSING (Acp publishes ${shapeOf(a[k])})`);
+      continue;
+    }
+    const sa = shapeOf(a[k]);
+    const st = shapeOf(t[k]);
+    // null on either side is "absent-ish" and fine; a TYPE difference is not.
+    if (sa !== st && sa !== 'null' && st !== 'null') {
+      wrong.push(`${k}: Acp=${sa} Tui=${st}`);
+    }
+  }
+  assert.deepStrictEqual(wrong, [], `the payloads disagree:\n  ${wrong.join('\n  ')}`);
+});
+
+check('THE APPROVAL CARD USES THE FIELD NAMES THE UI ACTUALLY READS', () => {
+  // The UI renders `o.name || APPROVAL_LABEL[o.optionId] || o.optionId` and
+  // keys the button on optionId. A card using id/label rendered
+  // `<button data-answer="">` with NO TEXT -- and since `answer()` treats
+  // anything unrecognised as a deny, CLICKING "ALLOW" DENIED THE TOOL.
+  const s = tui();
+  const p = s.requestApproval({ approvalId: 'a1', toolName: 'bash', timeoutMs: 5000 });
+  const [card] = s.toJSON().pendingApprovals;
+  assert.ok(card.approvalId, 'the card has no approvalId, which /api/approve keys on');
+  for (const o of card.options) {
+    assert.ok(o.optionId, `an option has no optionId: ${JSON.stringify(o)}`);
+    assert.ok(o.name, `option ${o.optionId} has no name, so its button renders blank`);
+  }
+  const allow = card.options.find((o) => /allow/.test(o.optionId));
+  assert.ok(allow, 'there is no allow option at all');
+  s.answer('a1', allow.optionId);
+  return p.then((d) => {
+    assert.strictEqual(d, 'allow', 'CLICKING THE ALLOW BUTTON DID NOT ALLOW');
+  });
+});
+
+check('A WATCHED SESSION HAS A TRANSCRIPT THE HUB CAN READ', () => {
+  const s = tui();
+  s.notePrompt('do a thing');
+  s.noteTool('bash');
+  assert.ok(Array.isArray(s.transcript), 'no transcript array; the hub cannot open this session');
+  assert.ok(s.transcript.length >= 2, 'nothing was recorded');
+  for (const e of s.transcript) {
+    assert.ok(Number.isInteger(e.seq), `transcript entry has no seq: ${JSON.stringify(e)}`);
+    assert.ok(e.update, 'transcript entry has no update');
+  }
+  // The daemon reads it by seq. Proven here rather than assumed.
+  const since = s.transcript[0].seq;
+  assert.strictEqual(s.transcript.filter((e) => e.seq > since).length, s.transcript.length - 1);
+});
+
+check('AN OUT-OF-DATE DEVICE CANNOT TAKE DOWN THE WHOLE UI', () => {
+  // Reported live: every session stuck, and the connection indicator stuck on
+  // "connecting". Cause: squad-hub 0.4.1 published expiredApprovals /
+  // answeredApprovals as COUNTERS for hooks sessions, and the web UI does
+  // `((s && s.expiredApprovals) || []).map(...)`. A number is TRUTHY, so
+  // `|| []` never fires and `.map` throws -- inside render(), so nothing drew
+  // at all, and the indicator never cleared because the render that clears it
+  // never finished.
+  //
+  // Fixing the class that produced it was not enough: every device already
+  // deployed still sends the old shape. A hub that only works with current
+  // devices is not a hub.
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqold-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'an old ACA worker' });
+  s.syncSessions('me', 'dev1', [{
+    id: 'from-0-4-1',
+    status: 'active',
+    supervision: 'hooks',
+    // Exactly what squad-hub 0.4.1 publishes.
+    expiredApprovals: 3,
+    answeredApprovals: 2,
+    pendingApprovals: [],
+  }]);
+
+  const [rec] = s.listSessions('me', { deviceId: 'dev1' });
+  for (const f of ['expiredApprovals', 'answeredApprovals', 'pendingApprovals']) {
+    assert.ok(Array.isArray(rec[f]), `${f} reached a client as ${typeof rec[f]}; .map would throw in render()`);
+  }
+  // The count is not thrown away -- there is no honest way to rebuild the
+  // entries, but "3 earlier approvals" is still true and worth keeping.
+  assert.strictEqual(rec.expiredApprovalsCount, 3);
+  assert.strictEqual(rec.answeredApprovalsCount, 2);
+});
+
+check('a device sending the CURRENT shape is passed through untouched', () => {
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqnew-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'a current device' });
+  const answered = [{ approvalId: 'a1', answeredAt: 123 }];
+  s.syncSessions('me', 'dev1', [{ id: 'ok', status: 'active', answeredApprovals: answered, expiredApprovals: [] }]);
+  const [rec] = s.listSessions('me', { deviceId: 'dev1' });
+  assert.deepStrictEqual(rec.answeredApprovals, answered, 'a correct payload was altered');
+  assert.strictEqual(rec.answeredApprovalsCount, undefined, 'a count was invented for a device that sent a list');
+});
+
+check('THE UI ITSELF SURVIVES A NUMBER, so no single device can blank the page', () => {
+  // Belt and braces on purpose. The store normalises on ingest now, but a
+  // viewer that cannot survive one odd field from one device is a viewer any
+  // device can take down.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  assert.match(src, /function asList\(v\) \{\s*return Array\.isArray\(v\) \? v : \[\];/,
+    'web/app.js has no list coercion helper');
+  const risky = src.match(/\((?:s && s\.|s\.|a\.|b\.)(?:pending|expired|answered)Approvals \|\| \[\]\)\.(map|some|filter|forEach)\(/g);
+  assert.deepStrictEqual(risky || [], [],
+    `these still trust the device's shape and would throw on a count: ${(risky || []).join(', ')}`);
+});
+
+check('AN OLD DEVICE\'S APPROVAL CARD STILL RENDERS A WORKING BUTTON', () => {
+  // squad-hub 0.4.1 published `{ id, options: [{ id, label }] }`. The UI keys
+  // the card on approvalId and each button on optionId, rendering
+  // `o.name || APPROVAL_LABEL[o.optionId] || o.optionId` -- all undefined
+  // against the old shape, so the card arrived as
+  // `<button data-answer=""></button>`: no text, and NO VALUE.
+  //
+  // The empty value is the dangerous half. `answer()` treats anything it does
+  // not recognise as a deny, so pressing ALLOW on a card from an older device
+  // DENIED the tool. Safe direction, which is why it survived a release.
+  const s = new Store({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'sqcard-')), persist: false });
+  s.registerDevice('me', { id: 'dev1', name: 'an ACA watcher on 0.4.1' });
+  s.syncSessions('me', 'dev1', [{
+    id: 't002',
+    status: 'waiting_approval',
+    supervision: 'hooks',
+    pendingApprovals: [{
+      id: 'a-123',
+      title: 'Run bash',
+      toolName: 'bash',
+      options: [{ id: 'allow_once', label: 'Allow once' }, { id: 'reject_once', label: 'Deny' }],
+    }],
+  }]);
+
+  const [rec] = s.listSessions('me', { deviceId: 'dev1' });
+  const [card] = rec.pendingApprovals;
+  assert.strictEqual(card.approvalId, 'a-123', 'the card has no approvalId, so /api/approve cannot key on it');
+  for (const o of card.options) {
+    assert.ok(o.optionId, `an option reached the UI with no optionId: ${JSON.stringify(o)}`);
+    assert.ok(o.name, `option ${o.optionId} reached the UI with no name, so its button renders blank`);
+  }
+  const allow = card.options.find((o) => o.optionId === 'allow_once');
+  assert.ok(allow, 'there is no allow option, so the card cannot be approved at all');
+  assert.strictEqual(allow.name, 'Allow once');
+});
+
+check('THE UI READS BOTH SPELLINGS, so no single device can render a dead button', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  assert.match(src, /const optionId = o\.optionId \|\| o\.id;/,
+    'web/app.js reads only the current option spelling');
+  assert.match(src, /o\.name \|\| o\.label \|\|/,
+    'web/app.js reads only the current label spelling');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

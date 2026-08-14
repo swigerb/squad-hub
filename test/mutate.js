@@ -118,9 +118,23 @@ const MUTATIONS = [
     // such rather than claimed as a single check.
     name: 'a control route trusts the device id without checking ownership',
     file: 'src/service/hub-service.js',
-    find: `      const device = this.store.getDevice(me.key, deviceId);`,
-    replace: `      const device = process.env.MUTANT ? { presence: 'online' } : this.store.getDevice(me.key, deviceId); // MUTATION`,
+    find: `      const body = await readJson(req);
+      const device = this.store.getDevice(me.key, deviceId);`,
+    replace: `      const body = await readJson(req);
+      const device = process.env.MUTANT ? { presence: 'online' } : this.store.getDevice(me.key, deviceId); // MUTATION`,
     mustFail: 'the refusal does not reveal that the device exists',
+  },
+  {
+    // Removing a device is the answer to "I cannot reach that machine". A
+    // revocation the live socket never hears is a record, not an enforcement:
+    // the device would keep heartbeating and accepting commands until it
+    // happened to reconnect, which is exactly the case that does not arise for
+    // a machine you have lost.
+    name: 'removing a device revokes the credential but leaves the socket up',
+    file: 'src/service/hub-service.js',
+    find: `      try { conn.close(1008, 'this device has been removed from the hub'); } catch { /* already gone */ }`,
+    replace: `      if (!process.env.MUTANT) { try { conn.close(1008, 'this device has been removed from the hub'); } catch { /* already gone */ } } // MUTATION`,
+    mustFail: 'REMOVING A DEVICE REVOKES ITS TOKEN AND DROPS IT, in one action',
   },
   {
     // The second layer. Breaking BOTH is what an actual cross-user breach
@@ -1961,17 +1975,17 @@ const MUTATIONS = [
     name: 'Always allow is offered whether or not the agent proposed it',
     file: 'web/app.js',
     find: `  const offered = (approval && approval.options) || [];
-  return offered.map((o) => ({`,
+  return offered.map((o) => {`,
     replace: `  let offered = (approval && approval.options) || [];
   if (process.env.MUTANT && offered.length) offered = [...offered, { optionId: 'allow_always' }]; // MUTATION
-  return offered.map((o) => ({`,
+  return offered.map((o) => {`,
     mustFail: 'Always allow is NEVER invented when the agent did not offer it',
   },
   {
     name: 'an option the agent offered is dropped for having no known label',
     file: 'web/app.js',
-    find: `    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,`,
-    replace: `    label: o.name || APPROVAL_LABEL[o.optionId] || (process.env.MUTANT ? '' : o.optionId), // MUTATION`,
+    find: `      label: o.name || o.label || APPROVAL_LABEL[optionId] || optionId,`,
+    replace: `      label: o.name || o.label || APPROVAL_LABEL[optionId] || (process.env.MUTANT ? '' : optionId), // MUTATION`,
     mustFail: 'an option nobody has a label for is still shown, by its id',
   },
   {
@@ -2414,8 +2428,16 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // person erase another's record of what ran.
     name: 'forget skips the device-ownership check',
     file: 'src/service/hub-service.js',
-    find: `      if (!device) return send(404, { error: 'no such device' });`,
-    replace: `      if (!device && !(process.env.MUTANT && op === 'forget')) return send(404, { error: 'no such device' }); // MUTATION`,
+    find: `      const body = await readJson(req);
+      const device = this.store.getDevice(me.key, deviceId);
+      // Not 403: revealing the difference between "not yours" and "does not
+      // exist" is itself a disclosure.
+      if (!device) return send(404, { error: 'no such device' });`,
+    replace: `      const body = await readJson(req);
+      const device = this.store.getDevice(me.key, deviceId);
+      // Not 403: revealing the difference between "not yours" and "does not
+      // exist" is itself a disclosure.
+      if (!device && !(process.env.MUTANT && op === 'forget')) return send(404, { error: 'no such device' }); // MUTATION`,
     mustFail: "forgetting sessions on another user's device is refused",
   },
   {
@@ -2725,13 +2747,9 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'an unanswered approval becomes permission instead of asking locally',
     file: 'src/tui-session.js',
-    find: `      const timer = setTimeout(() => {
-        this.expiredApprovals += 1;
-        settle('ask');
+    find: `        settle('ask');
       }, timeoutMs);`,
-    replace: `      const timer = setTimeout(() => {
-        this.expiredApprovals += 1;
-        settle('allow'); // MUTATION: a hub outage becomes permission
+    replace: `        settle('allow'); // MUTATION: a hub outage becomes permission
       }, timeoutMs);`,
     mustFail: 'NOBODY ANSWERING RESOLVES TO ask, NOT allow',
   },
