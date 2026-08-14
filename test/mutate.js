@@ -1961,17 +1961,17 @@ const MUTATIONS = [
     name: 'Always allow is offered whether or not the agent proposed it',
     file: 'web/app.js',
     find: `  const offered = (approval && approval.options) || [];
-  return offered.map((o) => ({`,
+  return offered.map((o) => {`,
     replace: `  let offered = (approval && approval.options) || [];
   if (process.env.MUTANT && offered.length) offered = [...offered, { optionId: 'allow_always' }]; // MUTATION
-  return offered.map((o) => ({`,
+  return offered.map((o) => {`,
     mustFail: 'Always allow is NEVER invented when the agent did not offer it',
   },
   {
     name: 'an option the agent offered is dropped for having no known label',
     file: 'web/app.js',
-    find: `    label: o.name || APPROVAL_LABEL[o.optionId] || o.optionId,`,
-    replace: `    label: o.name || APPROVAL_LABEL[o.optionId] || (process.env.MUTANT ? '' : o.optionId), // MUTATION`,
+    find: `      label: o.name || o.label || APPROVAL_LABEL[optionId] || optionId,`,
+    replace: `      label: o.name || o.label || APPROVAL_LABEL[optionId] || (process.env.MUTANT ? '' : optionId), // MUTATION`,
     mustFail: 'an option nobody has a label for is still shown, by its id',
   },
   {
