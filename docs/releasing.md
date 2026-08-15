@@ -49,12 +49,6 @@ tooling itself is changing — clone that branch instead:
 git clone -b <branch> https://github.com/swigerb/squad-hub
 ```
 
-> **Right now that applies.** The release tooling and the packaging fix live
-> on **`s0-packaging`** ([PR #13](https://github.com/swigerb/squad-hub/pull/13))
-> and have not merged yet. Clone `-b s0-packaging` until they have. Cloning
-> the default branch instead gets you a `package.json` that omits `web/`, and
-> no `release` script to catch it. Delete this note once the PR is merged.
-
 ### Rehearsing
 
 To run every check and publish nothing:
@@ -273,6 +267,30 @@ the empty-message form above.
 1. Bump `version` in `package.json` and commit it.
 2. `npm run release`.
 3. Tag the commit: `git tag v<version> && git push --tags`.
+
+### Deciding whether a release is needed at all
+
+Deploying the hub and publishing to npm are **different acts**, and it is worth
+being clear which one a change needs.
+
+| Changed | Reaches people by |
+|---|---|
+| `src/service/`, `web/` | deploying the hub — no publish needed |
+| `bin/`, `src/` (anything else) | **publishing**, then each device upgrading |
+
+The trap is assuming a hub deploy covers a device-side fix. It cannot: a device
+runs the version installed on that machine, upgraded on its owner's schedule.
+The hub can *normalise* what an old device sends — rename a field, coerce a
+count to a list — but it cannot invent data the device never sent. A card that
+arrives without the command is missing it for good.
+
+So:
+
+```bash
+git diff --name-only v<last-tag>..main -- bin src ':!src/service'
+```
+
+If that prints anything, devices need a new version.
 
 ## Ownership
 

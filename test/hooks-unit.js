@@ -265,6 +265,64 @@ check('answering an approval that does not exist is refused', () => {
   assert.strictEqual(session().answer('nope', 'allow_once'), false);
 });
 
+check('A STALE TIMEOUT MAKES A HOOK FILE OUT OF DATE, not just a missing event', () => {
+  /**
+   * The upgrade trap from 0.4.1 -> 0.5.0. That version wrote the same six
+   * events, so a name-only comparison called its file current -- but it capped
+   * `agentStop` at 5s, and this build needs 15s because the shim may wait 8s
+   * for a daemon holding a steer for 3s.
+   *
+   * Copilot enforces the number in the FILE. With a stale one it abandons the
+   * hook while the daemon is still answering, and the daemon has ALREADY popped
+   * that steer off the queue -- so the message is lost, not delayed, on a setup
+   * that reported itself healthy.
+   */
+  const env = fakeEnv();
+  fs.mkdirSync(path.join(env.COPILOT_HOME, 'hooks'), { recursive: true });
+
+  const old = { version: 1, hooks: {} };
+  for (const e of hooks.EVENTS) {
+    old.hooks[e] = [{
+      type: 'command',
+      bash: 'node squad-hub.js hook',
+      powershell: 'node squad-hub.js hook',
+      // v0.4.1's table exactly: preToolUse 300, everything else 5.
+      timeoutSec: e === 'preToolUse' ? 300 : 5,
+    }];
+  }
+  fs.writeFileSync(hooks.hookPath(env), JSON.stringify(old));
+
+  const st = hooks.status(env);
+  assert.strictEqual(st.installed, true);
+  assert.deepStrictEqual(st.missing, [], 'this fixture is meant to have every event, so nothing is missing');
+  assert.strictEqual(st.current, false,
+    'a hook file that caps agentStop below what this build needs reported itself as current');
+  assert.ok((st.stale || []).some((t) => t.event === 'agentStop'),
+    'the stale timeout is not named, so nothing can tell the user what to fix');
+});
+
+check('a LONGER timeout than we write is left alone', () => {
+  // Somebody raised it deliberately. Only a timeout shorter than this build
+  // needs is a fault.
+  const env = fakeEnv();
+  hooks.install({ env });
+  const file = hooks.hookPath(env);
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  parsed.hooks.agentStop[0].timeoutSec = 120;
+  fs.writeFileSync(file, JSON.stringify(parsed));
+
+  const st = hooks.status(env);
+  assert.strictEqual(st.current, true, 'a deliberately longer timeout was reported as stale');
+});
+
+check('a freshly installed hook file is current', () => {
+  const env = fakeEnv();
+  hooks.install({ env });
+  const st = hooks.status(env);
+  assert.strictEqual(st.current, true, 'what this build just wrote does not satisfy its own check');
+  assert.deepStrictEqual(st.stale, []);
+});
+
 checkAsync('AN UNREGISTERED SESSION NEVER REACHES THE DAEMON, so a wedged hub cannot tax it', async () => {
   /**
    * Hooks are USER-LEVEL. `agentStop` fires at the end of every turn of every
