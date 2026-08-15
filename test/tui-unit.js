@@ -172,6 +172,27 @@ check('A SUPERVISED SESSION STILL PROMISES NOTHING IS APPROVED FOR YOU', () => {
   assert.ok(/comes back to this keyboard/i.test(text), `does not say where an unanswered decision goes:\n${text}`);
 });
 
+check('A SUPERVISED SESSION SAYS FOLLOW-UP INPUT IS QUEUED, NOT DELIVERED', () => {
+  /**
+   * Measured end to end against production: a steer to a watched session that
+   * was already sitting at its prompt stayed queued for 45+ seconds and moved
+   * only when a human typed here. Someone who reads "approvals reach a phone"
+   * and reasonably assumes messages do too will be waiting for a reply that
+   * cannot arrive.
+   *
+   * The notice also has to name the mode that DOES answer that need, or it is
+   * a complaint rather than an instruction -- an owned ACP session accepts a
+   * steer while idle and answers `{"sent":true}`, verified against the same
+   * hub in the same run.
+   */
+  const text = tuiNotice(selectAgent({ cwd: squadProject() }), { supervised: true }).join('\n');
+  assert.ok(/QUEUED/.test(text), `the supervised notice does not say input is queued:\n${text}`);
+  assert.ok(/when a turn ends|turn ends/i.test(text), `it never says what the message waits for:\n${text}`);
+  assert.ok(/next time you type/i.test(text), `it does not say what "idle" means for delivery:\n${text}`);
+  assert.ok(/squad-hub squad/.test(text) && /without --tui/.test(text),
+    `the mode that can be driven at any time is not named:\n${text}`);
+});
+
 check('WHEN NOT SUPERVISED, THE NOTICE NAMES THE COMMAND THAT FIXES IT', () => {
   const text = tuiNotice(selectAgent({ cwd: squadProject() })).join('\n');
   assert.ok(/hooks install/.test(text), `no route to supervision is offered:\n${text}`);
