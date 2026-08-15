@@ -66,6 +66,13 @@ function tuiNotice(selection, { supervised = false } = {}) {
       '',
       'If nobody answers, the decision comes back to this keyboard.',
       'It is never approved on your behalf. Closing this terminal ends it.',
+      '',
+      'Follow-up input sent from the hub is QUEUED, not delivered on arrival:',
+      'this terminal belongs to Copilot, so the hub can only hand a message over',
+      'when a turn ends. While the agent is working that is moments away; while',
+      'it sits waiting for you, it is the next time you type here.',
+      'For a session the hub can drive at any time, run `squad-hub squad`',
+      'without --tui.',
     );
   } else {
     lines.push(

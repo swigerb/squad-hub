@@ -265,6 +265,23 @@ you got rather than reporting both as sent.
 
 A session the hub *owns* (started with `squad-hub squad`, no `--tui`) has no
 such limit — it is written to directly over ACP and answers `{"sent":true}`.
+Verified against the same hub in the same run: a session sitting at
+`status=idle` accepted a steer and ran it immediately.
+
+**Which mode to use, then:**
+
+| You want | Use |
+|---|---|
+| The real Copilot TUI at your keyboard, watched and approvable from a phone | `squad-hub squad --tui` |
+| To start, steer and stop work remotely, including while it sits idle | `squad-hub squad` |
+
+This is a real boundary, not a missing feature. A watched session's terminal
+belongs to Copilot: the daemon did not start that process and does not own its
+input, so it can hand a message over at a turn boundary and no sooner. The
+alternative — injecting keystrokes into a terminal the daemon does not own —
+is the primitive `TIOCSTI` was disabled on Linux to prevent, and is not
+something worth building into a tool that takes instructions over a network.
+See #145.
 
 **The hold is conditional, not a flat tax.** A steer that arrives after a turn
 has already ended can still be delivered — but only if the `agentStop` hook
