@@ -247,6 +247,13 @@ version was deprecated on a plausible reading that turned out to be wrong.
 
 ### What is deprecated, and why
 
+**`0.1.0` – `0.3.0` — deprecated, on security grounds.** Four fixes in `0.4.0`
+are the reason, and they are why these are deprecated rather than merely
+superseded: a device token could reach the account through unescaped
+interpolation of session-row counts; WebSocket upgrades did not validate
+`Origin`; no security headers were sent; and a grant did not survive a restart.
+See the [v0.4.0 release notes](https://github.com/swigerb/squad-hub/releases/tag/v0.4.0).
+
 **`0.4.0` — deprecate.** The daemon exits on the first heartbeat after a
 terminal session registers. `beat()` calls `isAgentDead()` on every live
 session, `TuiSession` did not have it, and the loop ran inside an unguarded
@@ -326,21 +333,30 @@ that cannot be found on a stale mirror looks exactly like a package that was
 never published correctly.** That is the trap this document now exists to keep
 you out of.
 
-Nothing here needs deprecating. Both versions work. v0.1.0 *was* deprecated
-while the mistaken diagnosis stood; if that flag is still set, clear it using
-the empty-message form above.
+Nothing here needed deprecating **for packaging**. Both versions install and
+run. v0.1.0 was deprecated while the mistaken diagnosis stood, and on that
+evidence alone the flag should have been cleared.
 
-> **Still outstanding.** Whether that flag is set can only be checked from a
-> machine that can reach the registry:
+> **Do not clear it.** That advice was written before checking why the flag is
+> actually there now, and it is wrong.
 >
-> ```bash
-> npm view squad-hub@0.1.0 deprecated
-> npm view @mightybs/squad-hub@0.1.0 deprecated
-> ```
+> 0.1.0 through 0.3.0 were **deprecated again in 0.4.0, on security grounds** —
+> see the [v0.4.0 release notes](https://github.com/swigerb/squad-hub/releases/tag/v0.4.0).
+> Four fixes are the reason, the sharpest being that a device token could reach
+> the account: a device supplies text the sessions page renders, and session-row
+> counts were interpolated into HTML unescaped. Also: WebSocket upgrades did not
+> validate `Origin`, no security headers were sent, and grants did not survive a
+> restart.
 >
-> Anything printed is a public warning about a version that works. Clear it
-> with the empty-message form. Worth doing at the same time as any deprecation
-> above, since it needs the same machine and the same login.
+> So the warning on those versions is correct and load-bearing. Clearing it
+> would remove a public warning from a version with a device-token-to-account
+> escalation path, on the strength of a packaging question that was settled
+> separately and in their favour.
+>
+> The lesson is narrower than "check before deprecating": a deprecation can be
+> **re-justified by a later finding**, so "the reason this was deprecated turned
+> out to be wrong" does not imply "this should not be deprecated". Check what
+> the current reason is, not the original one.
 
 ## Cutting a new version
 
