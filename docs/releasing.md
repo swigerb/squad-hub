@@ -208,6 +208,54 @@ Deprecate only on evidence. Confirm the published artefact is genuinely
 broken first — see below — because a deprecation notice is public and warns
 every person who installs that version.
 
+### The evidence standard, and how to meet it offline
+
+"Broken" means *reproduced against the published code*, not inferred from a
+diff. You do not need the registry for this — every release is a tag:
+
+```bash
+git worktree add /tmp/vX.Y.Z vX.Y.Z --detach
+```
+
+Then run the failing path against that worktree and watch it fail. Run the same
+probe against the neighbouring version too: a fault that reproduces on one and
+not the other is isolated, and a fault that reproduces on both means you have
+misdiagnosed which change caused it.
+
+That symmetry is what separates this from the v0.1.0 episode below, where a
+version was deprecated on a plausible reading that turned out to be wrong.
+
+### What is deprecated, and why
+
+**`0.4.0` — deprecate.** The daemon exits on the first heartbeat after a
+terminal session registers. `beat()` calls `isAgentDead()` on every live
+session, `TuiSession` did not have it, and the loop ran inside an unguarded
+`setInterval` with no `uncaughtException` handler anywhere in the package.
+
+Reproduced at process level against the published tag: daemon starts, a
+`hook-session-start` arrives, and one heartbeat later the process is gone with
+exit code 1 and a stack trace at the `setInterval` line. The same probe against
+`0.4.1` survives.
+
+It matters because it takes supervision with it — the device drops off the hub,
+its sessions become ghosts that `forget` will not clear, and every subsequent
+tool call falls back to asking at the local keyboard. Anyone who ran
+`squad-hub hooks install` on `0.4.0` hit this.
+
+```bash
+npm deprecate squad-hub@0.4.0 "the daemon exits on the first heartbeat after a terminal session registers; use 0.5.0 or later"
+npm deprecate @mightybs/squad-hub@0.4.0 "the daemon exits on the first heartbeat after a terminal session registers; use 0.5.0 or later"
+```
+
+Both names, because npm treats them as separate packages.
+
+**`0.4.1` — do not deprecate.** It is the fix for the above, and it works.
+Against a current hub it lists sessions and answers approvals correctly. What
+it lacks — the command on an approval card, controls that do what they report,
+steering — are things `0.5.0` adds. A new release is how you ask people to
+upgrade; a deprecation notice is how you tell them not to install something.
+Spending it on a working version makes the next one easier to ignore.
+
 ### Undoing a deprecation
 
 A deprecation is **reversible**. Clear it by deprecating the same version
@@ -261,6 +309,18 @@ you out of.
 Nothing here needs deprecating. Both versions work. v0.1.0 *was* deprecated
 while the mistaken diagnosis stood; if that flag is still set, clear it using
 the empty-message form above.
+
+> **Still outstanding.** Whether that flag is set can only be checked from a
+> machine that can reach the registry:
+>
+> ```bash
+> npm view squad-hub@0.1.0 deprecated
+> npm view @mightybs/squad-hub@0.1.0 deprecated
+> ```
+>
+> Anything printed is a public warning about a version that works. Clear it
+> with the empty-message form. Worth doing at the same time as any deprecation
+> above, since it needs the same machine and the same login.
 
 ## Cutting a new version
 
