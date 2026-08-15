@@ -1060,7 +1060,11 @@ function composerReduce(prev, event) {
   const s = { draft: '', control: CONTROL.UNKNOWN, reason: '', ...(prev || {}) };
   switch (event && event.type) {
     case 'type':
-      return { ...s, draft: String(event.text == null ? '' : event.text) };
+      // A new draft supersedes whatever happened to the last message, so the
+      // outcome note goes with it rather than lingering over unrelated text.
+      return {
+        ...s, draft: String(event.text == null ? '' : event.text), outcome: null, outcomeNote: '',
+      };
     case 'verify-start':
       return { ...s, control: CONTROL.VERIFYING, reason: '' };
     case 'verify-result': {
@@ -1072,9 +1076,30 @@ function composerReduce(prev, event) {
     }
     case 'sent':
       // The ONLY event that clears the draft, and only because it landed.
-      return { ...s, draft: '' };
+      //
+      // `queued` and `sent` are DIFFERENT OUTCOMES and are reported as such.
+      // A watched (`--tui`) session cannot be written to directly: the daemon
+      // does not own that process, so a steer goes onto a queue and is only
+      // delivered when the session's next turn ends. Reporting that as "sent"
+      // is the same lie as #129's controls -- and worse here, because on an
+      // IDLE session nothing will end a turn until somebody types at that
+      // keyboard, so the message can sit unread indefinitely while the person
+      // who sent it believes it arrived.
+      return {
+        ...s,
+        draft: '',
+        outcome: event.queued ? 'queued' : 'sent',
+        outcomeNote: event.queued
+          ? 'Queued. A watched terminal session picks this up when its current turn ends'
+            + ' — if it is idle, that means the next time somebody types there.'
+          : '',
+      };
     case 'send-failed':
-      return { ...s, reason: (event.error && String(event.error)) || 'the message was not delivered' };
+      return {
+        ...s,
+        outcome: 'failed',
+        reason: (event.error && String(event.error)) || 'the message was not delivered',
+      };
     default:
       return s;
   }
@@ -1674,7 +1699,11 @@ function renderControl() {
   const banner = $('dtControl');
   if (banner) banner.dataset.state = b.state;
   $('dtControlLabel').textContent = b.label;
-  $('dtControlWhy').textContent = b.reason;
+  // The banner's own reason takes precedence -- a control problem is more
+  // urgent than the fate of the last message. Otherwise, say what happened to
+  // that message, because "queued" and "delivered" are different promises and
+  // the person who pressed send is entitled to know which one they got.
+  $('dtControlWhy').textContent = b.reason || state.composer.outcomeNote || '';
   $('dtSync').hidden = !b.canSync;
   $('dtInput').disabled = !b.enabled;
   $('dtSend').disabled = !b.enabled;
@@ -2591,13 +2620,18 @@ function wire() {
     if (!text) return;
     const { device, session } = state.currentSession;
     try {
-      await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, {
+      const r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, {
         method: 'POST', body: { sessionId: session.id, text },
       });
       // Cleared only once it LANDED. Clearing first meant a failed send threw
       // away what the person had written in order to report the failure.
-      state.composer = composerReduce(state.composer, { type: 'sent' });
+      //
+      // The response is READ, not discarded: a watched session answers
+      // `{queued:true}` and an owned one `{sent:true}`, and those are not the
+      // same promise to the person who just pressed send.
+      state.composer = composerReduce(state.composer, { type: 'sent', queued: !!(r && r.queued) });
       $('dtInput').value = '';
+      renderControl();
     } catch (e) {
       state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });
       renderControl();

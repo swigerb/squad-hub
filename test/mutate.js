@@ -125,6 +125,17 @@ const MUTATIONS = [
     mustFail: 'the refusal does not reveal that the device exists',
   },
   {
+    // Measured against production with a real `squad-hub squad --tui` session:
+    // a steer to an IDLE watched session sat in the queue for 45+ seconds and
+    // moved only when a human typed at that keyboard. Reporting that as "sent"
+    // is #129's lying control wearing a different hat.
+    name: 'the composer reports a queued steer as sent',
+    file: 'web/app.js',
+    find: `        outcome: event.queued ? 'queued' : 'sent',`,
+    replace: `        outcome: process.env.MUTANT ? 'sent' : (event.queued ? 'queued' : 'sent'), // MUTATION`,
+    mustFail: 'A QUEUED STEER IS NOT REPORTED AS SENT',
+  },
+  {
     // A card that names the tool but withholds the command is not an approval
     // control. It is a prompt people learn to click through, which is worse
     // than no prompt at all because it looks like oversight.
@@ -1924,9 +1935,18 @@ const MUTATIONS = [
     name: 'a failed send clears the draft',
     file: 'web/app.js',
     find: `    case 'send-failed':
-      return { ...s, reason: (event.error && String(event.error)) || 'the message was not delivered' };`,
+      return {
+        ...s,
+        outcome: 'failed',
+        reason: (event.error && String(event.error)) || 'the message was not delivered',
+      };`,
     replace: `    case 'send-failed':
-      return { ...s, draft: process.env.MUTANT ? '' : s.draft, reason: (event.error && String(event.error)) || 'the message was not delivered' }; // MUTATION`,
+      return {
+        ...s,
+        draft: process.env.MUTANT ? '' : s.draft, // MUTATION
+        outcome: 'failed',
+        reason: (event.error && String(event.error)) || 'the message was not delivered',
+      };`,
     mustFail: 'the draft survives a failed send',
   },
   {

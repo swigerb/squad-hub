@@ -158,6 +158,48 @@ check('a successful send is the only thing that clears the draft', () => {
   assert.strictEqual(s.draft, '');
 });
 
+// ---------------------------------------------------------------------------
+// QUEUED IS NOT SENT
+//
+// Measured end to end against production, with a real `squad-hub squad --tui`
+// session running the Squad agent: steering an IDLE watched session answers
+// `{"queued":true,"position":1}` and the message then sat in the queue
+// untouched for 45+ seconds. It was delivered only when a human typed at that
+// keyboard and ended a turn.
+//
+// The composer used to discard that response and dispatch a bare `sent`,
+// clearing the draft and telling the person their message had landed. That is
+// the #129 failure again -- a control that reports success and does nothing --
+// and it is worse here, because the message may never arrive at all.
+// ---------------------------------------------------------------------------
+
+check('A QUEUED STEER IS NOT REPORTED AS SENT', () => {
+  let s = composerReduce(undefined, { type: 'type', text: 'do the thing' });
+  s = composerReduce(s, { type: 'sent', queued: true });
+  assert.strictEqual(s.draft, '', 'the message was accepted, so the draft is spent');
+  assert.strictEqual(s.outcome, 'queued',
+    'a queued steer was recorded as sent, which promises a delivery that has not happened');
+  assert.match(s.outcomeNote, /queued/i);
+  assert.match(s.outcomeNote, /turn ends|idle|types/i,
+    'the note does not say what the message is waiting for, so "queued" reads as a synonym for sent');
+});
+
+check('an owned session still reports a plain send', () => {
+  // An ACP session is written to directly, so `sent` there is the truth and
+  // must not be softened into a maybe.
+  const s = composerReduce({ draft: 'x', control: CONTROL.SYNCED, reason: '' }, { type: 'sent' });
+  assert.strictEqual(s.outcome, 'sent');
+  assert.strictEqual(s.outcomeNote, '');
+});
+
+check('typing again clears the outcome of the last message', () => {
+  let s = composerReduce(undefined, { type: 'sent', queued: true });
+  assert.ok(s.outcomeNote, 'nothing to clear, so this proves nothing');
+  s = composerReduce(s, { type: 'type', text: 'a new message' });
+  assert.strictEqual(s.outcomeNote, '',
+    'a stale "queued" note hung over an unrelated draft');
+});
+
 check('the reducer never mutates the state it was handed', () => {
   const before = { draft: 'original', control: CONTROL.SYNCED, reason: '' };
   composerReduce(before, { type: 'type', text: 'changed' });
