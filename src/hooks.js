@@ -141,6 +141,16 @@ function selfCommand() {
  * `current: false` matters as much as `installed: false`: a file left by an
  * older version can be missing events this build relies on, and reporting it as
  * simply "installed" would hide that.
+ *
+ * TIMEOUTS ARE PART OF "CURRENT", not just the event names. The hook file bakes
+ * `timeoutSec` in at install time, so a file whose events all match can still be
+ * wrong: v0.4.1 wrote `agentStop` at 5s, and this build needs 15s because the
+ * shim may wait 8s for a daemon that holds a steer for 3s. Copilot enforces the
+ * number in the FILE, so with a stale one it abandons the hook while the daemon
+ * is still answering -- and the daemon has already popped that steer off the
+ * queue, so the message is lost rather than delayed. Comparing names alone
+ * reported that file as healthy, which is the worst of both: broken, and
+ * nothing tells you to reinstall.
  */
 function status(env = process.env) {
   const file = hookPath(env);
@@ -157,12 +167,30 @@ function status(env = process.env) {
   }
   const events = Object.keys((parsed && parsed.hooks) || {});
   const missing = EVENTS.filter((e) => !events.includes(e));
+
+  // A timeout SHORTER than this build expects is the failure; a longer one was
+  // chosen deliberately by whoever edited the file and is left alone.
+  const stale = [];
+  for (const e of EVENTS) {
+    if (missing.includes(e)) continue;
+    const want = TIMEOUTS[e] || TIMEOUTS.default;
+    const entries = ((parsed.hooks || {})[e]) || [];
+    for (const entry of entries) {
+      const got = entry && Number(entry.timeoutSec);
+      if (Number.isFinite(got) && got < want) {
+        stale.push({ event: e, timeoutSec: got, expected: want });
+        break;
+      }
+    }
+  }
+
   return {
     installed: true,
-    current: missing.length === 0,
+    current: missing.length === 0 && stale.length === 0,
     path: file,
     events,
     missing,
+    stale,
   };
 }
 

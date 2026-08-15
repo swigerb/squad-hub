@@ -217,8 +217,18 @@ async function runDoctor({ cwd = process.cwd(), explicitAgent = null, explicitMo
   } else if (hookState.error) {
     add('copilot-hooks', 'fail', `${hookState.path} could not be read: ${hookState.error}`);
   } else if (!hookState.current) {
+    // Events and timeouts are separate ways for a file to be out of date, and
+    // an upgrade from 0.4.1 produces the second kind: every event present, but
+    // `agentStop` capped at the old 5s. Naming only the missing events printed
+    // an empty list and read as a tool bug.
+    const why = [];
+    if ((hookState.missing || []).length) why.push(`missing ${hookState.missing.join(', ')}`);
+    for (const t of hookState.stale || []) {
+      why.push(`${t.event} allows only ${t.timeoutSec}s, and this build needs ${t.expected}s`);
+    }
     add('copilot-hooks', 'fail',
-      `${hookState.path} is missing ${(hookState.missing || []).join(', ')}; run \`squad-hub hooks install --force\` to update it`);
+      `${hookState.path} is out of date (${why.join('; ') || 'not what this build writes'});`
+      + ' run `squad-hub hooks install --force` to update it');
   } else {
     add('copilot-hooks', 'ok', `installed at ${hookState.path}`);
   }

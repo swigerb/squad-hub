@@ -1036,7 +1036,18 @@ async function cmdHooks(argv) {
     if (!s.current) {
       // "Installed" and "installed and doing what this build expects" are
       // different facts, and only reporting the first would hide a stale file.
-      err(`PROBLEM: missing ${s.missing.join(', ')} -- run \`squad-hub hooks install --force\` to update it.`);
+      //
+      // A file can be current in its EVENTS and stale in its TIMEOUTS, so say
+      // which. Printing "missing " with nothing after it -- what this did when
+      // only a timeout was wrong -- reads as a bug in the tool rather than a
+      // problem with the file.
+      const why = [];
+      if ((s.missing || []).length) why.push(`missing ${s.missing.join(', ')}`);
+      for (const t of s.stale || []) {
+        why.push(`${t.event} allows only ${t.timeoutSec}s, and this build needs ${t.expected}s`);
+      }
+      err(`PROBLEM: ${why.join('; ') || 'it is not what this build writes'}`
+        + ' -- run `squad-hub hooks install --force` to update it.');
       return 1;
     }
     out('up to date');
