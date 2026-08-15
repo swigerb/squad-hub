@@ -645,5 +645,69 @@ check('the docs explain the one-time password, since 2FA is the normal case', ()
     'docs/releasing.md never mentions 2FA, which is what stopped the first real release');
 });
 
+// ---------------------------------------------------------------------------
+// THE PACKAGE MUST BE PROVEN TO RUN BEFORE IT IS PUBLISHED
+//
+// Every other pre-publish check reads a manifest or a file list. A package
+// whose `files` omits `src` has a real bin target, ships every web/ file and
+// declares a canonical bin -- so it passes all of them and then dies on
+// `Cannot find module` the first time anyone types the command. npm versions
+// are immutable, so learning that after publishing is one step too late.
+// ---------------------------------------------------------------------------
+
+check('EVERY BIN TARGET STARTS WITH A SHEBANG', () => {
+  /**
+   * Without one, npm's Windows shim invokes the `.js` through the file
+   * association instead of running node. Measured on a package built without
+   * a shebang: the command exited 0 and printed NOTHING on either stream --
+   * indistinguishable from success to anything watching an exit code.
+   */
+  const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8').slice(0, 2);
+  assert.deepStrictEqual(release.binMissingShebang(pkg, read), [],
+    'a bin target has no shebang, so npm would shim it through the file association');
+});
+
+check('the shebang check catches a bin that lacks one', () => {
+  const read = () => 'co';
+  assert.deepStrictEqual(release.binMissingShebang({ bin: { x: 'plain.js' } }, read), ['x: plain.js']);
+});
+
+check('a bin target that cannot be read at all counts as missing', () => {
+  const read = () => { throw new Error('ENOENT'); };
+  assert.strictEqual(release.binMissingShebang({ bin: { x: 'gone.js' } }, read).length, 1,
+    'an unreadable bin was treated as fine');
+});
+
+check('THE RELEASE INSTALLS AND RUNS THE TARBALL BEFORE PUBLISHING', () => {
+  // Asserted on the script's own order: the smoke test must come before the
+  // first publish, or it is documentation rather than a gate.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  const smoke = src.indexOf('smokeTestTarball(tgz');
+  const firstPublish = src.indexOf('publish(PRIMARY');
+  assert.ok(smoke > 0, 'the release never runs the packaged command');
+  assert.ok(firstPublish > 0, 'could not find the publish step');
+  assert.ok(smoke < firstPublish,
+    'the tarball is run AFTER publishing, which is too late -- versions are immutable');
+});
+
+check('BOTH published names are verified, not just the primary', () => {
+  // They are separate packages to npm and have already disagreed from an
+  // identical tarball: on 0.2.0 the unscoped name failed while the scoped one
+  // passed. Verifying one and reporting success lets the other rot.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  const step = src.slice(src.indexOf('proving the published packages'));
+  assert.match(step, /for \(const name of \[PRIMARY, ALIAS\]\)/,
+    'the post-publish verification does not cover both names');
+});
+
+check('a published version gets a tag, so it can be checked out later', () => {
+  // A published version with no tag cannot be reproduced against. That is not
+  // hypothetical -- this project has published versions with no tag, and when
+  // one needed investigating there was no way to `git worktree add` it.
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
+  assert.match(src, /git', \['tag'/, 'the release never creates a tag');
+  assert.match(src, /refs\/tags\//, 'the release does not check whether the tag already exists');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
