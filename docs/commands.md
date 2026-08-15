@@ -250,6 +250,22 @@ has no way to confirm delivery beyond "an `agentStop` hook popped this exact
 entry". Exactly one message is popped per turn; queued messages are never
 joined into one.
 
+**An idle session does not pick up a steer until somebody types there.** This
+is the limit worth understanding before relying on it. `agentStop` fires when a
+turn *ends*, so a steer sent to a session that is already sitting at its prompt
+has no turn boundary to arrive on. Measured end to end against production, with
+a real `squad-hub squad --tui` session running the Squad agent: the steer was
+accepted, reported `{"queued":true,"position":1}`, and sat untouched for 45+
+seconds. It was delivered the moment a human typed at that keyboard and ended a
+turn — the queued message then ran on its own, with nothing else typed.
+
+So steering a watched session is **reliable while the agent is working**, and
+is a **message left for later** when it is idle. The composer says which one
+you got rather than reporting both as sent.
+
+A session the hub *owns* (started with `squad-hub squad`, no `--tui`) has no
+such limit — it is written to directly over ACP and answers `{"sent":true}`.
+
 **The hold is conditional, not a flat tax.** A steer that arrives after a turn
 has already ended can still be delivered — but only if the `agentStop` hook
 *waits* for it, and waiting on every turn end, whether or not anyone is
