@@ -99,17 +99,37 @@ leading `./` back into `package.json`.
 3. **Runs the full test suite.** A failure publishes nothing.
 4. **Checks the tarball against the code**, independently of the suite: every
    file under `web/` and every `bin` target must actually be in the package,
-   and the tarball's own `package.json` must declare a command the installing
-   npm will honour.
-5. **Publishes `squad-hub`.**
-6. **Publishes `@mightybs/squad-hub`** — the same contents with the name
+   the tarball's own `package.json` must declare a command the installing npm
+   will honour, and every `bin` target must start with a **shebang** — without
+   one npm's Windows shim hands the `.js` to the file association rather than
+   running node, which can exit 0 having done nothing at all.
+5. **Installs the tarball and runs it.** Offline, into a throwaway prefix,
+   through npm's own shim. Everything above this reads a manifest or a file
+   list; this is the first step that proves the package *works*, and it is
+   deliberately before the publish because versions are immutable.
+6. **Publishes `squad-hub`.**
+7. **Publishes `@mightybs/squad-hub`** — the same contents with the name
    rewritten, then `package.json` restored.
-7. **Installs what it just published, from the registry, and runs it.**
-   Everything before this checks intent; only this checks the answer a user
-   gets.
+8. **Installs BOTH names from the registry and runs them.** Everything before
+   this checks intent; only this checks the answer a user gets. Both, because
+   they are separate packages to npm and have already disagreed from an
+   identical tarball.
+9. **Tags the commit locally** as `v<version>`, or says so if the tag already
+   exists elsewhere. It does not push — that is left to you.
 
-Step 6 restores `package.json` in a `finally`, so an interrupted release never
+Step 7 restores `package.json` in a `finally`, so an interrupted release never
 leaves the checkout claiming to be the alias package.
+
+### Why step 5 exists
+
+Every check before it is static. A package whose `files` list omits `src` still
+has a real `bin` target, still ships every `web/` file, and still declares a
+canonical `bin` — so it passes all of them, installs cleanly, and dies with
+`Cannot find module` the first time anyone types the command.
+
+That was verified by building exactly such a package: every existing
+pre-publish check passed it. The install-and-run caught it, and takes about a
+second.
 
 ### If it stops half way
 
@@ -326,7 +346,27 @@ the empty-message form above.
 
 1. Bump `version` in `package.json` and commit it.
 2. `npm run release`.
-3. Tag the commit: `git tag v<version> && git push --tags`.
+3. Push the tag it created: `git push origin v<version>`.
+
+### How long it takes, and why
+
+About four minutes, nearly all of it the test suite. Measured per suite:
+
+| | |
+|---|---|
+| `browser-e2e-unit` | 60s — a real browser, and the only thing that proves the UI works |
+| `steer-unit` | 23s |
+| `oneshot-unit` | 21s |
+| `docs-unit` | 20s — it runs mutations, which means spawning suites |
+| `connect-unit` | 14s |
+
+Those five are 63% of it, and each spends its time on processes or a browser
+rather than on anything avoidable. The packaging checks added later are
+cheap by comparison: the install-and-run is about a second.
+
+The suite is not skippable here even though CI already ran it, because the
+release publishes **the commit you have checked out**, which is not necessarily
+the one CI saw.
 
 ### Deciding whether a release is needed at all
 

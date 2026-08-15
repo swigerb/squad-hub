@@ -135,6 +135,110 @@ function binIsCanonical(pkg) {
   return offenders.map(([key, target]) => `${key}: ${target}`);
 }
 
+/** Pack into `dest` and return the tarball path. The caller owns `dest`. */
+function packInto(dest) {
+  const r = run('npm', ['pack', '--pack-destination', dest], { timeout: 180000 });
+  if (r.status !== 0) throw new Error(`npm pack failed:\n${r.stdout || ''}${r.stderr || ''}`);
+  const tgz = fs.readdirSync(dest).find((f) => f.endsWith('.tgz'));
+  if (!tgz) throw new Error('npm pack produced no tarball');
+  return path.join(dest, tgz);
+}
+
+/**
+ * Every bin target must start with a shebang.
+ *
+ * Found while testing the smoke test, on a deliberately broken package whose
+ * bin lacked one: npm's Windows shim then invokes the `.js` DIRECTLY and lets
+ * the file association decide what happens. On a machine where `.js` is bound
+ * to something inert that means the command silently does nothing, exits 0, and
+ * prints neither stdout nor stderr -- indistinguishable from success to
+ * anything watching the exit code. On Unix the same file is simply not
+ * executable as a program.
+ *
+ * With `#!/usr/bin/env node` present npm writes a shim that runs node itself,
+ * which is why the real package works. Nothing checked that it was there.
+ */
+function binMissingShebang(pkg, readFile) {
+  return Object.entries(pkg.bin || {})
+    .filter(([, target]) => typeof target === 'string')
+    .filter(([, target]) => {
+      let head = '';
+      try { head = readFile(target.replace(/^\.\//, '')); } catch { return true; }
+      return !/^#!/.test(head);
+    })
+    .map(([key, target]) => `${key}: ${target}`);
+}
+
+/**
+ * Install the tarball and RUN it, before anything is published.
+ *
+ * Every other pre-publish check reads a manifest or a file list. None of them
+ * runs the thing. That gap is not theoretical: a package whose `files` omits
+ * `src` still has a real `bin` target, still ships every `web/` file, and still
+ * declares a canonical `bin` -- so it passes all of them, installs cleanly, and
+ * dies on `Cannot find module '../src/cli.js'` the first time anyone types the
+ * command. Verified by building exactly that package.
+ *
+ * Until now the only proof it ran came AFTER publishing. npm versions are
+ * immutable, so that answer arrives one step too late to act on.
+ *
+ * Offline on purpose. `--offline` makes npm fail rather than reach the network,
+ * which keeps this honest (it can only be reading the tarball) and lets it run
+ * on a machine that cannot see the registry at all. It relies on this package
+ * having no dependencies -- if that ever changes, the install fails and says so
+ * rather than blaming the tarball.
+ */
+function smokeTestTarball(tgz, binName, version) {
+  const prefix = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-smoke-'));
+  try {
+    const install = run('npm', [
+      'install', '--offline', '--no-audit', '--no-fund', '--prefix', prefix, tgz,
+    ], { timeout: 180000, cwd: prefix });
+
+    if (install.status !== 0) {
+      const out = `${install.stdout || ''}${install.stderr || ''}`;
+      if (/ENOTCACHED|request to .* failed|offline mode/i.test(out)) {
+        return {
+          ok: false,
+          reason: 'this package now has dependencies, so it cannot be installed offline;'
+            + ' the smoke test needs adjusting rather than the tarball',
+          output: out,
+        };
+      }
+      return { ok: false, reason: 'the tarball would not install', output: out };
+    }
+
+    // Run npm's OWN shim, not the file directly: that is what a user gets, and
+    // it proves the bin linking as well as the code.
+    const shim = path.join(prefix, 'node_modules', '.bin',
+      process.platform === 'win32' ? `${binName}.cmd` : binName);
+    if (!fs.existsSync(shim)) {
+      return { ok: false, reason: `installing it produced no ${binName} command`, output: shim };
+    }
+
+    const ran = run(shim, ['--version'], { timeout: 60000, cwd: prefix });
+    const out = `${ran.stdout || ''}${ran.stderr || ''}`.trim();
+    if (ran.status !== 0) return { ok: false, reason: 'the installed command failed to run', output: out };
+    if (!out) {
+      // Exit 0 and total silence is what a Windows shim does when the bin has
+      // no shebang: it hands the .js to the file association, which may do
+      // nothing at all. Success and this are indistinguishable by exit code.
+      return {
+        ok: false,
+        reason: 'the installed command produced no output at all'
+          + ' (on Windows that is what a bin with no shebang does)',
+        output: '(nothing on stdout or stderr)',
+      };
+    }
+    if (!out.split(/\s+/).includes(version)) {
+      return { ok: false, reason: `the installed command reported "${out}" rather than ${version}`, output: out };
+    }
+    return { ok: true, output: out };
+  } finally {
+    fs.rmSync(prefix, { recursive: true, force: true });
+  }
+}
+
 /**
  * The package.json INSIDE the tarball -- the file a consumer's npm reads.
  * `npm pack` copies it verbatim, so it is the last chance to see what will
@@ -370,6 +474,15 @@ function main() {
   }
   console.log('    bin is in npm\'s canonical form, so publish will not rewrite it');
 
+  const noShebang = binMissingShebang(pkg, (f) => fs.readFileSync(path.join(ROOT, f), 'utf8').slice(0, 2));
+  if (noShebang.length) {
+    die(`these bin targets do not start with a shebang:\n  ${noShebang.join('\n  ')}\n`
+      + `\nWithout one, npm's Windows shim hands the .js to the file association instead of\n`
+      + `running node -- which can exit 0 having done nothing, printing neither stdout nor\n`
+      + `stderr. Add "#!/usr/bin/env node" as the first line.`);
+  }
+  console.log('    every bin target starts with a shebang, so npm will shim it through node');
+
   // The tarball's own package.json, not this one. They can differ -- files can
   // be excluded, and the manifest can be rewritten on the way out -- and it is
   // the tarball's copy that a consumer's npm reads when deciding what command
@@ -394,10 +507,29 @@ function main() {
     console.log(`    the tarball installs: ${bins.join(', ')}`);
   }
 
-  step(5, `publishing ${PRIMARY}`);
+  // Everything above reads a manifest or a file list. None of it runs the
+  // package. This does -- offline, from the tarball, through npm's own shim --
+  // because the alternative is finding out after an immutable publish.
+  step(5, 'installing the tarball and running it, before anything is published');
+  const smokeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-tgz-'));
+  try {
+    const tgz = packInto(smokeDir);
+    const binName = Object.keys(pkg.bin || {})[0] || PRIMARY;
+    const smoke = smokeTestTarball(tgz, binName, pkg.version);
+    if (!smoke.ok) {
+      die(`the packaged version does not work: ${smoke.reason}\n\n`
+        + `${String(smoke.output).split('\n').map((l) => `      ${l}`).join('\n')}\n\n`
+        + `Nothing has been published. Fix this first -- a published version cannot be replaced.`);
+    }
+    console.log(`    installed from the tarball and ran: ${binName} --version -> ${smoke.output}`);
+  } finally {
+    fs.rmSync(smokeDir, { recursive: true, force: true });
+  }
+
+  step(6, `publishing ${PRIMARY}`);
   const primary = publish(PRIMARY, extraArgs, dryRun);
 
-  step(6, `publishing ${ALIAS}`);
+  step(7, `publishing ${ALIAS}`);
   let alias;
   try {
     fs.writeFileSync(PKG_PATH, withName(original, ALIAS));
@@ -413,11 +545,20 @@ function main() {
 
   if (dryRun) return;
 
-  step(7, 'proving the published package actually installs a working command');
+  step(8, 'proving the published packages actually install a working command');
   // Every check so far inspected intent. This asks the registry, which is the
-  // only answer a user ever gets, and the only one that can distinguish a
-  // package that merely looks right from one that installs and runs.
-  const verified = reportVerification(PRIMARY, pkg.version, verifyPublished(PRIMARY, pkg.version));
+  // only answer a user ever gets.
+  //
+  // BOTH NAMES, not just the primary. They are separate packages to npm and
+  // have already disagreed from an identical tarball: on 0.2.0 the unscoped
+  // name failed while the scoped one passed, and it was the disagreement that
+  // located the fault. Verifying one of two published things and reporting
+  // success is how the other rots unnoticed.
+  let verified = true;
+  for (const name of [PRIMARY, ALIAS]) {
+    console.log(`\n  [${name}]`);
+    if (!reportVerification(name, pkg.version, verifyPublished(name, pkg.version))) verified = false;
+  }
   if (!verified) {
     console.error(`\nPUBLISHED, BUT NOT VERIFIED.`);
     console.error(`If it is only propagation, re-check with:  npm run verify`);
@@ -426,7 +567,31 @@ function main() {
     console.error(`  2. fix the cause, bump the version, and release again.\n`);
     process.exit(1);
   }
-  console.log(`\nBoth names are live. Verify the alias too with:  npm run verify`);
+
+  step(9, 'tagging this commit');
+  // A published version that cannot be checked out is a version nobody can
+  // reproduce a bug against later. That is not hypothetical: this project has
+  // published versions with no tag, and when one of them needed investigating
+  // there was no way to `git worktree add` it.
+  //
+  // Created locally and never pushed for you -- pushing is a decision, and the
+  // release has already done the irreversible part.
+  const tag = `v${pkg.version}`;
+  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]);
+  if (existing.status === 0) {
+    const at = (existing.stdout || '').trim();
+    const head = (run('git', ['rev-parse', 'HEAD']).stdout || '').trim();
+    console.log(at === head
+      ? `    ${tag} already points at this commit`
+      : `    WARNING: ${tag} already exists and points at ${at.slice(0, 8)}, not this commit`);
+  } else {
+    const made = run('git', ['tag', tag]);
+    console.log(made.status === 0
+      ? `    created ${tag}`
+      : `    could not create ${tag}: ${(made.stderr || '').trim()}`);
+  }
+  console.log(`\nBoth names are live and verified at ${pkg.version}.`);
+  console.log(`Push the tag when you are ready:  git push origin ${tag}`);
 }
 
 if (require.main === module) {
@@ -440,6 +605,7 @@ if (require.main === module) {
 module.exports = {
   isAlreadyPublished, needsOneTimePassword, sameRegistry, withName,
   requiredInPackage, missingFromPack, binIsCanonical, packedManifest,
+  packInto, smokeTestTarball, binMissingShebang,
   classifyAttempt, verifyPublished, reportVerification,
   PRIMARY, ALIAS, REGISTRY,
 };
