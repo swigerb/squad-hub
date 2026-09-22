@@ -11,7 +11,7 @@
 
 ## Model
 
-Use `claude-opus-5`.
+Use `claude-opus-5.5`.
 
 Coordination is judgement rather than execution: a bad sequencing decision costs
 the whole team a cycle. The executors I spawn run `claude-sonnet-5` and escalate
