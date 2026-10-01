@@ -146,6 +146,10 @@ jobs:
               { name: 'feedback', color: '00E5FF', description: 'User feedback — high signal, needs attention' }
             ];
 
+            const CEREMONY_LABELS = [
+              { name: 'retro-action', color: '5319E7', description: 'Action item from a retrospective ceremony — must be closed or re-triaged' }
+            ];
+
             const PRIORITY_LABELS = [
               { name: 'priority:p0', color: 'B60205', description: 'Blocking release' },
               { name: 'priority:p1', color: 'D93F0B', description: 'This sprint' },
@@ -177,12 +181,13 @@ jobs:
               });
             }
 
-            // Add go:, release:, type:, priority:, and high-signal labels
+            // Add go:, release:, type:, priority:, high-signal, and ceremony labels
             labels.push(...GO_LABELS);
             labels.push(...RELEASE_LABELS);
             labels.push(...TYPE_LABELS);
             labels.push(...PRIORITY_LABELS);
             labels.push(...SIGNAL_LABELS);
+            labels.push(...CEREMONY_LABELS);
 
             // Sync labels (create or update)
             for (const label of labels) {
