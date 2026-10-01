@@ -52,10 +52,10 @@ const pureSource = src.slice(0, idx);
 // touched the DOM directly (rather than only inside functions main() calls
 // later), this throws immediately instead of silently doing nothing.
 const sandboxModule = { exports: {} };
-const load = new Function('module', 'exports', `${pureSource}\nmodule.exports = { esc, num, ago, statusBadge, sessionRow, peopleRows };`);
+const load = new Function('module', 'exports', `${pureSource}\nmodule.exports = { esc, num, ago, statusBadge, sessionRow, peopleRows, renderSquadPanel };`);
 load(sandboxModule, sandboxModule.exports);
 const {
-  esc, num, sessionRow, peopleRows,
+  esc, num, sessionRow, peopleRows, renderSquadPanel,
 } = sandboxModule.exports;
 
 const XSS = '<img src=x onerror=alert(1)>';
@@ -175,6 +175,34 @@ check('a malicious device name, cwd, and squad project (same meta line) also ren
     squad: { project: XSS, activeMembers: 1, memberCount: 1 },
   }, XSS);
   assert.ok(!html.includes('<img'), 'device name / cwd / squad project let a live tag through');
+});
+
+check('malicious Squad model policy and roster source values render as inert text in the Squad panel', () => {
+  const oldDocument = global.document;
+  const el = { hidden: true, innerHTML: '' };
+  global.document = {
+    getElementById(id) { return id === 'dtSquad' ? el : { innerHTML: '' }; },
+  };
+  try {
+    renderSquadPanel({
+      project: XSS,
+      activeMembers: 1,
+      memberCount: 1,
+      memberSource: XSS,
+      members: [{ name: XSS, role: XSS, active: true }],
+      decisions: [],
+      models: {
+        uniform: true,
+        distinctModels: [XSS],
+        costPolicy: { maxCategory: XSS },
+        economyMode: true,
+      },
+    });
+  } finally {
+    if (oldDocument === undefined) delete global.document; else global.document = oldDocument;
+  }
+  assert.ok(!el.innerHTML.includes('<img'), `Squad panel let a live tag through: ${el.innerHTML}`);
+  assert.ok(el.innerHTML.includes(esc(XSS)), 'the escaped hostile value is missing');
 });
 
 check('a legitimate agent/model/source selection still renders normally, unaffected by escaping', () => {

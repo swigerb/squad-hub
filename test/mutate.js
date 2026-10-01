@@ -448,6 +448,101 @@ const MUTATIONS = [
     mustFail: 'a mixed-model team is flagged',
   },
   {
+    name: 'generated Team Capabilities block is ignored in favor of team.md',
+    file: 'src/squad-context.js',
+    find: `    const generated = parseTeamCapabilitiesBlock(readFileConfined(dirs.teamProjectReal, TEAM_CAPABILITIES_AGENT_FILE));`,
+    replace: `    const generated = process.env.MUTANT ? null : parseTeamCapabilitiesBlock(readFileConfined(dirs.teamProjectReal, TEAM_CAPABILITIES_AGENT_FILE)); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block is preferred over stale team.md',
+  },
+  {
+    name: 'pending Team Capabilities placeholder is treated as authoritative',
+    file: 'src/squad-context.js',
+    find: `    if (/\\bstatus\\s*=\\s*pending\\b/i.test(header[1])) continue;`,
+    replace: `    if (/\\bstatus\\s*=\\s*pending\\b/i.test(header[1])) { if (process.env.MUTANT) return { members: [], taskTypes: [], routingHints: [], capabilityBoundaries: { can: [], cannot: [] } }; continue; } // MUTATION`,
+    mustFail: 'a pending Team Capabilities placeholder falls back to team.md',
+  },
+  {
+    name: 'malformed Team Capabilities table is accepted instead of falling back',
+    file: 'src/squad-context.js',
+    find: `    if (!specialists.sawTable && !emptyCast) continue;`,
+    replace: `    if (!process.env.MUTANT && !specialists.sawTable && !emptyCast) continue; // MUTATION`,
+    mustFail: 'a malformed Team Capabilities block falls back to team.md',
+  },
+  {
+    name: 'Team Capabilities authority values are dropped',
+    file: 'src/squad-context.js',
+    find: `          .filter((a) => ['review', 'edit', 'advisory'].includes(a));`,
+    replace: `          .filter((a) => !process.env.MUTANT && ['review', 'edit', 'advisory'].includes(a)); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block parses specialists into the roster shape',
+  },
+  {
+    name: 'Team Capabilities supported task types are dropped',
+    file: 'src/squad-context.js',
+    find: `    return t.split(',').map((x) => x.trim()).filter(Boolean);`,
+    replace: `    return process.env.MUTANT ? [] : t.split(',').map((x) => x.trim()).filter(Boolean); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block parses supported task types',
+  },
+  {
+    name: 'Team Capabilities routing hints are dropped',
+    file: 'src/squad-context.js',
+    find: `    const routingHints = routingIdx < 0 ? [] : parseCapabilitiesTable(`,
+    replace: `    const routingHints = process.env.MUTANT || routingIdx < 0 ? [] : parseCapabilitiesTable( // MUTATION`,
+    mustFail: 'the generated Team Capabilities block parses routing hints',
+  },
+  {
+    name: 'Team Capabilities Can boundaries are not parsed',
+    file: 'src/squad-context.js',
+    find: `    let m = t.match(/^-\\s+\\*\\*Can:\\*\\*\\s*(.+)$/i);`,
+    replace: `    let m = process.env.MUTANT ? null : t.match(/^-\\s+\\*\\*Can:\\*\\*\\s*(.+)$/i); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block surfaces capability boundaries',
+  },
+  {
+    name: 'Team Capabilities Cannot boundaries are not parsed',
+    file: 'src/squad-context.js',
+    find: `    m = t.match(/^-\\s+\\*\\*Cannot(?:\\s+\\(no agent claims this\\))?:\\*\\*\\s*(.+)$/i);`,
+    replace: `    m = process.env.MUTANT ? null : t.match(/^-\\s+\\*\\*Cannot(?:\\s+\\(no agent claims this\\))?:\\*\\*\\s*(.+)$/i); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block surfaces capability boundaries',
+  },
+  {
+    name: 'Team Capabilities capability boundaries are not surfaced',
+    file: 'src/squad-context.js',
+    find: `      capabilityBoundaries: generated ? generated.capabilityBoundaries : { can: [], cannot: [] },`,
+    replace: `      capabilityBoundaries: process.env.MUTANT ? { can: [], cannot: [] } : (generated ? generated.capabilityBoundaries : { can: [], cannot: [] }), // MUTATION`,
+    mustFail: 'the generated Team Capabilities block surfaces capability boundaries',
+  },
+  {
+    name: 'top-level costPolicy is ignored',
+    file: 'src/squad-context.js',
+    find: `  const rawCostPolicy = topLevelCostPolicy !== undefined ? topLevelCostPolicy : nestedCostPolicy;`,
+    replace: `  const rawCostPolicy = process.env.MUTANT ? nestedCostPolicy : (topLevelCostPolicy !== undefined ? topLevelCostPolicy : nestedCostPolicy); // MUTATION`,
+    mustFail: 'top-level costPolicy is surfaced next to model preferences',
+  },
+  {
+    name: 'nested models.costPolicy is ignored',
+    file: 'src/squad-context.js',
+    find: `  const nestedCostPolicy = cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models.costPolicy
+    : undefined;`,
+    replace: `  const nestedCostPolicy = process.env.MUTANT ? undefined : (cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models.costPolicy
+    : undefined); // MUTATION`,
+    mustFail: 'nested models.costPolicy is accepted when no top-level policy exists',
+  },
+  {
+    name: 'invalid costPolicy maxCategory is accepted',
+    file: 'src/squad-context.js',
+    find: `    && ['lightweight', 'versatile', 'powerful'].includes(rawCostPolicy.maxCategory)`,
+    replace: `    && (process.env.MUTANT || ['lightweight', 'versatile', 'powerful'].includes(rawCostPolicy.maxCategory)) // MUTATION`,
+    mustFail: 'invalid costPolicy maxCategory is rejected without throwing or rendering nonsense',
+  },
+  {
+    name: 'economyMode is not surfaced',
+    file: 'src/squad-context.js',
+    find: `    economyMode: cfg.economyMode === true,`,
+    replace: `    economyMode: process.env.MUTANT ? false : cfg.economyMode === true, // MUTATION`,
+    mustFail: 'economyMode is surfaced as a distinct model cost signal',
+  },
+  {
     // Issue #92 Sprint 1: `-`, `.` and `/` must NOT count as word boundaries,
     // or a member named "Squad" matches inside "squad-hub"/"squad-on-aca"/
     // ".squad/team.md". Shrinking the excluded set back to bare identifier

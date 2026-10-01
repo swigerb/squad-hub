@@ -144,6 +144,7 @@ function dirsFor(local, stateDir, mode, roots) {
     localReal: roots.localReal,
     stateReal: roots.stateReal,
     projectReal: roots.projectReal,
+    teamProjectReal: roots.teamProjectReal || roots.projectReal,
   };
 }
 
@@ -153,14 +154,14 @@ function acceptLocalSquadDir(local, projectRoot) {
   const projectReal = realpath(projectRoot);
   if (!localReal || !projectReal) return null;
   if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState) return null;
-  return dirsFor(local, local.path, 'local', { localReal, stateReal: localReal, projectReal });
+  return dirsFor(local, local.path, 'local', { localReal, stateReal: localReal, projectReal, teamProjectReal: projectReal });
 }
 
 function fallbackSquadDirs(local, projectRoot) {
   return acceptLocalSquadDir(local, projectRoot);
 }
 
-function acceptStateDir(candidate, local, projectRoot, mode, acceptedLocal) {
+function acceptStateDir(candidate, local, projectRoot, mode, acceptedLocal, teamProjectReal) {
   if (!candidate || !isReadableDirectory(candidate)) return fallbackSquadDirs(local, projectRoot);
   const projectReal = acceptedLocal.projectReal;
   const stateReal = realpath(candidate);
@@ -172,6 +173,7 @@ function acceptStateDir(candidate, local, projectRoot, mode, acceptedLocal) {
     localReal: acceptedLocal.localReal,
     stateReal,
     projectReal,
+    teamProjectReal: teamProjectReal || acceptedLocal.teamProjectReal,
   });
 }
 
@@ -203,7 +205,8 @@ function resolveSquadDirs(cwd) {
 
     const stateDir = stateDirFromConfig(teamSquadDir);
     if (stateDir === localDir && mode === 'local') return acceptedLocal;
-    return acceptStateDir(stateDir, local, projectRoot, mode, acceptedLocal);
+    const teamProjectReal = realpath(path.resolve(teamSquadDir, '..')) || acceptedLocal.projectReal;
+    return acceptStateDir(stateDir, local, projectRoot, mode, acceptedLocal, teamProjectReal);
   } catch {
     const local = detectLocalSquadDir(cwd);
     return local ? fallbackSquadDirs(local, path.resolve(local.path, '..')) : null;
@@ -235,6 +238,7 @@ function parseTeam(md) {
       cols = { name: lower.indexOf('name'), role: lower.indexOf('role'), status: lower.indexOf('status') };
       continue;
     }
+
     if (!cols) continue;
 
     const name = cells[cols.name];
@@ -255,6 +259,150 @@ function parseTeam(md) {
     seen.add(k);
     return true;
   });
+}
+
+const TEAM_CAPABILITIES_BEGIN = '<!-- SQUAD:TEAM-CAPABILITIES:BEGIN -->';
+const TEAM_CAPABILITIES_END = '<!-- SQUAD:TEAM-CAPABILITIES:END -->';
+const TEAM_CAPABILITIES_AGENT_FILE = path.join('.github', 'agents', 'squad.agent.md');
+
+function cleanCapabilityCell(value) {
+  const s = String(value || '').replace(/[`*]/g, '').trim();
+  return s === '—' ? '' : s;
+}
+
+function markdownCells(line) {
+  const t = String(line || '').trim();
+  if (!t.startsWith('|')) return null;
+  return t.split('|').slice(1, -1).map((c) => c.trim());
+}
+
+function isSeparatorLine(line) {
+  const t = String(line || '').trim();
+  return t.startsWith('|') && /^[-:\s|]+$/.test(t.replace(/\|/g, ''));
+}
+
+function parseCapabilitiesTable(lines, start, requiredHeaders, rowMapper) {
+  let cols = null;
+  const out = [];
+  for (let i = start; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (t.startsWith('### ')) break;
+    if (!t) continue;
+    if (isSeparatorLine(t)) continue;
+    const cells = markdownCells(t);
+    if (!cells) continue;
+    const lower = cells.map((c) => c.toLowerCase());
+    if (!cols) {
+      if (requiredHeaders.every((h) => lower.includes(h))) {
+        cols = Object.fromEntries(requiredHeaders.map((h) => [h, lower.indexOf(h)]));
+      }
+      continue;
+    }
+    const row = rowMapper(cells, cols);
+    if (row) out.push(row);
+  }
+  return { rows: out, sawTable: !!cols };
+}
+
+function findSection(lines, heading) {
+  const needle = `### ${heading}`.toLowerCase();
+  return lines.findIndex((l) => l.trim().toLowerCase() === needle);
+}
+
+function parseSupportedTaskTypes(lines) {
+  const idx = findSection(lines, 'Supported task types');
+  if (idx < 0) return [];
+  for (let i = idx + 1; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (t.startsWith('### ')) break;
+    if (/^_None\b/i.test(t)) return [];
+    return t.split(',').map((x) => x.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function parseCapabilityBoundaries(lines) {
+  const idx = findSection(lines, 'Capability boundaries');
+  const boundaries = { can: [], cannot: [] };
+  if (idx < 0) return boundaries;
+  for (let i = idx + 1; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (t.startsWith('### ')) break;
+    let m = t.match(/^-\s+\*\*Can:\*\*\s*(.+)$/i);
+    if (m) {
+      boundaries.can = /^_/.test(m[1].trim()) ? [] : m[1].split(';').map((x) => x.trim()).filter(Boolean);
+      continue;
+    }
+    m = t.match(/^-\s+\*\*Cannot(?:\s+\(no agent claims this\))?:\*\*\s*(.+)$/i);
+    if (m) boundaries.cannot = /^_/.test(m[1].trim()) ? [] : m[1].split(';').map((x) => x.trim()).filter(Boolean);
+  }
+  return boundaries;
+}
+
+function parseTeamCapabilitiesBlock(md) {
+  if (!md) return null;
+  let pos = 0;
+  while (pos < md.length) {
+    const begin = md.indexOf(TEAM_CAPABILITIES_BEGIN, pos);
+    if (begin < 0) return null;
+    const contentStart = begin + TEAM_CAPABILITIES_BEGIN.length;
+    const end = md.indexOf(TEAM_CAPABILITIES_END, contentStart);
+    if (end < 0) return null;
+    pos = end + TEAM_CAPABILITIES_END.length;
+
+    const block = md.slice(contentStart, end);
+    const header = block.match(/<!--\s*squad:capabilities\s+([^>]*)-->/i);
+    if (!header) continue;
+    if (/\bstatus\s*=\s*pending\b/i.test(header[1])) continue;
+    if (!/\bschema\s*=\s*1\b/i.test(header[1])) continue;
+
+    const lines = block.split(/\r?\n/);
+    const availableIdx = findSection(lines, 'Available specialists');
+    if (availableIdx < 0) continue;
+    const specialists = parseCapabilitiesTable(
+      lines,
+      availableIdx + 1,
+      ['agent', 'role', 'authority', 'focus'],
+      (cells, cols) => {
+        const name = cleanCapabilityCell(cells[cols.agent]);
+        if (!name || /^agent$/i.test(name)) return null;
+        const authority = cleanCapabilityCell(cells[cols.authority])
+          .split(',')
+          .map((a) => a.trim())
+          .filter((a) => ['review', 'edit', 'advisory'].includes(a));
+        return {
+          name,
+          role: cleanCapabilityCell(cells[cols.role]),
+          active: true,
+          authority,
+          focus: cleanCapabilityCell(cells[cols.focus]),
+        };
+      },
+    );
+    const emptyCast = lines.slice(availableIdx + 1).some((l) => /^_None\b.*not been cast/i.test(l.trim()));
+    if (!specialists.sawTable && !emptyCast) continue;
+
+    const routingIdx = findSection(lines, 'Routing hints');
+    const routingHints = routingIdx < 0 ? [] : parseCapabilitiesTable(
+      lines,
+      routingIdx + 1,
+      ['domain', 'route to'],
+      (cells, cols) => {
+        const domain = cleanCapabilityCell(cells[cols.domain]);
+        const routeTo = cleanCapabilityCell(cells[cols['route to']]);
+        return domain && routeTo ? { domain, routeTo } : null;
+      },
+    ).rows;
+
+    return {
+      members: specialists.rows,
+      taskTypes: parseSupportedTaskTypes(lines),
+      routingHints,
+      capabilityBoundaries: parseCapabilityBoundaries(lines),
+    };
+  }
+  return null;
 }
 
 /**
@@ -333,6 +481,19 @@ function parseModels(cfg) {
   const overrides = cfg.agentModelOverrides || cfg.modelOverrides || {};
   const names = Object.keys(overrides);
   const distinct = [...new Set(Object.values(overrides).filter(Boolean))];
+  const topLevelCostPolicy = cfg.costPolicy;
+  const nestedCostPolicy = cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models.costPolicy
+    : undefined;
+  // Squad's checked-in `.squad/config.json` uses flat model preferences while
+  // the SDK config nests this field under `models`. Prefer the flat value when
+  // both exist because it is the file this panel reads; the nested form is kept
+  // for parity with SDK-shaped configs rather than silently missing a ceiling.
+  const rawCostPolicy = topLevelCostPolicy !== undefined ? topLevelCostPolicy : nestedCostPolicy;
+  const costPolicy = rawCostPolicy && typeof rawCostPolicy === 'object' && !Array.isArray(rawCostPolicy)
+    && ['lightweight', 'versatile', 'powerful'].includes(rawCostPolicy.maxCategory)
+    ? { maxCategory: rawCostPolicy.maxCategory }
+    : null;
   return {
     defaultModel: cfg.defaultModel || cfg.model || null,
     overrides,
@@ -341,6 +502,8 @@ function parseModels(cfg) {
     uniform: distinct.length <= 1,
     distinctModels: distinct,
     overriddenCount: names.length,
+    costPolicy,
+    economyMode: cfg.economyMode === true,
   };
 }
 
@@ -466,7 +629,15 @@ function readSquad(cwd, opts = {}) {
     const localDir = dirs.localReal;
 
     const confined = (rel) => readFileConfined(dir, rel);
-    const team = parseTeam(confined('team.md'));
+    const fallbackTeam = parseTeam(confined('team.md'));
+    // WHY the agent file is rooted at the TEAM project, not at `stateReal`:
+    // Squad writes `.github/agents/squad.agent.md` beside the team checkout and
+    // externalization never moves it into `.squad/`. When a local repo links to
+    // a remote team, that remote team's generated roster is the less-drifty
+    // truth; external state still falls back to the team's project root here.
+    const generated = parseTeamCapabilitiesBlock(readFileConfined(dirs.teamProjectReal, TEAM_CAPABILITIES_AGENT_FILE));
+    const team = generated ? generated.members : fallbackTeam;
+    const memberSource = generated ? 'team-capabilities' : 'team.md';
     const decisions = parseDecisions(confined('decisions.md'));
     const cfg = readJsonConfined(localDir, 'config.json');
     const models = parseModels(cfg);
@@ -490,8 +661,12 @@ function readSquad(cwd, opts = {}) {
       isSquad: true,
       project: project || path.basename(cwd),
       members: team,
+      memberSource,
       memberCount: team.length,
       activeMembers: team.filter((m) => m.active).length,
+      taskTypes: generated ? generated.taskTypes : [],
+      routingHints: generated ? generated.routingHints : [],
+      capabilityBoundaries: generated ? generated.capabilityBoundaries : { can: [], cannot: [] },
       decisions: decisions.slice(0, opts.decisionLimit || 10),
       decisionCount: decisions.length,
       latestDecision: decisions[0] || null,
@@ -619,7 +794,7 @@ function listSquadDocs(cwd) {
 }
 
 module.exports = {
-  readSquad, isSquadWorkspace, parseTeam, parseDecisions, parseModels, inferActiveMember,
+  readSquad, isSquadWorkspace, parseTeam, parseTeamCapabilitiesBlock, parseDecisions, parseModels, inferActiveMember,
   resolveSquadDoc, listSquadDocs, readFileSafe, resolveSquadDirs, resolveGlobalSquadPath,
   SQUAD_DOCS, MEMBER_DOCS,
 };

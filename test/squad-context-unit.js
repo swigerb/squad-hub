@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 
 const {
-  readSquad, isSquadWorkspace, parseTeam, parseDecisions, parseModels, inferActiveMember,
+  readSquad, isSquadWorkspace, parseTeam, parseTeamCapabilitiesBlock, parseDecisions, parseModels, inferActiveMember,
   resolveSquadDoc, listSquadDocs, resolveSquadDirs, resolveGlobalSquadPath,
 } = require('../src/squad-context');
 const hubConfig = require('../src/config');
@@ -57,6 +57,12 @@ function teamMd(name) {
 
 function writeSquadFile(root, rel, content) {
   const p = path.join(root, '.squad', rel);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, content);
+}
+
+function writeAgentFile(root, content) {
+  const p = path.join(root, '.github', 'agents', 'squad.agent.md');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content);
 }
@@ -141,6 +147,9 @@ function withReadWatch(root, fn) {
     fs.openSync = oldOpen;
   }
 }
+
+const CAPABILITIES_FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'squad-team-capabilities.md'), 'utf8');
+const CAPABILITIES_PENDING_FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'squad-team-capabilities-pending.md'), 'utf8');
 
 function linkDir(target, linkPath) {
   try {
@@ -303,6 +312,156 @@ check('a uniform team is not flagged', () => {
   const m = parseModels({ defaultModel: 'x', agentModelOverrides: { lead: 'x', eng: 'x' } });
   assert.strictEqual(m.uniform, true);
 });
+
+check('top-level costPolicy is surfaced next to model preferences', () => {
+  const m = parseModels({ defaultModel: 'x', costPolicy: { maxCategory: 'versatile' } });
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'versatile' });
+});
+
+check('nested models.costPolicy is accepted when no top-level policy exists', () => {
+  const m = parseModels({ defaultModel: 'x', models: { costPolicy: { maxCategory: 'lightweight' } } });
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'lightweight' });
+});
+
+check('top-level costPolicy wins over nested models.costPolicy', () => {
+  const m = parseModels({
+    defaultModel: 'x',
+    costPolicy: { maxCategory: 'powerful' },
+    models: { costPolicy: { maxCategory: 'lightweight' } },
+  });
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'powerful' });
+});
+
+check('invalid costPolicy maxCategory is rejected without throwing or rendering nonsense', () => {
+  for (const costPolicy of ['economy', null, [], { maxCategory: 'economy' }, { maxCategory: '' }]) {
+    const m = parseModels({ defaultModel: 'x', costPolicy });
+    assert.strictEqual(m.costPolicy, null, `accepted bad costPolicy: ${JSON.stringify(costPolicy)}`);
+  }
+});
+
+check('economyMode is surfaced as a distinct model cost signal', () => {
+  const m = parseModels({ defaultModel: 'x', economyMode: true, costPolicy: { maxCategory: 'versatile' } });
+  assert.strictEqual(m.economyMode, true);
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'versatile' });
+});
+
+check('the generated Team Capabilities block parses specialists into the roster shape', () => {
+  const parsed = parseTeamCapabilitiesBlock(CAPABILITIES_FIXTURE);
+  assert.ok(parsed, 'fixture did not parse');
+  assert.deepStrictEqual(parsed.members.map((m) => m.name), ['Flight', 'EECOM', 'FIDO', 'RETRO', 'CONTROL']);
+  assert.strictEqual(parsed.members[0].role, 'Lead');
+  assert.deepStrictEqual(parsed.members[0].authority, ['review']);
+  assert.strictEqual(parsed.members[1].focus, 'CLI internals, template pipeline');
+  assert.strictEqual(parsed.members[0].active, true);
+});
+
+check('the generated Team Capabilities block parses supported task types', () => {
+  const parsed = parseTeamCapabilitiesBlock(CAPABILITIES_FIXTURE);
+  assert.deepStrictEqual(parsed.taskTypes, ['Architecture', 'CLI internals', 'Testing', 'Security', 'TypeScript']);
+});
+
+check('the generated Team Capabilities block parses routing hints', () => {
+  const parsed = parseTeamCapabilitiesBlock(CAPABILITIES_FIXTURE);
+  assert.deepStrictEqual(parsed.routingHints.slice(0, 2), [
+    { domain: 'Architecture', routeTo: 'Flight' },
+    { domain: 'CLI internals', routeTo: 'EECOM' },
+  ]);
+  assert.deepStrictEqual(parsed.routingHints[5], { domain: 'packages/squad-cli/', routeTo: 'EECOM, CONTROL' });
+});
+
+check('the generated Team Capabilities block surfaces capability boundaries', () => {
+  const d = mkSquad({ 'team.md': teamMd('stale') });
+  try {
+    writeAgentFile(d, CAPABILITIES_FIXTURE);
+    const sq = readSquad(d);
+    assert.deepStrictEqual(sq.capabilityBoundaries.can, [
+      'review code and pull requests',
+      'write and modify code',
+      'write and run tests',
+      'security and secrets review',
+      'cut releases and publish packages',
+    ]);
+    assert.deepStrictEqual(sq.capabilityBoundaries.cannot, [
+      'write and maintain documentation',
+      'responsible-AI and content-safety review',
+      'author and maintain CI/CD workflows',
+      'UX and visual design',
+      'deploy to live environments',
+    ]);
+  } finally { cleanup(d); }
+});
+
+check('empty Team Capabilities boundary placeholders surface as empty lists', () => {
+  const d = mkSquad({ 'team.md': teamMd('stale') });
+  const emptyBoundaries = CAPABILITIES_FIXTURE
+    .replace('- **Can:** review code and pull requests; write and modify code; write and run tests; security and secrets review; cut releases and publish packages', '- **Can:** _nothing verified from charters_')
+    .replace('- **Cannot (no agent claims this):** write and maintain documentation; responsible-AI and content-safety review; author and maintain CI/CD workflows; UX and visual design; deploy to live environments', '- **Cannot:** _no gaps detected_');
+  try {
+    writeAgentFile(d, emptyBoundaries);
+    const sq = readSquad(d);
+    assert.deepStrictEqual(sq.capabilityBoundaries.can, []);
+    assert.deepStrictEqual(sq.capabilityBoundaries.cannot, []);
+  } finally { cleanup(d); }
+});
+
+check('the generated Team Capabilities block is preferred over stale team.md', () => {
+  const d = mkSquad({ 'team.md': teamMd('stale') });
+  try {
+    writeAgentFile(d, CAPABILITIES_FIXTURE);
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team-capabilities');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['Flight', 'EECOM', 'FIDO', 'RETRO', 'CONTROL']);
+    assert.deepStrictEqual(sq.taskTypes, ['Architecture', 'CLI internals', 'Testing', 'Security', 'TypeScript']);
+    assert.ok(sq.capabilityBoundaries.can.includes('write and modify code'));
+  } finally { cleanup(d); }
+});
+
+check('a pending Team Capabilities placeholder falls back to team.md', () => {
+  const d = mkSquad({ 'team.md': teamMd('fallback') });
+  try {
+    writeAgentFile(d, CAPABILITIES_PENDING_FIXTURE);
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team.md');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['fallback']);
+  } finally { cleanup(d); }
+});
+
+check('a malformed Team Capabilities block falls back to team.md', () => {
+  const d = mkSquad({ 'team.md': teamMd('fallback') });
+  try {
+    writeAgentFile(d, '<!-- SQUAD:TEAM-CAPABILITIES:BEGIN -->\n<!-- squad:capabilities schema=1 specialists=1 taskTypes=0 hints=0 -->\n### Available specialists\nnot a table\n<!-- SQUAD:TEAM-CAPABILITIES:END -->');
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team.md');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['fallback']);
+  } finally { cleanup(d); }
+});
+
+check('a truncated Team Capabilities block falls back without throwing', () => {
+  const d = mkSquad({ 'team.md': teamMd('fallback') });
+  try {
+    writeAgentFile(d, '<!-- SQUAD:TEAM-CAPABILITIES:BEGIN -->\n<!-- squad:capabilities schema=1 specialists=1 taskTypes=0 hints=0 -->');
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team.md');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['fallback']);
+  } finally { cleanup(d); }
+});
+
+check('a remote teamRoot prefers that team project agent file over the local one', () => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ teamRoot: '..' + path.sep + 'team-parent' }),
+  });
+  const teamParent = path.join(path.dirname(d), 'team-parent');
+  try {
+    fs.mkdirSync(path.join(teamParent, '.squad'), { recursive: true });
+    fs.writeFileSync(path.join(teamParent, '.squad', 'team.md'), teamMd('remote-team-md'));
+    writeAgentFile(d, CAPABILITIES_PENDING_FIXTURE);
+    writeAgentFile(teamParent, CAPABILITIES_FIXTURE);
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team-capabilities');
+    assert.strictEqual(sq.members[0].name, 'Flight');
+  } finally { cleanup(d); cleanup(teamParent); }
+}));
 
 check('the active member is inferred from the transcript, most recent first', () => {
   const members = [{ name: 'engineer', role: 'engineer', active: true }, { name: 'reviewer', role: 'reviewer', active: true }];
