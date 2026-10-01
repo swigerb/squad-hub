@@ -3139,6 +3139,173 @@ if ($health.accessStore -ne 'durable') {`,
       })`,
     mustFail: 'an export carries logins, notes and timestamps, and nothing that could be a credential',
   },
+  {
+    name: 'squad health accepts a pre-0.13 squad binary',
+    file: 'src/squad-health.js',
+    find: `  if (!versionAtLeast(foundVersion, MIN_VERSION)) {
+    return { available: false, reason: \`squad \${foundVersion || '(unknown version)'} is too old; need >= 0.13\` };
+  }`,
+    replace: `  if (!versionAtLeast(foundVersion, MIN_VERSION) && !process.env.MUTANT) { // MUTATION
+    return { available: false, reason: \`squad \${foundVersion || '(unknown version)'} is too old; need >= 0.13\` };
+  }`,
+    mustFail: 'squad versions older than 0.13 are rejected',
+  },
+  {
+    name: 'squad health treats exit-code-1 JSON as unavailable',
+    file: 'src/squad-health.js',
+    find: `  if (parsed.ok) return { available: true, version: foundVersion, report: parsed.report, exitCode: health.code };`,
+    replace: `  if (parsed.ok && !(process.env.MUTANT && health.code !== 0)) return { available: true, version: foundVersion, report: parsed.report, exitCode: health.code }; // MUTATION`,
+    mustFail: 'squad health exit code 1 with valid JSON is still parsed as a result',
+  },
+  {
+    name: 'squad health accepts the wrong schema',
+    file: 'src/squad-health.js',
+    find: `  if (!parsed || parsed.schema !== SCHEMA || !TOP_STATUSES.has(parsed.status) || !Array.isArray(parsed.checks)) {
+    return { ok: false, reason: 'produced JSON but not the squad-health/v1 schema' };
+  }`,
+    replace: `  if (!parsed || parsed.schema !== SCHEMA || !TOP_STATUSES.has(parsed.status) || !Array.isArray(parsed.checks)) {
+    if (process.env.MUTANT) return { ok: true, report: { schema: SCHEMA, status: 'pass', checks: CHECK_IDS.map((id) => ({ id, status: 'pass', message: 'mutated' })) } }; // MUTATION
+    return { ok: false, reason: 'produced JSON but not the squad-health/v1 schema' };
+  }`,
+    mustFail: 'wrong squad health schema is rejected',
+  },
+  {
+    name: 'squad health timeout waits far longer than requested',
+    file: 'src/squad-health.js',
+    find: `function spawnBounded(command, args, opts = {}) {
+  const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;`,
+    replace: `function spawnBounded(command, args, opts = {}) {
+  const timeoutMs = process.env.MUTANT ? 2500 : (opts.timeoutMs || DEFAULT_TIMEOUT_MS); // MUTATION`,
+    mustFail: 'squad health timeout is enforced and reported',
+  },
+  {
+    name: 'squad health uses PATH-resolved taskkill on Windows',
+    file: 'src/squad-health.js',
+    find: `      const taskkill = trustedSystem32Exe('taskkill.exe');
+      childProcess.spawnSync(taskkill, ['/pid', String(pid), '/T', '/F'], {`,
+    replace: `      const taskkill = process.env.MUTANT ? 'taskkill.exe' : trustedSystem32Exe('taskkill.exe'); // MUTATION
+      childProcess.spawnSync(taskkill, ['/pid', String(pid), '/T', '/F'], {`,
+    mustFail: 'squad health kills Windows children with trusted System32 taskkill',
+  },
+  {
+    name: 'squad health runs Windows cmd shims directly',
+    file: 'src/squad-health.js',
+    find: `  if (process.platform === 'win32' && /\\.(?:cmd|bat)$/i.test(command)) {`,
+    replace: `  if (process.platform === 'win32' && /\\.(?:cmd|bat)$/i.test(command) && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'Windows squad.cmd shim on PATH runs with literal metacharacter args',
+  },
+  {
+    name: 'squad health routes extensionless Windows files through cmd',
+    file: 'src/squad-health.js',
+    find: `  if (process.platform === 'win32' && /\\.(?:cmd|bat)$/i.test(command)) {`,
+    replace: `  if (process.platform === 'win32' && (process.env.MUTANT || /\\.(?:cmd|bat)$/i.test(command))) { // MUTATION`,
+    mustFail: 'Windows extensionless squad files spawn directly instead of through cmd.exe',
+  },
+  {
+    name: 'squad health does not quote the cmd shim path',
+    file: 'src/squad-health.js',
+    find: `function cmdShimCommandLine(command, args) {
+  return \`"\${[quoteForCmd(command), ...args.map(quoteForCmd)].join(' ')}"\`;
+}`,
+    replace: `function cmdShimCommandLine(command, args) { // MUTATION
+  return \`"\${[command, ...args.map(quoteForCmd)].join(' ')}"\`;
+}`,
+    mustFail: 'Windows squad.cmd shim path attack metacharacters do not execute injected commands',
+  },
+  {
+    name: 'squad health sends cmd shim args as separate cmd arguments again',
+    file: 'src/squad-health.js',
+    find: `      args: ['/d', '/v:off', '/s', '/c', cmdShimCommandLine(command, args)],
+      windowsVerbatimArguments: true,`,
+    replace: `      args: ['/d', '/v:off', '/s', '/c', command, ...args], // MUTATION
+      windowsVerbatimArguments: true,`,
+    mustFail: 'Windows squad.cmd shim keeps no-space metacharacter and delayed-expansion args literal',
+  },
+  {
+    name: 'squad health enables delayed expansion for cmd shims',
+    file: 'src/squad-health.js',
+    find: `      args: ['/d', '/v:off', '/s', '/c', cmdShimCommandLine(command, args)],`,
+    replace: `      args: ['/d', '/v:on', '/s', '/c', cmdShimCommandLine(command, args)], // MUTATION`,
+    mustFail: 'Windows squad.cmd shim keeps no-space metacharacter and delayed-expansion args literal',
+  },
+  {
+    name: 'squad health allows percent expansion in cmd shim arguments',
+    file: 'src/squad-health.js',
+    find: `    if (/%/.test(value)) return 'refusing unsafe Windows command shim argument containing percent expansion syntax';`,
+    replace: `    if (/%/.test(value) && !process.env.MUTANT) return 'refusing unsafe Windows command shim argument containing percent expansion syntax'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable prefix arguments',
+  },
+  {
+    name: 'squad health allows control characters in cmd shim arguments',
+    file: 'src/squad-health.js',
+    find: `    if (/[\\0\\r\\n]/.test(value)) return 'refusing unsafe Windows command shim argument containing a control character';`,
+    replace: `    if (/[\\0\\r\\n]/.test(value) && !process.env.MUTANT) return 'refusing unsafe Windows command shim argument containing a control character'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable prefix arguments',
+  },
+  {
+    name: 'squad health allows backslash-before-quote cmd shim arguments',
+    file: 'src/squad-health.js',
+    find: `    if (/\\\\+"/.test(value)) return 'refusing unsafe Windows command shim argument containing a backslash before a quote';`,
+    replace: `    if (/\\\\+"/.test(value) && !process.env.MUTANT) return 'refusing unsafe Windows command shim argument containing a backslash before a quote'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable prefix arguments',
+  },
+  {
+    name: 'squad health allows cmd syntax in shim paths',
+    file: 'src/squad-health.js',
+    find: `  if (/["%|<>]/.test(script)) return 'refusing unsafe Windows command shim path containing cmd syntax';`,
+    replace: `  if (/["%|<>]/.test(script) && !process.env.MUTANT) return 'refusing unsafe Windows command shim path containing cmd syntax'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable script paths',
+  },
+  {
+    name: 'squad health allows control characters in cmd shim paths',
+    file: 'src/squad-health.js',
+    find: `  if (/[\\0\\r\\n]/.test(script)) return 'refusing unsafe Windows command shim path containing a control character';`,
+    replace: `  if (/[\\0\\r\\n]/.test(script) && !process.env.MUTANT) return 'refusing unsafe Windows command shim path containing a control character'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable script paths',
+  },
+  {
+    name: 'squad health cache ignores its TTL and refreshes every read',
+    file: 'src/squad-health.js',
+    find: `  if (entry && entry.result && now - entry.at < ttlMs) {
+    cache.delete(key);
+    cache.set(key, entry);
+    return summaryFromResult(entry.result);
+  }`,
+    replace: `  if (entry && entry.result && now - entry.at < ttlMs && !process.env.MUTANT) { // MUTATION
+    cache.delete(key);
+    cache.set(key, entry);
+    return summaryFromResult(entry.result);
+  }`,
+    mustFail: 'squad health cache TTL is honored instead of respawning every read',
+  },
+  {
+    name: 'squad health cache never prunes expired or excess entries',
+    file: 'src/squad-health.js',
+    find: `  pruneCache(now, ttlMs, maxEntries);`,
+    replace: `  if (!process.env.MUTANT) pruneCache(now, ttlMs, maxEntries); // MUTATION`,
+    mustFail: 'squad health cache prunes expired entries and enforces max size',
+  },
+  {
+    name: 'squad health diagnostics leak into the hub summary',
+    file: 'src/squad-health.js',
+    find: `    checks: result.report.checks.map((c) => ({ id: c.id, status: c.status })),`,
+    replace: `    checks: result.report.checks.map((c) => ({ id: c.id, status: c.status, ...(process.env.MUTANT ? { diagnostics: c.diagnostics } : {}) })), // MUTATION`,
+    mustFail: 'squad health diagnostics are excluded from the hub summary',
+  },
+  {
+    name: 'doctor renders squad health skip as a failure',
+    file: 'src/doctor.js',
+    find: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : 'warn';`,
+    replace: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : (process.env.MUTANT ? 'fail' : 'warn'); // MUTATION`,
+    mustFail: 'doctor renders squad health skip as a warning, not a failure',
+  },
+  {
+    name: 'doctor downgrades failing squad health checks to warnings',
+    file: 'src/doctor.js',
+    find: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : 'warn';`,
+    replace: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? (process.env.MUTANT ? 'warn' : 'fail') : 'warn'; // MUTATION`,
+    mustFail: 'doctor renders failing squad health checks as required failures',
+  },
 ];
 
 /**
