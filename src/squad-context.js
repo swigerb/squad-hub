@@ -22,11 +22,13 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const hubConfig = require('./config');
 
 /** Is this directory a Squad workspace? */
 function isSquadWorkspace(cwd) {
-  try { return fs.statSync(path.join(cwd, '.squad')).isDirectory(); } catch { return false; }
+  try { return !!detectLocalSquadDir(cwd); } catch { return false; }
 }
 
 function readFileSafe(p, limit = 256 * 1024) {
@@ -48,6 +50,164 @@ function readJsonSafe(p) {
   const raw = readFileSafe(p);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
+}
+
+function isDirectory(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
+function isReadableDirectory(p) {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isDirectory()) return false;
+    fs.accessSync(p, fs.constants.R_OK);
+    return true;
+  } catch { return false; }
+}
+
+function realpath(p) {
+  try { return fs.realpathSync.native(p); } catch { return null; }
+}
+
+function pathContains(root, target) {
+  const rel = path.relative(root, target);
+  return rel === '' || (!path.isAbsolute(rel) && !rel.startsWith('..'));
+}
+
+function readFileConfined(rootReal, rel) {
+  const target = path.resolve(rootReal, rel);
+  const targetReal = realpath(target);
+  if (!targetReal || !pathContains(rootReal, targetReal)) return null;
+  return readFileSafe(targetReal);
+}
+
+function readJsonConfined(rootReal, rel) {
+  const raw = readFileConfined(rootReal, rel);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function detectLocalSquadDir(cwd) {
+  if (!cwd || typeof cwd !== 'string') return null;
+  for (const name of ['.squad', '.ai-team']) {
+    const dir = path.join(cwd, name);
+    if (isDirectory(dir)) return { name, path: dir };
+  }
+  return null;
+}
+
+function resolveGlobalSquadPath() {
+  let base;
+  if (process.platform === 'win32') {
+    base = process.env.APPDATA || process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  } else if (process.platform === 'darwin') {
+    base = path.join(os.homedir(), 'Library', 'Application Support');
+  } else {
+    base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  }
+  return path.join(base, 'squad');
+}
+
+function resolveExternalStateDir(projectKey) {
+  const raw = String(projectKey || '');
+  if (!raw || raw.includes('..')) return null;
+  if (/[. ]+$/.test(raw)) return null;
+  const sanitized = raw
+    .replace(/[/\\]/g, '-')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!sanitized) return null;
+  if (sanitized === '.') return null;
+  if (sanitized !== '.' && /[. ]$/.test(sanitized)) return null;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(sanitized)) return null;
+  return path.join(resolveGlobalSquadPath(), 'projects', sanitized);
+}
+
+function stateDirFromConfig(squadDir) {
+  const cfg = readJsonSafe(path.join(squadDir, 'config.json'));
+  if (cfg && cfg.stateLocation === 'external' && cfg.projectKey) {
+    return resolveExternalStateDir(cfg.projectKey);
+  }
+  return squadDir;
+}
+
+function dirsFor(local, stateDir, mode, roots) {
+  return {
+    localDir: local.path,
+    stateDir,
+    mode,
+    name: local.name,
+    localReal: roots.localReal,
+    stateReal: roots.stateReal,
+    projectReal: roots.projectReal,
+  };
+}
+
+function acceptLocalSquadDir(local, projectRoot) {
+  if (!isReadableDirectory(local.path)) return null;
+  const localReal = realpath(local.path);
+  const projectReal = realpath(projectRoot);
+  if (!localReal || !projectReal) return null;
+  if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState) return null;
+  return dirsFor(local, local.path, 'local', { localReal, stateReal: localReal, projectReal });
+}
+
+function fallbackSquadDirs(local, projectRoot) {
+  return acceptLocalSquadDir(local, projectRoot);
+}
+
+function acceptStateDir(candidate, local, projectRoot, mode, acceptedLocal) {
+  if (!candidate || !isReadableDirectory(candidate)) return fallbackSquadDirs(local, projectRoot);
+  const projectReal = acceptedLocal.projectReal;
+  const stateReal = realpath(candidate);
+  if (!stateReal) return fallbackSquadDirs(local, projectRoot);
+  if (!pathContains(projectReal, stateReal) && !hubConfig.read().followExternalSquadState) {
+    return fallbackSquadDirs(local, projectRoot);
+  }
+  return dirsFor(local, candidate, mode, {
+    localReal: acceptedLocal.localReal,
+    stateReal,
+    projectReal,
+  });
+}
+
+function resolveSquadDirs(cwd) {
+  try {
+    const local = detectLocalSquadDir(cwd);
+    if (!local) return null;
+    const localDir = local.path;
+    const projectRoot = path.resolve(localDir, '..');
+    const acceptedLocal = acceptLocalSquadDir(local, projectRoot);
+    if (!acceptedLocal) return null;
+    let teamSquadDir = localDir;
+    let mode = 'local';
+    const localCfg = readJsonSafe(path.join(localDir, 'config.json'));
+
+    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.') {
+      // `teamRoot` is untrusted repo content. Squad v0.13.1 deliberately
+      // allows it to point outside the checkout so teams can live in a sibling
+      // repo. squad-hub preserves that parity, but the only reads reachable
+      // from it are the fixed document allow-list below, with readFileSafe's
+      // size cap still applied. We also require the computed state root to be
+      // a readable directory; weird or missing targets degrade to local.
+      const teamDir = path.resolve(projectRoot, localCfg.teamRoot);
+      const remote = path.join(teamDir, local.name);
+      if (!isReadableDirectory(remote)) return fallbackSquadDirs(local, projectRoot);
+      teamSquadDir = remote;
+      mode = 'remote';
+    }
+
+    const stateDir = stateDirFromConfig(teamSquadDir);
+    if (stateDir === localDir && mode === 'local') return acceptedLocal;
+    return acceptStateDir(stateDir, local, projectRoot, mode, acceptedLocal);
+  } catch {
+    const local = detectLocalSquadDir(cwd);
+    return local ? fallbackSquadDirs(local, path.resolve(local.path, '..')) : null;
+  }
 }
 
 /**
@@ -300,22 +460,31 @@ function inferActiveMember(transcript, members) {
 function readSquad(cwd, opts = {}) {
   try {
     if (!cwd || !isSquadWorkspace(cwd)) return null;
-    const dir = path.join(cwd, '.squad');
+    const dirs = resolveSquadDirs(cwd);
+    if (!dirs) return null;
+    const dir = dirs.stateReal;
+    const localDir = dirs.localReal;
 
-    const team = parseTeam(readFileSafe(path.join(dir, 'team.md')));
-    const decisions = parseDecisions(readFileSafe(path.join(dir, 'decisions.md')));
-    const cfg = readJsonSafe(path.join(dir, 'config.json'));
+    const confined = (rel) => readFileConfined(dir, rel);
+    const team = parseTeam(confined('team.md'));
+    const decisions = parseDecisions(confined('decisions.md'));
+    const cfg = readJsonConfined(localDir, 'config.json');
     const models = parseModels(cfg);
 
     let project = cfg && (cfg.project || cfg.name);
     if (!project) {
-      const md = readFileSafe(path.join(dir, 'team.md')) || '';
+      const md = confined('team.md') || '';
       const m = md.match(/^>\s*(.+)$/m) || md.match(/\*\*Project:\*\*\s*(.+)$/m);
       if (m) project = m[1].trim();
     }
 
     let lastDecisionAt = null;
-    try { lastDecisionAt = fs.statSync(path.join(dir, 'decisions.md')).mtimeMs; } catch { /* none */ }
+    try {
+      const decisionPath = realpath(path.join(dir, 'decisions.md'));
+      if (decisionPath && pathContains(dir, decisionPath)) {
+        lastDecisionAt = fs.statSync(decisionPath).mtimeMs;
+      }
+    } catch { /* none */ }
 
     return {
       isSquad: true,
@@ -344,7 +513,9 @@ function readSquad(cwd, opts = {}) {
  * primitive, and it is why adding a document is a reviewed change to this
  * object rather than a new string arriving over a socket.
  *
- * Everything here is relative to `<cwd>/.squad`.
+ * State documents are relative to the resolved state directory. The keep-local
+ * bootstrap files (currently only config.json here) are relative to the local
+ * workspace .squad/.ai-team directory.
  */
 const SQUAD_DOCS = Object.freeze({
   team: 'team.md',
@@ -352,6 +523,8 @@ const SQUAD_DOCS = Object.freeze({
   routing: 'routing.md',
   config: 'config.json',
 });
+
+const LOCAL_SQUAD_DOCS = Object.freeze(new Set(['config']));
 
 /** `charter:<member>` and `history:<member>`, resolved against the real team. */
 const MEMBER_DOCS = Object.freeze({
@@ -379,11 +552,16 @@ function resolveSquadDoc(cwd, doc) {
   if (!cwd || typeof doc !== 'string' || !doc) return { error: 'no document was named' };
   if (!isSquadWorkspace(cwd)) return { error: 'not a Squad workspace' };
 
-  const root = path.resolve(cwd, '.squad');
+  const dirs = resolveSquadDirs(cwd);
+  if (!dirs) return { error: 'not a Squad workspace' };
+  const stateRoot = dirs.stateReal;
+  const localRoot = dirs.localReal;
+  let root = stateRoot;
   let rel = null;
 
   if (Object.prototype.hasOwnProperty.call(SQUAD_DOCS, doc)) {
     rel = SQUAD_DOCS[doc];
+    root = LOCAL_SQUAD_DOCS.has(doc) ? localRoot : stateRoot;
   } else {
     const at = doc.indexOf(':');
     const kind = at === -1 ? null : doc.slice(0, at);
@@ -391,7 +569,7 @@ function resolveSquadDoc(cwd, doc) {
     if (!kind || !Object.prototype.hasOwnProperty.call(MEMBER_DOCS, kind)) {
       return { error: `unknown document "${doc}"` };
     }
-    const team = parseTeam(readFileSafe(path.join(root, 'team.md')));
+    const team = parseTeam(readFileConfined(stateRoot, 'team.md'));
     const member = team.find((m) => String(m.name).toLowerCase() === String(who).toLowerCase());
     if (!member) return { error: `"${who}" is not on this team` };
     rel = path.join('agents', member.name, MEMBER_DOCS[kind]);
@@ -401,22 +579,15 @@ function resolveSquadDoc(cwd, doc) {
   /**
    * Containment, on the resolved path.
    *
-   * This is UNREACHABLE while the rules above hold -- every fixed document is
-   * a literal, and a member document is built from a name the team declares --
-   * and the mutation harness confirms it: breaking this check fails nothing,
-   * because nothing can get here with an escaping path. It is kept anyway, and
-   * that is a deliberate choice rather than an oversight. It costs one
-   * comparison, and it is the only thing standing between a future edit to the
-   * table above and a path outside the workspace. Defence that never fires is
-   * what you want; defence you removed because it never fired is how the next
-   * one gets through.
-   *
-   * `root + sep` rather than a prefix test on `root` alone, so a sibling
-   * directory named `.squad-other` cannot pass for being inside `.squad`.
+   * A fixed document name still must not be a symlink or junction out of the
+   * accepted state root. Use path.relative on canonical paths, not string
+   * prefixes: sibling directories can share leading characters.
    */
-  if (full !== root && !full.startsWith(root + path.sep)) {
+  const existsReal = realpath(full);
+  if (existsReal && !pathContains(root, existsReal)) {
     return { error: 'that document is outside the workspace' };
   }
+  if (!existsReal && !pathContains(root, full)) return { error: 'that document is outside the workspace' };
   return { path: full, doc };
 }
 
@@ -428,6 +599,8 @@ function resolveSquadDoc(cwd, doc) {
  */
 function listSquadDocs(cwd) {
   if (!cwd || !isSquadWorkspace(cwd)) return [];
+  const dirs = resolveSquadDirs(cwd);
+  if (!dirs) return [];
   const out = [];
   const has = (d) => {
     const r = resolveSquadDoc(cwd, d);
@@ -435,7 +608,7 @@ function listSquadDocs(cwd) {
     try { return fs.statSync(r.path).isFile(); } catch { return false; }
   };
   for (const d of Object.keys(SQUAD_DOCS)) if (has(d)) out.push(d);
-  const team = parseTeam(readFileSafe(path.join(path.resolve(cwd, '.squad'), 'team.md')));
+  const team = parseTeam(readFileConfined(dirs.stateReal, 'team.md'));
   for (const m of team) {
     for (const kind of Object.keys(MEMBER_DOCS)) {
       const d = `${kind}:${m.name}`;
@@ -447,5 +620,6 @@ function listSquadDocs(cwd) {
 
 module.exports = {
   readSquad, isSquadWorkspace, parseTeam, parseDecisions, parseModels, inferActiveMember,
-  resolveSquadDoc, listSquadDocs, readFileSafe, SQUAD_DOCS, MEMBER_DOCS,
+  resolveSquadDoc, listSquadDocs, readFileSafe, resolveSquadDirs, resolveGlobalSquadPath,
+  SQUAD_DOCS, MEMBER_DOCS,
 };

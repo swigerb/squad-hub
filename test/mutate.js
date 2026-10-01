@@ -505,6 +505,146 @@ const MUTATIONS = [
     mustFail: 'the payload distinguishes "no idea" from "the coordinator is acting"',
   },
   {
+    name: 'teamRoot "." is treated as remote instead of the local sentinel',
+    file: 'src/squad-context.js',
+    find: `    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.') {`,
+    replace: `    if (localCfg && localCfg.teamRoot && (process.env.MUTANT || localCfg.teamRoot !== '.')) { // MUTATION`,
+    mustFail: 'local state is unchanged with no config, and teamRoot "." stays local',
+  },
+  {
+    name: 'external project keys containing dot-dot are accepted',
+    file: 'src/squad-context.js',
+    find: `  if (!raw || raw.includes('..')) return null;`,
+    replace: `  if (!raw || (!process.env.MUTANT && raw.includes('..'))) return null; // MUTATION`,
+    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+  },
+  {
+    name: 'external project keys with raw trailing spaces are accepted',
+    file: 'src/squad-context.js',
+    find: `  if (/[. ]+$/.test(raw)) return null;`,
+    replace: `  if (!process.env.MUTANT && /[. ]+$/.test(raw)) return null; // MUTATION`,
+    mustFail: 'raw trailing-space projectKey is refused before sanitisation',
+  },
+  {
+    name: 'external project key collapsing to dot is accepted',
+    file: 'src/squad-context.js',
+    find: `  if (sanitized === '.') return null;`,
+    replace: `  if (!process.env.MUTANT && sanitized === '.') return null; // MUTATION`,
+    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+  },
+  {
+    name: 'reserved and trailing-dot external project keys are accepted',
+    file: 'src/squad-context.js',
+    find: `  if (sanitized !== '.' && /[. ]$/.test(sanitized)) return null;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?$/i.test(sanitized)) return null;`,
+    replace: `  if (!process.env.MUTANT && sanitized !== '.' && /[. ]$/.test(sanitized)) return null; // MUTATION
+  if (!process.env.MUTANT && /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?$/i.test(sanitized)) return null; // MUTATION`,
+    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+  },
+  {
+    name: 'external project key sanitisation does not trim edge dashes',
+    file: 'src/squad-context.js',
+    find: `    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/^-+|-+$/g, '');`,
+    replace: `    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(process.env.MUTANT ? /$a/ : /^-+|-+$/g, ''); // MUTATION`,
+    mustFail: 'projectKey sanitisation matches upstream exactly',
+  },
+  {
+    name: 'local external state beats remote teamRoot',
+    file: 'src/squad-context.js',
+    find: `    const stateDir = stateDirFromConfig(teamSquadDir);`,
+    replace: `    const stateDir = stateDirFromConfig(process.env.MUTANT ? localDir : teamSquadDir); // MUTATION`,
+    mustFail: 'remote teamRoot wins over local external state',
+  },
+  {
+    name: 'local Squad root canonicalization is removed',
+    file: 'src/squad-context.js',
+    find: `  if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState) return null;`,
+    replace: `  if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState && !process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'symlinked local Squad root outside the project is blocked unless squad-hub config enables it',
+  },
+  {
+    name: 'escaping Squad state is followed even when squad-hub config disables it',
+    file: 'src/squad-context.js',
+    find: `  if (!pathContains(projectReal, stateReal) && !hubConfig.read().followExternalSquadState) {
+    return fallbackSquadDirs(local, projectRoot);
+  }`,
+    replace: `  if (!pathContains(projectReal, stateReal) && !hubConfig.read().followExternalSquadState && !process.env.MUTANT) { // MUTATION
+    return fallbackSquadDirs(local, projectRoot);
+  }`,
+    mustFail: 'externalized state outside the project is blocked unless squad-hub config enables it',
+  },
+  {
+    name: 'local Squad document confinement is removed',
+    file: 'src/squad-context.js',
+    find: `  const existsReal = realpath(full);
+  if (existsReal && !pathContains(root, existsReal)) {`,
+    replace: `  const existsReal = process.env.MUTANT && root === stateRoot ? null : realpath(full); // MUTATION
+  if (existsReal && !pathContains(root, existsReal)) {`,
+    mustFail: 'symlinked documents cannot escape a local state root',
+  },
+  {
+    name: 'realpath containment is removed from Squad document resolution',
+    file: 'src/squad-context.js',
+    find: `  const existsReal = realpath(full);
+  if (existsReal && !pathContains(root, existsReal)) {
+    return { error: 'that document is outside the workspace' };
+  }
+  if (!existsReal && !pathContains(root, full)) return { error: 'that document is outside the workspace' };`,
+    replace: `  const existsReal = realpath(full);
+  if (!process.env.MUTANT && existsReal && !pathContains(root, existsReal)) { // MUTATION
+    return { error: 'that document is outside the workspace' };
+  }
+  if (!process.env.MUTANT && !existsReal && !pathContains(root, full)) return { error: 'that document is outside the workspace' }; // MUTATION`,
+    mustFail: 'symlinked documents cannot escape an accepted external state root',
+  },
+  {
+    name: 'SQUAD_HOME controls external Squad state',
+    file: 'src/squad-context.js',
+    find: `  return path.join(base, 'squad');`,
+    replace: `  return process.env.MUTANT && process.env.SQUAD_HOME ? process.env.SQUAD_HOME : path.join(base, 'squad'); // MUTATION`,
+    mustFail: 'externalized state ignores SQUAD_HOME and uses the platform global root',
+  },
+  {
+    name: 'teamRoot "./" is treated as local instead of remote',
+    file: 'src/squad-context.js',
+    find: `    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.') {`,
+    replace: `    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.' && !(process.env.MUTANT && localCfg.teamRoot === './')) { // MUTATION`,
+    mustFail: 'teamRoot "./" is remote and targets the parent containing .squad',
+  },
+  {
+    name: 'remote teamRoot points at the state dir instead of the parent containing it',
+    file: 'src/squad-context.js',
+    find: `      const remote = path.join(teamDir, local.name);`,
+    replace: `      const remote = process.env.MUTANT ? teamDir : path.join(teamDir, local.name); // MUTATION`,
+    mustFail: 'remote teamRoot reads the roster from the sibling team parent',
+  },
+  {
+    name: 'state resolution creates missing external directories',
+    file: 'src/squad-context.js',
+    find: `  return path.join(resolveGlobalSquadPath(), 'projects', sanitized);`,
+    replace: `  const dir = path.join(resolveGlobalSquadPath(), 'projects', sanitized);
+  if (process.env.MUTANT && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); // MUTATION
+  return dir;`,
+    mustFail: 'production state resolution does not create missing external directories',
+  },
+  {
+    name: 'models config is read from stateDir instead of localDir',
+    file: 'src/squad-context.js',
+    find: `    const cfg = readJsonConfined(localDir, 'config.json');`,
+    replace: `    const cfg = readJsonConfined(process.env.MUTANT ? dir : localDir, 'config.json'); // MUTATION`,
+    mustFail: 'externalized state reads roster and decisions externally but models locally',
+  },
+  {
+    name: 'malformed JSON config throws instead of degrading',
+    file: 'src/squad-context.js',
+    find: `  try { return JSON.parse(raw); } catch { return null; }`,
+    replace: `  if (process.env.MUTANT) return JSON.parse(raw); // MUTATION
+  try { return JSON.parse(raw); } catch { return null; }`,
+    mustFail: 'state resolution never throws and degrades to local on bad config or targets',
+  },
+  {
     // Issue #92 Sprint 3: a mention-based guess must be labelled `inferred:
     // true` -- it is a guess, not an assertion -- while a delegation-based
     // fact must not be. Silently dropping the label on the mention path lets

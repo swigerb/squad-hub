@@ -27,6 +27,7 @@ const DEFAULTS = Object.freeze({
   offlineAfterMissedBeats: 4, // stale -> offline
   environments: Object.freeze({}), // named hub URLs for --env; NOT a pinned server
   reportTelemetry: false,    // CPU/RAM load; off by default, like file access
+  followExternalSquadState: false, // allow Squad docs from state roots outside the opened project
   deviceKind: 'local',       // 'local' or 'cloud'; decides roster placement
   // Agents and models a real session advertised. Remembered so the New session
   // dialog can offer them after a restart, rather than falling back to a
@@ -79,10 +80,17 @@ function stamp() {
 function readFromDisk() {
   try {
     const raw = JSON.parse(fs.readFileSync(paths.config(), 'utf8'));
-    return { ...DEFAULTS, ...raw, environments: { ...DEFAULTS.environments, ...(raw.environments || {}) } };
+    return validate({ ...DEFAULTS, ...raw, environments: { ...DEFAULTS.environments, ...(raw.environments || {}) } });
   } catch {
     return { ...DEFAULTS, environments: { ...DEFAULTS.environments } };
   }
+}
+
+function validate(cfg) {
+  return {
+    ...cfg,
+    followExternalSquadState: cfg.followExternalSquadState === true,
+  };
 }
 
 function read() {
@@ -121,7 +129,7 @@ function applyOverrides(cfg) {
 
 function write(cfg) {
   paths.ensureHome();
-  const merged = { ...DEFAULTS, ...cfg, environments: { ...DEFAULTS.environments, ...(cfg.environments || {}) } };
+  const merged = validate({ ...DEFAULTS, ...cfg, environments: { ...DEFAULTS.environments, ...(cfg.environments || {}) } });
   fs.writeFileSync(paths.config(), JSON.stringify(merged, null, 2));
   // The file just moved underneath us; re-stamp rather than assume, so the very
   // next read cannot be served a memo keyed on the PREVIOUS file.

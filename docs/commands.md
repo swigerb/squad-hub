@@ -703,6 +703,11 @@ access, the daemon refuses rather than silently using somewhere else.
 Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 `~/.squad-hub`.
 
+`followExternalSquadState` defaults to `false`. Leave it off unless you want this
+device to follow Squad `teamRoot` or externalized state that resolves outside the
+opened project. A repository's own `.squad/config.json` cannot enable it for you,
+and the value is not included in the hub-facing public device view.
+
 `config edit` creates the file first if it does not exist — an editor opened on
 a path that is not there is how someone ends up editing nothing at all — and
 re-parses it afterwards. Invalid JSON is reported as a failure rather than left
