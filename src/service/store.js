@@ -433,6 +433,55 @@ class Store extends EventEmitter {
     return { removed, kept, stuck };
   }
 
+  /**
+   * A device's live link is gone: its pending approvals are no longer answerable.
+   *
+   * A pending approval is a handle onto one agent process's outstanding
+   * request (see sanitiseSessionForDisk). That rule was applied across a hub
+   * restart and NOT across a device disconnect, so a card from a laptop that
+   * had shut down stayed in memory, survived every page refresh, and could only
+   * be answered with "device is offline". Nothing could clear it except
+   * forgetting the device.
+   *
+   * The card becomes an expired approval that says why. A session that was
+   * waiting on it is marked `disconnected` rather than left asking for an
+   * answer nobody can give. If the device comes back, its reconnect republishes
+   * its whole session list -- including any approval that is genuinely still
+   * live -- and replaces all of this.
+   *
+   * @returns {number} how many approvals were expired
+   */
+  expireDeviceApprovals(subject, deviceId, reason = 'device disconnected') {
+    const b = this._bucket(subject);
+    const now = Date.now();
+    let expired = 0;
+    let changed = false;
+    for (const s of b.sessions.values()) {
+      if (s.deviceId !== deviceId) continue;
+      const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
+      if (!pending.length && s.status !== 'waiting_approval') continue;
+      const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
+      s.expiredApprovals = [...past, ...pending.map((a) => ({
+        approvalId: a.approvalId,
+        title: a.title || a.command || 'a tool call',
+        requestedAt: a.requestedAt,
+        expiredAt: now,
+        reason,
+      }))].slice(-20);
+      s.pendingApprovals = [];
+      if (s.status === 'waiting_approval') {
+        s.status = 'disconnected';
+        s.activity = 'Device disconnected';
+      }
+      s.updatedAt = now;
+      expired += pending.length;
+      changed = true;
+      this.emit('session', { subject, session: s });
+    }
+    if (changed) this._persist(subject);
+    return expired;
+  }
+
   listSessions(subject, filter = {}) {
     let out = [...this._bucket(subject).sessions.values()];
     if (filter.deviceId) out = out.filter((s) => s.deviceId === filter.deviceId);

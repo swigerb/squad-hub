@@ -965,6 +965,16 @@ async function suiteSteer() {
   runChildSuite(path.join(__dirname, 'steer-unit.js'), 'steer');
 }
 
+/**
+ * Approval cards from a device that is gone: a clean disconnect, a revoked
+ * token, or a device that went silent must not leave an answerable-looking
+ * card behind -- and a device that reconnects must not lose a live one.
+ */
+async function suiteStaleApprovals() {
+  console.log('\n[STALE APPROVALS] a gone device leaves no answerable card; a returning one loses nothing');
+  runChildSuite(path.join(__dirname, 'stale-approval-unit.js'), 'stale-approvals');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1024,6 +1034,7 @@ async function suiteSteer() {
   await suiteRetroActionOnRedTests();
   await suiteCeremonyConventions();
   await suiteSteer();
+  await suiteStaleApprovals();
 
   console.log('');
   console.log('='.repeat(60));

@@ -460,13 +460,30 @@ class HubService {
      * costs two bytes and needs no handling at the other end.
      */
     this.keepaliveMs = opts.keepaliveMs || 45000;
+    /**
+     * How long a device may go unheard before its socket is treated as dead.
+     *
+     * A device heartbeats every 15 seconds and answers every ping, so two
+     * whole keepalive intervals of silence is not a slow device -- it is a
+     * powered-off laptop or a dropped network whose TCP connection has not
+     * noticed yet. Until it does, the hub would keep offering approval cards
+     * nobody can answer.
+     */
+    this.deviceDeadAfterMs = opts.deviceDeadAfterMs || this.keepaliveMs * 2;
     this._keepalive = setInterval(() => this._pingAll(), this.keepaliveMs);
     if (this._keepalive.unref) this._keepalive.unref();
   }
 
   _pingAll() {
+    const now = Date.now();
     for (const [, byDevice] of this._devices) {
-      for (const [, c] of byDevice) { try { c.ping(); } catch { /* closing */ } }
+      for (const [, c] of [...byDevice]) {
+        if (typeof c.lastHeard === 'number' && now - c.lastHeard > this.deviceDeadAfterMs && c.terminate) {
+          c.terminate();
+          continue;
+        }
+        try { c.ping(); } catch { /* closing */ }
+      }
     }
     for (const [, set] of this._watchers) {
       for (const c of set) { try { c.ping(); } catch { /* closing */ } }
@@ -884,7 +901,7 @@ class HubService {
           try { conn.close(1008, 'this device token has been revoked'); } catch { /* already gone */ }
           mine.delete(deviceId);
           dropped.push(deviceId);
-          this._broadcast(me.key, { type: 'device-disconnected', deviceId });
+          this._deviceGone(me.key, deviceId);
         }
       }
       // `dropped` is reported, not inferred from a count. A caller who revokes
@@ -1232,7 +1249,6 @@ class HubService {
 
     if (!this._devices.has(me.key)) this._devices.set(me.key, new Map());
     const existing = this._devices.get(me.key).get(deviceId);
-    if (existing && existing !== conn) existing.close(1000);
     // Remember WHICH credential this socket is holding.
     //
     // Without it, revoking a device token recorded the revocation and did
@@ -1242,15 +1258,31 @@ class HubService {
     // reconnect -- which for a lost laptop or a runaway container is the one
     // case where revoking is the only thing you can do.
     conn.deviceTokenJti = me.jti || null;
+    // The new socket takes the slot BEFORE the old one is closed. Closing first
+    // would let the old socket's close handler see itself as current and
+    // expire the approvals of a device that is reconnecting, not leaving.
     this._devices.get(me.key).set(deviceId, conn);
+    if (existing && existing !== conn) existing.close(1000);
 
     conn.on('message', (msg) => this._fromDevice(me, deviceId, msg));
     conn.on('close', () => {
       const map = this._devices.get(me.key);
-      if (map && map.get(deviceId) === conn) map.delete(deviceId);
-      this._broadcast(me.key, { type: 'device-disconnected', deviceId });
+      if (map && map.get(deviceId) === conn) {
+        map.delete(deviceId);
+        this._deviceGone(me.key, deviceId);
+      }
     });
     conn.sendJson({ type: 'welcome', deviceId, subject: me.key });
+  }
+
+  /**
+   * A device's live socket is gone. Tell watchers, and retire the approval
+   * cards only that socket could have answered.
+   */
+  _deviceGone(subject, deviceId) {
+    this._broadcast(subject, { type: 'device-disconnected', deviceId });
+    this.store.expireDeviceApprovals(subject, deviceId);
+    this._broadcast(subject, { type: 'overview', ...this.store.overview(subject) });
   }
 
   _attachWatcher(me, conn) {
