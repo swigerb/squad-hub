@@ -587,7 +587,9 @@ Runs a fixed set of independent checks and reports each as `OK`, `WARN`, or
 | `copilot-cli` | The `copilot` executable is on `PATH`. |
 | `copilot-auth` | Bounded and non-destructive: never reaches `OK` -- an env credential's presence and a prior `copilot login`'s on-disk breadcrumb are both checked, but neither proves the CLI can authenticate right now (values are never inspected, and a login can expire or be revoked since). Always `WARN`, with a message describing exactly what evidence (if any) was found. |
 | `squad-project` | Whether the current directory is a Squad project. |
-| `squad-agent-file` | If it is a Squad project, whether `.github/agents/squad.agent.md` exists — the file the auto-selected `squad` agent actually needs. |
+| `squad-health` | Runs `squad health --json` when this is a Squad project and a separately installed `squad` CLI version **0.13 or newer** is on `PATH`. If it cannot run, this is a `WARN` with the specific reason: not a Squad project, `squad` not on `PATH`, version too old, timed out, crashed, produced too much output, or returned JSON that was not the expected schema. |
+| `squad-health:<id>` | One row per check reported by `squad health --json`: `team`, `registry-charters`, `routing`, `state-backend`, and `env-vars`. A reported `pass` is `OK`, `fail` is `FAIL`, and `skip` is `WARN`. |
+| `squad-agent` | If it is a Squad project, whether this Copilot installation has a `squad` custom agent. If not, `squad-hub squad` would run the default agent instead and says so. |
 | `hub-url` | A hub URL is saved and has a valid `http(s)` scheme. |
 | `device-token` | A device token is saved. Its value is never printed. |
 | `hub-reachable` | An unauthenticated, bounded request to the hub's `/healthz`. |
@@ -596,11 +598,11 @@ Runs a fixed set of independent checks and reports each as `OK`, `WARN`, or
 | `selected-agent` | The agent/model this project would use, and which precedence rule picked it. |
 | `agent-selection-warnings` | Any warning produced while resolving the agent/model — a `.squad-hub.json` value rejected for an invalid name, a stray credential-shaped key (`token`, `hub`, ...) in the project config, or a rejected `--agent`/`--model` value. `WARN` if any exist, `OK` if none. Only key names and reasons are ever shown; credential *values* are never printed. The same warnings (if any) are also printed on `squad-hub run`/`squad "<prompt>"` startup and in the interactive terminal's banner — not only here. |
 
-Only `node-version`, `copilot-cli`, a malformed `hub-url`, and a `daemon-hub-attach`
-refusal are `FAIL` checks — they are the ones a session genuinely cannot work
-without, or is silently broken by. Everything else is a `WARN`: a machine with
-no hub configured yet, or a daemon not currently running, is a normal state,
-not a broken one.
+`node-version`, `copilot-cli`, a malformed `hub-url`, a `daemon-hub-attach`
+refusal, a missing Squad custom agent in a Squad project, and failing checks
+reported by `squad health --json` are `FAIL` checks. Most setup gaps are still
+`WARN`: a machine with no hub configured yet, no local daemon currently running,
+or no compatible `squad` CLI installed can be a normal state, not a broken one.
 
 Exit code is **0** when nothing failed, non-zero when at least one `FAIL`
 check exists — warnings never affect it. `--json` prints the full report
@@ -705,8 +707,23 @@ Settings persist in `$SQUAD_HUB_HOME/config.json`, which defaults to
 
 `followExternalSquadState` defaults to `false`. Leave it off unless you want this
 device to follow Squad `teamRoot` or externalized state that resolves outside the
-opened project. A repository's own `.squad/config.json` cannot enable it for you,
-and the value is not included in the hub-facing public device view.
+opened project. Squad Hub still reads the project's local `.squad/config.json`
+first, because Squad keeps that bootstrap file local. From there it follows
+Squad 0.13's state resolution: a `teamRoot` that is not exactly `"."` points at
+the project directory containing the team's `.squad/`, and
+`stateLocation: "external"` plus `projectKey` points into the user-level Squad
+store (`%APPDATA%\squad` on Windows, `~/Library/Application Support/squad` on
+macOS, `$XDG_CONFIG_HOME/squad` or `~/.config/squad` on Linux). If resolving any
+of that fails, the session view falls back to the opened project's local
+`.squad/`.
+
+A repository's own `.squad/config.json` cannot enable
+`followExternalSquadState` for you, and the value is not included in the
+hub-facing public device view. Turning it on means a repository you observe can
+cause this device to read the Squad documents in its configured external team
+location and relay their fixed document set to the hub. That is useful for
+trusted projects that use `squad link` or `squad externalize`; it is not a
+general "safe for every clone" setting.
 
 `config edit` creates the file first if it does not exist — an editor opened on
 a path that is not there is how someone ends up editing nothing at all — and

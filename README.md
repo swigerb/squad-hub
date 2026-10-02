@@ -33,7 +33,7 @@ Squad Hub fixes both.
 | **Start a session anywhere** | Pick a device, write a prompt |
 | **Steer and stop** | Send follow-up input, or cut a run short |
 | **Device tokens** | Give a server a credential that can be a device and nothing else |
-| **Squad-aware** | Reads `.squad/` for team, decisions, and model policy |
+| **Squad-aware** | Reads Squad's resolved state for team, decisions, routing, model policy, and health summary |
 | **On your phone** | Installable as a PWA |
 
 ## What it looks like
@@ -62,10 +62,12 @@ box to steer the agent without touching the machine it runs on.
   <img src="docs/images/session-detail.jpg" alt="A session transcript, its Squad roster, and a follow-up input box" width="820">
 </p>
 
-**Your Squad, not just your sessions.** Click a member to read their charter, or
-open the team's decisions and routing — read from the device, and rendered as
-**text**, never as markup. These files are written by agents as well as by
-people, so the hub does not turn them into HTML.
+**Your Squad, not just your sessions.** The roster prefers Squad 0.13's generated
+Team Capabilities block when it exists, falling back to `team.md` when the block
+is pending or absent. Click a member to read their charter, or open the team's
+decisions and routing — read from the device, and rendered as **text**, never as
+markup. These files are written by agents as well as by people, so the hub does
+not turn them into HTML.
 
 <p align="center">
   <img src="docs/images/squad-charter.jpg" alt="A Squad member's charter, read from the device and shown as plain text" width="820">
@@ -96,6 +98,10 @@ dependencies, so there is no `npm install` step and no `node_modules`.
 > upgrading Squad needs nothing from Squad Hub. If the agent it asked for is not
 > there, the session runs with the default and **says so**, rather than quietly
 > substituting.
+>
+> `squad-hub doctor` can also ask Squad about project health, but only when a
+> separate `squad` CLI version 0.13 or newer is on `PATH`. Without it, doctor
+> reports the specific reason health is unavailable.
 
 ### Getting the `squad-hub` command
 
@@ -326,6 +332,13 @@ squad-hub start --allow-files-all   # the whole filesystem
 
 The confinement root is enforced by the daemon and **never leaves the device** —
 the service is told only whether file access is on and whether it is scoped.
+
+**External Squad state is opt-in.** Squad 0.13 can keep state outside the opened
+project through `teamRoot` or `stateLocation: "external"`. Squad Hub resolves
+those layouts, but by default it will not read a Squad state root outside the
+project. Enable `followExternalSquadState` only in Squad Hub's own config, and
+only when this device should trust the repository's pointer to that external
+team state.
 
 **Per-user isolation** is structural, not a filter applied at read time. Every
 lookup reaches into one subject's partition, so there is no code path that

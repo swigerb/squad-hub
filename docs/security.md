@@ -141,6 +141,24 @@ able to do more than its job.
 The last two are separate even when both are GitHub tokens: one says which
 device this is, the other spends quota.
 
+## External Squad state
+
+Squad 0.13 can resolve a project's state outside the opened repository:
+`teamRoot` can point at another project that owns the team's `.squad/`, and
+`stateLocation: "external"` plus `projectKey` can point into the user-level
+Squad store. Squad Hub follows those layouts only when the device owner opts in
+with `followExternalSquadState: true` in Squad Hub's own config.
+
+The default is safer for arbitrary clones. The observed repository controls its
+own `.squad/config.json`; if that file alone could redirect reads, a repository
+could ask Squad Hub to read the fixed Squad document set from elsewhere on the
+machine and relay it to the hub. The opt-in lives in `$SQUAD_HUB_HOME/config.json`,
+not in the observed repository, and is not reported in the public device view.
+
+Turn it on for trusted projects that deliberately use `squad link` or
+`squad externalize`. Leave it off when observing repositories that should not be
+allowed to point Squad Hub at state outside their own checkout.
+
 ## Enforcement
 
 The owner and allowlist checks run in one place — `_principal()` in
@@ -570,4 +588,3 @@ unreadable — the hub refuses the credential rather than allowing it.
 ```bash
 node spike/revocation-store-probe.js
 ```
-
