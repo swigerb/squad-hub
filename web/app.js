@@ -169,6 +169,7 @@ function statusLabel(s) {
     done: 'Finished',
     failed: 'Failed',
     stopped: 'Stopped',
+    disconnected: 'Device disconnected',
   // A status this build does not know is shown as it came, rather than as
   // "Unknown": the raw name at least says which state it is. Every caller
   // escapes it.
@@ -568,7 +569,7 @@ function sessionRow(s, deviceName, opts = {}) {
         </div>
         <div class="row-meta">${meta}</div>
         ${outcome ? (outcome.kind === 'expired'
-    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)} — nobody answered in time</span></div>`
+    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)} — ${outcome.reason === 'device disconnected' ? 'the device disconnected before anyone answered' : 'nobody answered in time'}</span></div>`
     : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)} — by ${esc(outcome.answeredBy)}</span></div>`) : ''}
         ${squadBits}
       </div>

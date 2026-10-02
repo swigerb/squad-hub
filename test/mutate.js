@@ -2534,8 +2534,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'an expired approval title is interpolated without escaping',
     file: 'web/app.js',
-    find: `\${esc(outcome.title)} — nobody answered in time`,
-    replace: `\${outcome.title} — nobody answered in time`,
+    find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
+    replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
   },
   {

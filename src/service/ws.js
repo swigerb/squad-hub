@@ -21,6 +21,8 @@ class WsConnection extends EventEmitter {
     this._buf = Buffer.alloc(0);
     this._fragments = [];
     this._fragmentOpcode = null;
+    // Any frame at all -- data, pong, close -- proves the far end is alive.
+    this.lastHeard = Date.now();
     socket.on('data', (d) => this._onData(d));
     socket.on('close', () => this._onClose());
     socket.on('error', () => this._onClose());
@@ -33,6 +35,7 @@ class WsConnection extends EventEmitter {
   }
 
   _onData(d) {
+    this.lastHeard = Date.now();
     this._buf = Buffer.concat([this._buf, d]);
     for (;;) {
       const frame = this._readFrame();
@@ -158,6 +161,18 @@ class WsConnection extends EventEmitter {
     this.closed = true;
     try { this.socket.end(); } catch { /* closing */ }
     this.emit('close');
+  }
+
+  /**
+   * Drop a connection whose far end has stopped answering.
+   *
+   * `close()` is a handshake, and a machine that was powered off or lost its
+   * network will never finish one -- TCP can take many minutes to notice on
+   * its own. Destroying the socket is the only way to say "gone" promptly.
+   */
+  terminate() {
+    try { this.socket.destroy(); } catch { /* already gone */ }
+    this._onClose();
   }
 }
 
