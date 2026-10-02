@@ -1727,6 +1727,12 @@ function renderSquadPanel(sq) {
   const modelLine = models.uniform
     ? `all on <b>${esc((models.distinctModels || [])[0] || models.defaultModel || 'default')}</b>`
     : `<span class="sq-warn">mixed: ${esc((models.distinctModels || []).join(', '))}</span>`;
+  const policyBits = [];
+  if (models.costPolicy && models.costPolicy.maxCategory) {
+    policyBits.push(`cost ceiling: ${esc(models.costPolicy.maxCategory)}`);
+  }
+  if (models.economyMode) policyBits.push('economy mode');
+  const modelSummary = [modelLine, ...policyBits.map((p) => `<span class="sq-dim">${p}</span>`)].join(' &middot; ');
 
   // Same rule as the row badge: a count is shown only when there is a count,
   // and the lists are defended because a partial payload must degrade rather
@@ -1739,8 +1745,9 @@ function renderSquadPanel(sq) {
   el.innerHTML = `
     <div class="sq-head">
       <b>${esc(sq.project)}</b>
-      <span class="sq-dim">${counts}${modelLine}</span>
+      <span class="sq-dim">${counts}${modelSummary}</span>
     </div>
+    ${sq.memberSource ? `<div class="sq-sub">Roster source: ${esc(sq.memberSource)}</div>` : ''}
     <div class="sq-members">
       ${members.map((m) => `
         <button type="button" class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}"

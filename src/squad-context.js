@@ -22,11 +22,13 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const hubConfig = require('./config');
 
 /** Is this directory a Squad workspace? */
 function isSquadWorkspace(cwd) {
-  try { return fs.statSync(path.join(cwd, '.squad')).isDirectory(); } catch { return false; }
+  try { return !!detectLocalSquadDir(cwd); } catch { return false; }
 }
 
 function readFileSafe(p, limit = 256 * 1024) {
@@ -48,6 +50,167 @@ function readJsonSafe(p) {
   const raw = readFileSafe(p);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
+}
+
+function isDirectory(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
+function isReadableDirectory(p) {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isDirectory()) return false;
+    fs.accessSync(p, fs.constants.R_OK);
+    return true;
+  } catch { return false; }
+}
+
+function realpath(p) {
+  try { return fs.realpathSync.native(p); } catch { return null; }
+}
+
+function pathContains(root, target) {
+  const rel = path.relative(root, target);
+  return rel === '' || (!path.isAbsolute(rel) && !rel.startsWith('..'));
+}
+
+function readFileConfined(rootReal, rel) {
+  const target = path.resolve(rootReal, rel);
+  const targetReal = realpath(target);
+  if (!targetReal || !pathContains(rootReal, targetReal)) return null;
+  return readFileSafe(targetReal);
+}
+
+function readJsonConfined(rootReal, rel) {
+  const raw = readFileConfined(rootReal, rel);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function detectLocalSquadDir(cwd) {
+  if (!cwd || typeof cwd !== 'string') return null;
+  for (const name of ['.squad', '.ai-team']) {
+    const dir = path.join(cwd, name);
+    if (isDirectory(dir)) return { name, path: dir };
+  }
+  return null;
+}
+
+function resolveGlobalSquadPath() {
+  let base;
+  if (process.platform === 'win32') {
+    base = process.env.APPDATA || process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  } else if (process.platform === 'darwin') {
+    base = path.join(os.homedir(), 'Library', 'Application Support');
+  } else {
+    base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  }
+  return path.join(base, 'squad');
+}
+
+function resolveExternalStateDir(projectKey) {
+  const raw = String(projectKey || '');
+  if (!raw || raw.includes('..')) return null;
+  if (/[. ]+$/.test(raw)) return null;
+  const sanitized = raw
+    .replace(/[/\\]/g, '-')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!sanitized) return null;
+  if (sanitized === '.') return null;
+  if (sanitized !== '.' && /[. ]$/.test(sanitized)) return null;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(sanitized)) return null;
+  return path.join(resolveGlobalSquadPath(), 'projects', sanitized);
+}
+
+function stateDirFromConfig(squadDir) {
+  const cfg = readJsonSafe(path.join(squadDir, 'config.json'));
+  if (cfg && cfg.stateLocation === 'external' && cfg.projectKey) {
+    return resolveExternalStateDir(cfg.projectKey);
+  }
+  return squadDir;
+}
+
+function dirsFor(local, stateDir, mode, roots) {
+  return {
+    localDir: local.path,
+    stateDir,
+    mode,
+    name: local.name,
+    localReal: roots.localReal,
+    stateReal: roots.stateReal,
+    projectReal: roots.projectReal,
+    teamProjectReal: roots.teamProjectReal || roots.projectReal,
+  };
+}
+
+function acceptLocalSquadDir(local, projectRoot) {
+  if (!isReadableDirectory(local.path)) return null;
+  const localReal = realpath(local.path);
+  const projectReal = realpath(projectRoot);
+  if (!localReal || !projectReal) return null;
+  if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState) return null;
+  return dirsFor(local, local.path, 'local', { localReal, stateReal: localReal, projectReal, teamProjectReal: projectReal });
+}
+
+function fallbackSquadDirs(local, projectRoot) {
+  return acceptLocalSquadDir(local, projectRoot);
+}
+
+function acceptStateDir(candidate, local, projectRoot, mode, acceptedLocal, teamProjectReal) {
+  if (!candidate || !isReadableDirectory(candidate)) return fallbackSquadDirs(local, projectRoot);
+  const projectReal = acceptedLocal.projectReal;
+  const stateReal = realpath(candidate);
+  if (!stateReal) return fallbackSquadDirs(local, projectRoot);
+  if (!pathContains(projectReal, stateReal) && !hubConfig.read().followExternalSquadState) {
+    return fallbackSquadDirs(local, projectRoot);
+  }
+  return dirsFor(local, candidate, mode, {
+    localReal: acceptedLocal.localReal,
+    stateReal,
+    projectReal,
+    teamProjectReal: teamProjectReal || acceptedLocal.teamProjectReal,
+  });
+}
+
+function resolveSquadDirs(cwd) {
+  try {
+    const local = detectLocalSquadDir(cwd);
+    if (!local) return null;
+    const localDir = local.path;
+    const projectRoot = path.resolve(localDir, '..');
+    const acceptedLocal = acceptLocalSquadDir(local, projectRoot);
+    if (!acceptedLocal) return null;
+    let teamSquadDir = localDir;
+    let mode = 'local';
+    const localCfg = readJsonSafe(path.join(localDir, 'config.json'));
+
+    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.') {
+      // `teamRoot` is untrusted repo content. Squad v0.13.1 deliberately
+      // allows it to point outside the checkout so teams can live in a sibling
+      // repo. squad-hub preserves that parity, but the only reads reachable
+      // from it are the fixed document allow-list below, with readFileSafe's
+      // size cap still applied. We also require the computed state root to be
+      // a readable directory; weird or missing targets degrade to local.
+      const teamDir = path.resolve(projectRoot, localCfg.teamRoot);
+      const remote = path.join(teamDir, local.name);
+      if (!isReadableDirectory(remote)) return fallbackSquadDirs(local, projectRoot);
+      teamSquadDir = remote;
+      mode = 'remote';
+    }
+
+    const stateDir = stateDirFromConfig(teamSquadDir);
+    if (stateDir === localDir && mode === 'local') return acceptedLocal;
+    const teamProjectReal = realpath(path.resolve(teamSquadDir, '..')) || acceptedLocal.projectReal;
+    return acceptStateDir(stateDir, local, projectRoot, mode, acceptedLocal, teamProjectReal);
+  } catch {
+    const local = detectLocalSquadDir(cwd);
+    return local ? fallbackSquadDirs(local, path.resolve(local.path, '..')) : null;
+  }
 }
 
 /**
@@ -75,6 +238,7 @@ function parseTeam(md) {
       cols = { name: lower.indexOf('name'), role: lower.indexOf('role'), status: lower.indexOf('status') };
       continue;
     }
+
     if (!cols) continue;
 
     const name = cells[cols.name];
@@ -95,6 +259,150 @@ function parseTeam(md) {
     seen.add(k);
     return true;
   });
+}
+
+const TEAM_CAPABILITIES_BEGIN = '<!-- SQUAD:TEAM-CAPABILITIES:BEGIN -->';
+const TEAM_CAPABILITIES_END = '<!-- SQUAD:TEAM-CAPABILITIES:END -->';
+const TEAM_CAPABILITIES_AGENT_FILE = path.join('.github', 'agents', 'squad.agent.md');
+
+function cleanCapabilityCell(value) {
+  const s = String(value || '').replace(/[`*]/g, '').trim();
+  return s === '—' ? '' : s;
+}
+
+function markdownCells(line) {
+  const t = String(line || '').trim();
+  if (!t.startsWith('|')) return null;
+  return t.split('|').slice(1, -1).map((c) => c.trim());
+}
+
+function isSeparatorLine(line) {
+  const t = String(line || '').trim();
+  return t.startsWith('|') && /^[-:\s|]+$/.test(t.replace(/\|/g, ''));
+}
+
+function parseCapabilitiesTable(lines, start, requiredHeaders, rowMapper) {
+  let cols = null;
+  const out = [];
+  for (let i = start; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (t.startsWith('### ')) break;
+    if (!t) continue;
+    if (isSeparatorLine(t)) continue;
+    const cells = markdownCells(t);
+    if (!cells) continue;
+    const lower = cells.map((c) => c.toLowerCase());
+    if (!cols) {
+      if (requiredHeaders.every((h) => lower.includes(h))) {
+        cols = Object.fromEntries(requiredHeaders.map((h) => [h, lower.indexOf(h)]));
+      }
+      continue;
+    }
+    const row = rowMapper(cells, cols);
+    if (row) out.push(row);
+  }
+  return { rows: out, sawTable: !!cols };
+}
+
+function findSection(lines, heading) {
+  const needle = `### ${heading}`.toLowerCase();
+  return lines.findIndex((l) => l.trim().toLowerCase() === needle);
+}
+
+function parseSupportedTaskTypes(lines) {
+  const idx = findSection(lines, 'Supported task types');
+  if (idx < 0) return [];
+  for (let i = idx + 1; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (t.startsWith('### ')) break;
+    if (/^_None\b/i.test(t)) return [];
+    return t.split(',').map((x) => x.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function parseCapabilityBoundaries(lines) {
+  const idx = findSection(lines, 'Capability boundaries');
+  const boundaries = { can: [], cannot: [] };
+  if (idx < 0) return boundaries;
+  for (let i = idx + 1; i < lines.length; i += 1) {
+    const t = lines[i].trim();
+    if (t.startsWith('### ')) break;
+    let m = t.match(/^-\s+\*\*Can:\*\*\s*(.+)$/i);
+    if (m) {
+      boundaries.can = /^_/.test(m[1].trim()) ? [] : m[1].split(';').map((x) => x.trim()).filter(Boolean);
+      continue;
+    }
+    m = t.match(/^-\s+\*\*Cannot(?:\s+\(no agent claims this\))?:\*\*\s*(.+)$/i);
+    if (m) boundaries.cannot = /^_/.test(m[1].trim()) ? [] : m[1].split(';').map((x) => x.trim()).filter(Boolean);
+  }
+  return boundaries;
+}
+
+function parseTeamCapabilitiesBlock(md) {
+  if (!md) return null;
+  let pos = 0;
+  while (pos < md.length) {
+    const begin = md.indexOf(TEAM_CAPABILITIES_BEGIN, pos);
+    if (begin < 0) return null;
+    const contentStart = begin + TEAM_CAPABILITIES_BEGIN.length;
+    const end = md.indexOf(TEAM_CAPABILITIES_END, contentStart);
+    if (end < 0) return null;
+    pos = end + TEAM_CAPABILITIES_END.length;
+
+    const block = md.slice(contentStart, end);
+    const header = block.match(/<!--\s*squad:capabilities\s+([^>]*)-->/i);
+    if (!header) continue;
+    if (/\bstatus\s*=\s*pending\b/i.test(header[1])) continue;
+    if (!/\bschema\s*=\s*1\b/i.test(header[1])) continue;
+
+    const lines = block.split(/\r?\n/);
+    const availableIdx = findSection(lines, 'Available specialists');
+    if (availableIdx < 0) continue;
+    const specialists = parseCapabilitiesTable(
+      lines,
+      availableIdx + 1,
+      ['agent', 'role', 'authority', 'focus'],
+      (cells, cols) => {
+        const name = cleanCapabilityCell(cells[cols.agent]);
+        if (!name || /^agent$/i.test(name)) return null;
+        const authority = cleanCapabilityCell(cells[cols.authority])
+          .split(',')
+          .map((a) => a.trim())
+          .filter((a) => ['review', 'edit', 'advisory'].includes(a));
+        return {
+          name,
+          role: cleanCapabilityCell(cells[cols.role]),
+          active: true,
+          authority,
+          focus: cleanCapabilityCell(cells[cols.focus]),
+        };
+      },
+    );
+    const emptyCast = lines.slice(availableIdx + 1).some((l) => /^_None\b.*not been cast/i.test(l.trim()));
+    if (!specialists.sawTable && !emptyCast) continue;
+
+    const routingIdx = findSection(lines, 'Routing hints');
+    const routingHints = routingIdx < 0 ? [] : parseCapabilitiesTable(
+      lines,
+      routingIdx + 1,
+      ['domain', 'route to'],
+      (cells, cols) => {
+        const domain = cleanCapabilityCell(cells[cols.domain]);
+        const routeTo = cleanCapabilityCell(cells[cols['route to']]);
+        return domain && routeTo ? { domain, routeTo } : null;
+      },
+    ).rows;
+
+    return {
+      members: specialists.rows,
+      taskTypes: parseSupportedTaskTypes(lines),
+      routingHints,
+      capabilityBoundaries: parseCapabilityBoundaries(lines),
+    };
+  }
+  return null;
 }
 
 /**
@@ -173,6 +481,19 @@ function parseModels(cfg) {
   const overrides = cfg.agentModelOverrides || cfg.modelOverrides || {};
   const names = Object.keys(overrides);
   const distinct = [...new Set(Object.values(overrides).filter(Boolean))];
+  const topLevelCostPolicy = cfg.costPolicy;
+  const nestedCostPolicy = cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models.costPolicy
+    : undefined;
+  // Squad's checked-in `.squad/config.json` uses flat model preferences while
+  // the SDK config nests this field under `models`. Prefer the flat value when
+  // both exist because it is the file this panel reads; the nested form is kept
+  // for parity with SDK-shaped configs rather than silently missing a ceiling.
+  const rawCostPolicy = topLevelCostPolicy !== undefined ? topLevelCostPolicy : nestedCostPolicy;
+  const costPolicy = rawCostPolicy && typeof rawCostPolicy === 'object' && !Array.isArray(rawCostPolicy)
+    && ['lightweight', 'versatile', 'powerful'].includes(rawCostPolicy.maxCategory)
+    ? { maxCategory: rawCostPolicy.maxCategory }
+    : null;
   return {
     defaultModel: cfg.defaultModel || cfg.model || null,
     overrides,
@@ -181,6 +502,8 @@ function parseModels(cfg) {
     uniform: distinct.length <= 1,
     distinctModels: distinct,
     overriddenCount: names.length,
+    costPolicy,
+    economyMode: cfg.economyMode === true,
   };
 }
 
@@ -300,29 +623,50 @@ function inferActiveMember(transcript, members) {
 function readSquad(cwd, opts = {}) {
   try {
     if (!cwd || !isSquadWorkspace(cwd)) return null;
-    const dir = path.join(cwd, '.squad');
+    const dirs = resolveSquadDirs(cwd);
+    if (!dirs) return null;
+    const dir = dirs.stateReal;
+    const localDir = dirs.localReal;
 
-    const team = parseTeam(readFileSafe(path.join(dir, 'team.md')));
-    const decisions = parseDecisions(readFileSafe(path.join(dir, 'decisions.md')));
-    const cfg = readJsonSafe(path.join(dir, 'config.json'));
+    const confined = (rel) => readFileConfined(dir, rel);
+    const fallbackTeam = parseTeam(confined('team.md'));
+    // WHY the agent file is rooted at the TEAM project, not at `stateReal`:
+    // Squad writes `.github/agents/squad.agent.md` beside the team checkout and
+    // externalization never moves it into `.squad/`. When a local repo links to
+    // a remote team, that remote team's generated roster is the less-drifty
+    // truth; external state still falls back to the team's project root here.
+    const generated = parseTeamCapabilitiesBlock(readFileConfined(dirs.teamProjectReal, TEAM_CAPABILITIES_AGENT_FILE));
+    const team = generated ? generated.members : fallbackTeam;
+    const memberSource = generated ? 'team-capabilities' : 'team.md';
+    const decisions = parseDecisions(confined('decisions.md'));
+    const cfg = readJsonConfined(localDir, 'config.json');
     const models = parseModels(cfg);
 
     let project = cfg && (cfg.project || cfg.name);
     if (!project) {
-      const md = readFileSafe(path.join(dir, 'team.md')) || '';
+      const md = confined('team.md') || '';
       const m = md.match(/^>\s*(.+)$/m) || md.match(/\*\*Project:\*\*\s*(.+)$/m);
       if (m) project = m[1].trim();
     }
 
     let lastDecisionAt = null;
-    try { lastDecisionAt = fs.statSync(path.join(dir, 'decisions.md')).mtimeMs; } catch { /* none */ }
+    try {
+      const decisionPath = realpath(path.join(dir, 'decisions.md'));
+      if (decisionPath && pathContains(dir, decisionPath)) {
+        lastDecisionAt = fs.statSync(decisionPath).mtimeMs;
+      }
+    } catch { /* none */ }
 
     return {
       isSquad: true,
       project: project || path.basename(cwd),
       members: team,
+      memberSource,
       memberCount: team.length,
       activeMembers: team.filter((m) => m.active).length,
+      taskTypes: generated ? generated.taskTypes : [],
+      routingHints: generated ? generated.routingHints : [],
+      capabilityBoundaries: generated ? generated.capabilityBoundaries : { can: [], cannot: [] },
       decisions: decisions.slice(0, opts.decisionLimit || 10),
       decisionCount: decisions.length,
       latestDecision: decisions[0] || null,
@@ -344,7 +688,9 @@ function readSquad(cwd, opts = {}) {
  * primitive, and it is why adding a document is a reviewed change to this
  * object rather than a new string arriving over a socket.
  *
- * Everything here is relative to `<cwd>/.squad`.
+ * State documents are relative to the resolved state directory. The keep-local
+ * bootstrap files (currently only config.json here) are relative to the local
+ * workspace .squad/.ai-team directory.
  */
 const SQUAD_DOCS = Object.freeze({
   team: 'team.md',
@@ -352,6 +698,8 @@ const SQUAD_DOCS = Object.freeze({
   routing: 'routing.md',
   config: 'config.json',
 });
+
+const LOCAL_SQUAD_DOCS = Object.freeze(new Set(['config']));
 
 /** `charter:<member>` and `history:<member>`, resolved against the real team. */
 const MEMBER_DOCS = Object.freeze({
@@ -379,11 +727,16 @@ function resolveSquadDoc(cwd, doc) {
   if (!cwd || typeof doc !== 'string' || !doc) return { error: 'no document was named' };
   if (!isSquadWorkspace(cwd)) return { error: 'not a Squad workspace' };
 
-  const root = path.resolve(cwd, '.squad');
+  const dirs = resolveSquadDirs(cwd);
+  if (!dirs) return { error: 'not a Squad workspace' };
+  const stateRoot = dirs.stateReal;
+  const localRoot = dirs.localReal;
+  let root = stateRoot;
   let rel = null;
 
   if (Object.prototype.hasOwnProperty.call(SQUAD_DOCS, doc)) {
     rel = SQUAD_DOCS[doc];
+    root = LOCAL_SQUAD_DOCS.has(doc) ? localRoot : stateRoot;
   } else {
     const at = doc.indexOf(':');
     const kind = at === -1 ? null : doc.slice(0, at);
@@ -391,7 +744,7 @@ function resolveSquadDoc(cwd, doc) {
     if (!kind || !Object.prototype.hasOwnProperty.call(MEMBER_DOCS, kind)) {
       return { error: `unknown document "${doc}"` };
     }
-    const team = parseTeam(readFileSafe(path.join(root, 'team.md')));
+    const team = parseTeam(readFileConfined(stateRoot, 'team.md'));
     const member = team.find((m) => String(m.name).toLowerCase() === String(who).toLowerCase());
     if (!member) return { error: `"${who}" is not on this team` };
     rel = path.join('agents', member.name, MEMBER_DOCS[kind]);
@@ -401,22 +754,15 @@ function resolveSquadDoc(cwd, doc) {
   /**
    * Containment, on the resolved path.
    *
-   * This is UNREACHABLE while the rules above hold -- every fixed document is
-   * a literal, and a member document is built from a name the team declares --
-   * and the mutation harness confirms it: breaking this check fails nothing,
-   * because nothing can get here with an escaping path. It is kept anyway, and
-   * that is a deliberate choice rather than an oversight. It costs one
-   * comparison, and it is the only thing standing between a future edit to the
-   * table above and a path outside the workspace. Defence that never fires is
-   * what you want; defence you removed because it never fired is how the next
-   * one gets through.
-   *
-   * `root + sep` rather than a prefix test on `root` alone, so a sibling
-   * directory named `.squad-other` cannot pass for being inside `.squad`.
+   * A fixed document name still must not be a symlink or junction out of the
+   * accepted state root. Use path.relative on canonical paths, not string
+   * prefixes: sibling directories can share leading characters.
    */
-  if (full !== root && !full.startsWith(root + path.sep)) {
+  const existsReal = realpath(full);
+  if (existsReal && !pathContains(root, existsReal)) {
     return { error: 'that document is outside the workspace' };
   }
+  if (!existsReal && !pathContains(root, full)) return { error: 'that document is outside the workspace' };
   return { path: full, doc };
 }
 
@@ -428,6 +774,8 @@ function resolveSquadDoc(cwd, doc) {
  */
 function listSquadDocs(cwd) {
   if (!cwd || !isSquadWorkspace(cwd)) return [];
+  const dirs = resolveSquadDirs(cwd);
+  if (!dirs) return [];
   const out = [];
   const has = (d) => {
     const r = resolveSquadDoc(cwd, d);
@@ -435,7 +783,7 @@ function listSquadDocs(cwd) {
     try { return fs.statSync(r.path).isFile(); } catch { return false; }
   };
   for (const d of Object.keys(SQUAD_DOCS)) if (has(d)) out.push(d);
-  const team = parseTeam(readFileSafe(path.join(path.resolve(cwd, '.squad'), 'team.md')));
+  const team = parseTeam(readFileConfined(dirs.stateReal, 'team.md'));
   for (const m of team) {
     for (const kind of Object.keys(MEMBER_DOCS)) {
       const d = `${kind}:${m.name}`;
@@ -446,6 +794,7 @@ function listSquadDocs(cwd) {
 }
 
 module.exports = {
-  readSquad, isSquadWorkspace, parseTeam, parseDecisions, parseModels, inferActiveMember,
-  resolveSquadDoc, listSquadDocs, readFileSafe, SQUAD_DOCS, MEMBER_DOCS,
+  readSquad, isSquadWorkspace, parseTeam, parseTeamCapabilitiesBlock, parseDecisions, parseModels, inferActiveMember,
+  resolveSquadDoc, listSquadDocs, readFileSafe, resolveSquadDirs, resolveGlobalSquadPath,
+  SQUAD_DOCS, MEMBER_DOCS,
 };

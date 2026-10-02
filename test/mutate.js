@@ -50,8 +50,10 @@ const MUTATIONS = [
     name: 'daemon does not kill its children on shutdown',
     file: 'src/daemon.js',
     find: `  _killAllChildren() {
+    try { require('./squad-health').killAllSquadHealthProbes(); } catch { /* none */ }
     for (const s of this.sessions.values()) {`,
     replace: `  _killAllChildren() {
+    try { require('./squad-health').killAllSquadHealthProbes(); } catch { /* none */ }
     if (process.env.MUTANT) return; // MUTATION
     for (const s of this.sessions.values()) {`,
     mustFail: 'SHUTDOWN kills the agent, without help from the OS',
@@ -448,6 +450,101 @@ const MUTATIONS = [
     mustFail: 'a mixed-model team is flagged',
   },
   {
+    name: 'generated Team Capabilities block is ignored in favor of team.md',
+    file: 'src/squad-context.js',
+    find: `    const generated = parseTeamCapabilitiesBlock(readFileConfined(dirs.teamProjectReal, TEAM_CAPABILITIES_AGENT_FILE));`,
+    replace: `    const generated = process.env.MUTANT ? null : parseTeamCapabilitiesBlock(readFileConfined(dirs.teamProjectReal, TEAM_CAPABILITIES_AGENT_FILE)); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block is preferred over stale team.md',
+  },
+  {
+    name: 'pending Team Capabilities placeholder is treated as authoritative',
+    file: 'src/squad-context.js',
+    find: `    if (/\\bstatus\\s*=\\s*pending\\b/i.test(header[1])) continue;`,
+    replace: `    if (/\\bstatus\\s*=\\s*pending\\b/i.test(header[1])) { if (process.env.MUTANT) return { members: [], taskTypes: [], routingHints: [], capabilityBoundaries: { can: [], cannot: [] } }; continue; } // MUTATION`,
+    mustFail: 'a pending Team Capabilities placeholder falls back to team.md',
+  },
+  {
+    name: 'malformed Team Capabilities table is accepted instead of falling back',
+    file: 'src/squad-context.js',
+    find: `    if (!specialists.sawTable && !emptyCast) continue;`,
+    replace: `    if (!process.env.MUTANT && !specialists.sawTable && !emptyCast) continue; // MUTATION`,
+    mustFail: 'a malformed Team Capabilities block falls back to team.md',
+  },
+  {
+    name: 'Team Capabilities authority values are dropped',
+    file: 'src/squad-context.js',
+    find: `          .filter((a) => ['review', 'edit', 'advisory'].includes(a));`,
+    replace: `          .filter((a) => !process.env.MUTANT && ['review', 'edit', 'advisory'].includes(a)); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block parses specialists into the roster shape',
+  },
+  {
+    name: 'Team Capabilities supported task types are dropped',
+    file: 'src/squad-context.js',
+    find: `    return t.split(',').map((x) => x.trim()).filter(Boolean);`,
+    replace: `    return process.env.MUTANT ? [] : t.split(',').map((x) => x.trim()).filter(Boolean); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block parses supported task types',
+  },
+  {
+    name: 'Team Capabilities routing hints are dropped',
+    file: 'src/squad-context.js',
+    find: `    const routingHints = routingIdx < 0 ? [] : parseCapabilitiesTable(`,
+    replace: `    const routingHints = process.env.MUTANT || routingIdx < 0 ? [] : parseCapabilitiesTable( // MUTATION`,
+    mustFail: 'the generated Team Capabilities block parses routing hints',
+  },
+  {
+    name: 'Team Capabilities Can boundaries are not parsed',
+    file: 'src/squad-context.js',
+    find: `    let m = t.match(/^-\\s+\\*\\*Can:\\*\\*\\s*(.+)$/i);`,
+    replace: `    let m = process.env.MUTANT ? null : t.match(/^-\\s+\\*\\*Can:\\*\\*\\s*(.+)$/i); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block surfaces capability boundaries',
+  },
+  {
+    name: 'Team Capabilities Cannot boundaries are not parsed',
+    file: 'src/squad-context.js',
+    find: `    m = t.match(/^-\\s+\\*\\*Cannot(?:\\s+\\(no agent claims this\\))?:\\*\\*\\s*(.+)$/i);`,
+    replace: `    m = process.env.MUTANT ? null : t.match(/^-\\s+\\*\\*Cannot(?:\\s+\\(no agent claims this\\))?:\\*\\*\\s*(.+)$/i); // MUTATION`,
+    mustFail: 'the generated Team Capabilities block surfaces capability boundaries',
+  },
+  {
+    name: 'Team Capabilities capability boundaries are not surfaced',
+    file: 'src/squad-context.js',
+    find: `      capabilityBoundaries: generated ? generated.capabilityBoundaries : { can: [], cannot: [] },`,
+    replace: `      capabilityBoundaries: process.env.MUTANT ? { can: [], cannot: [] } : (generated ? generated.capabilityBoundaries : { can: [], cannot: [] }), // MUTATION`,
+    mustFail: 'the generated Team Capabilities block surfaces capability boundaries',
+  },
+  {
+    name: 'top-level costPolicy is ignored',
+    file: 'src/squad-context.js',
+    find: `  const rawCostPolicy = topLevelCostPolicy !== undefined ? topLevelCostPolicy : nestedCostPolicy;`,
+    replace: `  const rawCostPolicy = process.env.MUTANT ? nestedCostPolicy : (topLevelCostPolicy !== undefined ? topLevelCostPolicy : nestedCostPolicy); // MUTATION`,
+    mustFail: 'top-level costPolicy is surfaced next to model preferences',
+  },
+  {
+    name: 'nested models.costPolicy is ignored',
+    file: 'src/squad-context.js',
+    find: `  const nestedCostPolicy = cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models.costPolicy
+    : undefined;`,
+    replace: `  const nestedCostPolicy = process.env.MUTANT ? undefined : (cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)
+    ? cfg.models.costPolicy
+    : undefined); // MUTATION`,
+    mustFail: 'nested models.costPolicy is accepted when no top-level policy exists',
+  },
+  {
+    name: 'invalid costPolicy maxCategory is accepted',
+    file: 'src/squad-context.js',
+    find: `    && ['lightweight', 'versatile', 'powerful'].includes(rawCostPolicy.maxCategory)`,
+    replace: `    && (process.env.MUTANT || ['lightweight', 'versatile', 'powerful'].includes(rawCostPolicy.maxCategory)) // MUTATION`,
+    mustFail: 'invalid costPolicy maxCategory is rejected without throwing or rendering nonsense',
+  },
+  {
+    name: 'economyMode is not surfaced',
+    file: 'src/squad-context.js',
+    find: `    economyMode: cfg.economyMode === true,`,
+    replace: `    economyMode: process.env.MUTANT ? false : cfg.economyMode === true, // MUTATION`,
+    mustFail: 'economyMode is surfaced as a distinct model cost signal',
+  },
+  {
     // Issue #92 Sprint 1: `-`, `.` and `/` must NOT count as word boundaries,
     // or a member named "Squad" matches inside "squad-hub"/"squad-on-aca"/
     // ".squad/team.md". Shrinking the excluded set back to bare identifier
@@ -503,6 +600,146 @@ const MUTATIONS = [
 /**
  * Read the Squad context for a working directory.`,
     mustFail: 'the payload distinguishes "no idea" from "the coordinator is acting"',
+  },
+  {
+    name: 'teamRoot "." is treated as remote instead of the local sentinel',
+    file: 'src/squad-context.js',
+    find: `    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.') {`,
+    replace: `    if (localCfg && localCfg.teamRoot && (process.env.MUTANT || localCfg.teamRoot !== '.')) { // MUTATION`,
+    mustFail: 'local state is unchanged with no config, and teamRoot "." stays local',
+  },
+  {
+    name: 'external project keys containing dot-dot are accepted',
+    file: 'src/squad-context.js',
+    find: `  if (!raw || raw.includes('..')) return null;`,
+    replace: `  if (!raw || (!process.env.MUTANT && raw.includes('..'))) return null; // MUTATION`,
+    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+  },
+  {
+    name: 'external project keys with raw trailing spaces are accepted',
+    file: 'src/squad-context.js',
+    find: `  if (/[. ]+$/.test(raw)) return null;`,
+    replace: `  if (!process.env.MUTANT && /[. ]+$/.test(raw)) return null; // MUTATION`,
+    mustFail: 'raw trailing-space projectKey is refused before sanitisation',
+  },
+  {
+    name: 'external project key collapsing to dot is accepted',
+    file: 'src/squad-context.js',
+    find: `  if (sanitized === '.') return null;`,
+    replace: `  if (!process.env.MUTANT && sanitized === '.') return null; // MUTATION`,
+    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+  },
+  {
+    name: 'reserved and trailing-dot external project keys are accepted',
+    file: 'src/squad-context.js',
+    find: `  if (sanitized !== '.' && /[. ]$/.test(sanitized)) return null;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?$/i.test(sanitized)) return null;`,
+    replace: `  if (!process.env.MUTANT && sanitized !== '.' && /[. ]$/.test(sanitized)) return null; // MUTATION
+  if (!process.env.MUTANT && /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?$/i.test(sanitized)) return null; // MUTATION`,
+    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+  },
+  {
+    name: 'external project key sanitisation does not trim edge dashes',
+    file: 'src/squad-context.js',
+    find: `    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/^-+|-+$/g, '');`,
+    replace: `    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(process.env.MUTANT ? /$a/ : /^-+|-+$/g, ''); // MUTATION`,
+    mustFail: 'projectKey sanitisation matches upstream exactly',
+  },
+  {
+    name: 'local external state beats remote teamRoot',
+    file: 'src/squad-context.js',
+    find: `    const stateDir = stateDirFromConfig(teamSquadDir);`,
+    replace: `    const stateDir = stateDirFromConfig(process.env.MUTANT ? localDir : teamSquadDir); // MUTATION`,
+    mustFail: 'remote teamRoot wins over local external state',
+  },
+  {
+    name: 'local Squad root canonicalization is removed',
+    file: 'src/squad-context.js',
+    find: `  if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState) return null;`,
+    replace: `  if (!pathContains(projectReal, localReal) && !hubConfig.read().followExternalSquadState && !process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'symlinked local Squad root outside the project is blocked unless squad-hub config enables it',
+  },
+  {
+    name: 'escaping Squad state is followed even when squad-hub config disables it',
+    file: 'src/squad-context.js',
+    find: `  if (!pathContains(projectReal, stateReal) && !hubConfig.read().followExternalSquadState) {
+    return fallbackSquadDirs(local, projectRoot);
+  }`,
+    replace: `  if (!pathContains(projectReal, stateReal) && !hubConfig.read().followExternalSquadState && !process.env.MUTANT) { // MUTATION
+    return fallbackSquadDirs(local, projectRoot);
+  }`,
+    mustFail: 'externalized state outside the project is blocked unless squad-hub config enables it',
+  },
+  {
+    name: 'local Squad document confinement is removed',
+    file: 'src/squad-context.js',
+    find: `  const existsReal = realpath(full);
+  if (existsReal && !pathContains(root, existsReal)) {`,
+    replace: `  const existsReal = process.env.MUTANT && root === stateRoot ? null : realpath(full); // MUTATION
+  if (existsReal && !pathContains(root, existsReal)) {`,
+    mustFail: 'symlinked documents cannot escape a local state root',
+  },
+  {
+    name: 'realpath containment is removed from Squad document resolution',
+    file: 'src/squad-context.js',
+    find: `  const existsReal = realpath(full);
+  if (existsReal && !pathContains(root, existsReal)) {
+    return { error: 'that document is outside the workspace' };
+  }
+  if (!existsReal && !pathContains(root, full)) return { error: 'that document is outside the workspace' };`,
+    replace: `  const existsReal = realpath(full);
+  if (!process.env.MUTANT && existsReal && !pathContains(root, existsReal)) { // MUTATION
+    return { error: 'that document is outside the workspace' };
+  }
+  if (!process.env.MUTANT && !existsReal && !pathContains(root, full)) return { error: 'that document is outside the workspace' }; // MUTATION`,
+    mustFail: 'symlinked documents cannot escape an accepted external state root',
+  },
+  {
+    name: 'SQUAD_HOME controls external Squad state',
+    file: 'src/squad-context.js',
+    find: `  return path.join(base, 'squad');`,
+    replace: `  return process.env.MUTANT && process.env.SQUAD_HOME ? process.env.SQUAD_HOME : path.join(base, 'squad'); // MUTATION`,
+    mustFail: 'externalized state ignores SQUAD_HOME and uses the platform global root',
+  },
+  {
+    name: 'teamRoot "./" is treated as local instead of remote',
+    file: 'src/squad-context.js',
+    find: `    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.') {`,
+    replace: `    if (localCfg && localCfg.teamRoot && localCfg.teamRoot !== '.' && !(process.env.MUTANT && localCfg.teamRoot === './')) { // MUTATION`,
+    mustFail: 'teamRoot "./" is remote and targets the parent containing .squad',
+  },
+  {
+    name: 'remote teamRoot points at the state dir instead of the parent containing it',
+    file: 'src/squad-context.js',
+    find: `      const remote = path.join(teamDir, local.name);`,
+    replace: `      const remote = process.env.MUTANT ? teamDir : path.join(teamDir, local.name); // MUTATION`,
+    mustFail: 'remote teamRoot reads the roster from the sibling team parent',
+  },
+  {
+    name: 'state resolution creates missing external directories',
+    file: 'src/squad-context.js',
+    find: `  return path.join(resolveGlobalSquadPath(), 'projects', sanitized);`,
+    replace: `  const dir = path.join(resolveGlobalSquadPath(), 'projects', sanitized);
+  if (process.env.MUTANT && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); // MUTATION
+  return dir;`,
+    mustFail: 'production state resolution does not create missing external directories',
+  },
+  {
+    name: 'models config is read from stateDir instead of localDir',
+    file: 'src/squad-context.js',
+    find: `    const cfg = readJsonConfined(localDir, 'config.json');`,
+    replace: `    const cfg = readJsonConfined(process.env.MUTANT ? dir : localDir, 'config.json'); // MUTATION`,
+    mustFail: 'externalized state reads roster and decisions externally but models locally',
+  },
+  {
+    name: 'malformed JSON config throws instead of degrading',
+    file: 'src/squad-context.js',
+    find: `  try { return JSON.parse(raw); } catch { return null; }`,
+    replace: `  if (process.env.MUTANT) return JSON.parse(raw); // MUTATION
+  try { return JSON.parse(raw); } catch { return null; }`,
+    mustFail: 'state resolution never throws and degrades to local on bad config or targets',
   },
   {
     // Issue #92 Sprint 3: a mention-based guess must be labelled `inferred:
@@ -2903,6 +3140,173 @@ if ($health.accessStore -ne 'durable') {`,
         ...(process.env.MUTANT ? { token: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJlLWxvb2tpbmctc3VmZml4' } : {}), // MUTATION
       })`,
     mustFail: 'an export carries logins, notes and timestamps, and nothing that could be a credential',
+  },
+  {
+    name: 'squad health accepts a pre-0.13 squad binary',
+    file: 'src/squad-health.js',
+    find: `  if (!versionAtLeast(foundVersion, MIN_VERSION)) {
+    return { available: false, reason: \`squad \${foundVersion || '(unknown version)'} is too old; need >= 0.13\` };
+  }`,
+    replace: `  if (!versionAtLeast(foundVersion, MIN_VERSION) && !process.env.MUTANT) { // MUTATION
+    return { available: false, reason: \`squad \${foundVersion || '(unknown version)'} is too old; need >= 0.13\` };
+  }`,
+    mustFail: 'squad versions older than 0.13 are rejected',
+  },
+  {
+    name: 'squad health treats exit-code-1 JSON as unavailable',
+    file: 'src/squad-health.js',
+    find: `  if (parsed.ok) return { available: true, version: foundVersion, report: parsed.report, exitCode: health.code };`,
+    replace: `  if (parsed.ok && !(process.env.MUTANT && health.code !== 0)) return { available: true, version: foundVersion, report: parsed.report, exitCode: health.code }; // MUTATION`,
+    mustFail: 'squad health exit code 1 with valid JSON is still parsed as a result',
+  },
+  {
+    name: 'squad health accepts the wrong schema',
+    file: 'src/squad-health.js',
+    find: `  if (!parsed || parsed.schema !== SCHEMA || !TOP_STATUSES.has(parsed.status) || !Array.isArray(parsed.checks)) {
+    return { ok: false, reason: 'produced JSON but not the squad-health/v1 schema' };
+  }`,
+    replace: `  if (!parsed || parsed.schema !== SCHEMA || !TOP_STATUSES.has(parsed.status) || !Array.isArray(parsed.checks)) {
+    if (process.env.MUTANT) return { ok: true, report: { schema: SCHEMA, status: 'pass', checks: CHECK_IDS.map((id) => ({ id, status: 'pass', message: 'mutated' })) } }; // MUTATION
+    return { ok: false, reason: 'produced JSON but not the squad-health/v1 schema' };
+  }`,
+    mustFail: 'wrong squad health schema is rejected',
+  },
+  {
+    name: 'squad health timeout waits far longer than requested',
+    file: 'src/squad-health.js',
+    find: `function spawnBounded(command, args, opts = {}) {
+  const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;`,
+    replace: `function spawnBounded(command, args, opts = {}) {
+  const timeoutMs = process.env.MUTANT ? 2500 : (opts.timeoutMs || DEFAULT_TIMEOUT_MS); // MUTATION`,
+    mustFail: 'squad health timeout is enforced and reported',
+  },
+  {
+    name: 'squad health uses PATH-resolved taskkill on Windows',
+    file: 'src/squad-health.js',
+    find: `      const taskkill = trustedSystem32Exe('taskkill.exe');
+      childProcess.spawnSync(taskkill, ['/pid', String(pid), '/T', '/F'], {`,
+    replace: `      const taskkill = process.env.MUTANT ? 'taskkill.exe' : trustedSystem32Exe('taskkill.exe'); // MUTATION
+      childProcess.spawnSync(taskkill, ['/pid', String(pid), '/T', '/F'], {`,
+    mustFail: 'squad health kills Windows children with trusted System32 taskkill',
+  },
+  {
+    name: 'squad health runs Windows cmd shims directly',
+    file: 'src/squad-health.js',
+    find: `  if (process.platform === 'win32' && /\\.(?:cmd|bat)$/i.test(command)) {`,
+    replace: `  if (process.platform === 'win32' && /\\.(?:cmd|bat)$/i.test(command) && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'Windows squad.cmd shim on PATH runs with literal metacharacter args',
+  },
+  {
+    name: 'squad health routes extensionless Windows files through cmd',
+    file: 'src/squad-health.js',
+    find: `  if (process.platform === 'win32' && /\\.(?:cmd|bat)$/i.test(command)) {`,
+    replace: `  if (process.platform === 'win32' && (process.env.MUTANT || /\\.(?:cmd|bat)$/i.test(command))) { // MUTATION`,
+    mustFail: 'Windows extensionless squad files spawn directly instead of through cmd.exe',
+  },
+  {
+    name: 'squad health does not quote the cmd shim path',
+    file: 'src/squad-health.js',
+    find: `function cmdShimCommandLine(command, args) {
+  return \`"\${[quoteForCmd(command), ...args.map(quoteForCmd)].join(' ')}"\`;
+}`,
+    replace: `function cmdShimCommandLine(command, args) { // MUTATION
+  return \`"\${[command, ...args.map(quoteForCmd)].join(' ')}"\`;
+}`,
+    mustFail: 'Windows squad.cmd shim path attack metacharacters do not execute injected commands',
+  },
+  {
+    name: 'squad health sends cmd shim args as separate cmd arguments again',
+    file: 'src/squad-health.js',
+    find: `      args: ['/d', '/v:off', '/s', '/c', cmdShimCommandLine(command, args)],
+      windowsVerbatimArguments: true,`,
+    replace: `      args: ['/d', '/v:off', '/s', '/c', command, ...args], // MUTATION
+      windowsVerbatimArguments: true,`,
+    mustFail: 'Windows squad.cmd shim keeps no-space metacharacter and delayed-expansion args literal',
+  },
+  {
+    name: 'squad health enables delayed expansion for cmd shims',
+    file: 'src/squad-health.js',
+    find: `      args: ['/d', '/v:off', '/s', '/c', cmdShimCommandLine(command, args)],`,
+    replace: `      args: ['/d', '/v:on', '/s', '/c', cmdShimCommandLine(command, args)], // MUTATION`,
+    mustFail: 'Windows squad.cmd shim keeps no-space metacharacter and delayed-expansion args literal',
+  },
+  {
+    name: 'squad health allows percent expansion in cmd shim arguments',
+    file: 'src/squad-health.js',
+    find: `    if (/%/.test(value)) return 'refusing unsafe Windows command shim argument containing percent expansion syntax';`,
+    replace: `    if (/%/.test(value) && !process.env.MUTANT) return 'refusing unsafe Windows command shim argument containing percent expansion syntax'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable prefix arguments',
+  },
+  {
+    name: 'squad health allows control characters in cmd shim arguments',
+    file: 'src/squad-health.js',
+    find: `    if (/[\\0\\r\\n]/.test(value)) return 'refusing unsafe Windows command shim argument containing a control character';`,
+    replace: `    if (/[\\0\\r\\n]/.test(value) && !process.env.MUTANT) return 'refusing unsafe Windows command shim argument containing a control character'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable prefix arguments',
+  },
+  {
+    name: 'squad health allows backslash-before-quote cmd shim arguments',
+    file: 'src/squad-health.js',
+    find: `    if (/\\\\+"/.test(value)) return 'refusing unsafe Windows command shim argument containing a backslash before a quote';`,
+    replace: `    if (/\\\\+"/.test(value) && !process.env.MUTANT) return 'refusing unsafe Windows command shim argument containing a backslash before a quote'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable prefix arguments',
+  },
+  {
+    name: 'squad health allows cmd syntax in shim paths',
+    file: 'src/squad-health.js',
+    find: `  if (/["%|<>]/.test(script)) return 'refusing unsafe Windows command shim path containing cmd syntax';`,
+    replace: `  if (/["%|<>]/.test(script) && !process.env.MUTANT) return 'refusing unsafe Windows command shim path containing cmd syntax'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable script paths',
+  },
+  {
+    name: 'squad health allows control characters in cmd shim paths',
+    file: 'src/squad-health.js',
+    find: `  if (/[\\0\\r\\n]/.test(script)) return 'refusing unsafe Windows command shim path containing a control character';`,
+    replace: `  if (/[\\0\\r\\n]/.test(script) && !process.env.MUTANT) return 'refusing unsafe Windows command shim path containing a control character'; // MUTATION`,
+    mustFail: 'Windows squad.cmd shim fails closed for unrepresentable script paths',
+  },
+  {
+    name: 'squad health cache ignores its TTL and refreshes every read',
+    file: 'src/squad-health.js',
+    find: `  if (entry && entry.result && now - entry.at < ttlMs) {
+    cache.delete(key);
+    cache.set(key, entry);
+    return summaryFromResult(entry.result);
+  }`,
+    replace: `  if (entry && entry.result && now - entry.at < ttlMs && !process.env.MUTANT) { // MUTATION
+    cache.delete(key);
+    cache.set(key, entry);
+    return summaryFromResult(entry.result);
+  }`,
+    mustFail: 'squad health cache TTL is honored instead of respawning every read',
+  },
+  {
+    name: 'squad health cache never prunes expired or excess entries',
+    file: 'src/squad-health.js',
+    find: `  pruneCache(now, ttlMs, maxEntries);`,
+    replace: `  if (!process.env.MUTANT) pruneCache(now, ttlMs, maxEntries); // MUTATION`,
+    mustFail: 'squad health cache prunes expired entries and enforces max size',
+  },
+  {
+    name: 'squad health diagnostics leak into the hub summary',
+    file: 'src/squad-health.js',
+    find: `    checks: result.report.checks.map((c) => ({ id: c.id, status: c.status })),`,
+    replace: `    checks: result.report.checks.map((c) => ({ id: c.id, status: c.status, ...(process.env.MUTANT ? { diagnostics: c.diagnostics } : {}) })), // MUTATION`,
+    mustFail: 'squad health diagnostics are excluded from the hub summary',
+  },
+  {
+    name: 'doctor renders squad health skip as a failure',
+    file: 'src/doctor.js',
+    find: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : 'warn';`,
+    replace: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : (process.env.MUTANT ? 'fail' : 'warn'); // MUTATION`,
+    mustFail: 'doctor renders squad health skip as a warning, not a failure',
+  },
+  {
+    name: 'doctor downgrades failing squad health checks to warnings',
+    file: 'src/doctor.js',
+    find: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : 'warn';`,
+    replace: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? (process.env.MUTANT ? 'warn' : 'fail') : 'warn'; // MUTATION`,
+    mustFail: 'doctor renders failing squad health checks as required failures',
   },
 ];
 

@@ -361,6 +361,7 @@ class Daemon extends EventEmitter {
   }
 
   _killAllChildren() {
+    try { require('./squad-health').killAllSquadHealthProbes(); } catch { /* none */ }
     for (const s of this.sessions.values()) {
       if (s.pid && alive(s.pid)) { try { process.kill(s.pid); } catch { /* gone */ } }
       this._untrackChild(s.pid);

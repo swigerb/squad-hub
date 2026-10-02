@@ -674,6 +674,7 @@ async function suiteServiceInstall() {
 async function suiteDoctor() {
   console.log('\n[DOCTOR] one command, every independent health check');
   runChildSuite(path.join(__dirname, 'doctor-unit.js'), 'doctor');
+  runChildSuite(path.join(__dirname, 'squad-health-unit.js'), 'squad-health');
 }
 
 /**

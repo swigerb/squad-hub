@@ -18,8 +18,10 @@ const os = require('os');
 const path = require('path');
 
 const {
-  readSquad, isSquadWorkspace, parseTeam, parseDecisions, parseModels, inferActiveMember,
+  readSquad, isSquadWorkspace, parseTeam, parseTeamCapabilitiesBlock, parseDecisions, parseModels, inferActiveMember,
+  resolveSquadDoc, listSquadDocs, resolveSquadDirs, resolveGlobalSquadPath,
 } = require('../src/squad-context');
+const hubConfig = require('../src/config');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -38,9 +40,125 @@ function mkSquad(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-'));
   fs.mkdirSync(path.join(dir, '.squad'));
   for (const [name, content] of Object.entries(files)) {
-    fs.writeFileSync(path.join(dir, '.squad', name), content);
+    const p = path.join(dir, '.squad', name);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
   }
   return dir;
+}
+
+function cleanup(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+function teamMd(name) {
+  return `# Team\n\n> ${name}\n\n| Name | Role | Status |\n| --- | --- | --- |\n| ${name} | lead | active |\n`;
+}
+
+function writeSquadFile(root, rel, content) {
+  const p = path.join(root, '.squad', rel);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, content);
+}
+
+function writeAgentFile(root, content) {
+  const p = path.join(root, '.github', 'agents', 'squad.agent.md');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, content);
+}
+
+function withGlobalEnv(fn) {
+  const old = {
+    APPDATA: process.env.APPDATA,
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    HOME: process.env.HOME,
+    SQUAD_HOME: process.env.SQUAD_HOME,
+  };
+  const oldHomedir = os.homedir;
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'sqglobal-'));
+  try {
+    process.env.HOME = path.join(base, 'home');
+    os.homedir = () => process.env.HOME;
+    if (process.platform === 'win32') {
+      process.env.APPDATA = path.join(base, 'appdata');
+      process.env.LOCALAPPDATA = path.join(base, 'localappdata');
+    } else {
+      process.env.XDG_CONFIG_HOME = path.join(base, 'xdg');
+    }
+    return fn(base);
+  } finally {
+    for (const [k, v] of Object.entries(old)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    os.homedir = oldHomedir;
+    cleanup(base);
+  }
+}
+
+function assertInside(base, target, message) {
+  const rel = path.relative(path.resolve(base), path.resolve(target));
+  assert.ok(rel === '' || (!path.isAbsolute(rel) && !rel.startsWith('..')),
+    message || `${target} is not inside ${base}`);
+}
+
+function externalProjectDir(base, key) {
+  const dir = path.join(resolveGlobalSquadPath(), 'projects', key);
+  assertInside(base, dir, `resolved global Squad dir escaped the test temp base: ${dir}`);
+  return dir;
+}
+
+function withHubConfig(patch, fn) {
+  hubConfig.setOverrides(patch);
+  try { return fn(); }
+  finally {
+    hubConfig.setOverrides(null);
+    hubConfig.invalidate();
+  }
+}
+
+function pathContainsResolved(root, target) {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (!path.isAbsolute(rel) && !rel.startsWith('..'));
+}
+
+function withReadWatch(root, fn) {
+  const rootReal = fs.realpathSync.native(root);
+  const oldRead = fs.readFileSync;
+  const oldOpen = fs.openSync;
+  const reads = [];
+  function note(p) {
+    try {
+      const real = fs.realpathSync.native(p);
+      if (pathContainsResolved(rootReal, real)) reads.push(real);
+    } catch { /* ignored */ }
+  }
+  fs.readFileSync = function watchedReadFileSync(p, ...args) {
+    note(p);
+    return oldRead.call(this, p, ...args);
+  };
+  fs.openSync = function watchedOpenSync(p, ...args) {
+    note(p);
+    return oldOpen.call(this, p, ...args);
+  };
+  try { return fn(reads); }
+  finally {
+    fs.readFileSync = oldRead;
+    fs.openSync = oldOpen;
+  }
+}
+
+const CAPABILITIES_FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'squad-team-capabilities.md'), 'utf8');
+const CAPABILITIES_PENDING_FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'squad-team-capabilities-pending.md'), 'utf8');
+
+function linkDir(target, linkPath) {
+  try {
+    fs.symlinkSync(target, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch (e) {
+    console.log(`  skip directory symlink/junction setup (${e.code || e.message})`);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +312,156 @@ check('a uniform team is not flagged', () => {
   const m = parseModels({ defaultModel: 'x', agentModelOverrides: { lead: 'x', eng: 'x' } });
   assert.strictEqual(m.uniform, true);
 });
+
+check('top-level costPolicy is surfaced next to model preferences', () => {
+  const m = parseModels({ defaultModel: 'x', costPolicy: { maxCategory: 'versatile' } });
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'versatile' });
+});
+
+check('nested models.costPolicy is accepted when no top-level policy exists', () => {
+  const m = parseModels({ defaultModel: 'x', models: { costPolicy: { maxCategory: 'lightweight' } } });
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'lightweight' });
+});
+
+check('top-level costPolicy wins over nested models.costPolicy', () => {
+  const m = parseModels({
+    defaultModel: 'x',
+    costPolicy: { maxCategory: 'powerful' },
+    models: { costPolicy: { maxCategory: 'lightweight' } },
+  });
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'powerful' });
+});
+
+check('invalid costPolicy maxCategory is rejected without throwing or rendering nonsense', () => {
+  for (const costPolicy of ['economy', null, [], { maxCategory: 'economy' }, { maxCategory: '' }]) {
+    const m = parseModels({ defaultModel: 'x', costPolicy });
+    assert.strictEqual(m.costPolicy, null, `accepted bad costPolicy: ${JSON.stringify(costPolicy)}`);
+  }
+});
+
+check('economyMode is surfaced as a distinct model cost signal', () => {
+  const m = parseModels({ defaultModel: 'x', economyMode: true, costPolicy: { maxCategory: 'versatile' } });
+  assert.strictEqual(m.economyMode, true);
+  assert.deepStrictEqual(m.costPolicy, { maxCategory: 'versatile' });
+});
+
+check('the generated Team Capabilities block parses specialists into the roster shape', () => {
+  const parsed = parseTeamCapabilitiesBlock(CAPABILITIES_FIXTURE);
+  assert.ok(parsed, 'fixture did not parse');
+  assert.deepStrictEqual(parsed.members.map((m) => m.name), ['Flight', 'EECOM', 'FIDO', 'RETRO', 'CONTROL']);
+  assert.strictEqual(parsed.members[0].role, 'Lead');
+  assert.deepStrictEqual(parsed.members[0].authority, ['review']);
+  assert.strictEqual(parsed.members[1].focus, 'CLI internals, template pipeline');
+  assert.strictEqual(parsed.members[0].active, true);
+});
+
+check('the generated Team Capabilities block parses supported task types', () => {
+  const parsed = parseTeamCapabilitiesBlock(CAPABILITIES_FIXTURE);
+  assert.deepStrictEqual(parsed.taskTypes, ['Architecture', 'CLI internals', 'Testing', 'Security', 'TypeScript']);
+});
+
+check('the generated Team Capabilities block parses routing hints', () => {
+  const parsed = parseTeamCapabilitiesBlock(CAPABILITIES_FIXTURE);
+  assert.deepStrictEqual(parsed.routingHints.slice(0, 2), [
+    { domain: 'Architecture', routeTo: 'Flight' },
+    { domain: 'CLI internals', routeTo: 'EECOM' },
+  ]);
+  assert.deepStrictEqual(parsed.routingHints[5], { domain: 'packages/squad-cli/', routeTo: 'EECOM, CONTROL' });
+});
+
+check('the generated Team Capabilities block surfaces capability boundaries', () => {
+  const d = mkSquad({ 'team.md': teamMd('stale') });
+  try {
+    writeAgentFile(d, CAPABILITIES_FIXTURE);
+    const sq = readSquad(d);
+    assert.deepStrictEqual(sq.capabilityBoundaries.can, [
+      'review code and pull requests',
+      'write and modify code',
+      'write and run tests',
+      'security and secrets review',
+      'cut releases and publish packages',
+    ]);
+    assert.deepStrictEqual(sq.capabilityBoundaries.cannot, [
+      'write and maintain documentation',
+      'responsible-AI and content-safety review',
+      'author and maintain CI/CD workflows',
+      'UX and visual design',
+      'deploy to live environments',
+    ]);
+  } finally { cleanup(d); }
+});
+
+check('empty Team Capabilities boundary placeholders surface as empty lists', () => {
+  const d = mkSquad({ 'team.md': teamMd('stale') });
+  const emptyBoundaries = CAPABILITIES_FIXTURE
+    .replace('- **Can:** review code and pull requests; write and modify code; write and run tests; security and secrets review; cut releases and publish packages', '- **Can:** _nothing verified from charters_')
+    .replace('- **Cannot (no agent claims this):** write and maintain documentation; responsible-AI and content-safety review; author and maintain CI/CD workflows; UX and visual design; deploy to live environments', '- **Cannot:** _no gaps detected_');
+  try {
+    writeAgentFile(d, emptyBoundaries);
+    const sq = readSquad(d);
+    assert.deepStrictEqual(sq.capabilityBoundaries.can, []);
+    assert.deepStrictEqual(sq.capabilityBoundaries.cannot, []);
+  } finally { cleanup(d); }
+});
+
+check('the generated Team Capabilities block is preferred over stale team.md', () => {
+  const d = mkSquad({ 'team.md': teamMd('stale') });
+  try {
+    writeAgentFile(d, CAPABILITIES_FIXTURE);
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team-capabilities');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['Flight', 'EECOM', 'FIDO', 'RETRO', 'CONTROL']);
+    assert.deepStrictEqual(sq.taskTypes, ['Architecture', 'CLI internals', 'Testing', 'Security', 'TypeScript']);
+    assert.ok(sq.capabilityBoundaries.can.includes('write and modify code'));
+  } finally { cleanup(d); }
+});
+
+check('a pending Team Capabilities placeholder falls back to team.md', () => {
+  const d = mkSquad({ 'team.md': teamMd('fallback') });
+  try {
+    writeAgentFile(d, CAPABILITIES_PENDING_FIXTURE);
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team.md');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['fallback']);
+  } finally { cleanup(d); }
+});
+
+check('a malformed Team Capabilities block falls back to team.md', () => {
+  const d = mkSquad({ 'team.md': teamMd('fallback') });
+  try {
+    writeAgentFile(d, '<!-- SQUAD:TEAM-CAPABILITIES:BEGIN -->\n<!-- squad:capabilities schema=1 specialists=1 taskTypes=0 hints=0 -->\n### Available specialists\nnot a table\n<!-- SQUAD:TEAM-CAPABILITIES:END -->');
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team.md');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['fallback']);
+  } finally { cleanup(d); }
+});
+
+check('a truncated Team Capabilities block falls back without throwing', () => {
+  const d = mkSquad({ 'team.md': teamMd('fallback') });
+  try {
+    writeAgentFile(d, '<!-- SQUAD:TEAM-CAPABILITIES:BEGIN -->\n<!-- squad:capabilities schema=1 specialists=1 taskTypes=0 hints=0 -->');
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team.md');
+    assert.deepStrictEqual(sq.members.map((m) => m.name), ['fallback']);
+  } finally { cleanup(d); }
+});
+
+check('a remote teamRoot prefers that team project agent file over the local one', () => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ teamRoot: '..' + path.sep + 'team-parent' }),
+  });
+  const teamParent = path.join(path.dirname(d), 'team-parent');
+  try {
+    fs.mkdirSync(path.join(teamParent, '.squad'), { recursive: true });
+    fs.writeFileSync(path.join(teamParent, '.squad', 'team.md'), teamMd('remote-team-md'));
+    writeAgentFile(d, CAPABILITIES_PENDING_FIXTURE);
+    writeAgentFile(teamParent, CAPABILITIES_FIXTURE);
+    const sq = readSquad(d);
+    assert.strictEqual(sq.memberSource, 'team-capabilities');
+    assert.strictEqual(sq.members[0].name, 'Flight');
+  } finally { cleanup(d); cleanup(teamParent); }
+}));
 
 check('the active member is inferred from the transcript, most recent first', () => {
   const members = [{ name: 'engineer', role: 'engineer', active: true }, { name: 'reviewer', role: 'reviewer', active: true }];
@@ -405,6 +673,334 @@ check('an empty .squad directory is still a squad', () => {
   assert.strictEqual(sq.memberCount, 0);
   assert.strictEqual(sq.decisionCount, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #156 -- effective Squad state dirs.
+// ---------------------------------------------------------------------------
+check('local state is unchanged with no config, and teamRoot "." stays local', () => {
+  for (const cfg of [null, { teamRoot: '.' }]) {
+    const d = mkSquad({
+      'team.md': teamMd('local'),
+      'decisions.md': '## Active\n\n### 2026-01-01: local decision\n',
+      ...(cfg ? { 'config.json': JSON.stringify(cfg) } : {}),
+    });
+    try {
+      const dirs = resolveSquadDirs(d);
+      assert.strictEqual(dirs.stateDir, path.join(d, '.squad'));
+      assert.strictEqual(dirs.mode, 'local');
+      const sq = readSquad(d);
+      assert.strictEqual(sq.members[0].name, 'local');
+      assert.strictEqual(sq.latestDecision.title, 'local decision');
+    } finally { cleanup(d); }
+  }
+});
+
+check('externalized state reads roster and decisions externally but models locally', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'decisions.md': '## Active\n\n### 2026-01-01: local decision\n',
+    'config.json': JSON.stringify({
+      stateLocation: 'external',
+      projectKey: 'Project One',
+      defaultModel: 'local-model-only',
+      agentModelOverrides: { external: 'local-override-only' },
+    }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'Project-One');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('external'));
+    fs.writeFileSync(path.join(ext, 'decisions.md'), '## Active\n\n### 2026-01-02: external decision\n');
+    const sq = readSquad(d);
+    assert.strictEqual(sq.members[0].name, 'external');
+    assert.strictEqual(sq.latestDecision.title, 'external decision');
+    assert.strictEqual(sq.models.defaultModel, 'local-model-only');
+    assert.strictEqual(sq.models.overrides.external, 'local-override-only');
+    assert.strictEqual(resolveSquadDoc(d, 'team').path, path.join(ext, 'team.md'));
+    assert.strictEqual(resolveSquadDoc(d, 'config').path, path.join(d, '.squad', 'config.json'));
+    assert.ok(listSquadDocs(d).includes('team'));
+  } finally { cleanup(d); }
+})));
+
+check('remote teamRoot reads the roster from the sibling team parent', () => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ teamRoot: '..' + path.sep + 'team-parent' }),
+  });
+  const teamParent = path.join(path.dirname(d), 'team-parent');
+  try {
+    fs.mkdirSync(path.join(teamParent, '.squad'), { recursive: true });
+    fs.writeFileSync(path.join(teamParent, '.squad', 'team.md'), teamMd('remote'));
+    const sq = readSquad(d);
+    assert.strictEqual(resolveSquadDirs(d).mode, 'remote');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(teamParent, '.squad'));
+    assert.strictEqual(sq.members[0].name, 'remote');
+  } finally { cleanup(d); cleanup(teamParent); }
+}));
+
+check('remote teamRoot wins over local external state', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({
+      teamRoot: '..' + path.sep + 'team-parent',
+      stateLocation: 'external',
+      projectKey: 'local-external',
+    }),
+  });
+  const teamParent = path.join(path.dirname(d), 'team-parent');
+  try {
+    const localExt = externalProjectDir(base, 'local-external');
+    fs.mkdirSync(localExt, { recursive: true });
+    fs.writeFileSync(path.join(localExt, 'team.md'), teamMd('wrong-external'));
+    fs.mkdirSync(path.join(teamParent, '.squad'), { recursive: true });
+    fs.writeFileSync(path.join(teamParent, '.squad', 'team.md'), teamMd('remote'));
+    const sq = readSquad(d);
+    assert.strictEqual(sq.members[0].name, 'remote');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(teamParent, '.squad'));
+  } finally { cleanup(d); cleanup(teamParent); }
+})));
+
+check('invalid projectKey is refused and empty sanitisation falls back local', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  for (const key of ['..\\outside', '🔥', '.', 'CON', 'con.txt', 'LPT9.log', 'alias.']) {
+    const d = mkSquad({
+      'team.md': teamMd('local'),
+      'config.json': JSON.stringify({ stateLocation: 'external', projectKey: key }),
+    });
+    try {
+      const sanitized = String(key)
+        .replace(/[/\\]/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '-')
+        .replace(/^-+|-+$/g, '');
+      if (sanitized) {
+        const escaped = externalProjectDir(base, sanitized);
+        fs.mkdirSync(escaped, { recursive: true });
+        fs.writeFileSync(path.join(escaped, 'team.md'), teamMd('refused-key-was-used'));
+      }
+      const sq = readSquad(d);
+      assert.strictEqual(sq.members[0].name, 'local');
+      assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+    } finally { cleanup(d); }
+  }
+})));
+
+check('projectKey sanitisation matches upstream exactly', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ stateLocation: 'external', projectKey: '🔥A/B C🔥\\D🔥' }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'A-B-C---D');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('sanitised'));
+    const sq = readSquad(d);
+    assert.strictEqual(sq.members[0].name, 'sanitised');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, ext);
+  } finally { cleanup(d); }
+})));
+
+check('externalized state outside the project is blocked unless squad-hub config enables it', () => withGlobalEnv((base) => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({
+      stateLocation: 'external',
+      projectKey: 'blocked-by-default',
+      followExternalSquadState: true,
+    }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'blocked-by-default');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('external'));
+    const sq = readSquad(d);
+    assert.strictEqual(sq.members[0].name, 'local', 'repo-controlled config enabled an external read');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+  } finally { cleanup(d); }
+}));
+
+check('externalized state outside the project is followed when squad-hub config enables it', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ stateLocation: 'external', projectKey: 'allowed-by-hub-config' }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'allowed-by-hub-config');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('external'));
+    assert.strictEqual(readSquad(d).members[0].name, 'external');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, ext);
+  } finally { cleanup(d); }
+})));
+
+check('symlinked local Squad root outside the project is blocked unless squad-hub config enables it', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'team.md'), teamMd('outside'));
+    fs.writeFileSync(path.join(outside, 'config.json'), JSON.stringify({ project: 'outside' }));
+    if (!linkDir(outside, path.join(d, '.squad'))) return;
+    withReadWatch(outside, (reads) => {
+      assert.strictEqual(readSquad(d), null);
+      assert.strictEqual(resolveSquadDirs(d), null);
+      assert.strictEqual(resolveSquadDoc(d, 'team').error, 'not a Squad workspace');
+      assert.deepStrictEqual(listSquadDocs(d), []);
+      assert.strictEqual(reads.length, 0, `blocked local symlink read outside state: ${reads.join(', ')}`);
+    });
+  } finally { cleanup(d); cleanup(outside); }
+});
+
+check('symlinked local Squad root outside the project is followed when squad-hub config enables it', () => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'team.md'), teamMd('outside'));
+    fs.writeFileSync(path.join(outside, 'config.json'), JSON.stringify({ project: 'outside' }));
+    if (!linkDir(outside, path.join(d, '.squad'))) return;
+    withReadWatch(outside, (reads) => {
+      assert.strictEqual(readSquad(d).members[0].name, 'outside');
+      assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+      assert.ok(reads.length > 0, 'enabled local symlink did not read the external state root');
+    });
+  } finally { cleanup(d); cleanup(outside); }
+}));
+
+check('symlinked documents cannot escape a local state root', () => {
+  const d = mkSquad({
+    'team.md': teamMd('escape'),
+  });
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'charter.md'), '# Outside\n');
+    fs.mkdirSync(path.join(d, '.squad', 'agents'), { recursive: true });
+    if (!linkDir(outside, path.join(d, '.squad', 'agents', 'escape'))) return;
+    withReadWatch(outside, (reads) => {
+      assert.strictEqual(resolveSquadDoc(d, 'charter:escape').error, 'that document is outside the workspace');
+      assert.ok(!listSquadDocs(d).includes('charter:escape'), 'escaped local symlink was offered as a readable document');
+      assert.strictEqual(reads.length, 0, `local escaped document was read: ${reads.join(', ')}`);
+    });
+  } finally { cleanup(d); cleanup(outside); }
+});
+
+check('raw trailing-space projectKey is refused before sanitisation', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ stateLocation: 'external', projectKey: 'foo ' }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'foo');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('raw-trailing-space-was-used'));
+    const sq = readSquad(d);
+    assert.strictEqual(sq.members[0].name, 'local');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+  } finally { cleanup(d); }
+})));
+
+check('externalized state ignores SQUAD_HOME and uses the platform global root', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ stateLocation: 'external', projectKey: 'squad-home-ignored' }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'squad-home-ignored');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('right'));
+    process.env.SQUAD_HOME = path.join(base, 'wrong-squad-home');
+    const wrong = path.join(process.env.SQUAD_HOME, 'projects', 'squad-home-ignored');
+    fs.mkdirSync(wrong, { recursive: true });
+    fs.writeFileSync(path.join(wrong, 'team.md'), teamMd('wrong'));
+    assert.strictEqual(readSquad(d).members[0].name, 'right');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, ext);
+  } finally { cleanup(d); }
+})));
+
+check('teamRoot "./" is remote and targets the parent containing .squad', () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ teamRoot: './' }),
+  });
+  try {
+    const dirs = resolveSquadDirs(d);
+    assert.strictEqual(dirs.mode, 'remote');
+    assert.strictEqual(dirs.stateDir, path.join(d, '.squad'));
+    assert.strictEqual(readSquad(d).members[0].name, 'local');
+  } finally { cleanup(d); }
+});
+
+check('production state resolution does not create missing external directories', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ stateLocation: 'external', projectKey: 'missing-must-not-be-created' }),
+  });
+  try {
+    const ext = externalProjectDir(base, 'missing-must-not-be-created');
+    assert.ok(!fs.existsSync(ext), 'test setup accidentally created the external dir');
+    assert.strictEqual(readSquad(d).members[0].name, 'local');
+    assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+    assert.ok(!fs.existsSync(ext), 'state resolution created production state');
+  } finally { cleanup(d); }
+})));
+
+check('symlinked documents cannot escape an accepted external state root', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ stateLocation: 'external', projectKey: 'symlink-escape' }),
+  });
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-outside-'));
+  try {
+    const ext = externalProjectDir(base, 'symlink-escape');
+    fs.mkdirSync(ext, { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team.md'), teamMd('escape'));
+    fs.writeFileSync(path.join(outside, 'charter.md'), '# Outside\n');
+    fs.mkdirSync(path.join(ext, 'agents'), { recursive: true });
+    try {
+      fs.symlinkSync(outside, path.join(ext, 'agents', 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      console.log(`  skip symlinked documents cannot escape an accepted external state root (${e.code || e.message})`);
+      return;
+    }
+    assert.strictEqual(readSquad(d).members[0].name, 'escape');
+    assert.strictEqual(resolveSquadDoc(d, 'charter:escape').error, 'that document is outside the workspace');
+    assert.ok(!listSquadDocs(d).includes('charter:escape'), 'escaped symlink was offered as a readable document');
+  } finally { cleanup(d); cleanup(outside); }
+})));
+
+check('state resolution never throws and degrades to local on bad config or targets', () => withGlobalEnv((base) => {
+  const cases = [
+    { files: { 'config.json': '{not json' } },
+    { before: (d) => { fs.rmSync(path.join(d, '.squad', 'config.json'), { force: true }); fs.mkdirSync(path.join(d, '.squad', 'config.json')); } },
+    { files: { 'config.json': JSON.stringify({ teamRoot: '..' + path.sep + 'missing-team' }) } },
+    { files: { 'config.json': JSON.stringify({ stateLocation: 'external', projectKey: 'state-is-file' }) },
+      before: () => {
+        const p = path.dirname(externalProjectDir(base, 'state-is-file'));
+        fs.mkdirSync(p, { recursive: true });
+        fs.writeFileSync(path.join(p, 'state-is-file'), 'not a dir');
+      } },
+  ];
+  for (const c of cases) {
+    const d = mkSquad({ 'team.md': teamMd('local'), ...(c.files || {}) });
+    try {
+      if (c.before) c.before(d);
+      assert.doesNotThrow(() => readSquad(d));
+      assert.strictEqual(readSquad(d).members[0].name, 'local');
+      assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+    } finally { cleanup(d); }
+  }
+}));
+
+check('global squad dir follows current platform env precedence', () => withGlobalEnv((base) => {
+  assert.strictEqual(os.homedir(), path.join(base, 'home'), 'test homedir override did not take');
+  if (process.platform === 'win32') {
+    assert.strictEqual(resolveGlobalSquadPath(), path.join(base, 'appdata', 'squad'));
+    delete process.env.APPDATA;
+    assert.strictEqual(resolveGlobalSquadPath(), path.join(base, 'localappdata', 'squad'));
+  } else if (process.platform === 'darwin') {
+    assert.strictEqual(resolveGlobalSquadPath(), path.join(base, 'home', 'Library', 'Application Support', 'squad'));
+  } else {
+    assert.strictEqual(resolveGlobalSquadPath(), path.join(base, 'xdg', 'squad'));
+    delete process.env.XDG_CONFIG_HOME;
+    assert.strictEqual(resolveGlobalSquadPath(), path.join(base, 'home', '.config', 'squad'));
+  }
+}));
 
 check('a huge decisions file is truncated rather than read whole', () => {
   const big = '### 2026-01-01: x\n'.repeat(60000);

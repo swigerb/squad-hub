@@ -188,7 +188,17 @@ function nodeVersionCheck() {
  * point it at a throwaway directory instead of depending on whatever is
  * actually signed in on the machine running the suite.
  */
-async function runDoctor({ cwd = process.cwd(), explicitAgent = null, explicitModel = null, copilotHomeDir = os.homedir() } = {}) {
+async function runDoctor({
+  cwd = process.cwd(),
+  explicitAgent = null,
+  explicitModel = null,
+  copilotHomeDir = os.homedir(),
+  squadCommand = null,
+  squadArgsPrefix = [],
+  squadHealthTimeoutMs = undefined,
+  squadHealthMaxOutputBytes = undefined,
+  squadHealthEnv = undefined,
+} = {}) {
   const checks = [];
   const add = (id, level, message, extra = {}) => checks.push({ id, level, message, ...extra });
 
@@ -263,6 +273,28 @@ async function runDoctor({ cwd = process.cwd(), explicitAgent = null, explicitMo
 
   const squad = isSquadProject(cwd);
   add('squad-project', 'ok', squad ? `${cwd} is a Squad project` : `${cwd} is not a Squad project`, { isSquad: squad });
+
+  const squadHealth = require('./squad-health');
+  const health = await squadHealth.runSquadHealth(cwd, {
+    squadCommand,
+    squadArgsPrefix,
+    timeoutMs: squadHealthTimeoutMs,
+    maxOutputBytes: squadHealthMaxOutputBytes,
+    env: squadHealthEnv,
+  });
+  if (!health.available) {
+    add('squad-health', 'warn', `unavailable: ${health.reason}`);
+  } else {
+    add('squad-health', health.report.status === 'pass' ? 'ok' : 'fail',
+      `squad ${health.version} health ${health.report.status}`);
+    for (const check of health.report.checks) {
+      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : 'warn';
+      add(`squad-health:${check.id}`, level, check.status === 'skip'
+        ? `${check.message} (skipped)`
+        : check.message,
+      { squadHealthStatus: check.status });
+    }
+  }
 
   if (squad) {
     /**

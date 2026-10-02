@@ -68,6 +68,43 @@ file access is on, and when each was last seen.
 
 Your sessions across all devices.
 
+When a session is in a Squad workspace, its `squad` field is the device's
+summary of that workspace. It includes the roster, recent decisions, model
+summary, and a small health summary:
+
+```json
+{
+  "squad": {
+    "isSquad": true,
+    "project": "my-project",
+    "memberSource": "team-capabilities",
+    "members": [{ "name": "docs", "role": "docs", "active": true }],
+    "taskTypes": ["documentation"],
+    "routingHints": [{ "domain": "Documentation", "routeTo": "docs" }],
+    "capabilityBoundaries": { "can": ["README"], "cannot": [] },
+    "models": {
+      "defaultModel": "claude-sonnet-5",
+      "uniform": true,
+      "distinctModels": ["claude-sonnet-5"],
+      "overriddenCount": 4,
+      "costPolicy": { "maxCategory": "versatile" },
+      "economyMode": false
+    },
+    "health": {
+      "status": "pass",
+      "checks": [{ "id": "team", "status": "pass" }]
+    }
+  }
+}
+```
+
+`memberSource` is `team-capabilities` when the generated block in
+`.github/agents/squad.agent.md` was used, and `team.md` when Squad Hub fell back
+to `.squad/team.md` (including the common `status=pending` placeholder). The
+health object is intentionally small and computed on the device; only `status`
+and check ids/statuses cross to the hub, not diagnostic messages, stderr, or
+local paths.
+
 ### `GET|POST /api/access`, `DELETE /api/access/{login}`
 
 Who may sign in to this hub. **Owner only, on every method including the read.**

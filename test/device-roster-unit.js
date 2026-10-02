@@ -283,9 +283,15 @@ check('a device is local unless it says otherwise', () => {
 
 check('the public view reports WHETHER telemetry is on, never a path or a process', () => {
   const cfg = require('../src/config');
-  const view = cfg.publicView({ ...cfg.DEFAULTS, filesRoot: '/home/someone/secret', reportTelemetry: true });
+  const view = cfg.publicView({
+    ...cfg.DEFAULTS,
+    filesRoot: '/home/someone/secret',
+    reportTelemetry: true,
+    followExternalSquadState: true,
+  });
   assert.strictEqual(view.telemetry, true);
   assert.ok(!('filesRoot' in view), 'the confinement root must never leave the device');
+  assert.ok(!('followExternalSquadState' in view), 'the external Squad state flag is local-only and must not leave the device');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -630,9 +630,15 @@ class AcpSession extends EventEmitter {
    */
   squadContext() {
     const now = Date.now();
-    if (this._squad !== undefined && now - this._squadAt < 30000) return this._squad;
+    if (this._squad !== undefined && now - this._squadAt < 30000) {
+      if (this._squad) this._squad.health = require('./squad-health').getCachedSquadHealth(this.cwd);
+      return this._squad;
+    }
     const { readSquad } = require('./squad-context');
     this._squad = readSquad(this.cwd, { transcript: this.transcript.slice(-40) });
+    if (this._squad) {
+      this._squad.health = require('./squad-health').getCachedSquadHealth(this.cwd);
+    }
     this._squadAt = now;
     return this._squad;
   }
