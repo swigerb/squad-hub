@@ -50,8 +50,10 @@ const MUTATIONS = [
     name: 'daemon does not kill its children on shutdown',
     file: 'src/daemon.js',
     find: `  _killAllChildren() {
+    try { require('./squad-health').killAllSquadHealthProbes(); } catch { /* none */ }
     for (const s of this.sessions.values()) {`,
     replace: `  _killAllChildren() {
+    try { require('./squad-health').killAllSquadHealthProbes(); } catch { /* none */ }
     if (process.env.MUTANT) return; // MUTATION
     for (const s of this.sessions.values()) {`,
     mustFail: 'SHUTDOWN kills the agent, without help from the OS',
