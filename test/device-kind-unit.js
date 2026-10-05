@@ -13,7 +13,7 @@
 
 const assert = require('assert');
 
-const { sanitiseDeviceMeta, parseDeviceMetaEnv } = require('../src/device-meta');
+const { sanitizeDeviceMeta, parseDeviceMetaEnv } = require('../src/device-meta');
 const { Store, resolveDeviceKind } = require('../src/service/store');
 
 let pass = 0; let fail = 0;
@@ -116,7 +116,7 @@ check('an old-daemon heartbeat with no kind preserves an existing local kind', (
 });
 
 // ---------------------------------------------------------------------------
-// sanitiseDeviceMeta / parseDeviceMetaEnv
+// sanitizeDeviceMeta / parseDeviceMetaEnv
 // ---------------------------------------------------------------------------
 
 check('valid device metadata survives unchanged', () => {
@@ -127,33 +127,33 @@ check('valid device metadata survives unchanged', () => {
     executionName: 'exec-1',
     jobName: 'nightly',
   };
-  assert.deepStrictEqual(sanitiseDeviceMeta(meta), meta);
+  assert.deepStrictEqual(sanitizeDeviceMeta(meta), meta);
 });
 
 check('unknown metadata fields are dropped', () => {
   assert.deepStrictEqual(
-    sanitiseDeviceMeta({ repo: 'swigerb/squad-hub', what: 'nope' }),
+    sanitizeDeviceMeta({ repo: 'swigerb/squad-hub', what: 'nope' }),
     { repo: 'swigerb/squad-hub' },
   );
 });
 
 check('a non-string metadata field is dropped, not the whole object', () => {
   assert.deepStrictEqual(
-    sanitiseDeviceMeta({ repo: 'swigerb/squad-hub', issue: 166 }),
+    sanitizeDeviceMeta({ repo: 'swigerb/squad-hub', issue: 166 }),
     { repo: 'swigerb/squad-hub' },
   );
 });
 
 check('an overlong metadata field is dropped, not the whole object', () => {
   assert.deepStrictEqual(
-    sanitiseDeviceMeta({ repo: 'swigerb/squad-hub', displayName: 'x'.repeat(201) }),
+    sanitizeDeviceMeta({ repo: 'swigerb/squad-hub', displayName: 'x'.repeat(201) }),
     { repo: 'swigerb/squad-hub' },
   );
 });
 
 check('injection-shaped metadata is dropped field by field', () => {
   assert.deepStrictEqual(
-    sanitiseDeviceMeta({
+    sanitizeDeviceMeta({
       repo: 'swigerb/squad-hub',
       displayName: 'nightly\u001b[31m',
       issue: '<166>',
@@ -161,7 +161,7 @@ check('injection-shaped metadata is dropped field by field', () => {
     { repo: 'swigerb/squad-hub' },
   );
   assert.deepStrictEqual(
-    sanitiseDeviceMeta({
+    sanitizeDeviceMeta({
       repo: 'swigerb/squad-hub',
       jobName: 'nightly\u0000run',
     }),
@@ -173,7 +173,7 @@ check('oversize metadata object is refused outright', () => {
   const big = {};
   for (let i = 0; i < 30; i += 1) big[`extra${i}`] = 'x'.repeat(180);
   big.repo = 'swigerb/squad-hub';
-  assert.strictEqual(sanitiseDeviceMeta(big), null);
+  assert.strictEqual(sanitizeDeviceMeta(big), null);
 });
 
 check('malformed metadata JSON returns null, not an exception', () => {
@@ -181,7 +181,7 @@ check('malformed metadata JSON returns null, not an exception', () => {
 });
 
 check('empty metadata input returns null', () => {
-  assert.strictEqual(sanitiseDeviceMeta({}), null);
+  assert.strictEqual(sanitizeDeviceMeta({}), null);
   assert.strictEqual(parseDeviceMetaEnv(''), null);
   assert.strictEqual(parseDeviceMetaEnv('{}'), null);
 });

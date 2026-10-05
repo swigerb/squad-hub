@@ -15,7 +15,7 @@
 
 const { EventEmitter } = require('events');
 const { MemoryBacking } = require('./store-backing');
-const { sanitiseDeviceMeta } = require('../device-meta');
+const { sanitizeDeviceMeta } = require('../device-meta');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
@@ -227,7 +227,7 @@ class Store extends EventEmitter {
   registerDevice(subject, device) {
     const b = this._bucket(subject);
     const existing = b.devices.get(device.deviceId) || {};
-    const meta = sanitiseDeviceMeta(device.meta) || existing.meta || null;
+    const meta = sanitizeDeviceMeta(device.meta) || existing.meta || null;
     const rec = {
       ...existing,
       deviceId: device.deviceId,
@@ -259,7 +259,7 @@ class Store extends EventEmitter {
     const b = this._bucket(subject);
     const rec = b.devices.get(deviceId);
     if (!rec) return null;
-    const meta = ('meta' in patch) ? (sanitiseDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    const meta = ('meta' in patch) ? (sanitizeDeviceMeta(patch.meta) || null) : (rec.meta || null);
     Object.assign(rec, patch, {
       kind: ('kind' in patch) ? resolveDeviceKind(rec.deviceId, patch.kind, meta) : rec.kind,
       meta,

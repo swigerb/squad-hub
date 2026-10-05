@@ -41,7 +41,7 @@ const INJECTION_RE = /[\x00-\x1f\x7f<>]/;
  * Validate an already-parsed object. Returns a new object containing only the
  * fields that passed, or `null` if nothing did.
  */
-function sanitiseDeviceMeta(input) {
+function sanitizeDeviceMeta(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
 
   let raw;
@@ -71,13 +71,13 @@ function parseDeviceMetaEnv(raw) {
   if (Buffer.byteLength(raw, 'utf8') > MAX_TOTAL_BYTES) return null;
   let parsed;
   try { parsed = JSON.parse(raw); } catch { return null; }
-  return sanitiseDeviceMeta(parsed);
+  return sanitizeDeviceMeta(parsed);
 }
 
 module.exports = {
   FIELDS,
   MAX_FIELD_LEN,
   MAX_TOTAL_BYTES,
-  sanitiseDeviceMeta,
+  sanitizeDeviceMeta,
   parseDeviceMetaEnv,
 };

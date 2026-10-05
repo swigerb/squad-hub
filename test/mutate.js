@@ -125,10 +125,10 @@ const MUTATIONS = [
   {
     name: 'heartbeat re-resolves an already-resolved kind when no fresh kind was reported',
     file: 'src/service/store.js',
-    find: `    const meta = ('meta' in patch) ? (sanitiseDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    find: `    const meta = ('meta' in patch) ? (sanitizeDeviceMeta(patch.meta) || null) : (rec.meta || null);
     Object.assign(rec, patch, {
       kind: ('kind' in patch) ? resolveDeviceKind(rec.deviceId, patch.kind, meta) : rec.kind,`,
-    replace: `    const meta = ('meta' in patch) ? (sanitiseDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    replace: `    const meta = ('meta' in patch) ? (sanitizeDeviceMeta(patch.meta) || null) : (rec.meta || null);
     Object.assign(rec, patch, {
       kind: (process.env.MUTANT || ('kind' in patch)) ? resolveDeviceKind(rec.deviceId, (patch.kind ?? rec.kind), meta) : rec.kind, // MUTATION`,
     mustFail: 'a metadata-promoted ACA device stays ACA when heartbeat omits kind and meta',
