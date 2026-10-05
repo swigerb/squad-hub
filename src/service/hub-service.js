@@ -25,6 +25,7 @@ const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
 const { DeviceTokenStore } = require('./device-token-store');
 const { AccessStore } = require('./access-store');
 const { AccessAudit } = require('./access-audit');
+const { PrefsStore } = require('./prefs-store');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store } = require('./store');
@@ -32,6 +33,24 @@ const { FileBacking, MemoryBacking } = require('./store-backing');
 const ws = require('./ws');
 
 const WEB_ROOT = path.join(__dirname, '..', '..', 'web');
+
+/**
+ * The stylesheet `<link>` tags for the tiny server-rendered sign-in pages
+ * below. Built from index.html's own list, in its own order, rather than
+ * hand-copied -- a second hand-maintained copy is exactly how these two pages
+ * fell out of sync with the real stylesheet the first time it was split.
+ */
+function buildCssLinks() {
+  try {
+    const html = fs.readFileSync(path.join(WEB_ROOT, 'index.html'), 'utf8');
+    const hrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1]);
+    return hrefs.map((h) => `<link rel="stylesheet" href="${h}">`).join('');
+  } catch {
+    return '';
+  }
+}
+const CSS_LINKS = buildCssLinks();
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -431,6 +450,16 @@ class HubService {
     if (this.auth && !this.auth.isDeviceTokenRevoked) {
       this.auth.isDeviceTokenRevoked = (jti) => this.deviceTokenStore.isRevoked(jti);
     }
+
+    /**
+     * Per-user preferences -- pins, renames, the saved view -- so they follow
+     * a signed-in user across every device, the same "survives a restart
+     * under SQUAD_HUB_HOME" rule as accessStore and deviceTokenStore above.
+     * `opts.prefsStore` is the same test/embedder escape hatch those two
+     * already give.
+     */
+    this.prefsStore = opts.prefsStore
+      || new PrefsStore({ dir: opts.prefsDir || paths.home(), persist: opts.persistPrefs !== false });
     this.serveWeb = opts.serveWeb !== false;
     this.oauth = opts.oauth || new GitHubOAuth();
     this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
@@ -598,6 +627,9 @@ class HubService {
          * the setting it just wrote.
          */
         accessStore: this.accessStore.persist ? 'durable' : 'memory',
+        // Whether a saved pin, rename or view (/api/prefs) survives a
+        // restart. Same rule, same reason, as `sessionStore` above.
+        prefsStore: this.prefsStore.persist ? 'durable' : 'memory',
         // Named rather than implied, so it appears in the UI and in any log
         // scrape without the reader having to know the rule.
         //
@@ -703,6 +735,25 @@ class HubService {
 
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(200, { sessions: this.store.listSessions(me.key) });
+    }
+
+    // -- per-user preferences --------------------------------------------------
+    //
+    // Pins, renames and the saved view, keyed on `me.key` -- the verified
+    // partition, never anything the request supplies -- so this never needs a
+    // separate ownership check: there is no request shape that reaches
+    // another subject's record. A device token never reaches this far at
+    // all; the gate above (`principal.kind !== KIND_USER`) already refused it
+    // with 403 before `_api` was called.
+    if (p === '/api/prefs' && req.method === 'GET') {
+      return send(200, this.prefsStore.get(me.key));
+    }
+
+    if (p === '/api/prefs' && req.method === 'PUT') {
+      const body = await readJson(req);
+      const r = this.prefsStore.set(me.key, body);
+      if (!r.ok) return send(400, { error: r.reason });
+      return send(200, r.prefs);
     }
 
     // -- who may use this hub -------------------------------------------------
@@ -1104,14 +1155,14 @@ class HubService {
    */
   _signinComplete(send, token) {
     return send(200, `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Signing in…</title><link rel="stylesheet" href="/app.css"></head>
+<title>Signing in…</title>${CSS_LINKS}</head>
 <body data-signin-token="${escapeHtml(token)}"><div class="empty"><h3>Signing you in…</h3></div>
 <script src="/signin-complete.js"></script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
   }
 
   _signinError(send, message) {
     return send(403, `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Sign-in failed</title><link rel="stylesheet" href="/app.css"></head>
+<title>Sign-in failed</title>${CSS_LINKS}</head>
 <body><div class="empty">
   <img class="signin-logo" src="/logo.jpg" alt="Squad Hub" width="140">
   <h3>Sign-in failed</h3>

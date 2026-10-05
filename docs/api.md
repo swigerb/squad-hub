@@ -108,6 +108,44 @@ health object is intentionally small and computed on the device; only `status`
 and check ids/statuses cross to the hub, not diagnostic messages, stderr, or
 local paths.
 
+### `GET /api/prefs`, `PUT /api/prefs`
+
+Per-user preferences -- pins, renames, and the saved view -- so they follow you
+across every device you sign into. Partitioned on the verified caller, the same
+as everything else under `/api/`: there is no request shape that reaches
+another user's record.
+
+```json
+{
+  "pins": ["dev-laptop:session-42"],
+  "names": { "dev-laptop:session-42": "release branch" },
+  "view": { "scope": "mine", "filters": { "status": "active" }, "groupBy": "device", "sortBy": "recent" }
+}
+```
+
+`GET` returns this shape, defaulting to `{"pins":[],"names":{},"view":null}`
+for a user who has never saved a preference.
+
+`PUT` **replaces the whole record.** A field left out of the body reverts to
+its default rather than being left as it was, so a client never has to guess
+what omitting a field means. Send the complete record back each time.
+
+Caps, enforced with a `400` on refusal:
+
+| | |
+|---|---|
+| `pins` | at most 500 entries, each a non-empty string |
+| `names` | at most 500 entries, each value at most 120 characters |
+| `view` | `scope`, `groupBy`, `sortBy` (strings) and `filters` (an object) |
+
+An unknown top-level field, a wrong type (an array where `names` wants an
+object, a number where a pin wants a string), or exceeding a cap is refused
+with `400` and a reason -- nothing is silently dropped or truncated, except
+that duplicate entries within `pins` are de-duplicated rather than rejected.
+
+A device token gets **403** here exactly as it does everywhere else under
+`/api/`: see "Which token" above.
+
 ### `GET|POST /api/access`, `DELETE /api/access/{login}`
 
 Who may sign in to this hub. **Owner only, on every method including the read.**

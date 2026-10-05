@@ -114,6 +114,19 @@ lost that is still running — only the history.
 That is the only thing persistence would buy, and it is a history feature rather
 than a reliability one.
 
+## Per-user preferences
+
+Pins, renames and the saved view (`GET`/`PUT /api/prefs`, see
+[api.md](api.md#get-apiprefs-put-apiprefs)) are a user's own settings, not the
+hub's operational state, so they follow the same "whole record, every time"
+persistence rule as sessions and access grants rather than living in the `Store`
+above: a file of their own (`prefs.json` under `SQUAD_HUB_HOME`, see
+[security.md](security.md#where-state-is-kept)), keyed on the caller's verified
+partition. `/healthz` reports `prefsStore: "durable"` once a deployment persists
+it, for the same reason `sessionStore` and `accessStore` do -- so a hub pointed
+at an unwritable or unset `SQUAD_HUB_HOME` says so before a redeploy silently
+forgets every saved view, rather than after.
+
 ## One instance only
 
 State is per process. Two instances means a device attaches to one of them and

@@ -29,6 +29,14 @@ const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'squad-hub.js');
 const FAKE = path.join(__dirname, 'fake-agent.js');
 
+// The stylesheet list lives in index.html's own <link> tags, not duplicated
+// here -- a split that adds or renames a css file should not require touching
+// this test too.
+function cssHrefs() {
+  const html = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
+  return [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1]);
+}
+
 let pass = 0; let fail = 0;
 function check(name, fn) {
   try {
@@ -304,7 +312,7 @@ function api(port, p, token, opts = {}) {
     assert.match(r.raw, /All sessions/);
   });
   await checkAsync('the web assets load', async () => {
-    for (const f of ['/app.js', '/app.css', '/app.webmanifest']) {
+    for (const f of ['/app.js', ...cssHrefs(), '/app.webmanifest']) {
       const r = await api(port, f, null);
       assert.strictEqual(r.status, 200, `${f} did not load (${r.status})`);
     }
@@ -313,9 +321,13 @@ function api(port, p, token, opts = {}) {
   // Found by rendering the page: `.scrim { display: flex }` outranks the UA
   // stylesheet's `[hidden] { display: none }`, so every modal appeared at once,
   // stacked, on first load. A stylesheet cannot be caught by an API test, so
-  // this asserts the rule exists.
+  // this asserts the rule exists. The rules now live wherever the split put
+  // them, so every shipped css file is concatenated before the search.
   await checkAsync('hidden modals are actually hidden', async () => {
-    const css = (await api(port, '/app.css', null)).raw;
+    let css = '';
+    for (const f of cssHrefs()) {
+      css += (await api(port, f, null)).raw;
+    }
     assert.match(css, /\.scrim\[hidden\]\s*\{\s*display:\s*none/,
       'no rule re-hides a .scrim marked [hidden]; display:flex would override it');
     assert.match(css, /\.menu\[hidden\]\s*\{\s*display:\s*none/,

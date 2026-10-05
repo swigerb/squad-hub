@@ -24,7 +24,9 @@ const read = (p) => { try { return fs.readFileSync(path.join(ROOT, p), 'utf8'); 
 
 const app = read('web/app.js');
 const html = read('web/index.html');
-const css = read('web/app.css');
+const css = fs.readdirSync(path.join(ROOT, 'web', 'css'))
+  .filter((f) => f.endsWith('.css'))
+  .map((f) => read(`web/css/${f}`)).join('\n');
 const cli = read('src/cli.js');
 const daemon = read('src/daemon.js');
 const acp = read('src/acp-session.js');

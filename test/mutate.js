@@ -2017,11 +2017,11 @@ const MUTATIONS = [
   {
     name: 'a cloud device is sorted like any other',
     file: 'web/app.js',
-    find: `    const ak = a.kind === 'cloud' ? 0 : 1;
-    const bk = b.kind === 'cloud' ? 0 : 1;
+    find: `    const ak = isCloudKind(a.kind) ? 0 : 1;
+    const bk = isCloudKind(b.kind) ? 0 : 1;
     if (ak !== bk) return ak - bk;`,
-    replace: `    const ak = a.kind === 'cloud' ? 0 : 1;
-    const bk = b.kind === 'cloud' ? 0 : 1;
+    replace: `    const ak = isCloudKind(a.kind) ? 0 : 1;
+    const bk = isCloudKind(b.kind) ? 0 : 1;
     if (ak !== bk && !process.env.MUTANT) return ak - bk; // MUTATION`,
     mustFail: 'a cloud device is listed first',
   },
@@ -2029,10 +2029,10 @@ const MUTATIONS = [
     name: 'presence outranks kind, so an offline cloud device sinks',
     file: 'web/app.js',
     find: `  return [...devices].sort((a, b) => {
-    const ak = a.kind === 'cloud' ? 0 : 1;`,
+    const ak = isCloudKind(a.kind) ? 0 : 1;`,
     replace: `  return [...devices].sort((a, b) => {
     if (process.env.MUTANT) { const x = (PRESENCE_RANK[a.presence] ?? 3) - (PRESENCE_RANK[b.presence] ?? 3); if (x) return x; } // MUTATION
-    const ak = a.kind === 'cloud' ? 0 : 1;`,
+    const ak = isCloudKind(a.kind) ? 0 : 1;`,
     mustFail: 'a cloud device stays first even when it is the only offline one',
   },
   {
@@ -2502,6 +2502,42 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `      const cached = null; // MUTATION
       if (cached) return cached;`,
     mustFail: 'the shell survives the hub going away entirely',
+  },
+  {
+    // #190's size-budget test ("no css file is anywhere near the old
+    // single-file size") checks fs.statSync(...).size against a constant --
+    // there is no line of logic to invert that would prove the assertion
+    // bites, since nothing in this repo computes or gates that size at
+    // runtime. The anchor would be "make a css file 25KB bigger", which is a
+    // fixture change, not a mutation of behavior. Left out deliberately
+    // rather than faked with a no-op entry.
+    name: 'web/css files grow past the size budget (not mutation-testable)',
+    file: 'web/sw.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
+  },
+  {
+    // #190: app.css was split into web/css/*.css. The shell has to list the
+    // new files instead of the one it replaced, or an offline load serves a
+    // page with no stylesheet at all.
+    name: 'SHELL reverts to the deleted single-file stylesheet',
+    file: 'web/sw.js',
+    find: `const SHELL = ['/', '/css/tokens.css', '/css/topbar.css', '/css/list.css', '/css/devices.css', '/css/modals.css', '/css/detail.css', '/css/squad.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg'];`,
+    replace: `const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg']; // MUTATION`,
+    mustFail: "the service worker's shell lists the split css, not the old single file",
+  },
+  {
+    // The shell's cached FILE SET changed shape (one stylesheet became
+    // seven), and the comment above CACHE explains why that alone forces a
+    // version bump -- an existing install's cache otherwise keeps serving the
+    // single old file forever, since the install handler only ever ADDS.
+    name: 'CACHE is not bumped for the split, so old installs never refresh',
+    file: 'web/sw.js',
+    find: `const CACHE = 'squad-hub-shell-v2';`,
+    replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
+    mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
   {
     name: 'an unreachable hub is reported as a credential problem',
@@ -3354,6 +3390,173 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  return kind === 'cloud' || kind === 'aca';`,
     replace: `  return kind === 'cloud' || (process.env.MUTANT ? false : kind === 'aca'); // MUTATION`,
     mustFail: 'an ACA device counts as a cloud device in the Create menu',
+  },
+
+  // ---- per-user preferences: /api/prefs, pins/names/view, per partition (#192) --
+  {
+    name: 'the pins cap stops being enforced',
+    file: 'src/service/prefs-store.js',
+    find: `    if (body.pins.length > MAX_PINS) return { ok: false, reason: \`pins may not exceed \${MAX_PINS}\` };`,
+    replace: `    if (process.env.MUTANT ? false : body.pins.length > MAX_PINS) return { ok: false, reason: \`pins may not exceed \${MAX_PINS}\` }; // MUTATION`,
+    mustFail: 'pins may not exceed 500',
+  },
+  {
+    name: 'the names-count cap stops being enforced',
+    file: 'src/service/prefs-store.js',
+    find: `    if (entries.length > MAX_NAMES) return { ok: false, reason: \`names may not exceed \${MAX_NAMES} entries\` };`,
+    replace: `    if (process.env.MUTANT ? false : entries.length > MAX_NAMES) return { ok: false, reason: \`names may not exceed \${MAX_NAMES} entries\` }; // MUTATION`,
+    mustFail: 'names may not exceed 500 entries',
+  },
+  {
+    name: 'the per-name length cap stops being enforced',
+    file: 'src/service/prefs-store.js',
+    find: `      if (value.length > MAX_NAME_LEN) {
+        return { ok: false, reason: \`the name for "\${key}" may not exceed \${MAX_NAME_LEN} characters\` };
+      }`,
+    replace: `      if (process.env.MUTANT ? false : value.length > MAX_NAME_LEN) { // MUTATION
+        return { ok: false, reason: \`the name for "\${key}" may not exceed \${MAX_NAME_LEN} characters\` };
+      }`,
+    mustFail: 'a name longer than 120 characters is refused',
+  },
+  {
+    name: 'pins silently accepts a non-array instead of refusing it',
+    file: 'src/service/prefs-store.js',
+    find: `    if (!Array.isArray(body.pins)) return { ok: false, reason: 'pins must be an array' };`,
+    replace: `    if (process.env.MUTANT ? false : !Array.isArray(body.pins)) return { ok: false, reason: 'pins must be an array' }; // MUTATION`,
+    mustFail: 'pins must be an array, not a string',
+  },
+  {
+    name: 'a PUT merges into the existing record instead of replacing it wholly',
+    file: 'src/service/prefs-store.js',
+    find: `    const previous = this._prefs.get(subject);
+    this._prefs.set(subject, v.value);`,
+    replace: `    const previous = this._prefs.get(subject);
+    // MUTATION: a field the caller left out of this PUT keeps its old stored
+    // value instead of reverting to default -- a "helpful" partial-update bug.
+    this._prefs.set(subject, process.env.MUTANT && previous ? {
+      pins: body.pins !== undefined ? v.value.pins : previous.pins,
+      names: body.names !== undefined ? v.value.names : previous.names,
+      view: body.view !== undefined ? v.value.view : previous.view,
+    } : v.value);`,
+    mustFail: 'a PUT that omits a field reverts that field to its default, rather than leaving it as it was',
+  },
+  {
+    name: 'preferences are no longer partitioned by subject',
+    file: 'src/service/prefs-store.js',
+    find: `    const previous = this._prefs.get(subject);
+    this._prefs.set(subject, v.value);`,
+    replace: `    const previous = this._prefs.get(subject);
+    // MUTATION: every subject's write lands in the same slot
+    this._prefs.set(process.env.MUTANT ? '__shared__' : subject, v.value);`,
+    mustFail: 'one subject writing preferences does not affect another subject',
+  },
+  {
+    name: 'a preferences file that failed to load is written over anyway',
+    file: 'src/service/prefs-store.js',
+    // Both guards -- `_save()`'s and `set()`'s -- refuse the same write for the
+    // same reason; a mutation disabling only one is still caught by the other,
+    // so both have to go down together to prove the protection is load-bearing
+    // rather than redundant decoration.
+    find: `  _save() {
+    if (!this.persist) return;
+    if (!this.ok) throw new Error('refusing to write over a preferences file that did not load');
+    const body = JSON.stringify({ shape: SHAPE, subjects: Object.fromEntries(this._prefs) }, null, 2);
+    const tmp = \`\${this.file}.\${process.pid}.tmp\`;
+    fs.writeFileSync(tmp, body, { mode: 0o600 });
+    try {
+      fs.renameSync(tmp, this.file);
+    } catch (e) {
+      // Same tolerance as access-store.js and store-backing.js: Defender, the
+      // indexer, and Windows/CIFS all briefly hold the destination open
+      // between our write and rename, and an unlink-then-rename is safe here
+      // specifically because the replacement is already fully written to tmp.
+      if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EACCES') throw e;
+      try { fs.unlinkSync(this.file); } catch { /* best effort */ }
+      fs.renameSync(tmp, this.file);
+    }
+  }
+
+  /** This subject's preferences, or the empty defaults if none were ever saved. */
+  get(subject) {
+    const rec = this._prefs.get(subject);
+    return rec ? { pins: [...rec.pins], names: { ...rec.names }, view: rec.view } : emptyPrefs();
+  }
+
+  /**
+   * Replace this subject's preferences wholly.
+   *
+   * A PUT, not a PATCH: the body is the full record the client intends this
+   * subject to hold from now on, the same "whole state, every time" rule
+   * \`store-backing.js\`'s \`persist\` uses for session records. A field left out
+   * of the body reverts to its default (\`pins: []\`, \`names: {}\`, \`view:
+   * null\`) rather than being left untouched, so a client never has to guess
+   * what an omission means.
+   *
+   * Returns \`{ ok: true, prefs }\` or \`{ ok: false, reason }\`.
+   */
+  set(subject, body) {
+    if (!this.ok) {`,
+    replace: `  _save() {
+    if (!this.persist) return;
+    if (process.env.MUTANT ? false : !this.ok) throw new Error('refusing to write over a preferences file that did not load'); // MUTATION
+    const body = JSON.stringify({ shape: SHAPE, subjects: Object.fromEntries(this._prefs) }, null, 2);
+    const tmp = \`\${this.file}.\${process.pid}.tmp\`;
+    fs.writeFileSync(tmp, body, { mode: 0o600 });
+    try {
+      fs.renameSync(tmp, this.file);
+    } catch (e) {
+      // Same tolerance as access-store.js and store-backing.js: Defender, the
+      // indexer, and Windows/CIFS all briefly hold the destination open
+      // between our write and rename, and an unlink-then-rename is safe here
+      // specifically because the replacement is already fully written to tmp.
+      if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EACCES') throw e;
+      try { fs.unlinkSync(this.file); } catch { /* best effort */ }
+      fs.renameSync(tmp, this.file);
+    }
+  }
+
+  /** This subject's preferences, or the empty defaults if none were ever saved. */
+  get(subject) {
+    const rec = this._prefs.get(subject);
+    return rec ? { pins: [...rec.pins], names: { ...rec.names }, view: rec.view } : emptyPrefs();
+  }
+
+  /**
+   * Replace this subject's preferences wholly.
+   *
+   * A PUT, not a PATCH: the body is the full record the client intends this
+   * subject to hold from now on, the same "whole state, every time" rule
+   * \`store-backing.js\`'s \`persist\` uses for session records. A field left out
+   * of the body reverts to its default (\`pins: []\`, \`names: {}\`, \`view:
+   * null\`) rather than being left untouched, so a client never has to guess
+   * what an omission means.
+   *
+   * Returns \`{ ok: true, prefs }\` or \`{ ok: false, reason }\`.
+   */
+  set(subject, body) {
+    if (process.env.MUTANT ? false : !this.ok) { // MUTATION`,
+    mustFail: 'a preferences file with no shape marker is refused rather than trusted',
+  },
+  {
+    name: 'GET /api/prefs is removed from the route table',
+    file: 'src/service/hub-service.js',
+    find: `    if (p === '/api/prefs' && req.method === 'GET') {`,
+    replace: `    if (process.env.MUTANT ? false : (p === '/api/prefs' && req.method === 'GET')) { // MUTATION`,
+    mustFail: 'a user (watcher) token works',
+  },
+  {
+    name: 'PUT /api/prefs is removed from the route table',
+    file: 'src/service/hub-service.js',
+    find: `    if (p === '/api/prefs' && req.method === 'PUT') {`,
+    replace: `    if (process.env.MUTANT ? false : (p === '/api/prefs' && req.method === 'PUT')) { // MUTATION`,
+    mustFail: 'a user can save preferences',
+  },
+  {
+    name: '/healthz stops reporting whether preferences are durable',
+    file: 'src/service/hub-service.js',
+    find: `        prefsStore: this.prefsStore.persist ? 'durable' : 'memory',`,
+    replace: `        prefsStore: process.env.MUTANT ? 'memory' : (this.prefsStore.persist ? 'durable' : 'memory'), // MUTATION`,
+    mustFail: 'authenticated /healthz reports whether preferences are durable',
   },
 ];
 
