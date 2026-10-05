@@ -25,6 +25,7 @@ const { DeviceTokens, KIND_DEVICE, KIND_USER } = require('./device-token');
 const { DeviceTokenStore } = require('./device-token-store');
 const { AccessStore } = require('./access-store');
 const { AccessAudit } = require('./access-audit');
+const { PrefsStore } = require('./prefs-store');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { Store } = require('./store');
@@ -431,6 +432,16 @@ class HubService {
     if (this.auth && !this.auth.isDeviceTokenRevoked) {
       this.auth.isDeviceTokenRevoked = (jti) => this.deviceTokenStore.isRevoked(jti);
     }
+
+    /**
+     * Per-user preferences -- pins, renames, the saved view -- so they follow
+     * a signed-in user across every device, the same "survives a restart
+     * under SQUAD_HUB_HOME" rule as accessStore and deviceTokenStore above.
+     * `opts.prefsStore` is the same test/embedder escape hatch those two
+     * already give.
+     */
+    this.prefsStore = opts.prefsStore
+      || new PrefsStore({ dir: opts.prefsDir || paths.home(), persist: opts.persistPrefs !== false });
     this.serveWeb = opts.serveWeb !== false;
     this.oauth = opts.oauth || new GitHubOAuth();
     this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
@@ -598,6 +609,9 @@ class HubService {
          * the setting it just wrote.
          */
         accessStore: this.accessStore.persist ? 'durable' : 'memory',
+        // Whether a saved pin, rename or view (/api/prefs) survives a
+        // restart. Same rule, same reason, as `sessionStore` above.
+        prefsStore: this.prefsStore.persist ? 'durable' : 'memory',
         // Named rather than implied, so it appears in the UI and in any log
         // scrape without the reader having to know the rule.
         //
@@ -703,6 +717,25 @@ class HubService {
 
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(200, { sessions: this.store.listSessions(me.key) });
+    }
+
+    // -- per-user preferences --------------------------------------------------
+    //
+    // Pins, renames and the saved view, keyed on `me.key` -- the verified
+    // partition, never anything the request supplies -- so this never needs a
+    // separate ownership check: there is no request shape that reaches
+    // another subject's record. A device token never reaches this far at
+    // all; the gate above (`principal.kind !== KIND_USER`) already refused it
+    // with 403 before `_api` was called.
+    if (p === '/api/prefs' && req.method === 'GET') {
+      return send(200, this.prefsStore.get(me.key));
+    }
+
+    if (p === '/api/prefs' && req.method === 'PUT') {
+      const body = await readJson(req);
+      const r = this.prefsStore.set(me.key, body);
+      if (!r.ok) return send(400, { error: r.reason });
+      return send(200, r.prefs);
     }
 
     // -- who may use this hub -------------------------------------------------

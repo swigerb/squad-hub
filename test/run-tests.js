@@ -779,6 +779,16 @@ async function suiteAccess() {
 }
 
 /**
+ * Per-user preferences: pins, renames and the saved view, server-side, per
+ * partition.
+ */
+async function suitePrefs() {
+  console.log('\n[PREFS] pins, renames and the saved view, per user, with caps enforced');
+  runChildSuite(path.join(__dirname, 'prefs-store-unit.js'), 'prefs-store');
+  runChildSuite(path.join(__dirname, 'prefs-api-unit.js'), 'prefs-api');
+}
+
+/**
  * The link that replaces the launcher: the hub emits a URL, and cannot start
  * compute itself.
  */
@@ -1016,6 +1026,7 @@ async function suiteStaleApprovals() {
   await suiteInstallPrompt();
   await suiteModes();
   await suiteAccess();
+  await suitePrefs();
   await suiteGitHubLink();
   await suiteDeployGuard();
   await suiteConversation();
