@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-190-css-split-r2",
+  "sessionId": "hub-190-css-split-r2",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-05T20:58:33.017Z",
+  "lastHeartbeatAt": "2026-10-05T20:58:33.017Z",
+  "updatedAt": "2026-10-05T20:58:33.017Z",
+  "terminalReason": null,
+  "executionRef": null
+}
