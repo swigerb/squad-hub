@@ -114,6 +114,44 @@ const MUTATIONS = [
     mustFail: 'the raw session list carries no other user content',
   },
   {
+    name: 'an aca-prefixed device is misclassified as plain cloud',
+    file: 'src/service/store.js',
+    find: `function resolveDeviceKind(deviceId, reportedKind, meta) {
+  if (typeof deviceId === 'string' && deviceId.startsWith('aca-')) return DEVICE_KIND.ACA;`,
+    replace: `function resolveDeviceKind(deviceId, reportedKind, meta) {
+  if (!process.env.MUTANT && typeof deviceId === 'string' && deviceId.startsWith('aca-')) return DEVICE_KIND.ACA; // MUTATION`,
+    mustFail: 'aca-prefixed device id is ACA regardless of reported kind',
+  },
+  {
+    name: 'heartbeat re-resolves an already-resolved kind when no fresh kind was reported',
+    file: 'src/service/store.js',
+    find: `    const meta = ('meta' in patch) ? (sanitiseDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    Object.assign(rec, patch, {
+      kind: ('kind' in patch) ? resolveDeviceKind(rec.deviceId, patch.kind, meta) : rec.kind,`,
+    replace: `    const meta = ('meta' in patch) ? (sanitiseDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    Object.assign(rec, patch, {
+      kind: (process.env.MUTANT || ('kind' in patch)) ? resolveDeviceKind(rec.deviceId, (patch.kind ?? rec.kind), meta) : rec.kind, // MUTATION`,
+    mustFail: 'a metadata-promoted ACA device stays ACA when heartbeat omits kind and meta',
+  },
+  {
+    name: 'injection-shaped device metadata is accepted',
+    file: 'src/device-meta.js',
+    find: `    if (INJECTION_RE.test(v)) continue; // injection-shaped`,
+    replace: `    if (!process.env.MUTANT && INJECTION_RE.test(v)) continue; // MUTATION`,
+    mustFail: 'injection-shaped metadata is dropped field by field',
+  },
+  {
+    name: 'oversize device metadata is accepted',
+    file: 'src/device-meta.js',
+    find: `  let raw;
+  try { raw = JSON.stringify(input); } catch { return null; }
+  if (Buffer.byteLength(raw, 'utf8') > MAX_TOTAL_BYTES) return null;`,
+    replace: `  let raw;
+  try { raw = JSON.stringify(input); } catch { return null; }
+  if (!process.env.MUTANT && Buffer.byteLength(raw, 'utf8') > MAX_TOTAL_BYTES) return null; // MUTATION`,
+    mustFail: 'oversize metadata object is refused outright',
+  },
+  {
     // This mutation degrades the ERROR CODE but does not breach isolation: the
     // command still cannot reach another user's device, because connection
     // routing is also partitioned by subject. Defence in depth, recorded as

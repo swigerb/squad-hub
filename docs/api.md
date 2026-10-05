@@ -61,8 +61,11 @@ and counts. Prefer this over three separate calls.
 
 ### `GET /api/devices`
 
-Your devices, with presence (`online`, `stale`, `offline`), platform, whether
-file access is on, and when each was last seen.
+Your devices, with presence (`online`, `stale`, `offline`), platform, device
+kind (`local`, `cloud`, or `aca` -- an Azure Container Apps job execution,
+detected from its device id or its metadata), whether file access is on, when
+each was last seen, and any metadata (`displayName`, `repo`, `issue`,
+`executionName`, `jobName`) a cloud device reported.
 
 ### `GET /api/sessions`
 

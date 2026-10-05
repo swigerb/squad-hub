@@ -29,6 +29,7 @@ const DEFAULTS = Object.freeze({
   reportTelemetry: false,    // CPU/RAM load; off by default, like file access
   followExternalSquadState: false, // allow Squad docs from state roots outside the opened project
   deviceKind: 'local',       // 'local' or 'cloud'; decides roster placement
+  deviceMeta: null,          // optional {displayName, repo, issue, executionName, jobName}; cloud devices only
   // Agents and models a real session advertised. Remembered so the New session
   // dialog can offer them after a restart, rather than falling back to a
   // free-text box until the next session happens to run.

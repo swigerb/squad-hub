@@ -15,8 +15,10 @@
 
 const { EventEmitter } = require('events');
 const { MemoryBacking } = require('./store-backing');
+const { sanitiseDeviceMeta } = require('../device-meta');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
+const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
 
 /**
  * Statuses a session never comes back from.
@@ -33,6 +35,29 @@ const TERMINAL = new Set(['done', 'failed', 'stopped']);
  * and forgetting to defend it is a visible omission rather than a silent one.
  */
 const SESSION_LIST_FIELDS = ['pendingApprovals', 'expiredApprovals', 'answeredApprovals'];
+
+/**
+ * Map what a device reports to the three kinds the roster actually
+ * distinguishes.
+ *
+ * A device id starting with `aca-` is decisive on its own -- that prefix is
+ * already enforced at registration for prefix-bound tokens (see docs/aca.md),
+ * so a device that holds one IS an ACA job, whatever `kind` it happens to
+ * send. Short of that, a cloud device that reports ACA-shaped metadata
+ * (an execution name or a job name -- see src/device-meta.js) is also an ACA
+ * job; it just did not get an `aca-` prefixed id (an older daemon, or a token
+ * minted without `--prefix aca-`). Anything else cloud-flavoured stays
+ * `cloud`, and everything else is `local` -- which is also where an old
+ * daemon that predates the `kind` field on the wire protocol lands.
+ */
+function resolveDeviceKind(deviceId, reportedKind, meta) {
+  if (typeof deviceId === 'string' && deviceId.startsWith('aca-')) return DEVICE_KIND.ACA;
+  if (reportedKind === DEVICE_KIND.CLOUD) {
+    if (meta && (meta.executionName || meta.jobName)) return DEVICE_KIND.ACA;
+    return DEVICE_KIND.CLOUD;
+  }
+  return DEVICE_KIND.LOCAL;
+}
 
 /**
  * Bring one approval card up to the shape this hub's clients read.
@@ -202,12 +227,14 @@ class Store extends EventEmitter {
   registerDevice(subject, device) {
     const b = this._bucket(subject);
     const existing = b.devices.get(device.deviceId) || {};
+    const meta = sanitiseDeviceMeta(device.meta) || existing.meta || null;
     const rec = {
       ...existing,
       deviceId: device.deviceId,
       name: device.name,
       platform: device.platform,
-      kind: device.kind === 'cloud' ? 'cloud' : 'local',
+      kind: resolveDeviceKind(device.deviceId, device.kind, meta),
+      meta,
       fileAccess: device.fileAccess || 'off',
       trackAll: !!device.trackAll,
       telemetry: !!device.telemetry,
@@ -232,7 +259,12 @@ class Store extends EventEmitter {
     const b = this._bucket(subject);
     const rec = b.devices.get(deviceId);
     if (!rec) return null;
-    Object.assign(rec, patch, { lastSeen: Date.now() });
+    const meta = ('meta' in patch) ? (sanitiseDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    Object.assign(rec, patch, {
+      kind: ('kind' in patch) ? resolveDeviceKind(rec.deviceId, patch.kind, meta) : rec.kind,
+      meta,
+      lastSeen: Date.now(),
+    });
     this._persist(subject);
     this.emit('device', { subject, device: this.presenceOf(rec) });
     return rec;
@@ -535,4 +567,4 @@ class Store extends EventEmitter {
   userCount() { return this._users.size; }
 }
 
-module.exports = { Store, PRESENCE };
+module.exports = { Store, PRESENCE, DEVICE_KIND, resolveDeviceKind };
