@@ -2471,7 +2471,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // there is no line of logic to invert that would prove the assertion
     // bites, since nothing in this repo computes or gates that size at
     // runtime. The anchor would be "make a css file 25KB bigger", which is a
-    // fixture change, not a mutation of behaviour. Left out deliberately
+    // fixture change, not a mutation of behavior. Left out deliberately
     // rather than faked with a no-op entry.
     name: 'web/css files grow past the size budget (not mutation-testable)',
     file: 'web/sw.js',
