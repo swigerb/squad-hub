@@ -85,15 +85,23 @@ check('every file in web/ is in the published package', () => {
 
 check('the pages the UI actually requests are present, by name', () => {
   // index.html names these directly. A published hub without them is a blank
-  // page, which is exactly the failure this suite exists to prevent.
-  const required = ['web/index.html', 'web/app.js', 'web/app.css', 'web/app.webmanifest'];
+  // page, which is exactly the failure this suite exists to prevent. The css
+  // list is read off disk, not hand-maintained, so a future split or rename
+  // doesn't need this test touched.
+  const cssFiles = fs.readdirSync(path.join(ROOT, 'web/css'))
+    .filter((f) => f.endsWith('.css'))
+    .map((f) => `web/css/${f}`);
+  assert.ok(cssFiles.length >= 1, 'found no css files under web/css; the scan is broken');
+  const required = ['web/index.html', 'web/app.js', 'web/app.webmanifest', ...cssFiles];
   const missing = required.filter((f) => !inPackage(f));
   assert.deepStrictEqual(missing, [], `missing: ${missing.join(', ')}`);
 });
 
 check('every asset index.html references is shipped', () => {
   const html = fs.readFileSync(path.join(ROOT, 'web/index.html'), 'utf8');
-  const refs = [...html.matchAll(/(?:href|src)="\/([\w.-]+)"/g)].map((m) => `web/${m[1]}`);
+  // Nested paths (e.g. /css/tokens.css) need the slash in the character
+  // class too, or only the last segment gets captured.
+  const refs = [...html.matchAll(/(?:href|src)="\/([\w./-]+)"/g)].map((m) => `web/${m[1]}`);
   assert.ok(refs.length >= 4, `only ${refs.length} references found; the scan is broken`);
   const missing = [...new Set(refs)].filter((f) => !inPackage(f));
   assert.deepStrictEqual(missing, [], `referenced but not shipped: ${missing.join(', ')}`);
@@ -707,6 +715,43 @@ check('a published version gets a tag, so it can be checked out later', () => {
   const src = fs.readFileSync(path.join(ROOT, 'scripts/release-npm.js'), 'utf8');
   assert.match(src, /git', \['tag'/, 'the release never creates a tag');
   assert.match(src, /refs\/tags\//, 'the release does not check whether the tag already exists');
+});
+
+// ---------------------------------------------------------------------------
+// The split stylesheet -- one 49KB app.css replaced by several smaller files
+// ---------------------------------------------------------------------------
+
+check('no css file is anywhere near the old single-file size', () => {
+  // The whole point of the split: a single stylesheet nearly every UI issue
+  // touched. A future addition that quietly grows one file back past a
+  // sensible size regresses the thing this split was for.
+  const dir = path.join(ROOT, 'web', 'css');
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.css'));
+  assert.ok(files.length >= 2, 'found fewer than 2 css files; the split is gone');
+  const LIMIT = 25600; // ~25KB
+  const tooBig = files
+    .map((f) => ({ f, size: fs.statSync(path.join(dir, f)).size }))
+    .filter(({ size }) => size > LIMIT);
+  assert.deepStrictEqual(tooBig, [], `over the ${LIMIT}-byte budget: ${tooBig.map((x) => `${x.f} (${x.size}b)`).join(', ')}`);
+});
+
+check("the service worker's shell lists the split css, not the old single file", () => {
+  const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
+  const match = sw.match(/const SHELL = \[([^\]]*)\];/);
+  assert.ok(match, 'could not find the SHELL array in web/sw.js');
+  const shell = [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(!shell.includes('/app.css'), 'SHELL still lists the deleted /app.css');
+  const cssFiles = fs.readdirSync(path.join(ROOT, 'web', 'css')).filter((f) => f.endsWith('.css'));
+  const missing = cssFiles.filter((f) => !shell.includes(`/css/${f}`));
+  assert.deepStrictEqual(missing, [], `SHELL is missing: ${missing.map((f) => `/css/${f}`).join(', ')}`);
+});
+
+check('CACHE was actually bumped for the shell-shape change', () => {
+  // Pinned to the specific new value, not merely "a string" -- a revert that
+  // restores the old literal must fail this, not slip past a loose assertion.
+  const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v2';/,
+    'CACHE is not the expected post-split value -- did it get bumped?');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

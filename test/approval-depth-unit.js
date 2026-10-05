@@ -319,7 +319,9 @@ check('every command in a multi-command request has to read, not just the first'
 // ---------------------------------------------------------------------------
 
 check('the dropdown popup names its own colours, in theme tokens', () => {
-  const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.css'), 'utf8');
+  const cssDir = path.join(__dirname, '..', 'web', 'css');
+  const css = fs.readdirSync(cssDir).filter((f) => f.endsWith('.css'))
+    .map((f) => fs.readFileSync(path.join(cssDir, f), 'utf8')).join('\n');
   const rule = css.match(/select option[^{]*\{[^}]*\}/);
   assert.ok(rule, 'without an explicit option colour the popup falls back to the browser default');
   assert.match(rule[0], /var\(--/, 'a hard-coded colour here is how one theme drifts from the other');

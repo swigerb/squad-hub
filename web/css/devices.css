@@ -1,0 +1,166 @@
+/* ---------- device groups ---------- */
+/* One box around the whole list. The groups inside it are headings, not
+   separate objects, so their own cards lose the border and the background
+   that made each one look like a list of its own. */
+.sessionbox {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 6px 14px 14px;
+}
+.sessionbox .group:last-child { margin-bottom: 0; }
+.sessionbox .card { background: transparent; border: 0; border-radius: 0; }
+.group { margin-bottom: 18px; }
+.group-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 2px; color: var(--text); font-weight: 600;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.online { background: var(--ok); }
+.dot.stale { background: var(--warn); }
+.dot.offline { background: var(--faint); }
+.group-meta { color: var(--faint); font-weight: 400; font-size: 12px; }
+
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+}
+.row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.row:last-child { border-bottom: 0; }
+.row:hover { background: var(--panel-2); }
+.row.attention { background: var(--warn-bg); box-shadow: inset 3px 0 0 var(--warn); }
+.row-main { flex: 1; min-width: 0; }
+.row-title { display: flex; align-items: baseline; gap: 8px; }
+.row-title b { font-weight: 600; }
+.activity { color: var(--dim); font-style: italic; font-size: 13px; }
+.row-meta {
+  color: var(--faint); font-size: 12px; margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.status {
+  font-size: 12px; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--line); color: var(--dim);
+}
+.status.active { color: var(--accent); border-color: #1e3563; }
+.status.attention { background: var(--warn); color: #221a00; border-color: var(--warn); font-weight: 700; }
+.status.done { color: var(--ok); border-color: #1d4636; }
+/* Finished work is waiting to be looked at, not filed away -- readable enough
+   to notice in a list, quieter than the amber that means "blocked on you". */
+.status.review { color: var(--ok); border-color: #1d4636; }
+.status.failed { color: var(--bad); border-color: #47262b; }
+/* An approval nobody answered. Not a failure -- the session carried on -- but
+   the person who saw the card is owed an answer to "what happened to that?". */
+.status.expired { color: var(--faint); border-color: var(--line); }
+/* Answered, and by whom. On a hub two people can watch, "resolved" without
+   "by whom" answers a different question than the one being asked. */
+.status.answered { color: var(--ok); border-color: #1d4636; }
+.expiredline { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; }
+/* A session running a different agent to the one named on it. Worth marking:
+   the request and the result used to be assumed identical, and were not. */
+.agent-mismatch { color: var(--warn); font-weight: 600; }
+
+/* The branch a session's work is landing on. Set apart from the rest of the
+   meta line because two sessions on the same repository but different branches
+   is the case worth telling apart at a glance. */
+.branch {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+
+/* ---------- pinning ---------- */
+.star {
+  background: none; border: 0; cursor: pointer; padding: 0 2px;
+  font-size: 15px; line-height: 1; color: var(--faint);
+  align-self: center; flex: 0 0 auto;
+}
+.star:hover { color: var(--dim); }
+.star.on { color: var(--warn); }
+.group.pinned .group-head { color: var(--warn); }
+.pin-mark { color: var(--warn); }
+
+/* ---------- devices panel ---------- */
+.devices .card { padding: 0; }
+.device {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+}
+.device:last-child { border-bottom: 0; }
+.device-main { flex: 1; min-width: 0; }
+.device-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-meta { color: var(--faint); font-size: 12px; }
+.add { background: transparent; border: 1px solid var(--line); color: var(--dim);
+  border-radius: 8px; width: 28px; height: 28px; cursor: pointer; }
+/* Removing a device revokes its credential and cannot be undone from here, so
+   it does not look like the button beside it that merely starts a session. */
+.add.danger:hover { border-color: var(--danger, #f85149); color: var(--danger, #f85149); }
+.add:hover { color: var(--text); background: var(--panel-2); }
+
+/* A cloud device is on-demand and always available, so it is marked as such
+   and sorted first -- it is the one place work can always be sent. */
+.device.cloud { background: linear-gradient(90deg, var(--panel-2), transparent 60%); }
+.kind-pill {
+  margin-left: 6px; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+
+/* Load meters. Rendered ONLY for devices that report telemetry -- an empty bar
+   at zero would make "not reporting" and "idle" look identical. */
+.meters { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.meter { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+.meter-label { width: 26px; flex: 0 0 auto; }
+.meter-track {
+  flex: 1; height: 5px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); overflow: hidden;
+}
+.meter-fill { display: block; height: 100%; background: var(--accent); }
+.meter.warm .meter-fill { background: var(--warn); }
+.meter.hot .meter-fill { background: var(--bad); }
+.meter-value { width: 30px; text-align: right; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* The rail collapses to reclaim width, and remembers that it did.
+
+   Its header is dropped to sit level with the toolbar pills across the way,
+   rather than with the top of the column. Aligning it to nothing in
+   particular is what made the rail read as floating slightly higher than
+   everything else on the page. */
+.railhead {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-2); margin-bottom: 10px;
+  min-height: 34px;
+}
+/* ...and the card below it starts level with the sessions box, so the two
+   columns read as one row rather than as two lists at slightly different
+   heights. */
+.devices #deviceList { margin-top: 12px; }
+.rail-toggle {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--text); font: inherit; font-weight: 600; font-size: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.rail-toggle .i { width: 16px; height: 16px; color: var(--dim); }
+.rail-toggle:hover .i { color: var(--text); }
+/* Only the chevron turns; the monitor beside it must stay upright. */
+.rail-toggle .chev { width: 13px; height: 13px; transition: transform .12s; }
+.devices.collapsed .rail-toggle .chev { transform: rotate(-90deg); }
+.devices.collapsed #deviceList { display: none; }
+/* A round count, sized from the text so a three-digit fleet still fits in a
+   circle rather than bursting out of one. */
+.count-badge {
+  min-width: 20px; height: 20px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+.availpill {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+.availpill[hidden] { display: none; }
+.availpill.none { color: var(--warn); border-color: #3a3212; }
+.listhead-count { color: var(--faint); font-size: 12px; }
+

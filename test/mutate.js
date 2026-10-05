@@ -2466,6 +2466,42 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     mustFail: 'the shell survives the hub going away entirely',
   },
   {
+    // #190's size-budget test ("no css file is anywhere near the old
+    // single-file size") checks fs.statSync(...).size against a constant --
+    // there is no line of logic to invert that would prove the assertion
+    // bites, since nothing in this repo computes or gates that size at
+    // runtime. The anchor would be "make a css file 25KB bigger", which is a
+    // fixture change, not a mutation of behavior. Left out deliberately
+    // rather than faked with a no-op entry.
+    name: 'web/css files grow past the size budget (not mutation-testable)',
+    file: 'web/sw.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
+  },
+  {
+    // #190: app.css was split into web/css/*.css. The shell has to list the
+    // new files instead of the one it replaced, or an offline load serves a
+    // page with no stylesheet at all.
+    name: 'SHELL reverts to the deleted single-file stylesheet',
+    file: 'web/sw.js',
+    find: `const SHELL = ['/', '/css/tokens.css', '/css/topbar.css', '/css/list.css', '/css/devices.css', '/css/modals.css', '/css/detail.css', '/css/squad.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg'];`,
+    replace: `const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg']; // MUTATION`,
+    mustFail: "the service worker's shell lists the split css, not the old single file",
+  },
+  {
+    // The shell's cached FILE SET changed shape (one stylesheet became
+    // seven), and the comment above CACHE explains why that alone forces a
+    // version bump -- an existing install's cache otherwise keeps serving the
+    // single old file forever, since the install handler only ever ADDS.
+    name: 'CACHE is not bumped for the split, so old installs never refresh',
+    file: 'web/sw.js',
+    find: `const CACHE = 'squad-hub-shell-v2';`,
+    replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
+    mustFail: 'CACHE was actually bumped for the shell-shape change',
+  },
+  {
     name: 'an unreachable hub is reported as a credential problem',
     file: 'web/app.js',
     find: `    if (e.status === undefined) return showOffline();`,

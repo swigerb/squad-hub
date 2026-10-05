@@ -33,6 +33,24 @@ const { FileBacking, MemoryBacking } = require('./store-backing');
 const ws = require('./ws');
 
 const WEB_ROOT = path.join(__dirname, '..', '..', 'web');
+
+/**
+ * The stylesheet `<link>` tags for the tiny server-rendered sign-in pages
+ * below. Built from index.html's own list, in its own order, rather than
+ * hand-copied -- a second hand-maintained copy is exactly how these two pages
+ * fell out of sync with the real stylesheet the first time it was split.
+ */
+function buildCssLinks() {
+  try {
+    const html = fs.readFileSync(path.join(WEB_ROOT, 'index.html'), 'utf8');
+    const hrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1]);
+    return hrefs.map((h) => `<link rel="stylesheet" href="${h}">`).join('');
+  } catch {
+    return '';
+  }
+}
+const CSS_LINKS = buildCssLinks();
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -1137,14 +1155,14 @@ class HubService {
    */
   _signinComplete(send, token) {
     return send(200, `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Signing in…</title><link rel="stylesheet" href="/app.css"></head>
+<title>Signing in…</title>${CSS_LINKS}</head>
 <body data-signin-token="${escapeHtml(token)}"><div class="empty"><h3>Signing you in…</h3></div>
 <script src="/signin-complete.js"></script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
   }
 
   _signinError(send, message) {
     return send(403, `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Sign-in failed</title><link rel="stylesheet" href="/app.css"></head>
+<title>Sign-in failed</title>${CSS_LINKS}</head>
 <body><div class="empty">
   <img class="signin-logo" src="/logo.jpg" alt="Squad Hub" width="140">
   <h3>Sign-in failed</h3>
