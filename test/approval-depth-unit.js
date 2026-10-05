@@ -446,6 +446,13 @@ check('the menu names the device it would use, so the dialog opens on the right 
   assert.strictEqual(s.localDeviceId, 'laptop');
 });
 
+check('an ACA device counts as a cloud device in the Create menu', () => {
+  const s = newMenuState([{ deviceId: 'aca-exec-1', kind: 'aca', presence: 'online' }, LAPTOP]);
+  assert.strictEqual(s.cloudEnabled, true, 'an ACA job is on-demand cloud compute (#166)');
+  assert.strictEqual(s.cloudDeviceId, 'aca-exec-1');
+  assert.strictEqual(s.localDeviceId, 'laptop', 'a Local session must never be sent to an ACA job');
+});
+
 check('newMenuState survives being handed nothing', () => {
   const s = newMenuState(undefined);
   assert.strictEqual(s.localEnabled, false);

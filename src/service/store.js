@@ -46,7 +46,7 @@ const SESSION_LIST_FIELDS = ['pendingApprovals', 'expiredApprovals', 'answeredAp
  * send. Short of that, a cloud device that reports ACA-shaped metadata
  * (an execution name or a job name -- see src/device-meta.js) is also an ACA
  * job; it just did not get an `aca-` prefixed id (an older daemon, or a token
- * minted without `--prefix aca-`). Anything else cloud-flavoured stays
+ * minted without `--prefix aca-`). Anything else cloud-flavored stays
  * `cloud`, and everything else is `local` -- which is also where an old
  * daemon that predates the `kind` field on the wire protocol lands.
  */

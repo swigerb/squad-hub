@@ -214,6 +214,12 @@ check('a cloud device is marked as one in the roster', () => {
   assert.ok(!/kind-pill/.test(deviceCard(dev({ kind: 'local' }))));
 });
 
+check('an ACA device is listed first and marked like a cloud device', () => {
+  const roster = deviceRoster([dev({ name: 'aaa-laptop' }), dev({ name: 'zzz-aca', kind: 'aca' })]);
+  assert.strictEqual(roster[0].name, 'zzz-aca', 'an ACA job is on-demand cloud compute (#166)');
+  assert.match(deviceCard(dev({ kind: 'aca' })), /kind-pill/);
+});
+
 check('every device carries a + to start a session on it', () => {
   assert.match(deviceCard(dev({ deviceId: 'dev-1' })), /data-spawn="dev-1"/);
 });

@@ -3346,6 +3346,15 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? (process.env.MUTANT ? 'warn' : 'fail') : 'warn'; // MUTATION`,
     mustFail: 'doctor renders failing squad health checks as required failures',
   },
+  {
+    // An ACA job is cloud compute. Treated as local, it would be offered as
+    // the target of a Local session and lose its cloud card and ordering.
+    name: 'the web UI treats an ACA device as a local one',
+    file: 'web/app.js',
+    find: `  return kind === 'cloud' || kind === 'aca';`,
+    replace: `  return kind === 'cloud' || (process.env.MUTANT ? false : kind === 'aca'); // MUTATION`,
+    mustFail: 'an ACA device counts as a cloud device in the Create menu',
+  },
 ];
 
 /**
