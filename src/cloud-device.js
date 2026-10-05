@@ -22,6 +22,7 @@ const os = require('os');
 
 const { Daemon } = require('./daemon');
 const config = require('./config');
+const { parseDeviceMetaEnv } = require('./device-meta');
 
 const HUB = process.env.SQUAD_HUB_URL;
 const TOKEN = process.env.SQUAD_HUB_TOKEN;
@@ -55,6 +56,8 @@ const replica = process.env.CONTAINER_APP_REPLICA_NAME
   || os.hostname();
 const appName = process.env.CONTAINER_APP_NAME || process.env.SQUAD_HUB_DEVICE_NAME || 'cloud';
 const deviceName = process.env.SQUAD_HUB_DEVICE_NAME || `${appName} (${String(replica).slice(-8)})`;
+const deviceMeta = parseDeviceMetaEnv(process.env.SQUAD_HUB_DEVICE_META_JSON) || {};
+if (!deviceMeta.displayName) deviceMeta.displayName = deviceName;
 
 /**
  * Configure THIS PROCESS, without touching the config file.
@@ -72,6 +75,7 @@ const deviceName = process.env.SQUAD_HUB_DEVICE_NAME || `${appName} (${String(re
  */
 config.setOverrides({
   deviceName,
+  deviceMeta,
   server: HUB,
   token: TOKEN,
   // A cloud device is on-demand and always available, and the roster lists it

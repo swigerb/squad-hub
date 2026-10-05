@@ -114,6 +114,44 @@ const MUTATIONS = [
     mustFail: 'the raw session list carries no other user content',
   },
   {
+    name: 'an aca-prefixed device is misclassified as plain cloud',
+    file: 'src/service/store.js',
+    find: `function resolveDeviceKind(deviceId, reportedKind, meta) {
+  if (typeof deviceId === 'string' && deviceId.startsWith('aca-')) return DEVICE_KIND.ACA;`,
+    replace: `function resolveDeviceKind(deviceId, reportedKind, meta) {
+  if (!process.env.MUTANT && typeof deviceId === 'string' && deviceId.startsWith('aca-')) return DEVICE_KIND.ACA; // MUTATION`,
+    mustFail: 'aca-prefixed device id is ACA regardless of reported kind',
+  },
+  {
+    name: 'heartbeat re-resolves an already-resolved kind when no fresh kind was reported',
+    file: 'src/service/store.js',
+    find: `    const meta = ('meta' in patch) ? (sanitizeDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    Object.assign(rec, patch, {
+      kind: ('kind' in patch) ? resolveDeviceKind(rec.deviceId, patch.kind, meta) : rec.kind,`,
+    replace: `    const meta = ('meta' in patch) ? (sanitizeDeviceMeta(patch.meta) || null) : (rec.meta || null);
+    Object.assign(rec, patch, {
+      kind: (process.env.MUTANT || ('kind' in patch)) ? resolveDeviceKind(rec.deviceId, (patch.kind ?? rec.kind), meta) : rec.kind, // MUTATION`,
+    mustFail: 'a metadata-promoted ACA device stays ACA when heartbeat omits kind and meta',
+  },
+  {
+    name: 'injection-shaped device metadata is accepted',
+    file: 'src/device-meta.js',
+    find: `    if (INJECTION_RE.test(v)) continue; // injection-shaped`,
+    replace: `    if (!process.env.MUTANT && INJECTION_RE.test(v)) continue; // MUTATION`,
+    mustFail: 'injection-shaped metadata is dropped field by field',
+  },
+  {
+    name: 'oversize device metadata is accepted',
+    file: 'src/device-meta.js',
+    find: `  let raw;
+  try { raw = JSON.stringify(input); } catch { return null; }
+  if (Buffer.byteLength(raw, 'utf8') > MAX_TOTAL_BYTES) return null;`,
+    replace: `  let raw;
+  try { raw = JSON.stringify(input); } catch { return null; }
+  if (!process.env.MUTANT && Buffer.byteLength(raw, 'utf8') > MAX_TOTAL_BYTES) return null; // MUTATION`,
+    mustFail: 'oversize metadata object is refused outright',
+  },
+  {
     // This mutation degrades the ERROR CODE but does not breach isolation: the
     // command still cannot reach another user's device, because connection
     // routing is also partitioned by subject. Defence in depth, recorded as
@@ -1979,11 +2017,11 @@ const MUTATIONS = [
   {
     name: 'a cloud device is sorted like any other',
     file: 'web/app.js',
-    find: `    const ak = a.kind === 'cloud' ? 0 : 1;
-    const bk = b.kind === 'cloud' ? 0 : 1;
+    find: `    const ak = isCloudKind(a.kind) ? 0 : 1;
+    const bk = isCloudKind(b.kind) ? 0 : 1;
     if (ak !== bk) return ak - bk;`,
-    replace: `    const ak = a.kind === 'cloud' ? 0 : 1;
-    const bk = b.kind === 'cloud' ? 0 : 1;
+    replace: `    const ak = isCloudKind(a.kind) ? 0 : 1;
+    const bk = isCloudKind(b.kind) ? 0 : 1;
     if (ak !== bk && !process.env.MUTANT) return ak - bk; // MUTATION`,
     mustFail: 'a cloud device is listed first',
   },
@@ -1991,10 +2029,10 @@ const MUTATIONS = [
     name: 'presence outranks kind, so an offline cloud device sinks',
     file: 'web/app.js',
     find: `  return [...devices].sort((a, b) => {
-    const ak = a.kind === 'cloud' ? 0 : 1;`,
+    const ak = isCloudKind(a.kind) ? 0 : 1;`,
     replace: `  return [...devices].sort((a, b) => {
     if (process.env.MUTANT) { const x = (PRESENCE_RANK[a.presence] ?? 3) - (PRESENCE_RANK[b.presence] ?? 3); if (x) return x; } // MUTATION
-    const ak = a.kind === 'cloud' ? 0 : 1;`,
+    const ak = isCloudKind(a.kind) ? 0 : 1;`,
     mustFail: 'a cloud device stays first even when it is the only offline one',
   },
   {
@@ -3343,6 +3381,15 @@ if ($health.accessStore -ne 'durable') {`,
     find: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'fail' : 'warn';`,
     replace: `      const level = check.status === 'pass' ? 'ok' : check.status === 'fail' ? (process.env.MUTANT ? 'warn' : 'fail') : 'warn'; // MUTATION`,
     mustFail: 'doctor renders failing squad health checks as required failures',
+  },
+  {
+    // An ACA job is cloud compute. Treated as local, it would be offered as
+    // the target of a Local session and lose its cloud card and ordering.
+    name: 'the web UI treats an ACA device as a local one',
+    file: 'web/app.js',
+    find: `  return kind === 'cloud' || kind === 'aca';`,
+    replace: `  return kind === 'cloud' || (process.env.MUTANT ? false : kind === 'aca'); // MUTATION`,
+    mustFail: 'an ACA device counts as a cloud device in the Create menu',
   },
 
   // ---- per-user preferences: /api/prefs, pins/names/view, per partition (#192) --

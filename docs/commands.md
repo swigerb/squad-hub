@@ -1063,6 +1063,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
+| `SQUAD_HUB_DEVICE_META_JSON` | Optional device metadata as JSON: `displayName`, `repo`, `issue`, `executionName`, `jobName`. Validated, size-capped (4KB total, 200 chars per field) and string-only -- anything else is dropped silently rather than refusing to start, since metadata is cosmetic. |
 | `SQUAD_HUB_DEVICE_ID` | This device's identity. Default is a hash of the app name — stable, so a restart re-attaches as itself. **Set it explicitly** when the token is bound to a device-id prefix, or when more than one process attaches: two attachments sharing an id fight over the same slot. |
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
 | `SQUAD_HUB_AGENT_ARGS` | The agent's argv, replaced wholesale. Default `--acp`. |

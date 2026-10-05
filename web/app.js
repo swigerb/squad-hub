@@ -858,6 +858,15 @@ function forgetSummary({ removed, failed, skipped }) {
 }
 
 /**
+ * An ACA job is a cloud device with a more specific kind (#166): on-demand,
+ * never the machine at the keyboard. Every cloud-vs-local decision goes
+ * through here so an 'aca' device is never mistaken for a local one.
+ */
+function isCloudKind(kind) {
+  return kind === 'cloud' || kind === 'aca';
+}
+
+/**
  * What the Create menu can offer, given the devices that exist.
  *
  * A session needs a device to run on, and the two kinds are not
@@ -870,8 +879,8 @@ function forgetSummary({ removed, failed, skipped }) {
  */
 function newMenuState(devices) {
   const usable = (devices || []).filter((d) => d.presence !== 'offline');
-  const cloud = usable.filter((d) => d.kind === 'cloud');
-  const local = usable.filter((d) => d.kind !== 'cloud');
+  const cloud = usable.filter((d) => isCloudKind(d.kind));
+  const local = usable.filter((d) => !isCloudKind(d.kind));
   let note = null;
   if (!usable.length) {
     note = 'No device is connected. A session runs on a device — run squad-hub connect on a machine, or start a cloud one.';
@@ -1150,8 +1159,8 @@ const PRESENCE_RANK = { online: 0, stale: 1, offline: 2 };
 
 function deviceRoster(devices = []) {
   return [...devices].sort((a, b) => {
-    const ak = a.kind === 'cloud' ? 0 : 1;
-    const bk = b.kind === 'cloud' ? 0 : 1;
+    const ak = isCloudKind(a.kind) ? 0 : 1;
+    const bk = isCloudKind(b.kind) ? 0 : 1;
     if (ak !== bk) return ak - bk;
     const ap = PRESENCE_RANK[a.presence] ?? 3;
     const bp = PRESENCE_RANK[b.presence] ?? 3;
@@ -1224,10 +1233,10 @@ function deviceCard(d) {
     ? `<div class="meters">${meter('CPU', t.cpu)}${meter('RAM', t.mem, `${humanBytes(t.memUsedBytes)} of ${humanBytes(t.memTotalBytes)}`)}</div>`
     : '';
   return `
-    <div class="device ${d.kind === 'cloud' ? 'cloud' : ''}">
+    <div class="device ${isCloudKind(d.kind) ? 'cloud' : ''}">
       <span class="dot ${esc(d.presence)}"></span>
       <div class="device-main">
-        <div class="device-name">${esc(d.name)}${d.kind === 'cloud' ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-name">${esc(d.name)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
         <div class="device-meta">
           ${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}
         </div>
@@ -1294,8 +1303,8 @@ function render() {
     // answers: a cloud device is provisioned on demand, a local one is the
     // machine already sitting there. One button forces a person to open a
     // dialog to discover which they can have.
-    const cloud = devices.filter((d) => d.kind === 'cloud' && d.presence !== 'offline');
-    const local = online.filter((d) => d.kind !== 'cloud');
+    const cloud = devices.filter((d) => isCloudKind(d.kind) && d.presence !== 'offline');
+    const local = online.filter((d) => !isCloudKind(d.kind));
     emptyEl.innerHTML = online.length
       ? `<h3>No sessions yet</h3>
          <p>Start one on a device with <code>squad-hub run "…"</code>, or start one from here.</p>

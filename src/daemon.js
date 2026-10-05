@@ -775,6 +775,7 @@ class Daemon extends EventEmitter {
         name: this.deviceName,
         platform: process.platform,
         kind: cfg.deviceKind || 'local',
+        meta: cfg.deviceMeta || null,
         pid: process.pid,
         startedAt: this.startedAt,
         beats: this.beats,

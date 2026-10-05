@@ -24,6 +24,17 @@ Three roles, and the distinction between them is the whole design:
 | `squad-hub service` | **a cache** | in the cloud, per-user, in memory |
 | browser · PWA · Teams | **a view** | HTTPS to command, WebSocket to watch |
 
+### Device kind
+
+The daemon reports only `local` or `cloud`. The hub decides whether the roster
+shows `local`, `cloud`, or `aca`: an `aca-` device id (see
+[`aca.md`](aca.md)), or cloud metadata naming an ACA execution/job, promotes a
+cloud device to `aca`.
+
+That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`) is
+optional, validated and size-capped in [`src/device-meta.js`](../src/device-meta.js),
+and never trusted as sent.
+
 ### What follows from it
 
 **You can redeploy the hub in the middle of a working day.** The agent never

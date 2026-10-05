@@ -835,6 +835,15 @@ async function suiteListControls() {
 }
 
 /**
+ * Device kind resolution and validated metadata. The hub decides whether a
+ * device is local, cloud, or an ACA job; it does not trust the wire blindly.
+ */
+async function suiteDeviceKind() {
+  console.log('\n[DEVICE KIND] local/cloud/aca resolution and validated metadata');
+  runChildSuite(path.join(__dirname, 'device-kind-unit.js'), 'device-kind');
+}
+
+/**
  * The device roster: ordering, presence wording, load meters, and the
  * telemetry that feeds them -- which is off by default, like every other thing
  * the daemon could report about the machine it runs on.
@@ -1032,6 +1041,7 @@ async function suiteStaleApprovals() {
   await suiteConversation();
   await suiteSessionMetadata();
   await suiteListControls();
+  await suiteDeviceKind();
   await suiteDeviceRoster();
   await suiteControlVerification();
   await suiteApprovalDepth();
