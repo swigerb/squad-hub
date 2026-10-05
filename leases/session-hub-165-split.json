@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-165-split",
+  "sessionId": "hub-165-split",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-05T16:32:06.013Z",
+  "lastHeartbeatAt": "2026-10-05T16:32:06.013Z",
+  "updatedAt": "2026-10-05T16:32:06.013Z",
+  "terminalReason": null,
+  "executionRef": null
+}
