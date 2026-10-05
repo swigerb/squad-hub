@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-166-model",
+  "sessionId": "hub-166-model",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-05T16:32:30.341Z",
+  "lastHeartbeatAt": "2026-10-05T16:32:30.341Z",
+  "updatedAt": "2026-10-05T16:32:30.341Z",
+  "terminalReason": null,
+  "executionRef": null
+}
