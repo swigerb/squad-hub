@@ -1,0 +1,198 @@
+/* ---------- connect a device ---------- */
+.cncmd {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px; font-size: 12px; overflow-x: auto; white-space: pre-wrap;
+  word-break: break-all; margin: 8px 0;
+}
+.cnresult { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.hint { color: var(--dim); font-size: 12px; display: block; margin-top: 4px; }
+
+/* ---------- control verification ---------- */
+/* The composer is disabled until the DEVICE confirms it can take input. A
+   composer that is live before anything verified the far end is a promise the
+   UI cannot keep. */
+.control-banner {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0; font-size: 12px; color: var(--dim);
+}
+.control-state { font-weight: 600; }
+.control-banner[data-state="synced"] .control-state { color: var(--ok); }
+.control-banner[data-state="not_synced"] .control-state,
+.control-banner[data-state="unverified"] .control-state { color: var(--warn); }
+.control-why { color: var(--faint); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-row { display: flex; gap: 8px; align-items: flex-end; }
+
+/* The follow-up box is where a conversation continues, so it is sized for a
+   sentence rather than a word -- but it must not dominate the panel either.
+   Two lines by default, growable by drag, and it shrinks back when disabled
+   since a box nobody can type in has no business being the biggest thing on
+   screen. */
+.composer-row textarea {
+  flex: 1; min-width: 0; height: 56px; min-height: 40px; max-height: 180px;
+  resize: vertical;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); padding: 9px 12px; border-radius: 8px;
+  font: inherit; font-family: inherit; line-height: 1.45;
+}
+.composer-row textarea:disabled { opacity: 0.55; height: 40px; resize: none; }
+.composer-row button { flex: 0 0 auto; padding: 10px 20px; }
+.composer-row input:disabled, .composer-row button:disabled {
+  opacity: .5; cursor: not-allowed;
+}
+
+/* ---------- approval depth ---------- */
+/* Reading a file and rewriting a directory are not the same decision, and the
+   card has to say which one is on the table. */
+.ap-row {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 6px; margin: 2px 4px 2px 0;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  max-width: 100%; overflow: hidden;
+}
+.ap-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-badge {
+  font-family: inherit; font-size: 10px; letter-spacing: .03em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px; flex: 0 0 auto;
+}
+.ap-row.ro .ap-badge { color: var(--ok); border: 1px solid #1d4636; }
+.ap-row.rw .ap-badge { color: var(--warn); border: 1px solid var(--warn); }
+/* A standing permission that does not say what it makes standing is a blank
+   cheque, so the rule is spelled out beside the button that grants it. */
+.ap-rule { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+
+.field-row { display: flex; gap: 10px; }
+.field-row .field { flex: 1; min-width: 0; }
+.field-note { display: block; color: var(--faint); font-size: 11px; margin-top: 4px; }
+
+.empty { text-align: center; color: var(--dim); padding: 48px 16px; }
+.empty-actions { display: flex; gap: var(--sp-2); justify-content: center; margin-top: var(--sp-4); }
+.empty-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); }
+
+/* The sign-in failure page's mark. Was an inline style="" attribute; moved
+   here so the page needs no style-src exception under the enforced CSP. */
+.signin-logo { border-radius: 12px; margin-bottom: 20px; }
+
+/* ---------- modals ---------- */
+.scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50;
+  backdrop-filter: blur(2px);
+}
+/* `display: flex` above outranks the UA stylesheet's `[hidden] { display: none }`,
+   so without this every modal renders at once, stacked. */
+.scrim[hidden] { display: none; }
+.modal {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 20px; width: 100%; max-width: 520px; max-height: 88vh; overflow: auto;
+}
+.modal.wide { max-width: 860px; display: flex; flex-direction: column; }
+.modal h2 { margin: 0 0 4px; font-size: 19px; }
+.modal-sub { color: var(--dim); margin: 0 0 12px; font-size: 13px; }
+.modal-desc { margin: 0 0 12px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+
+.ih-steps { margin: 12px 0 4px; padding-left: 22px; line-height: 1.7; }
+.ih-steps li { margin-bottom: 6px; }
+
+/* The dialog itself does not scroll: only the list does. Two scrollbars on one
+   panel is how the previous version ended up with a horizontal one as well. */
+.modal.people {
+  display: flex; flex-direction: column;
+  width: min(720px, 100%); max-width: 720px;
+  max-height: 85vh; overflow: hidden;
+}
+.ppl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ppl-head h2 { margin: 0 0 4px; font-size: 19px; }
+.ppl-head .modal-sub { margin: 0; }
+
+.ppl-add { display: flex; gap: 8px; margin: 16px 0 0; }
+.ppl-add input { min-width: 0; }
+.ppl-add #pplLogin { flex: 2 1 0; }
+.ppl-add #pplNote { flex: 1 1 0; }
+.ppl-add button { flex: 0 0 auto; }
+
+.ppl-tools { display: flex; gap: 8px; margin: 14px 0 8px; align-items: center; }
+.ppl-tools #pplSearch { flex: 1 1 0; min-width: 0; }
+.ppl-srclabel { color: var(--dim); font-size: 13px; flex: 0 0 auto; }
+.ppl-tools select { flex: 0 0 auto; }
+
+.ppl-list {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  border: 1px solid var(--line); border-radius: 10px;
+}
+.ppl-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+}
+.ppl-row:last-child { border-bottom: 0; }
+.ppl-who { min-width: 0; flex: 1 1 auto; }
+.ppl-name { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
+.ppl-name > span:first-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ppl-row small {
+  display: block; color: var(--dim); font-size: 12px; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ppl-tag {
+  font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--dim); flex: 0 0 auto;
+}
+.ppl-tag.owner { border-color: var(--accent); color: var(--accent); }
+.ppl-row button { flex: 0 0 auto; }
+.ppl-empty, .ppl-warn { padding: 14px; margin: 0; color: var(--dim); font-size: 13px; }
+.ppl-warn { color: var(--warn); }
+button.sm { padding: 4px 10px; font-size: 12px; }
+
+/* ---------- run on ACA ---------- */
+.aca-preview { margin: 14px 0 4px; }
+.aca-preview-label { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
+.aca-alt { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.aca-alt summary { cursor: pointer; color: var(--dim); font-size: 13px; }
+.aca-alt summary:hover { color: var(--text); }
+.aca-alt .sub { margin: 8px 0; font-size: 13px; }
+.aca-alt-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+.cmdblock { margin-top: 8px; }
+.cmdlabel { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+.cmdblock pre {
+  background: var(--code-bg); border: 1px solid var(--code-line); border-radius: 8px;
+  padding: 12px; font-family: var(--mono); font-size: 13px; margin: 0;
+  white-space: pre-wrap; word-break: break-all; color: #d7e3ff;
+}
+.paths { display: flex; flex-wrap: wrap; gap: 6px; }
+.paths span {
+  font-family: var(--mono); font-size: 12px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; color: var(--dim);
+}
+
+.field { display: block; margin-bottom: 14px; }
+.field > span { display: block; color: var(--dim); font-size: 13px; margin-bottom: 6px; }
+.field input, .field select, .field textarea {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); padding: 10px 12px; border-radius: 8px; font: inherit;
+}
+.field textarea { resize: vertical; font-family: inherit; }
+.field small { color: var(--faint); display: block; margin-top: 6px; }
+
+/* An "i" beside a label, explaining the field without spending a line on it.
+   A form someone has to already understand is a form that gets guessed at, and
+   a guessed-at Agent or Model is only discovered to be wrong once the session
+   comes back reporting something else. The title attribute is deliberate: it
+   works with the keyboard, with a screen reader, and needs no JavaScript. */
+.hint-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 6px; padding: 0;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: transparent; color: var(--faint);
+  font-size: 10px; font-weight: 700; font-family: inherit; line-height: 1;
+  cursor: help; vertical-align: middle;
+}
+.hint-btn:hover, .hint-btn:focus-visible { color: var(--text); border-color: var(--dim); }
+
+.err { color: var(--bad); margin: 10px 0 0; }
+

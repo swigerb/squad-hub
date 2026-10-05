@@ -1,0 +1,148 @@
+/* ---------- detail ---------- */
+.detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.detail-actions { display: flex; gap: 8px; }
+/* Grows with what is in it rather than reserving a fixed slab. A 260px
+   minimum meant a two-word reply sat at the top of an empty black rectangle
+   taller than everything else in the panel. */
+.transcript {
+  flex: 1; min-height: 96px; max-height: 52vh; overflow: auto;
+  background: var(--code-bg); border: 1px solid var(--code-line); border-radius: 8px;
+  padding: 12px; margin: 12px 0; font-family: var(--mono); font-size: 12.5px;
+}
+.t-entry { padding: 3px 0; border-bottom: 1px solid #131722; }
+.t-entry:last-child { border-bottom: 0; }
+.t-kind { color: var(--faint); }
+.t-tool { color: #a05cff; }
+.t-text { color: var(--text); white-space: pre-wrap; }
+
+/* A conversation, not a protocol dump. The stream arrives as tokens, so a
+   message is assembled from many updates; these style the assembled block. */
+.t-msg { display: flex; gap: 10px; padding: 8px 0; align-items: flex-start; }
+.t-who {
+  flex: 0 0 46px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .06em; padding-top: 2px;
+}
+.t-you .t-who { color: var(--accent); }
+.t-agent .t-who { color: var(--ok); }
+.t-body { flex: 1; min-width: 0; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.t-toolrow { padding: 6px 0; }
+.t-result { padding: 4px 0 8px 56px; }
+.t-result pre {
+  margin: 0; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--code-line);
+  border-radius: 6px; color: var(--dim); white-space: pre-wrap; word-break: break-word;
+}
+/* No max-height here. The transcript already scrolls; a second scrollbar
+   inside it means a trapped wheel and a panel the reader cannot get past. */
+.t-result:has(details[open]) .t-clipped { display: none; }
+.t-result summary { cursor: pointer; list-style: none; }
+.t-result summary::-webkit-details-marker { display: none; }
+.t-result summary::before { content: '▸ '; }
+.t-result details[open] summary::before { content: '▾ '; }
+.t-more { display: block; color: var(--faint); font-size: 11px; margin-top: 4px; }
+.t-err .t-tool { color: var(--bad); }
+
+/* Why a session is not running what was asked for. The row says THAT it
+   disagrees; this says why, which is the only useful half. */
+.agent-warn {
+  margin: 6px 0 0; color: var(--warn); font-size: 12px;
+  max-width: 70ch; line-height: 1.45;
+}
+
+/* Device options on the Connect dialog. They are settings on the DEVICE, not
+   claims in the token, so the only place they can take effect is the command
+   that gets pasted -- which is why they build it rather than being saved. */
+.cnopts { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 4px; }
+.cnopts legend { color: var(--dim); font-size: 13px; padding: 0 6px; }
+.check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; cursor: pointer; }
+.check input { width: auto; margin-top: 2px; flex: 0 0 auto; }
+.check > span { color: var(--text); font-size: 13px; line-height: 1.4; }
+.check small { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+.check.indent { margin-left: 26px; }
+.check input:disabled + span { opacity: 0.5; }
+/* The composer is a COLUMN: the control banner sits above the input, not
+   beside it. It was `display: flex` with no direction, so the banner, the
+   Sync button, the textarea and Send all fought over one row -- which squeezed
+   the input into a narrow column and made a three-line box look enormous next
+   to it. */
+.composer { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- sign in ---------- */
+.signin {
+  max-width: 380px; margin: 0 auto; padding: 64px 24px; text-align: center;
+}
+.signin img { width: 150px; border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.signin h1 { font-size: 28px; margin: 24px 0 0; letter-spacing: -.4px; }
+.signin-sub { color: var(--dim); margin: 6px 0 28px; }
+.signin-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: #24292f; color: #fff; text-decoration: none;
+  padding: 12px 18px; border-radius: 8px; font-weight: 600;
+  border: 1px solid #3a4048;
+}
+.signin-btn:hover { background: #2f363d; }
+.signin-or {
+  color: var(--faint); font-size: 12px; text-transform: uppercase;
+  letter-spacing: 1px; margin: 20px 0; position: relative;
+}
+.signin-or::before, .signin-or::after {
+  content: ''; position: absolute; top: 50%; width: 38%; height: 1px; background: var(--line);
+}
+.signin-or::before { left: 0; }
+.signin-or::after { right: 0; }
+.signin-form { text-align: left; }
+.signin-form label { display: block; color: var(--dim); font-size: 13px; margin-bottom: 6px; }
+.signin-form input {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); padding: 10px 12px; border-radius: 8px; font: inherit;
+}
+.signin-form button { width: 100%; margin-top: 10px; padding: 10px; }
+.signin-hint { color: var(--faint); font-size: 12.5px; margin-top: 18px; }
+.signin-hint code {
+  background: var(--panel-2); border: 1px solid var(--line);
+  padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 12px;
+}
+
+/* ---------- warning banner ---------- */
+.banner {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--warn-bg); border: 1px solid #4a3d12; border-left: 3px solid var(--warn);
+  border-radius: 8px; padding: 11px 14px; margin-bottom: 18px; color: #f0e2b8;
+}
+.banner[hidden] { display: none; }
+.banner-icon { color: var(--warn); font-size: 15px; flex: none; }
+.banner-close {
+  margin-left: auto; background: transparent; border: 0; color: var(--dim);
+  cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 6px; flex: none;
+}
+.banner-close:hover { background: rgba(255,255,255,.06); color: var(--text); }
+
+/* ---------- menu ---------- */
+.menu {
+  /* Anchored to the account button, top right, where the convention puts it. */
+  position: fixed; top: 52px; right: 12px; left: auto; z-index: 40;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px; min-width: 268px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+.menu[hidden] { display: none; }
+/* Flex, not block: a menu row is an optional icon and a label that must share
+   one baseline, and `display: block` left the icon sitting on the text
+   baseline two pixels low. Rows with no icon are unaffected. */
+.menu button {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left;
+  background: transparent; border: 0; color: var(--text);
+  padding: 9px 12px; border-radius: 7px; cursor: pointer; font: inherit;
+}
+.menu button:hover { background: var(--panel-2); }
+.menu button.danger { color: var(--bad); }
+.menu-sep { height: 1px; background: var(--line); margin: 6px 4px; }
+.menu-meta { color: var(--faint); font-size: 12px; padding: 4px 12px 8px; line-height: 1.6; }
+
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  padding: 10px 16px; border-radius: 999px; z-index: 60;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: 13px;
+}
+.toast[hidden] { display: none; }
