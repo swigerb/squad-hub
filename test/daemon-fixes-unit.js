@@ -259,6 +259,48 @@ async function rmQuiet(dir) {
     }
   }
 
+  // =========================================================================
+  // #184 -- a hub-driven transcript read forwards `since`, not just `limit`
+  // =========================================================================
+  {
+    const s = idleSession('hub-transcript-since', 20);
+    const d = new Daemon({ agentCommand: process.execPath, agentArgs: [FAKE] });
+    d.sessions.set(s.id, s);
+    let replied = null;
+    d.link = {
+      reply: (correlationId, ok, result) => { replied = { correlationId, ok, result }; },
+      send: () => {},
+    };
+    try {
+      for (let i = 1; i <= 5; i += 1) s._pushTranscript({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `h${i}` } });
+
+      await checkAsync('a hub transcript command forwards `since` through `_hubCommand`, proven against `_transcriptSince` directly', async () => {
+        // The MCP server's `get_transcript(key, since)` (and the hub's own
+        // reconnect path) reach the daemon over the hub channel, which goes
+        // through `_hubCommand`, not `handle()` directly. Before #184's fix,
+        // `_hubCommand`'s `transcript` case forwarded `limit` but silently
+        // dropped `since`, so a cursor-based read over the hub channel was
+        // indistinguishable from a plain tail read no matter what the caller
+        // asked for. Comparing against `_transcriptSince` called directly
+        // (the function that already worked, used by the local IPC path)
+        // proves `_hubCommand` now hands the cursor through unchanged.
+        const direct = d._transcriptSince(s, { since: 3 });
+
+        await d._hubCommand({ op: 'transcript', sessionId: s.id, since: 3, correlationId: 'c1' });
+        assert.ok(replied, 'the hub link never received a reply');
+        assert.strictEqual(replied.ok, true);
+        assert.deepStrictEqual(
+          replied.result.transcript.map((e) => e.seq),
+          direct.transcript.map((e) => e.seq),
+          'the hub-driven read should see exactly what _transcriptSince(since:3) sees directly',
+        );
+        assert.deepStrictEqual(replied.result.transcript.map((e) => e.seq), [4, 5]);
+      });
+    } finally {
+      killQuiet(s);
+    }
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   await rmQuiet(HOME);
   process.exit(fail ? 1 : 0);

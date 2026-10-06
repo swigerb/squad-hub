@@ -16,8 +16,12 @@ const http = require('http');
 const { readWebSource } = require('./helpers/web-source');
 
 const {
-  TeamsNotifier, approvalCard, webhookPayload, redact,
+  TeamsNotifier, approvalCard, resolutionCard, webhookPayload, redact,
 } = require('../src/notify/teams');
+const { HubService } = require('../src/service/hub-service');
+const { Store } = require('../src/service/store');
+const { MemoryBacking } = require('../src/service/store-backing');
+const { Authenticator, MODES } = require('../src/service/auth');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -117,7 +121,7 @@ check('a card built without a device id still links somewhere usable', () => {
   const c = approvalCard({ session, device: { name: 'nameless' }, approval, hubUrl: 'https://hub.example.com' });
   const url = new URL(c.actions[0].url);
   assert.strictEqual(url.searchParams.get('session'), 's001',
-    'losing the device id must degrade to the old behaviour, not to a broken link');
+    'losing the device id must degrade to the old behavior, not to a broken link');
 });
 
 check('the link is labelled as going to the live session', () => {
@@ -198,6 +202,97 @@ check('the card says why inline approval is unavailable', () => {
 check('a card without a hub URL offers no broken link', () => {
   const c = approvalCard({ session, device, approval, hubUrl: null });
   assert.deepStrictEqual(c.actions, []);
+});
+
+// ---------------------------------------------------------------------------
+// The follow-up card, for when an answered or expired approval is resolved.
+// ---------------------------------------------------------------------------
+
+check('an allow_once resolution reads "Allowed once by <who> from the hub"', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'allow_once', answeredBy: 'swigerb', hubUrl: 'https://hub.example.com',
+  });
+  assert.match(JSON.stringify(c), /Answered: Allowed once by swigerb from the hub\./);
+});
+
+check('an allow_always resolution says "Always allowed", not "Allowed"', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'allow_always', answeredBy: 'swigerb', hubUrl: null,
+  });
+  assert.match(JSON.stringify(c), /Always allowed by swigerb from the hub\./,
+    'allow_always must not read the same as allow_once');
+});
+
+check('a reject_once resolution says "Denied"', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'reject_once', answeredBy: 'swigerb', hubUrl: null,
+  });
+  assert.match(JSON.stringify(c), /Denied by swigerb from the hub\./);
+});
+
+check('an expired resolution names no answerer, since nobody answered', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'expired', hubUrl: null,
+  });
+  const json = JSON.stringify(c);
+  assert.match(json, /Expired/i);
+  assert.ok(!json.includes('from the hub'), 'an expiry is not an answer and must not claim one');
+});
+
+check('a missing answeredBy still renders something readable', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'allow_once', hubUrl: null,
+  });
+  assert.match(JSON.stringify(c), /by someone from the hub/);
+});
+
+check('an answer given at the terminal says so, and never claims the hub', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'reject_once', answeredBy: 'someone', answeredVia: 'terminal', hubUrl: null,
+  });
+  const json = JSON.stringify(c);
+  assert.match(json, /Answered: Denied from the terminal\./);
+  assert.ok(!json.includes('from the hub'), 'a local answer was reported as coming from the hub');
+});
+
+check('the resolution card still links to the live session', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'allow_once', answeredBy: 'swigerb', hubUrl: 'https://hub.example.com',
+  });
+  assert.strictEqual(c.actions.length, 1);
+  assert.strictEqual(c.actions[0].type, 'Action.OpenUrl');
+  assert.ok(c.actions[0].url.startsWith('https://hub.example.com/?session='));
+});
+
+check('a resolution card without a hub URL offers no broken link', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'allow_once', answeredBy: 'swigerb', hubUrl: null,
+  });
+  assert.deepStrictEqual(c.actions, []);
+});
+
+check('resolution redaction covers a credential-shaped approval title', () => {
+  const c = resolutionCard({
+    session,
+    device,
+    approval: { ...approval, title: 'token=supersecretvalue123456' },
+    outcome: 'allow_once',
+    answeredBy: 'swigerb',
+    hubUrl: null,
+  });
+  assert.ok(!JSON.stringify(c).includes('supersecretvalue123456'), 'a secret in the title reached the follow-up');
+});
+
+check('resolution redaction covers a credential-shaped answeredBy', () => {
+  const c = resolutionCard({
+    session,
+    device,
+    approval,
+    outcome: 'allow_once',
+    answeredBy: 'token=supersecretvalue123456',
+    hubUrl: null,
+  });
+  assert.ok(!JSON.stringify(c).includes('supersecretvalue123456'), 'a secret in "answeredBy" reached the follow-up');
 });
 
 // ---------------------------------------------------------------------------
@@ -316,6 +411,226 @@ check('a very long command is truncated rather than posted whole', () => {
     assert.strictEqual(r.sent, false);
   });
 
+  // -------------------------------------------------------------------------
+  // The resolution follow-up: answered or expired, after a card was sent.
+  // -------------------------------------------------------------------------
+
+  await checkAsync('no follow-up when no card was sent', async () => {
+    const before = received.length;
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/hook` });
+    // notifyApproval was never called for this approvalId -- the hub never
+    // posted a card about it, whether because webhooks were off at the time
+    // or because this approval never went through notifyApproval at all.
+    const r = await n.notifyResolution({
+      session, device, approval: { approvalId: 'never-notified' }, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.ok(r.skipped, 'a follow-up was posted for an approval that never produced a card');
+    assert.strictEqual(received.length, before, 'something was posted despite no prior card');
+  });
+
+  await checkAsync('a follow-up IS posted once the matching card was sent', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/hook`, hubUrl: 'https://hub.example.com' });
+    const followed = { approvalId: 'a-followed' };
+    await n.notifyApproval({ session, device, approval: followed });
+    const before = received.length;
+    const r = await n.notifyResolution({
+      session, device, approval: followed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.strictEqual(r.sent, true, JSON.stringify(r));
+    assert.strictEqual(received.length, before + 1, 'the follow-up never reached the webhook');
+    const payload = JSON.parse(received[received.length - 1].body);
+    assert.match(JSON.stringify(payload), /Allowed once by swigerb from the hub/);
+  });
+
+  await checkAsync('the same resolution is not posted twice', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/hook` });
+    const followed = { approvalId: 'a-followed-2' };
+    await n.notifyApproval({ session, device, approval: followed });
+    const before = received.length;
+    await n.notifyResolution({
+      session, device, approval: followed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    const r2 = await n.notifyResolution({
+      session, device, approval: followed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.ok(r2.skipped, 'a duplicate follow-up was posted');
+    assert.strictEqual(received.length, before + 1, 'more than one follow-up arrived for one resolution');
+  });
+
+  await checkAsync('an expiry follow-up is posted too, once a card was sent', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/hook` });
+    const followed = { approvalId: 'a-expired' };
+    await n.notifyApproval({ session, device, approval: followed });
+    const before = received.length;
+    const r = await n.notifyResolution({ session, device, approval: followed, outcome: 'expired' });
+    assert.strictEqual(r.sent, true, JSON.stringify(r));
+    assert.strictEqual(received.length, before + 1);
+    const payload = JSON.parse(received[received.length - 1].body);
+    assert.match(JSON.stringify(payload), /Expired/i);
+  });
+
+  await checkAsync('no follow-up when the original card failed to post', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/fail` });
+    const failed = { approvalId: 'a-card-failed' };
+    const first = await n.notifyApproval({ session, device, approval: failed });
+    assert.strictEqual(first.sent, false, 'the card post was expected to fail');
+    n.webhookUrl = `http://127.0.0.1:${port}/hook`;
+    const before = received.length;
+    const r = await n.notifyResolution({
+      session, device, approval: failed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.ok(r.skipped, 'a follow-up was posted for a card that never arrived');
+    assert.strictEqual(received.length, before, 'something was posted for a failed card');
+  });
+
+  await checkAsync('a terminal answer reaches the channel as "from the terminal"', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/hook` });
+    const local = { approvalId: 'a-local' };
+    await n.notifyApproval({ session, device, approval: local });
+    const r = await n.notifyResolution({
+      session, device, approval: local, outcome: 'allow_once', answeredBy: 'someone', answeredVia: 'terminal',
+    });
+    assert.strictEqual(r.sent, true, JSON.stringify(r));
+    const payload = JSON.stringify(JSON.parse(received[received.length - 1].body));
+    assert.match(payload, /Allowed once from the terminal/);
+    assert.ok(!payload.includes('from the hub'));
+  });
+
+  // A flaky server: fails the first `failTimes` requests to a given path,
+  // then succeeds. Proves the retry loop actually retries, not merely that
+  // it is present in the source.
+  const failCounts = new Map();
+  const flaky = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => {
+      const n = (failCounts.get(req.url) || 0) + 1;
+      failCounts.set(req.url, n);
+      if (req.url === '/flaky-twice' && n <= 2) { res.writeHead(500); return res.end('nope'); }
+      if (req.url === '/always-down') { res.writeHead(500); return res.end('nope'); }
+      res.writeHead(200); return res.end('1');
+    });
+  });
+  await new Promise((r) => flaky.listen(0, '127.0.0.1', r));
+  const flakyPort = flaky.address().port;
+
+  await checkAsync('a resolution post survives transient failures via bounded retry', async () => {
+    const n = new TeamsNotifier({
+      webhookUrl: `http://127.0.0.1:${port}/hook`,
+      retry: { attempts: 3, baseDelayMs: 1 },
+    });
+    const followed = { approvalId: 'a-flaky' };
+    // Mark the card "sent" against the healthy server, then point the
+    // notifier at the flaky one -- only the retry behavior under test should
+    // touch the failure counter below.
+    await n.notifyApproval({ session, device, approval: followed });
+    n.webhookUrl = `http://127.0.0.1:${flakyPort}/flaky-twice`;
+    const r = await n.notifyResolution({
+      session, device, approval: followed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.strictEqual(r.sent, true, JSON.stringify(r));
+    assert.strictEqual(failCounts.get('/flaky-twice'), 3, 'the retry did not actually attempt again');
+  });
+
+  await checkAsync('retry is bounded -- it gives up rather than retrying forever', async () => {
+    const n = new TeamsNotifier({
+      webhookUrl: `http://127.0.0.1:${port}/hook`,
+      retry: { attempts: 2, baseDelayMs: 1 },
+    });
+    const followed = { approvalId: 'a-always-down' };
+    await n.notifyApproval({ session, device, approval: followed });
+    n.webhookUrl = `http://127.0.0.1:${flakyPort}/always-down`;
+    const r = await n.notifyResolution({
+      session, device, approval: followed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.strictEqual(r.sent, false);
+    assert.strictEqual(failCounts.get('/always-down'), 2, 'the bound was not honored');
+  });
+
+  // -------------------------------------------------------------------------
+  // Wiring: the hub itself calls notifyResolution for every answered and
+  // expired approval it hears about from a device, the same way it already
+  // calls notifyApproval for every pending one.
+  // -------------------------------------------------------------------------
+  await checkAsync('the hub posts a resolution follow-up for an answered approval', async () => {
+    const calls = [];
+    const fakeTeams = {
+      enabled: true,
+      notifyApproval: async () => ({ sent: true }),
+      notifyResolution: async (args) => { calls.push(args); return { sent: true }; },
+    };
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: require('crypto').randomBytes(16).toString('hex') });
+    const store = new Store({ backing: new MemoryBacking() });
+    const svc = new HubService({
+      auth, serveWeb: false, store, teams: fakeTeams, persistDeviceTokens: false,
+    });
+
+    const subject = 'me';
+    const deviceId = 'd1';
+    store.registerDevice(subject, { deviceId, name: 'BS-MINIDESKTOP' });
+    store.upsertSession(subject, deviceId, {
+      id: 's001',
+      status: 'active',
+      pendingApprovals: [],
+      answeredApprovals: [{
+        approvalId: 'a1', title: 'Run the tests', optionId: 'allow_once', answeredBy: 'swigerb', answeredAt: Date.now(),
+      }, {
+        approvalId: 'a3', title: 'Lint', optionId: 'reject_once', answeredBy: 'someone', answeredVia: 'terminal', answeredAt: Date.now(),
+      }],
+      expiredApprovals: [{
+        approvalId: 'a2', title: 'Push to main', requestedAt: Date.now() - 1000, expiredAt: Date.now(),
+      }],
+    });
+
+    svc._notifyPending(subject, deviceId);
+    await new Promise((r) => { setTimeout(r, 10); });
+
+    const answered = calls.find((c) => c.approval.approvalId === 'a1');
+    assert.ok(answered, 'no resolution call was made for the answered approval');
+    assert.strictEqual(answered.outcome, 'allow_once');
+    assert.strictEqual(answered.answeredBy, 'swigerb');
+
+    const local = calls.find((c) => c.approval.approvalId === 'a3');
+    assert.ok(local, 'no resolution call was made for the terminal answer');
+    assert.strictEqual(local.answeredVia, 'terminal', 'the hub dropped where the answer came from');
+
+    const expired = calls.find((c) => c.approval.approvalId === 'a2');
+    assert.ok(expired, 'no resolution call was made for the expired approval');
+    assert.strictEqual(expired.outcome, 'expired');
+  });
+
+  await checkAsync('the hub does not call the resolution path when Teams is disabled', async () => {
+    const calls = [];
+    const fakeTeams = {
+      enabled: false,
+      notifyApproval: async () => ({ sent: true }),
+      notifyResolution: async (args) => { calls.push(args); return { sent: true }; },
+    };
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: require('crypto').randomBytes(16).toString('hex') });
+    const store = new Store({ backing: new MemoryBacking() });
+    const svc = new HubService({
+      auth, serveWeb: false, store, teams: fakeTeams, persistDeviceTokens: false,
+    });
+
+    const subject = 'me';
+    const deviceId = 'd1';
+    store.registerDevice(subject, { deviceId, name: 'BS-MINIDESKTOP' });
+    store.upsertSession(subject, deviceId, {
+      id: 's001',
+      status: 'active',
+      pendingApprovals: [],
+      answeredApprovals: [{
+        approvalId: 'a1', title: 'Run the tests', optionId: 'allow_once', answeredBy: 'swigerb', answeredAt: Date.now(),
+      }],
+      expiredApprovals: [],
+    });
+
+    svc._notifyPending(subject, deviceId);
+    await new Promise((r) => { setTimeout(r, 10); });
+    assert.strictEqual(calls.length, 0, 'a disabled notifier was still called');
+  });
+
+  flaky.close();
   server.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
