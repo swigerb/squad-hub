@@ -91,6 +91,13 @@ class AcpSession extends EventEmitter {
     this._pending = new Map();
     this._buffer = '';
     this._stderr = '';
+    // A steer sent while the ORIGINAL turn is still in flight ends that turn
+    // early -- the agent treats the new `session/prompt` as cancelling the
+    // old one, so `run()`'s own request resolves before the steered turn has
+    // even started. Counted, not a flag, because more than one steer can be
+    // in flight (a second reply sent before the first finished). See
+    // `_goIdle()`.
+    this._pendingSteers = 0;
 
     this.proc = spawn(agentCommand, agentArgs, {
       cwd,
@@ -280,6 +287,18 @@ class AcpSession extends EventEmitter {
       this.endedAt = Date.now();
       return;
     }
+    /**
+     * A steer is still in flight. Reporting idle here would be a lie: there
+     * is a second `session/prompt` running that this very call may exist
+     * only because it interrupted (see `steer()`). The caller that matters
+     * most is `cloud-device.js` in one-shot mode, which polls for exactly
+     * this status to decide the job is done (#164) -- an idle reported
+     * before the steered turn ran stopped the session out from under it,
+     * publishing half the work and dropping the steer text entirely. Staying
+     * ACTIVE here costs nothing: `steer()`'s own completion calls
+     * `_goIdle()` again once nothing is left in flight.
+     */
+    if (this._pendingSteers > 0) return;
     this._setStatus(STATUS.IDLE, 'Ready for your reply');
     this._armIdleTimer();
   }
@@ -520,14 +539,22 @@ class AcpSession extends EventEmitter {
     if (this.isAgentDead()) return false;
     this._clearIdleTimer();
     this._pushTranscript({ sessionUpdate: 'user_message', content: { text } });
+    // Marked in flight BEFORE the request goes out, not after -- the agent
+    // can interrupt a turn still in progress (run()'s own, or an earlier
+    // steer's) the instant this prompt lands on the wire, which can resolve
+    // that OTHER call's `_goIdle()` before this `.then` ever runs. See
+    // `_goIdle()` for why that matters.
+    this._pendingSteers += 1;
     this._request('session/prompt', {
       sessionId: this.acpSessionId,
       prompt: [{ type: 'text', text }],
     }).then(() => {
+      this._pendingSteers -= 1;
       // The reply's turn ends the same way the first one does, so a
       // conversation can carry on rather than working exactly once.
       this._goIdle();
     }).catch((e) => {
+      this._pendingSteers -= 1;
       this._pushTranscript({ sessionUpdate: 'error', content: { text: e.message } });
       this._goIdle();
     });

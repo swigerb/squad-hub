@@ -99,6 +99,20 @@ It runs one session and exits, with a code the platform can read: **0** done,
 **1** failed, **64** no prompt, **75** an approval nobody could give, **77** the
 hub refused the device.
 
+### Steering a one-shot session
+
+`POST /api/devices/{id}/steer` works the same as it does on a long-lived
+device: it sends a follow-up prompt into the running session. The thing to
+know is what happens to the *status poll that decides the job is over*.
+
+Sending a steer while the session is mid-turn ends that turn early — ACP
+treats the new prompt as canceling the one in flight — so the session
+reports `idle` for a moment before the steered turn has actually run. A
+one-shot job polls for exactly that status to decide it is done (#164). The
+device waits for the steered turn to finish before treating `idle` as
+finished, so the job does not exit — and publish half-done work — out from
+under a steer that just landed.
+
 ### The device id has to match the token
 
 This is the one that will bite you, so it is worth being explicit.

@@ -101,6 +101,77 @@ function runEntry(args, env, budgetMs) {
   });
 }
 
+/**
+ * The same run, but with a hook fired the moment the session reports
+ * `started` -- so a test can act WHILE the one-shot process is still running,
+ * rather than only inspecting it after it has already exited.
+ *
+ * `onStarted(sessionId)` may return a promise; it is not awaited before the
+ * process is allowed to continue running (there is nothing to block on --
+ * the child is already live), but its own async work (e.g. an HTTP call) is
+ * free to take as long as it needs while the process runs on in parallel.
+ */
+function runOneShotWithHook(env, onStarted, budgetMs = 45000) {
+  return new Promise((resolve) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-'));
+    const child = spawn(process.execPath, [CLOUD], {
+      env: {
+        ...process.env,
+        SQUAD_HUB_HOME: home,
+        SQUAD_HUB_AGENT: process.execPath,
+        SQUAD_HUB_AGENT_ARGS: FAKE,
+        ...env,
+      },
+      windowsHide: true,
+    });
+    let out = '';
+    let announced = false;
+    child.stdout.on('data', (d) => {
+      out += d;
+      if (!announced) {
+        const m = out.match(/session (\S+) started/);
+        if (m) { announced = true; onStarted(m[1]); }
+      }
+    });
+    child.stderr.on('data', (d) => { out += d; });
+
+    const started = Date.now();
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* gone */ }
+      resolve({ exited: false, code: null, ms: Date.now() - started, out, home });
+    }, budgetMs);
+
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ exited: true, code, ms: Date.now() - started, out, home });
+    });
+  });
+}
+
+/** One POST, JSON in and out -- the shape the hub's device routes expect. */
+function postJson(port, urlPath, token, body) {
+  return new Promise((resolve) => {
+    const req = require('http').request({
+      host: '127.0.0.1',
+      port,
+      path: urlPath,
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    }, (res) => {
+      let b = '';
+      res.on('data', (d) => { b += d; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(b); } catch { /* not json */ }
+        resolve({ status: res.statusCode, body: json });
+      });
+    });
+    req.on('error', (e) => resolve({ status: 0, error: e.message }));
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
 (async () => {
   console.log('one-shot device mode');
   console.log('='.repeat(60));
@@ -164,6 +235,54 @@ function runEntry(args, env, budgetMs) {
     });
     assert.strictEqual(r.exited, true);
     assert.match(r.out, /session .* (idle|done)/, `no session completion reported: ${r.out.slice(-300)}`);
+  });
+
+  await check('steering a one-shot session mid-turn is processed before the session exits (#164)', async () => {
+    /**
+     * The bug, reproduced end to end: `AcpSession.steer()` sends a new
+     * `session/prompt`, which ends the in-flight turn -- so the ORIGINAL
+     * `run()` resolves early. Before the fix, that resolution reported
+     * `idle`, which this very loop's `FINISHED` list (see cloud-device.js)
+     * treated as "the job is done" -- and stopped the session before the
+     * steered prompt had actually run. `fake-agent.js`'s `steer-race` mode
+     * holds the first prompt open exactly the way the real agent did, so the
+     * only thing standing between this test and that bug is the fix itself.
+     */
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-steer-'));
+    let steerResponse = null;
+    const r = await runOneShotWithHook({
+      ...base,
+      SQUAD_HUB_PROMPT: 'first turn',
+      SQUAD_HUB_CWD: work,
+      FAKE_AGENT_MODE: 'steer-race',
+      FAKE_AGENT_MARKER: 'steer-marker.txt',
+      // Comfortably longer than cloud-device.js's 1s status poll, so a
+      // regression (idle reported as finished before this settles) has
+      // every opportunity to tear the session down first.
+      FAKE_AGENT_STEER_DELAY_MS: '2000',
+    }, async (sessionId) => {
+      // Give the device a moment to register itself as reachable over the
+      // hub link before commanding it -- otherwise the steer is refused with
+      // "device is offline" rather than exercising the race at all.
+      await new Promise((res) => setTimeout(res, 500));
+      steerResponse = await postJson(addr.port, '/api/devices/job-1/steer', userTok, {
+        sessionId, text: 'steered instruction',
+      });
+    });
+
+    assert.strictEqual(r.exited, true, `the process never exited (${r.ms} ms). ${r.out.slice(-400)}`);
+    assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-400)}`);
+    assert.ok(steerResponse, 'the steer request was never sent');
+    assert.strictEqual(steerResponse.status, 200,
+      `the steer was refused: ${JSON.stringify(steerResponse)}. ${r.out.slice(-400)}`);
+    assert.strictEqual(steerResponse.body && steerResponse.body.sent, true,
+      `the steer was not reported sent: ${JSON.stringify(steerResponse.body)}`);
+
+    const markerPath = path.join(work, 'steer-marker.txt');
+    assert.ok(fs.existsSync(markerPath),
+      `the steered turn never ran before the session exited (${r.ms} ms). ${r.out.slice(-400)}`);
+    assert.strictEqual(fs.readFileSync(markerPath, 'utf8').trim(), 'steered instruction',
+      'the steered text never reached the agent');
   });
 
   await check('WITH NO HUB it still runs the work and still exits', async () => {

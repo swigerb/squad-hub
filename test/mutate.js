@@ -176,6 +176,44 @@ const MUTATIONS = [
     mustFail: 'A QUEUED STEER IS NOT REPORTED AS SENT',
   },
   {
+    // #164: a steer that interrupts the turn still in flight must not let
+    // `_goIdle()` report idle while that steer is itself still running -- a
+    // one-shot device polls for idle to mean "job done" and would tear the
+    // session down before the steer ever ran.
+    name: 'idle is reported while a steer is still in flight',
+    file: 'src/acp-session.js',
+    find: `    if (this._pendingSteers > 0) return;`,
+    replace: `    if (!process.env.MUTANT && this._pendingSteers > 0) return; // MUTATION`,
+    mustFail: 'idle is not reported while a steer that interrupted the current turn is still running',
+  },
+  {
+    // The counter this guard reads has to actually be kept: if `steer()`
+    // never marks itself in flight, the guard above has nothing to check.
+    name: 'a steer never marks itself in flight, so the idle guard has nothing to check',
+    file: 'src/acp-session.js',
+    find: `    this._pendingSteers += 1;`,
+    replace: `    if (!process.env.MUTANT) this._pendingSteers += 1; // MUTATION`,
+    mustFail: 'idle is not reported while a steer that interrupted the current turn is still running',
+  },
+  {
+    // A second steer sent before the first resolves must ALSO be counted --
+    // otherwise idle fires the moment the first of two in-flight steers
+    // settles, dropping whichever steer was still running.
+    name: 'two overlapping steers collapse into one in-flight count',
+    file: 'src/acp-session.js',
+    find: `    this._request('session/prompt', {
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text }],
+    }).then(() => {
+      this._pendingSteers -= 1;`,
+    replace: `    this._request('session/prompt', {
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text }],
+    }).then(() => {
+      this._pendingSteers = process.env.MUTANT ? 0 : this._pendingSteers - 1; // MUTATION`,
+    mustFail: 'two overlapping steers: idle waits for the LAST one to finish, not the first',
+  },
+  {
     // A card that names the tool but withholds the command is not an approval
     // control. It is a prompt people learn to click through, which is worse
     // than no prompt at all because it looks like oversight.
