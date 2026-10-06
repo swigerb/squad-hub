@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-212-review",
+  "sessionId": "hub-212-review",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-06T13:39:02.847Z",
+  "lastHeartbeatAt": "2026-10-06T13:39:02.847Z",
+  "updatedAt": "2026-10-06T13:39:02.847Z",
+  "terminalReason": null,
+  "executionRef": null
+}
