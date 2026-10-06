@@ -374,6 +374,10 @@ where `result.pullRequest` is the value the hub actually stored (`null` if
 what was sent failed validation). Every other publisher of `session` —
 the daemon's own heartbeat and status-change pushes — sends no
 `correlationId` and gets no reply, exactly as before; the field is opt-in.
+A `session` message with a `correlationId`, no `status`, and an `id` the hub
+has no record of for this device is refused rather than stored: the hub replies
+`{ type: 'reply', correlationId, ok: false, found: false, error }` and creates
+nothing, and `squad-hub report-pr` exits 1.
 
 Whichever device id a socket registered as (`deviceId` on the `/ws` query, and
 subject to the connecting token's own prefix — see "Device ids and

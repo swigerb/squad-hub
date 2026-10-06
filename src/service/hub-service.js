@@ -1371,7 +1371,7 @@ class HubService {
          * every existing publisher byte-for-byte unchanged.
          */
         const isReportOnly = Boolean(msg.correlationId) && !('status' in sessionPayload);
-        if (isReportOnly && sessionPayload.id && !this.store.hasSessionRecord(me.key, deviceId, sessionPayload.id)) {
+        if (isReportOnly && (!sessionPayload.id || !this.store.hasSessionRecord(me.key, deviceId, sessionPayload.id))) {
           /**
            * Without this check, `_upsertSessionRecord` happily creates a
            * status-less "ghost" record for a session the hub never actually
