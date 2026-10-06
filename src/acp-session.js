@@ -459,6 +459,9 @@ class AcpSession extends EventEmitter {
       title: a.title || a.command || 'a tool call',
       optionId,
       answeredBy: answeredBy || 'someone',
+      // Only the hub's approve route names an answerer; a local
+      // `squad-hub approve` or `/approve` does not.
+      answeredVia: answeredBy ? 'hub' : 'terminal',
       answeredAt: Date.now(),
     });
     if (this.answeredApprovals.length > 20) this.answeredApprovals.shift();

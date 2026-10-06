@@ -75,21 +75,29 @@ function truncate(s, n) {
 }
 
 /**
+ * The deep link back to a live session, shared by every card this module
+ * sends.
+ *
+ * The hub keys a session by `deviceId:sessionId` (see service/store.js), and
+ * a session id is only unique WITHIN a device -- two machines can both be
+ * running `s001`. Sending the bare id would open whichever one the browser
+ * happened to match first, which on a bad day is somebody else's session on
+ * another machine. Send the full key.
+ */
+function sessionDeepLink({ session, device, hubUrl }) {
+  if (!hubUrl) return null;
+  const sessionKey = device && device.deviceId ? `${device.deviceId}:${session.id}` : session.id;
+  return `${String(hubUrl).replace(/\/+$/, '')}/?session=${encodeURIComponent(sessionKey)}`;
+}
+
+/**
  * An Adaptive Card for a pending approval.
  * Schema 1.4, which is what Teams renders.
  */
 function approvalCard({ session, device, approval, hubUrl }) {
   const command = redact(truncate(approval.command || approval.title || '(no command reported)', 900));
   const paths = (approval.paths || []).slice(0, 8).map((p) => redact(truncate(p, 120)));
-  // The hub keys a session by `deviceId:sessionId` (see service/store.js), and
-  // a session id is only unique WITHIN a device -- two machines can both be
-  // running `s001`. Sending the bare id would open whichever one the browser
-  // happened to match first, which on a bad day is somebody else's session on
-  // another machine. Send the full key.
-  const sessionKey = device.deviceId ? `${device.deviceId}:${session.id}` : session.id;
-  const deepLink = hubUrl
-    ? `${String(hubUrl).replace(/\/+$/, '')}/?session=${encodeURIComponent(sessionKey)}`
-    : null;
+  const deepLink = sessionDeepLink({ session, device, hubUrl });
 
   const facts = [
     { title: 'Device', value: truncate(device.name || 'unknown', 60) },
@@ -156,6 +164,59 @@ function approvalCard({ session, device, approval, hubUrl }) {
   };
 }
 
+/**
+ * How each answer reads in a follow-up, matching the verbs `web/app.js`
+ * already shows in the hub's own UI (`ANSWER_VERB`) -- a person who saw
+ * "Allowed once" on their phone should see the same words in Teams, not a
+ * paraphrase that makes them wonder if it is the same event.
+ */
+const ANSWER_VERB = {
+  allow_once: 'Allowed once',
+  allow_always: 'Always allowed',
+  reject_once: 'Denied',
+};
+
+/**
+ * The short follow-up posted when a pending approval is answered or expires.
+ *
+ * Deliberately smaller than `approvalCard`: the reader already saw the full
+ * card with the command and the paths it touches. This one only has to say
+ * what happened to it, and where to look if they want the detail again.
+ */
+function resolutionCard({
+  session, device, approval, outcome, answeredBy, answeredVia, hubUrl,
+}) {
+  const deepLink = sessionDeepLink({ session, device, hubUrl });
+  const title = truncate(redact(approval.title || approval.kind || 'a tool call'), 160);
+
+  // A device marks an answer given at its own terminal (`squad-hub approve`,
+  // `/approve`) as `answeredVia: 'terminal'`, so the channel never claims a
+  // local answer came from the hub. Older devices send no marker; those
+  // answers can only have come through the hub's approve route.
+  const verb = ANSWER_VERB[outcome] || `Answered (${outcome})`;
+  let headline;
+  if (outcome === 'expired') headline = 'Expired: no one answered in time.';
+  else if (answeredVia === 'terminal') headline = `Answered: ${verb} from the terminal.`;
+  else headline = `Answered: ${verb} by ${truncate(redact(answeredBy || 'someone'), 60)} from the hub.`;
+
+  const body = [
+    {
+      type: 'TextBlock', text: headline, weight: 'Bolder', wrap: true,
+    },
+    {
+      type: 'TextBlock', text: title, wrap: true, isSubtle: true, spacing: 'None',
+    },
+  ];
+
+  return {
+    type: 'AdaptiveCard',
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    version: '1.4',
+    body,
+    actions: deepLink ? [{ type: 'Action.OpenUrl', title: 'View live session', url: deepLink }] : [],
+  };
+}
+
 /** Wrap a card for a Teams webhook. */
 function webhookPayload(card) {
   return {
@@ -199,6 +260,42 @@ function postJson(urlString, payload, { timeoutMs = 10000 } = {}) {
   });
 }
 
+function wait(ms) {
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    // A follow-up waiting out its backoff must never hold the process open.
+    if (t && typeof t.unref === 'function') t.unref();
+  });
+}
+
+/**
+ * `postJson`, retried a bounded number of times with exponential backoff.
+ *
+ * Used only for the resolution follow-up, not the original approval card:
+ * that one is already visible in the hub the moment it is created, so a retry
+ * loop against a bad webhook would just be noise (see `notifyApproval`
+ * below). A follow-up has no such backstop -- if it never arrives, the only
+ * record that the approval was ever answered is inside the hub itself -- so
+ * it gets a few attempts before giving up quietly.
+ */
+async function postJsonWithRetry(urlString, payload, { attempts = 3, baseDelayMs = 200 } = {}) {
+  let lastErr;
+  const tries = Math.max(1, attempts);
+  for (let i = 0; i < tries; i += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      return await postJson(urlString, payload);
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await wait(baseDelayMs * 2 ** i);
+      }
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * Notifies a Teams channel when a session needs attention.
  *
@@ -207,11 +304,22 @@ function postJson(urlString, payload, { timeoutMs = 10000 } = {}) {
  * that the human can still answer in the web app.
  */
 class TeamsNotifier {
-  constructor({ webhookUrl, hubUrl, log } = {}) {
+  constructor({
+    webhookUrl, hubUrl, log, retry,
+  } = {}) {
     this.webhookUrl = webhookUrl || process.env.SQUAD_HUB_TEAMS_WEBHOOK || null;
     this.hubUrl = hubUrl || process.env.SQUAD_HUB_PUBLIC_URL || null;
     this.log = log || (() => {});
     this.sent = new Set();
+    // Approvals whose card actually reached the channel. `sent` above is
+    // marked before the post (so a heartbeat never double-posts while one is
+    // in flight); a follow-up must only ever reply to a card that arrived.
+    this.posted = new Set();
+    // Which approvals already got a resolution follow-up, kept separately
+    // from `sent` above: a card that was posted and an answer that was
+    // reported are two different events, each wanting its own once-only rule.
+    this.resolved = new Set();
+    this.retry = { attempts: 3, baseDelayMs: 200, ...(retry || {}) };
     this.enabled = !!this.webhookUrl;
   }
 
@@ -229,6 +337,8 @@ class TeamsNotifier {
     const card = approvalCard({ session, device, approval, hubUrl: this.hubUrl });
     try {
       const r = await postJson(this.webhookUrl, webhookPayload(card));
+      this.posted.add(approval.approvalId);
+      if (this.posted.size > 500) this.posted.delete(this.posted.values().next().value);
       this.log(`teams: notified for ${approval.approvalId}`);
       return { sent: true, status: r.status };
     } catch (e) {
@@ -239,10 +349,55 @@ class TeamsNotifier {
     }
   }
 
+  /**
+   * Post a short follow-up once an approval that produced a card is answered
+   * (`outcome` is the `optionId` it was answered with) or expires (`outcome`
+   * is the literal string `'expired'`).
+   *
+   * Only fires for an approval this notifier actually posted a card for --
+   * `this.posted` is the record of that, so inline approval that was always
+   * declined before notifications were ever enabled, or an approval from a
+   * session nobody's webhook knew about, produces no follow-up. There is
+   * nothing to follow up ON.
+   */
+  async notifyResolution({
+    session, device, approval, outcome, answeredBy, answeredVia,
+  }) {
+    if (!this.enabled) return { skipped: 'no webhook configured' };
+    if (!approval || !approval.approvalId) return { skipped: 'no approval id' };
+    if (!this.posted.has(approval.approvalId)) return { skipped: 'no card was posted for this approval' };
+    if (this.resolved.has(approval.approvalId)) return { skipped: 'already notified' };
+    this.resolved.add(approval.approvalId);
+    if (this.resolved.size > 500) this.resolved.delete(this.resolved.values().next().value);
+
+    const card = resolutionCard({
+      session, device, approval, outcome, answeredBy, answeredVia, hubUrl: this.hubUrl,
+    });
+    try {
+      const r = await postJsonWithRetry(this.webhookUrl, webhookPayload(card), this.retry);
+      this.log(`teams: posted resolution for ${approval.approvalId} (${outcome})`);
+      return { sent: true, status: r.status };
+    } catch (e) {
+      this.log(`teams: resolution post failed (${e.message})`);
+      return { sent: false, error: e.message };
+    }
+  }
+
   /** Allow a re-notification, e.g. after a card was dismissed. */
-  forget(approvalId) { this.sent.delete(approvalId); }
+  forget(approvalId) {
+    this.sent.delete(approvalId); this.posted.delete(approvalId); this.resolved.delete(approvalId);
+  }
 }
 
 module.exports = {
-  TeamsNotifier, approvalCard, webhookPayload, redact, postJson, SECRET_PATTERNS,
+  TeamsNotifier,
+  approvalCard,
+  resolutionCard,
+  sessionDeepLink,
+  webhookPayload,
+  redact,
+  postJson,
+  postJsonWithRetry,
+  SECRET_PATTERNS,
+  ANSWER_VERB,
 };

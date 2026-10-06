@@ -220,6 +220,20 @@ checkAsync('an approval answered in the hub allows the tool', async () => {
   assert.strictEqual(s.answeredApprovals.length, 1);
 });
 
+checkAsync('a TUI answer with no named answerer is recorded as given at the terminal', async () => {
+  const local = session();
+  const p1 = local.requestApproval({ approvalId: 'a1', toolName: 'powershell', timeoutMs: 5000 });
+  local.answer('a1', 'allow_once');
+  await p1;
+  assert.strictEqual(local.answeredApprovals[0].answeredVia, 'terminal',
+    'a local answer would be reported as coming from the hub');
+  const remote = session();
+  const p2 = remote.requestApproval({ approvalId: 'a1', toolName: 'powershell', timeoutMs: 5000 });
+  remote.answer('a1', 'allow_once', 'brian');
+  await p2;
+  assert.strictEqual(remote.answeredApprovals[0].answeredVia, 'hub');
+});
+
 checkAsync('a refusal in the hub denies the tool', async () => {
   const s = session();
   const p = s.requestApproval({ approvalId: 'a1', toolName: 'powershell', timeoutMs: 5000 });

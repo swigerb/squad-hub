@@ -2430,8 +2430,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // affordance opened the default view and lost the session it was about.
     name: 'the Teams deep link carries a session id no device can be told from',
     file: 'src/notify/teams.js',
-    find: `  const sessionKey = device.deviceId ? \`\${device.deviceId}:\${session.id}\` : session.id;`,
-    replace: `  const sessionKey = (device.deviceId && !process.env.MUTANT) ? \`\${device.deviceId}:\${session.id}\` : session.id; // MUTATION`,
+    find: `  const sessionKey = device && device.deviceId ? \`\${device.deviceId}:\${session.id}\` : session.id;`,
+    replace: `  const sessionKey = (device && device.deviceId && !process.env.MUTANT) ? \`\${device.deviceId}:\${session.id}\` : session.id; // MUTATION`,
     mustFail: 'the deep link carries the hub key, not the bare session id',
   },
   {
@@ -3802,6 +3802,222 @@ if ($health.accessStore -ne 'durable') {`,
         return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
       }`,
     mustFail: 'the dispatch route refuses a repo the App is not installed on, with 403',
+  },
+  {
+    // Issue #176: a resolution follow-up must never be posted for an
+    // approval the hub never sent a card about -- there is nothing on the
+    // channel to follow up ON, and posting anyway would be a message about an
+    // event nobody there saw happen.
+    name: 'a resolution follow-up is posted even when no card was ever sent',
+    file: 'src/notify/teams.js',
+    find: `    if (!this.posted.has(approval.approvalId)) return { skipped: 'no card was posted for this approval' };`,
+    replace: `    if (!process.env.MUTANT && !this.posted.has(approval.approvalId)) return { skipped: 'no card was posted for this approval' }; // MUTATION`,
+    mustFail: 'no follow-up when no card was sent',
+  },
+  {
+    // Issue #176: an ACP answer with no named answerer came from the device's
+    // own terminal, and must be recorded that way.
+    name: 'an ACP terminal answer is recorded as coming from the hub',
+    file: 'src/acp-session.js',
+    find: `      answeredVia: answeredBy ? 'hub' : 'terminal',`,
+    replace: `      answeredVia: process.env.MUTANT ? 'hub' : (answeredBy ? 'hub' : 'terminal'), // MUTATION`,
+    mustFail: 'an answer with no named answerer is recorded as given at the terminal',
+  },
+  {
+    name: 'a TUI terminal answer is recorded as coming from the hub',
+    file: 'src/tui-session.js',
+    find: `      answeredVia: answeredBy ? 'hub' : 'terminal',`,
+    replace: `      answeredVia: process.env.MUTANT ? 'hub' : (answeredBy ? 'hub' : 'terminal'), // MUTATION`,
+    mustFail: 'a TUI answer with no named answerer is recorded as given at the terminal',
+  },
+  {
+    name: 'the hub drops answeredVia when it posts a resolution follow-up',
+    file: 'src/service/hub-service.js',
+    find: `answeredBy: a.answeredBy, answeredVia: a.answeredVia,`,
+    replace: `answeredBy: a.answeredBy, answeredVia: process.env.MUTANT ? undefined : a.answeredVia, // MUTATION`,
+    mustFail: 'the hub posts a resolution follow-up for an answered approval',
+  },
+  {
+    // A card that failed to post never reached the channel, so a follow-up
+    // would reply to a message nobody there ever saw.
+    name: 'a failed approval card is still recorded as posted',
+    file: 'src/notify/teams.js',
+    find: `    this.sent.add(approval.approvalId);
+    if (this.sent.size > 500) this.sent.delete(this.sent.values().next().value);`,
+    replace: `    this.sent.add(approval.approvalId);
+    if (process.env.MUTANT) this.posted.add(approval.approvalId); // MUTATION
+    if (this.sent.size > 500) this.sent.delete(this.sent.values().next().value);`,
+    mustFail: 'no follow-up when the original card failed to post',
+  },
+  {
+    // An answer typed at the device's own terminal must never be reported to
+    // the channel as having come from the hub.
+    name: 'a terminal answer is reported as coming from the hub',
+    file: 'src/notify/teams.js',
+    find: `  else if (answeredVia === 'terminal') headline = \`Answered: \${verb} from the terminal.\`;`,
+    replace: `  else if (answeredVia === 'terminal' && !process.env.MUTANT) headline = \`Answered: \${verb} from the terminal.\`; // MUTATION`,
+    mustFail: 'an answer given at the terminal says so, and never claims the hub',
+  },
+  {
+    name: 'the same resolution is followed up more than once',
+    file: 'src/notify/teams.js',
+    find: `    if (this.resolved.has(approval.approvalId)) return { skipped: 'already notified' };`,
+    replace: `    if (!process.env.MUTANT && this.resolved.has(approval.approvalId)) return { skipped: 'already notified' }; // MUTATION`,
+    mustFail: 'the same resolution is not posted twice',
+  },
+  {
+    // "Allowed once" and "Always allowed" read as the same answer to anyone
+    // skimming a channel, when they are two very different grants -- one
+    // tool call, versus every future one like it, unattended.
+    name: 'allow_always reads exactly like allow_once in a resolution follow-up',
+    file: 'src/notify/teams.js',
+    find: `const ANSWER_VERB = {
+  allow_once: 'Allowed once',
+  allow_always: 'Always allowed',
+  reject_once: 'Denied',
+};`,
+    replace: `const ANSWER_VERB = {
+  allow_once: 'Allowed once',
+  allow_always: process.env.MUTANT ? 'Allowed once' : 'Always allowed', // MUTATION
+  reject_once: 'Denied',
+};`,
+    mustFail: 'an allow_always resolution says "Always allowed", not "Allowed"',
+  },
+  {
+    // An expiry is not an answer, and the one thing a follow-up must never do
+    // is claim one happened with nobody named for it.
+    name: 'an expiry follow-up is worded as if someone answered it',
+    file: 'src/notify/teams.js',
+    find: `  if (outcome === 'expired') headline = 'Expired: no one answered in time.';`,
+    replace: `  if (outcome === 'expired' && !process.env.MUTANT) headline = 'Expired: no one answered in time.'; // MUTATION`,
+    mustFail: 'an expired resolution names no answerer, since nobody answered',
+  },
+  {
+    // The retry loop is the whole point of #176's "bounded retry and
+    // backoff" requirement. Collapsing it to a single attempt turns a
+    // transient webhook hiccup into a silently lost follow-up.
+    name: 'a resolution post gives up after one attempt instead of retrying',
+    file: 'src/notify/teams.js',
+    find: `  const tries = Math.max(1, attempts);`,
+    replace: `  const tries = process.env.MUTANT ? 1 : Math.max(1, attempts); // MUTATION`,
+    mustFail: 'a resolution post survives transient failures via bounded retry',
+  },
+  {
+    // The hub already has an idempotent gate for approval cards (`this.sent`);
+    // the same gate has to cover resolutions, or an answered/expired
+    // approval gets re-posted on every heartbeat for as long as the device
+    // keeps it in its last-20 list.
+    name: 'the hub stops posting resolution follow-ups for answered approvals',
+    file: 'src/service/hub-service.js',
+    find: `      for (const a of s.answeredApprovals || []) {
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy, answeredVia: a.answeredVia,
+        }).catch(() => {});
+      }`,
+    replace: `      for (const a of (process.env.MUTANT ? [] : (s.answeredApprovals || []))) { // MUTATION
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy, answeredVia: a.answeredVia,
+        }).catch(() => {});
+      }`,
+    mustFail: 'the hub posts a resolution follow-up for an answered approval',
+  },
+  {
+    name: 'the hub stops posting resolution follow-ups for expired approvals',
+    file: 'src/service/hub-service.js',
+    find: `      for (const a of s.expiredApprovals || []) {
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: 'expired',
+        }).catch(() => {});
+      }`,
+    replace: `      for (const a of (process.env.MUTANT ? [] : (s.expiredApprovals || []))) { // MUTATION
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: 'expired',
+        }).catch(() => {});
+      }`,
+    mustFail: 'the hub posts a resolution follow-up for an answered approval',
+  },
+  {
+    name: 'squad-hub mcp accepts a device token instead of refusing it',
+    file: 'src/cli.js',
+    find: `  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (DeviceTokens.looksLikeDeviceToken(token)) {
+    err(\`refusing to start: that is a device token (the "\${DEVICE_TOKEN_PREFIX}." prefix), not yours.\`);`,
+    replace: `  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (!process.env.MUTANT && DeviceTokens.looksLikeDeviceToken(token)) { // MUTATION
+    err(\`refusing to start: that is a device token (the "\${DEVICE_TOKEN_PREFIX}." prefix), not yours.\`);`,
+    mustFail: 'squad-hub mcp refuses a sqhd1. token',
+  },
+  {
+    name: 'send_message accepts empty/whitespace-only text',
+    file: 'src/mcp-hub-client.js',
+    find: `      if (typeof text !== 'string' || !text.trim()) throw new Error('text is required');`,
+    replace: `      if (!process.env.MUTANT && (typeof text !== 'string' || !text.trim())) throw new Error('text is required'); // MUTATION`,
+    mustFail: 'send_message refuses empty text before any network call',
+  },
+  {
+    name: 'splitKey accepts a key with no colon',
+    file: 'src/mcp-hub-client.js',
+    find: `  const i = key.indexOf(':');
+  if (i <= 0 || i === key.length - 1) {`,
+    replace: `  const i = key.indexOf(':');
+  if (!process.env.MUTANT && (i <= 0 || i === key.length - 1)) { // MUTATION`,
+    mustFail: 'splitKey refuses a key with no colon',
+  },
+  {
+    name: 'tools/call silently no-ops on an unknown tool instead of erroring',
+    file: 'src/mcp-server.js',
+    find: `        if (typeof handler !== 'function') {
+          return replyError(id, JSONRPC_INVALID_PARAMS, \`unknown tool: \${name}\`);
+        }`,
+    replace: `        if (typeof handler !== 'function') {
+          if (process.env.MUTANT) return reply(id, { content: [{ type: 'text', text: '' }] }); // MUTATION
+          return replyError(id, JSONRPC_INVALID_PARAMS, \`unknown tool: \${name}\`);
+        }`,
+    mustFail: 'tools/call refuses an unknown tool name with a JSON-RPC error, not a crash',
+  },
+  {
+    // `null` is valid JSON and must get an answer, not silence or a crash.
+    name: 'a non-object JSON line goes unanswered',
+    file: 'src/mcp-server.js',
+    find: `      replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object');`,
+    replace: `      if (!process.env.MUTANT) replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object'); // MUTATION`,
+    mustFail: 'a JSON null, number or array line gets Invalid Request, not a crash',
+  },
+  {
+    // `HANDLERS.constructor` is Object itself; only own tool names may resolve.
+    name: 'a tool name inherited from Object.prototype resolves to a handler',
+    file: 'src/mcp-server.js',
+    find: `        const handler = typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name)
+          ? HANDLERS[name] : null;`,
+    replace: `        const handler = process.env.MUTANT ? HANDLERS[name] // MUTATION
+          : (typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name) ? HANDLERS[name] : null);`,
+    mustFail: 'a tool name inherited from Object.prototype is an unknown tool',
+  },
+  {
+    // The CLI exits the moment `serve` resolves, so resolving before the
+    // in-flight replies are written drops them.
+    name: 'serve resolves at stdin close without waiting for in-flight replies',
+    file: 'src/mcp-server.js',
+    find: `      Promise.allSettled([...inflight]).then(() => resolve());`,
+    replace: `      if (process.env.MUTANT) { resolve(); return; } // MUTATION
+      Promise.allSettled([...inflight]).then(() => resolve());`,
+    mustFail: 'a request in flight when stdin closes is still answered',
+  },
+  {
+    name: 'the daemon drops "since" from a hub-driven transcript read, downgrading it to a tail',
+    file: 'src/daemon.js',
+    find: `          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit, since: m.since });`,
+    replace: `          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit, since: process.env.MUTANT ? undefined : m.since }); // MUTATION`,
+    mustFail: 'a hub transcript command forwards `since` through `_hubCommand`, proven against `_transcriptSince` directly',
+  },
+  {
+    name: 'the hub client swallows a non-2xx response instead of throwing HubApiError',
+    file: 'src/mcp-hub-client.js',
+    find: `  if (res.status >= 200 && res.status < 300) return res.body;
+  throw new HubApiError(res.status, res.body, res.raw);`,
+    replace: `  if (process.env.MUTANT || (res.status >= 200 && res.status < 300)) return res.body; // MUTATION
+  throw new HubApiError(res.status, res.body, res.raw);`,
+    mustFail: "dispatch_aca passes the hub's error through, not a synthesized one",
   },
 ];
 

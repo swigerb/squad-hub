@@ -1021,6 +1021,17 @@ async function suiteStaleApprovals() {
   runChildSuite(path.join(__dirname, 'stale-approval-unit.js'), 'stale-approvals');
 }
 
+/**
+ * `squad-hub mcp` (#184): the stdio MCP server an agent drives to see and
+ * control sessions through the hub -- every tool against a real hub with a
+ * real fake device attached, the JSON-RPC/stdio framing itself, and the
+ * sqhd1. device-token refusal at the real CLI entry point.
+ */
+async function suiteMcp() {
+  console.log('\n[MCP] list/get/transcript/start/steer/stop/devices/aca-passthrough, the stdio protocol, and the sqhd1. refusal');
+  runChildSuite(path.join(__dirname, 'mcp-unit.js'), 'mcp');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1085,6 +1096,7 @@ async function suiteStaleApprovals() {
   await suiteCeremonyConventions();
   await suiteSteer();
   await suiteStaleApprovals();
+  await suiteMcp();
 
   console.log('');
   console.log('='.repeat(60));

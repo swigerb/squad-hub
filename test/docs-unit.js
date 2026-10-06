@@ -635,6 +635,16 @@ check('the Teams webhook variable is explained where it is set', () => {
   assert.match(commands, /Workflows/);
 });
 
+check('the docs describe the resolution follow-up, and that it is bounded', () => {
+  assert.match(commands, /follow-up posts to the same channel/i,
+    'the follow-up behavior (#176) is not documented');
+  assert.match(commands, /answered or\s+expires/i);
+  assert.match(commands, /no follow-up/i,
+    'the "no card, no follow-up" rule is not documented');
+  assert.match(commands, /retried a few times with/i,
+    'the bounded retry is not documented');
+});
+
 check('every navigation in the browser suite tolerates being interrupted', () => {
   /**
    * The PWA cache checks have gone red on CI three times, always with
