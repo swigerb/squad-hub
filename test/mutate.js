@@ -3558,6 +3558,92 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `        prefsStore: process.env.MUTANT ? 'memory' : (this.prefsStore.persist ? 'durable' : 'memory'), // MUTATION`,
     mustFail: 'authenticated /healthz reports whether preferences are durable',
   },
+  {
+    name: 'lastActivityAt bumps on every re-publish, not only a real status change',
+    file: 'src/service/store.js',
+    find: `    rec.lastActivityAt = (!priorActivityAt || existing.status !== rec.status || ranTools)
+      ? Date.now()
+      : priorActivityAt;`,
+    replace: `    rec.lastActivityAt = (process.env.MUTANT || !priorActivityAt || existing.status !== rec.status || ranTools) // MUTATION
+      ? Date.now()
+      : priorActivityAt;`,
+    mustFail: 'an unchanged status on re-publish does NOT bump lastActivityAt',
+  },
+  {
+    name: 'new tool calls on a republish never move lastActivityAt',
+    file: 'src/service/store.js',
+    find: `    const ranTools = Number.isFinite(rec.toolCallCount)
+      && rec.toolCallCount > (Number.isFinite(existing.toolCallCount) ? existing.toolCallCount : 0);`,
+    replace: `    const ranTools = !process.env.MUTANT && Number.isFinite(rec.toolCallCount) // MUTATION
+      && rec.toolCallCount > (Number.isFinite(existing.toolCallCount) ? existing.toolCallCount : 0);`,
+    mustFail: 'new tool calls reported on a heartbeat republish bump lastActivityAt',
+  },
+  {
+    name: 'a session saved before lastActivityAt existed looks freshly active after an upgrade',
+    file: 'src/service/store.js',
+    find: `    const priorActivityAt = existing.lastActivityAt || existing.endedAt || existing.firstSeen;`,
+    replace: `    const priorActivityAt = process.env.MUTANT ? existing.lastActivityAt : (existing.lastActivityAt || existing.endedAt || existing.firstSeen); // MUTATION`,
+    mustFail: 'a session saved before lastActivityAt existed keeps its own age on the next heartbeat',
+  },
+  {
+    name: 'a transcript push is silently dropped, never moving lastActivityAt',
+    file: 'src/service/store.js',
+    find: `    const rec = b.sessions.get(key);
+    if (!rec) return null;
+    rec.lastActivityAt = Date.now();`,
+    replace: `    const rec = b.sessions.get(key);
+    if (!rec) return null;
+    if (!process.env.MUTANT) rec.lastActivityAt = Date.now(); // MUTATION`,
+    mustFail: 'a transcript push bumps lastActivityAt without a status change',
+  },
+  {
+    name: 'an invalid pullRequest resend is kept instead of being cleared',
+    file: 'src/service/store.js',
+    find: `    if ('pullRequest' in sent) {
+      rec.pullRequest = sanitizePullRequest(sent.pullRequest);
+    } else if (!('pullRequest' in existing)) {`,
+    replace: `    if ('pullRequest' in sent) {
+      rec.pullRequest = process.env.MUTANT ? (sanitizePullRequest(sent.pullRequest) || existing.pullRequest || null) : sanitizePullRequest(sent.pullRequest); // MUTATION
+    } else if (!('pullRequest' in existing)) {`,
+    mustFail: 'the store validates pullRequest on upsert and clears it on an invalid resend',
+  },
+  {
+    name: 'a non-object session payload reaches the pullRequest check unguarded',
+    file: 'src/service/store.js',
+    find: `    const sent = (session && typeof session === 'object') ? session : {};`,
+    replace: `    const sent = process.env.MUTANT ? session : ((session && typeof session === 'object') ? session : {}); // MUTATION`,
+    mustFail: 'a non-object session payload does not throw on the pullRequest check',
+  },
+  {
+    name: 'a pull request number that does not match its URL is accepted',
+    file: 'src/pull-request.js',
+    find: `  if (String(number) !== url.slice(url.lastIndexOf('/') + 1)) return null;`,
+    replace: `  if (!process.env.MUTANT && String(number) !== url.slice(url.lastIndexOf('/') + 1)) return null; // MUTATION`,
+    mustFail: 'a pull request number that does not match its URL is rejected',
+  },
+  {
+    name: 'a non-GitHub pull request URL is accepted',
+    file: 'src/pull-request.js',
+    find: `  if (INJECTION_RE.test(url) || !PR_URL_RE.test(url)) return null;`,
+    replace: `  if (!process.env.MUTANT && (INJECTION_RE.test(url) || !PR_URL_RE.test(url))) return null; // MUTATION`,
+    mustFail: 'a non-GitHub URL is rejected',
+  },
+  {
+    name: 'a non-integer, negative or string pull request number is accepted',
+    file: 'src/pull-request.js',
+    find: `  if (!Number.isInteger(number) || number <= 0) return null;`,
+    replace: `  if (!process.env.MUTANT && (!Number.isInteger(number) || number <= 0)) return null; // MUTATION`,
+    mustFail: 'a number sent as a string is rejected, not coerced',
+  },
+  {
+    name: 'an injection-shaped or oversize pull request title is accepted',
+    file: 'src/pull-request.js',
+    find: `    if (typeof title !== 'string' || !title.length || title.length > MAX_TITLE_LEN) return null;
+    if (INJECTION_RE.test(title)) return null;`,
+    replace: `    if (!process.env.MUTANT && (typeof title !== 'string' || !title.length || title.length > MAX_TITLE_LEN)) return null; // MUTATION
+    if (!process.env.MUTANT && INJECTION_RE.test(title)) return null; // MUTATION`,
+    mustFail: 'an injection-shaped title is rejected',
+  },
 ];
 
 /**

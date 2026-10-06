@@ -16,6 +16,7 @@
 const { EventEmitter } = require('events');
 const { MemoryBacking } = require('./store-backing');
 const { sanitizeDeviceMeta } = require('../device-meta');
+const { sanitizePullRequest } = require('../pull-request');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
@@ -355,6 +356,23 @@ class Store extends EventEmitter {
       firstSeen: existing.firstSeen || Date.now(),
     };
     /**
+     * The pull request a device reports for this session, if any.
+     *
+     * A device IS NOT THIS PROCESS (see the note on `normaliseSession` above),
+     * so `{ url, number, title }` is validated here exactly as device metadata
+     * is -- see `src/pull-request.js`. An omitted `pullRequest` key leaves
+     * whatever was recorded before untouched (a device that stops echoing it
+     * is not a device that revoked it); an explicit `null` or a value that
+     * fails validation clears it. A payload that is not an object at all
+     * carries no `pullRequest` (and `in` would throw on a string or number).
+     */
+    const sent = (session && typeof session === 'object') ? session : {};
+    if ('pullRequest' in sent) {
+      rec.pullRequest = sanitizePullRequest(sent.pullRequest);
+    } else if (!('pullRequest' in existing)) {
+      rec.pullRequest = null;
+    }
+    /**
      * When this session FINISHED, stamped once.
      *
      * Retention cannot use updatedAt: a device re-publishes its whole session
@@ -364,12 +382,66 @@ class Store extends EventEmitter {
      */
     if (TERMINAL.has(rec.status) && !rec.endedAt) rec.endedAt = Date.now();
     if (!TERMINAL.has(rec.status)) rec.endedAt = null;
+    /**
+     * When this session last did something, for "Latest/First updated"
+     * sorting (#169).
+     *
+     * NOT `updatedAt`: a device re-publishes its whole session list on every
+     * heartbeat and reconnect (see the note above on `endedAt`), which would
+     * make every idle session look freshly active on the next heartbeat tick.
+     * `lastActivityAt` instead moves only when a brand-new session appears,
+     * when the status itself changes (starting -> active -> waiting_approval
+     * -> done, etc.), or when the device reports new tool calls: a higher
+     * `toolCallCount` than last time. Devices do not stream transcript
+     * entries to the hub (the hub pulls them on request), but every heartbeat
+     * carries `toolCallCount`, so a session that is busy without changing
+     * status still reads as active within one heartbeat. A device that does
+     * send a `transcript` message also moves it, via `touchSessionActivity`
+     * below. A read -- `listSessions`, `overview`, `getSession` -- never calls
+     * this method at all, so it cannot bump it.
+     *
+     * A record saved before this field existed keeps its own age (when it
+     * finished, or else when it was first seen) instead of looking freshly
+     * active on its first heartbeat after the hub is upgraded.
+     */
+    const ranTools = Number.isFinite(rec.toolCallCount)
+      && rec.toolCallCount > (Number.isFinite(existing.toolCallCount) ? existing.toolCallCount : 0);
+    const priorActivityAt = existing.lastActivityAt || existing.endedAt || existing.firstSeen;
+    rec.lastActivityAt = (!priorActivityAt || existing.status !== rec.status || ranTools)
+      ? Date.now()
+      : priorActivityAt;
     b.sessions.set(key, rec);
     return rec;
   }
 
   upsertSession(subject, deviceId, session) {
     const rec = this._upsertSessionRecord(subject, deviceId, session);
+    this._persist(subject);
+    this.emit('session', { subject, session: rec });
+    return rec;
+  }
+
+  /**
+   * A transcript entry arrived for a session whose status did not change.
+   *
+   * A `transcript` message is a separate wire message from a session snapshot
+   * (see `_fromDevice`'s `case 'transcript'` in `hub-service.js`), carrying no
+   * status or tool count of its own -- so `_upsertSessionRecord`'s checks
+   * never see it. Today's devices do not send one (the hub pulls transcripts
+   * on request, and `toolCallCount` on each heartbeat is what moves
+   * `lastActivityAt` for a busy session), but a device that does push one is
+   * reporting activity, and it counts.
+   *
+   * A no-op, not an error, when the session is unknown: a transcript entry
+   * can race a session's removal (the device forgot it, or it aged out) and
+   * arriving a moment late is not a fault worth surfacing.
+   */
+  touchSessionActivity(subject, deviceId, sessionId) {
+    const b = this._bucket(subject);
+    const key = `${deviceId}:${sessionId}`;
+    const rec = b.sessions.get(key);
+    if (!rec) return null;
+    rec.lastActivityAt = Date.now();
     this._persist(subject);
     this.emit('session', { subject, session: rec });
     return rec;

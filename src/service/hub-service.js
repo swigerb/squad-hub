@@ -1363,6 +1363,7 @@ class HubService {
         this.store.upsertSession(me.key, deviceId, msg.session);
         break;
       case 'transcript':
+        this.store.touchSessionActivity(me.key, deviceId, msg.sessionId);
         this._broadcast(me.key, { type: 'transcript', deviceId, sessionId: msg.sessionId, entries: msg.entries });
         return;
       case 'reply': {

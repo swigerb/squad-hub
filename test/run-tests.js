@@ -844,6 +844,19 @@ async function suiteDeviceKind() {
 }
 
 /**
+ * Session `lastActivityAt` and `pullRequest` (#191). The first enables
+ * "Latest/First updated" sorting (#169) and must move only on real activity --
+ * a status change or new tool calls -- never on a read or an unchanged
+ * republish. The second is a device-reported fact validated with the same
+ * posture as device metadata: a wrong type, an oversize field, a non-GitHub
+ * pull-request URL, or an injection-shaped string rejects the whole thing.
+ */
+async function suiteSessionActivity() {
+  console.log('\n[SESSION ACTIVITY] lastActivityAt and validated pullRequest');
+  runChildSuite(path.join(__dirname, 'session-activity-unit.js'), 'session-activity');
+}
+
+/**
  * The device roster: ordering, presence wording, load meters, and the
  * telemetry that feeds them -- which is off by default, like every other thing
  * the daemon could report about the machine it runs on.
@@ -1042,6 +1055,7 @@ async function suiteStaleApprovals() {
   await suiteSessionMetadata();
   await suiteListControls();
   await suiteDeviceKind();
+  await suiteSessionActivity();
   await suiteDeviceRoster();
   await suiteControlVerification();
   await suiteApprovalDepth();
