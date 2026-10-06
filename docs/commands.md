@@ -921,6 +921,18 @@ is truncated and anything credential-shaped is redacted before it leaves the
 process — an approval prompt is exactly where a token pasted onto a command
 line would otherwise show up.
 
+**A short follow-up posts to the same channel once the approval is answered or
+expires** — e.g. *"Answered: Allowed once by Brian from the hub."*,
+*"Answered: Denied from the terminal."* (answered with `squad-hub approve` or
+`/approve` on the device itself) or *"Expired: no one answered in time."* — with the same **View live session**
+link and the same redaction rules as the original card. It only posts for an
+approval this hub actually sent a card for; answering something that never
+produced a card (webhooks were off, or the card itself failed to send)
+produces no follow-up. Posting the follow-up is retried a few times with
+backoff before it is given up on quietly — same as the original card, a
+failure here never blocks the approval itself. Inline approval from inside
+Teams stays out of scope, for the reasons above.
+
 ## Installing it as an app
 
 The web UI is a PWA: install it from the account menu, or with your browser's
@@ -975,6 +987,59 @@ you cannot go and stop the machine: the laptop is lost, the colleague has left,
 the container will not stop, the token reached a log.
 
 See [security.md](security.md#device-tokens).
+
+## MCP server
+
+`squad-hub mcp` runs a stdio [MCP](https://modelcontextprotocol.io) server, so
+an agent can see and drive your own sessions the same way the web app does —
+list what is running, read a transcript, start a session, steer one, stop one.
+
+```bash
+squad-hub mcp --hub <url> --token <your own token>
+```
+
+Authenticated with **your** sign-in token, never a device token — a device
+token can be a device and nothing else (see above), and an MCP server that can
+list sessions, read transcripts, start work and send messages needs exactly
+the authority a device token is built to never have. A `sqhd1.`-prefixed
+token is refused immediately, by its shape alone, before any request reaches
+the hub. `SQUAD_HUB_USER_TOKEN` supplies `--token` here too.
+
+### Tools
+
+| Tool | Does |
+|---|---|
+| `list_sessions(filter?)` | Your sessions across every device. `filter`: `device`, `status`, `keyword`, `actionNeeded`. |
+| `get_session(key)` | One session, by its `"deviceId:sessionId"` key (as `list_sessions` returns it). |
+| `get_transcript(key, since?)` | A session's transcript. Omit `since` for the tail; pass the `nextSince` a prior call returned to read only what is new. |
+| `start_session(device, prompt, cwd?, model?, mode?)` | Start a session on one of your devices. |
+| `send_message(key, text)` | Steer a running session without stopping it. |
+| `stop_session(key)` | Stop a running session. |
+| `list_devices()` | Your devices, with presence, kind, and metadata. |
+| `dispatch_aca(...)` | Dispatch onto Azure Container Apps (#177). Passed straight through to `/api/aca/dispatch` — a hub that does not have that route yet answers with its own refusal, never a synthesized one. |
+
+**There is no `approve` tool.** Approvals stay human, on purpose: every other
+tool here acts on your behalf, the same as the web app would — but an approval
+exists specifically because an agent is asking a *human* whether it may do
+something. A tool that let an agent answer its own approval would not be a
+control, it would be the control's absence with a control's name on it.
+Answer approvals with `squad-hub approve <sessionId> <approvalId> <optionId>`,
+the web app, or Teams — exactly as today, with nothing new reachable from an
+MCP client.
+
+### `.mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "squad-hub": {
+      "command": "squad-hub",
+      "args": ["mcp", "--hub", "https://your-hub.example.com"],
+      "env": { "SQUAD_HUB_USER_TOKEN": "your-token-here" }
+    }
+  }
+}
+```
 
 ## Removing a device
 

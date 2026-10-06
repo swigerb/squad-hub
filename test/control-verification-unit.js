@@ -481,6 +481,16 @@ process.env.SQUAD_HUB_HOME = home;
     assert.ok(s.pendingApprovals.has('a1'), 'the other request was resolved too');
   });
 
+  await checkAsync('an answer with no named answerer is recorded as given at the terminal', async () => {
+    const local = gated();
+    local.answer('a1', 'allow_once');
+    assert.strictEqual(local.answeredApprovals[0].answeredVia, 'terminal',
+      'a squad-hub approve or /approve answer would be reported as coming from the hub');
+    const remote = gated();
+    remote.answer('a1', 'allow_once', 'Brian');
+    assert.strictEqual(remote.answeredApprovals[0].answeredVia, 'hub');
+  });
+
   await checkAsync('a resolved approval records WHO answered it', async () => {
     const s = gated();
     s.answer('a1', 'allow_once', 'Brian');

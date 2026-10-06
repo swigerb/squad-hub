@@ -1433,37 +1433,10 @@ async function cmdTrackAll(argv) {
 
 /**
  * One small JSON-over-HTTP call, for the few CLI commands that talk to the hub
- * rather than to the local daemon.
- *
- * Rejecting only on transport failure, never on status: an HTTP error is an
- * answer, and the caller needs to see WHICH one to say anything useful.
+ * rather than to the local daemon. Shared with the MCP server (src/hub-http.js),
+ * which talks to the exact same `/api/*` surface with the exact same rules.
  */
-function httpJson(url, { method = 'GET', headers = {}, body = null } = {}) {
-  const u = typeof url === 'string' ? new URL(url) : url;
-  const mod = u.protocol === 'https:' ? require('https') : require('http');
-  return new Promise((resolve, reject) => {
-    const req = mod.request({
-      hostname: u.hostname,
-      port: u.port || (u.protocol === 'https:' ? 443 : 80),
-      path: u.pathname + u.search,
-      method,
-      headers: { ...headers, ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}) },
-      timeout: 20000,
-    }, (res) => {
-      let b = '';
-      res.on('data', (d) => { b += d; });
-      res.on('end', () => {
-        let json = null;
-        try { json = JSON.parse(b); } catch { /* not json */ }
-        resolve({ status: res.statusCode, body: json, raw: b });
-      });
-    });
-    req.on('timeout', () => req.destroy(new Error('timed out talking to the hub')));
-    req.on('error', reject);
-    if (body) req.write(body);
-    req.end();
-  });
-}
+const { httpJson } = require('./hub-http');
 
 /**
  * Build the local access store directly over `SQUAD_HUB_HOME`, the same way
@@ -1603,6 +1576,48 @@ async function cmdAccess(argv) {
     out(`${result.pendingRevocations.length} revocation(s) in the file were not applied (pass --apply-revocations):`);
     for (const login of result.pendingRevocations) out(`  - ${login}`);
   }
+  return 0;
+}
+
+/**
+ * `squad-hub mcp`: a stdio MCP server, so an agent can see and drive YOUR
+ * sessions through the same hub API the web app uses.
+ *
+ * Authenticated with YOUR hub token, never a device token -- a device token
+ * can be a device and nothing else (see docs/security.md#device-tokens), and
+ * an MCP server that could start work, read transcripts, and send messages
+ * needs the authority a device token is specifically built to never have.
+ * Refused here, before a single request reaches the hub, by SHAPE alone: a
+ * device token always carries the `sqhd1.` prefix (see
+ * `src/service/device-token.js`), so this needs no network round trip to
+ * know a given credential cannot be the right one.
+ */
+async function cmdMcp(argv) {
+  const hub = value(argv, 'hub', effectiveServer());
+  const token = value(argv, 'token', process.env.SQUAD_HUB_USER_TOKEN);
+  if (!hub || !token) {
+    err('usage: squad-hub mcp --hub <url> --token <your own token>');
+    err('');
+    err('The token is YOUR sign-in credential, not a device token. Mint one for');
+    err('yourself from the hub, or export SQUAD_HUB_USER_TOKEN.');
+    return 2;
+  }
+  if (!looksLikeUrl(hub)) {
+    err(`--hub must be an http:// or https:// URL, got: ${hub}`);
+    return 2;
+  }
+  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (DeviceTokens.looksLikeDeviceToken(token)) {
+    err(`refusing to start: that is a device token (the "${DEVICE_TOKEN_PREFIX}." prefix), not yours.`);
+    err('A device token can be a device and nothing else -- it cannot list, read,');
+    err('or drive sessions on your behalf. Use your own sign-in token instead.');
+    return 2;
+  }
+
+  const { serve } = require('./mcp-server');
+  await serve({
+    hub, token, input: process.stdin, output: process.stdout, log: (s) => err(s),
+  });
   return 0;
 }
 
@@ -1849,6 +1864,12 @@ function usage() {
   squad-hub device-token --hub <url> --token <your token> --list
   squad-hub device-token --hub <url> --token <your token> --revoke <id>
 
+  MCP SERVER (for an agent that wants to see and drive YOUR sessions)
+  squad-hub mcp --hub <url> --token <your token>   stdio MCP server; SQUAD_HUB_USER_TOKEN also works
+                        tools: list_sessions, get_session, get_transcript, start_session,
+                               send_message, stop_session, list_devices, dispatch_aca
+                        no "approve" tool -- approvals stay human, see docs/commands.md
+
   ACCESS LIST BACKUP (local; does not need the hub to be answering)
   squad-hub access export <path>                       write the access list to a file you choose
   squad-hub access import <path> [--apply-revocations]  restore it (additive by default)
@@ -2068,6 +2089,7 @@ async function main(argv) {
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);
+    case 'mcp': return cmdMcp(rest);
     case 'access': return cmdAccess(rest);
     case 'autostart': return cmdAutostart(rest);
     // The pre-`autostart` spellings. Kept working forever: they are in scripts,
