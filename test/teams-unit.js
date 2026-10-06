@@ -13,6 +13,7 @@
 
 const assert = require('assert');
 const http = require('http');
+const { readWebSource } = require('./helpers/web-source');
 
 const {
   TeamsNotifier, approvalCard, webhookPayload, redact,
@@ -133,13 +134,10 @@ check('the link is labelled as going to the live session', () => {
 // from the query string, so the card's one working affordance opened the
 // default view and lost the session it was about.
 // ---------------------------------------------------------------------------
-const fs = require('fs');
-const path = require('path');
 
-const appSrc = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
-const marker = appSrc.indexOf('(async function main()');
+const src = readWebSource();
 const appMod = { exports: {} };
-new Function('module', 'exports', `${appSrc.slice(0, marker)}
+new Function('module', 'exports', `${src}
 module.exports = { resolveDeepLink };`)(appMod, appMod.exports);
 const { resolveDeepLink } = appMod.exports;
 

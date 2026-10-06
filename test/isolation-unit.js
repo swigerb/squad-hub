@@ -680,7 +680,7 @@ function api(port, path, token, opts = {}) {
       // A missing MIME entry is easy to delete by accident and produces a hub
       // that returns 200 for everything while rendering nothing -- a browser
       // will not execute a script served as application/octet-stream.
-      for (const [file, type] of [['/app.js', /javascript/], ['/css/tokens.css', /text\/css/], ['/index.html', /text\/html/]]) {
+      for (const [file, type] of [['/app.js', /javascript/], ['/js/api.js', /javascript/], ['/css/tokens.css', /text\/css/], ['/index.html', /text\/html/]]) {
         const r = await api(p, file, null);
         assert.strictEqual(r.status, 200, `${file} is not served at all`);
         assert.match(r.headers['content-type'] || '', type,

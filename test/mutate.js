@@ -818,7 +818,7 @@ const MUTATIONS = [
     // dangling "squad" pill and an empty count in front of every session that
     // was never a Squad project.
     name: 'the web row renders an empty Squad slot for a non-Squad session',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  const squadBits = sq ? \`      <div class="squadline">`,
     replace: `  const squadBits = (sq || process.env.MUTANT) ? \`      <div class="squadline"> <span class="MUTATION"></span>`,
     mustFail: 'a session in a non-Squad workspace shows no member and no empty slot on the web row',
@@ -830,7 +830,7 @@ const MUTATIONS = [
     // reintroduces exactly the bug the issue reported: an invented label
     // where the row should stay silent.
     name: 'the web row invents a name for the coordinator or an unknown active member',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  const activeName = am && am.name ? am.name : '';`,
     replace: `  const activeName = process.env.MUTANT ? (am ? (am.name || 'Squad') : '') : (am && am.name ? am.name : ''); // MUTATION`,
     mustFail: 'the web row shows no member chip when the coordinator is acting',
@@ -1409,7 +1409,7 @@ const MUTATIONS = [
      * rather than by mutations of their own.
      */
     name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `esc(agentInfo.text)`,
     replace: `(process.env.MUTANT ? agentInfo.text : esc(agentInfo.text))`,
     mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
@@ -1723,21 +1723,21 @@ const MUTATIONS = [
     // The classic stored-XSS shape, on the newest field to reach the DOM. git
     // will happily let you name a branch `<img src=x onerror=...>`.
     name: 'the branch is interpolated into the row without escaping',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `    git && git.branch ? \`<span class="branch">\${esc(git.branch)}</span>\` : '',`,
     replace: `    git && git.branch ? \`<span class="branch">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
     mustFail: 'a malicious BRANCH name renders as inert escaped text',
   },
   {
     name: 'the repository is interpolated into the row without escaping',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),`,
     replace: `    git && git.repository ? (process.env.MUTANT ? git.repository : esc(git.repository)) : esc(sq ? sq.project : s.cwd), // MUTATION`,
     mustFail: 'a malicious REPOSITORY name renders as inert escaped text',
   },
   {
     name: 'the activity line is interpolated into the row without escaping',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `          <span class="activity">\${esc(activityLine(s))}</span>`,
     replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s) : esc(activityLine(s))}</span>`,
     mustFail: 'a malicious ACTIVITY line renders as inert escaped text',
@@ -1746,14 +1746,14 @@ const MUTATIONS = [
     // A blocked session that looks busy is the one state a watcher must not
     // miss, and a stale streaming update is exactly how it happens.
     name: 'a blocked session reports whatever the last update claimed',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  if (pending || s.status === 'waiting_approval') return 'Waiting for input';`,
     replace: `  if ((pending || s.status === 'waiting_approval') && !process.env.MUTANT) return 'Waiting for input'; // MUTATION`,
     mustFail: 'a blocked session says it is waiting, whatever the last update claimed',
   },
   {
     name: 'action-needed rows are not pulled to the top of their card',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  if (an !== bn) return an ? -1 : 1;
   return (b.startedAt || 0) - (a.startedAt || 0);`,
     replace: `  if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION
@@ -1762,7 +1762,7 @@ const MUTATIONS = [
   },
   {
     name: 'a lapsed approval leaves the raw status showing in the badge',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `    waiting_approval: 'Needs approval',`,
     replace: `    ...(process.env.MUTANT ? {} : { waiting_approval: 'Needs approval' }), // MUTATION`,
     mustFail: 'waiting_approval is a badge, not a raw status string',
@@ -1780,7 +1780,7 @@ const MUTATIONS = [
   },
   {
     name: 'a session waiting for a reply is filed away as Done rather than named honestly',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `    idle: 'Awaiting your reply',`,
     replace: `    idle: process.env.MUTANT ? 'Done' : 'Awaiting your reply', // MUTATION`,
     mustFail: 'a session waiting for your reply says it is waiting for a reply, not "Done"',
@@ -1789,7 +1789,7 @@ const MUTATIONS = [
     // The two states that want a person must not be described the same way:
     // one blocks until somebody decides, the other can be left alone.
     name: 'a session waiting for a reply claims to need an approval',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `    idle: 'Awaiting your reply',
     done: 'Finished',`,
     replace: `    idle: process.env.MUTANT ? 'Needs approval' : 'Awaiting your reply', // MUTATION
@@ -1853,7 +1853,7 @@ const MUTATIONS = [
   {
     // Decoration must never take the session list down.
     name: 'a session outside a checkout loses its location entirely',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),`,
     replace: `    process.env.MUTANT ? esc(git && git.repository) : (git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd)), // MUTATION`,
     mustFail: 'a session outside a checkout still shows its cwd',
@@ -1880,28 +1880,28 @@ const MUTATIONS = [
     // The filter that turns a dashboard for paused agents into a way to lose
     // work: someone is waiting on an answer and the row is hidden for being old.
     name: 'the time window hides a session that is blocked on a person',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  if (!needsAttention(s) && !withinWindow(s, f.window, now)) return false;`,
     replace: `  if ((process.env.MUTANT || !needsAttention(s)) && !withinWindow(s, f.window, now)) return false; // MUTATION`,
     mustFail: 'a BLOCKED session survives the time window',
   },
   {
     name: 'the time window boundary is a one-millisecond cliff',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  return (now - s.startedAt) <= w.ms;`,
     replace: `  return process.env.MUTANT ? (now - s.startedAt) < w.ms : (now - s.startedAt) <= w.ms; // MUTATION`,
     mustFail: 'the window boundary is inclusive, not a one-millisecond cliff',
   },
   {
     name: 'a session with no start time is filtered out by the time window',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  if (!s.startedAt) return true;`,
     replace: `  if (!s.startedAt) return !process.env.MUTANT; // MUTATION`,
     mustFail: 'a session with no start time is kept, not filtered out',
   },
   {
     name: 'an unknown window key empties the entire list',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  if (!w || w.ms == null) return true;`,
     replace: `  if (process.env.MUTANT) return !!(w && w.ms == null); // MUTATION
   if (!w || w.ms == null) return true;`,
@@ -1909,14 +1909,14 @@ const MUTATIONS = [
   },
   {
     name: 'the organisation scope matches prefixes instead of the whole name',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  if (f.org && sessionOrg(s) !== f.org) return false;`,
     replace: `  if (f.org && (process.env.MUTANT ? !sessionOrg(s).startsWith(f.org) : sessionOrg(s) !== f.org)) return false; // MUTATION`,
     mustFail: 'the organisation scope is an EXACT match, not a substring',
   },
   {
     name: 'the chosen sort is allowed to bury a blocked session',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `    const an = needsAttention(a);
     const bn = needsAttention(b);
     if (an !== bn) return an ? -1 : 1;
@@ -1929,7 +1929,7 @@ const MUTATIONS = [
   },
   {
     name: 'sorting reorders the caller\'s own array',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  return [...list].sort((a, b) => {
     const an = needsAttention(a);`,
     replace: `  return (process.env.MUTANT ? list : [...list]).sort((a, b) => { // MUTATION
@@ -1938,14 +1938,14 @@ const MUTATIONS = [
   },
   {
     name: 'a pinned session is also left in its device group',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
     replace: `      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); if (!process.env.MUTANT) continue; } // MUTATION`,
     mustFail: 'a pinned session does not also appear in its device group',
   },
   {
     name: 'a pinned session is still subject to every filter',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `      const entry = { session: s, device: g.device };
       if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
     replace: `      const entry = { session: s, device: g.device };
@@ -1954,7 +1954,7 @@ const MUTATIONS = [
   },
   {
     name: 'a group holding a blocked session is left in alphabetical order',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `    const an = buckets.get(a).some((e) => needsAttention(e.session));
     const bn = buckets.get(b).some((e) => needsAttention(e.session));
     if (an !== bn) return an ? -1 : 1;`,
@@ -1965,7 +1965,7 @@ const MUTATIONS = [
   },
   {
     name: 'groups are left in whatever order they arrived in',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `    return a.localeCompare(b);
   });
 
@@ -1978,14 +1978,14 @@ const MUTATIONS = [
   },
   {
     name: 'grouping by repository silently groups by device instead',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  const keyOf = groupBy === 'repository'`,
     replace: `  const keyOf = (groupBy === 'repository' && !process.env.MUTANT) // MUTATION`,
     mustFail: 'grouping by repository crosses device boundaries',
   },
   {
     name: 'a session key is interpolated into the star attribute unescaped',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     // Single-quoted on purpose: the anchor itself contains `${...}`, which a
     // template literal here would try to interpolate.
     find: 'data-star="${esc(sessionKey(s))}"',
@@ -1994,7 +1994,7 @@ const MUTATIONS = [
   },
   {
     name: 'the shown count includes rows that were filtered away',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
 }`,
     replace: `  return { sections, counts: { pinned: pinned.length, shown: process.env.MUTANT ? groups.reduce((n, g) => n + (g.sessions || []).length, 0) : pinned.length + rest.length } }; // MUTATION
@@ -2003,7 +2003,7 @@ const MUTATIONS = [
   },
   {
     name: 'an empty Pinned section is rendered when nothing is pinned',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `  if (pinned.length) {
     sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });`,
     replace: `  if (pinned.length || process.env.MUTANT) { // MUTATION
@@ -2323,7 +2323,7 @@ const MUTATIONS = [
   {
     // "Nothing to show" must never soften into "safe".
     name: 'an approval with nothing in it is treated as read-only',
-    file: 'web/app.js',
+    file: 'web/js/approvals.js',
     find: `  return rows.length > 0 && rows.every((r) => r.readOnly);`,
     replace: `  return process.env.MUTANT ? rows.every((r) => r.readOnly) : (rows.length > 0 && rows.every((r) => r.readOnly)); // MUTATION`,
     mustFail: 'an empty approval is NOT treated as read-only',
@@ -2346,14 +2346,14 @@ const MUTATIONS = [
   },
   {
     name: 'a tool with no name renders as a blank row',
-    file: 'web/app.js',
+    file: 'web/js/approvals.js',
     find: `    label: approval.command || approval.title || 'an unnamed tool',`,
     replace: `    label: approval.command || approval.title || (process.env.MUTANT ? '' : 'an unnamed tool'), // MUTATION`,
     mustFail: 'an approval with neither command nor title says so, rather than showing blank',
   },
   {
     name: 'the paths an approval names are not listed at all',
-    file: 'web/app.js',
+    file: 'web/js/approvals.js',
     find: `  for (const p of approval.paths || []) {
     rows.push({ kind: 'path', label: String(p), readOnly });`,
     replace: `  for (const p of process.env.MUTANT ? [] : (approval.paths || [])) { // MUTATION
@@ -2524,7 +2524,25 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // page with no stylesheet at all.
     name: 'SHELL reverts to the deleted single-file stylesheet',
     file: 'web/sw.js',
-    find: `const SHELL = ['/', '/css/tokens.css', '/css/topbar.css', '/css/list.css', '/css/devices.css', '/css/modals.css', '/css/detail.css', '/css/squad.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg'];`,
+    find: `const SHELL = [
+  '/',
+  '/css/tokens.css',
+  '/css/topbar.css',
+  '/css/list.css',
+  '/css/devices.css',
+  '/css/modals.css',
+  '/css/detail.css',
+  '/css/squad.css',
+  '/js/api.js',
+  '/js/util.js',
+  '/js/list.js',
+  '/js/approvals.js',
+  '/app.js',
+  '/app.webmanifest',
+  '/favicon.svg',
+  '/icon.svg',
+  '/logo.jpg',
+];`,
     replace: `const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg']; // MUTATION`,
     mustFail: "the service worker's shell lists the split css, not the old single file",
   },
@@ -2535,7 +2553,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v2';`,
+    find: `const CACHE = 'squad-hub-shell-v3';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -2600,21 +2618,21 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the row hides an approval that expired unanswered',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `        \${outcome ? (outcome.kind === 'expired'`,
     replace: `        \${(outcome && !process.env.MUTANT) ? (outcome.kind === 'expired'`,
     mustFail: 'an expired approval is shown, not silently dropped',
   },
   {
     name: 'an expired approval title is interpolated without escaping',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
     replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
   },
   {
     name: 'the OLDEST outcome is shown rather than the most recent',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
   return all[0] || null;`,
     replace: `  const all = [...answered, ...expired].sort((a, b) => process.env.MUTANT ? (a.at || 0) - (b.at || 0) : (b.at || 0) - (a.at || 0)); // MUTATION
@@ -2685,7 +2703,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the row goes back to printing the request as though it were the answer',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  if (agentOk && modelOk && modeOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
     replace: `  if (agentOk || modelOk || modeOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
     mustFail: 'a session running a DIFFERENT agent to the one named on it says so',
@@ -2695,7 +2713,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // get wrong: someone who chose autopilot and got interactive is waiting for
     // a session that is waiting for them.
     name: 'a session running a DIFFERENT mode to the one asked for keeps quiet about it',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  const modeOk = !want.mode || (got.mode
     && String(got.mode).toLowerCase().includes(String(want.mode).toLowerCase()));`,
     replace: `  const modeOk = true; // MUTATION`,
@@ -2703,7 +2721,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'a device too old to report what it applied is accused of a mismatch',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
     replace: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: true }; // MUTATION`,
     mustFail: 'a device too old to report what it applied is not accused of a mismatch',
@@ -2819,21 +2837,21 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'a denial is rendered as an approval',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Denied' };`,
     replace: `const ANSWER_VERB = { allow_once: 'Allowed', allow_always: 'Always allowed', reject_once: 'Allowed' }; // MUTATION`,
     mustFail: 'a denial reads as denied, not as allowed',
   },
   {
     name: 'the answerer name is interpolated without escaping',
-    file: 'web/app.js',
+    file: 'web/js/list.js',
     find: `— by \${esc(outcome.answeredBy)}</span>`,
     replace: `— by \${outcome.answeredBy}</span>`,
     mustFail: 'a malicious answerer name renders as inert escaped text',
   },
   {
     name: 'both an answered and an expired outcome are shown at once',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));
   return all[0] || null;`,
     replace: `  const all = [...answered, ...expired].sort((a, b) => (b.at || 0) - (a.at || 0));

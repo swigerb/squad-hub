@@ -20,8 +20,7 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -36,15 +35,7 @@ function check(name, fn) {
   }
 }
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
-const MARKER = '(async function main()';
-const idx = src.indexOf(MARKER);
-if (idx < 0) {
-  console.log(`  FAIL could not find the "${MARKER}" extraction anchor in web/app.js -- it moved`);
-  console.log('RESULT\tfail\tweb/app.js extraction anchor is present\tanchor not found');
-  console.log('\n0 passed, 1 failed');
-  process.exit(1);
-}
+const src = readWebSource();
 
 // `navigator` is a parameter, so it shadows the (absent) global for the whole
 // prefix -- no globals are mutated and nothing leaks between cases.
@@ -56,7 +47,7 @@ function load(navigator) {
   const mod = { exports: {} };
   const fn = new Function(
     'module', 'navigator',
-    `${src.slice(0, idx)}\nmodule.exports = { installSteps, isInstalled };`,
+    `${src}\nmodule.exports = { installSteps, isInstalled };`,
   );
   fn(mod, navigator);
   return mod.exports;

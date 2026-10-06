@@ -13,6 +13,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readWebApp, readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -27,18 +28,10 @@ function check(name, fn) {
   }
 }
 
-const APP_JS = path.join(__dirname, '..', 'web', 'app.js');
-const src = fs.readFileSync(APP_JS, 'utf8');
-const MARKER = '(async function main()';
-const idx = src.indexOf(MARKER);
-if (idx < 0) {
-  console.log(`  FAIL could not find the "${MARKER}" extraction anchor in web/app.js -- it moved`);
-  console.log('RESULT\tfail\tweb/app.js extraction anchor is present\tanchor not found');
-  console.log('\n0 passed, 1 failed');
-  process.exit(1);
-}
+const src = readWebSource();
+const web = `${readWebSource()}\n${readWebApp()}`;
 const mod = { exports: {} };
-new Function('module', 'exports', `${src.slice(0, idx)}
+new Function('module', 'exports', `${src}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell,
   updateText, transcriptBlocks, resultView };`)(mod, mod.exports);
@@ -471,7 +464,7 @@ check('newMenuState survives being handed nothing', () => {
 // ---------------------------------------------------------------------------
 
 check('permission is asked for on a CLICK, never on load', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function requestNotifyPermission[\s\S]*?\n\}/);
   assert.ok(fn, 'requestNotifyPermission moved; find it before trusting this test');
   // The only caller must be the bell's own handler.
@@ -482,20 +475,20 @@ check('permission is asked for on a CLICK, never on load', () => {
 });
 
 check('a permission already decided is never asked for again', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function requestNotifyPermission[\s\S]*?\n\}/)[0];
   assert.match(fn, /!== 'default'/,
     're-requesting a denied permission does nothing and re-requesting a granted one is noise');
 });
 
 check('an unsupported browser is told apart from a blocked one', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /'unsupported'/,
     'one is a setting a person can change and the other is not, so they cannot share a message');
 });
 
 check('the same approval never notifies twice', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function notifyApproval[\s\S]*?\n\}/)[0];
   assert.match(fn, /state\.notified\.has/,
     'every poll and every reconnect would raise another notification for the same question');
@@ -503,14 +496,14 @@ check('the same approval never notifies twice', () => {
 });
 
 check('a browser that refuses to construct a notification does not take the render down', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function notifyApproval[\s\S]*?\n\}/)[0];
   assert.match(fn, /catch/,
     'some mobile engines throw unless a service worker raises it; that must not break the session list');
 });
 
 check('the bell says what it will do before it is pressed', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function syncBell[\s\S]*?\n\}/);
   assert.ok(fn, 'syncBell moved');
   assert.match(fn[0], /blocked/i);
@@ -526,7 +519,7 @@ check('the bell says what it will do before it is pressed', () => {
 // ---------------------------------------------------------------------------
 
 check('the connection badge is a DOT when live and WORDS when not', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function setConn[\s\S]*?\n\}/)[0];
   assert.match(fn, /s === 'live' \? '' :/,
     'a permanent "live" pill is a label saying "working", and a label that is always there is one nobody reads on the day it changes');
@@ -535,14 +528,14 @@ check('the connection badge is a DOT when live and WORDS when not', () => {
 });
 
 check('the live dot is still marked up as a state, for anything that cannot see it', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const fn = app.match(/function setConn[\s\S]*?\n\}/)[0];
   assert.match(fn, /aria-label/,
     'a screen reader gets no colour, so the dot has to say the word the sighted user is spared');
 });
 
 check('every state that is NOT live still spells itself out', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const labels = app.match(/const CONN_LABEL = \{[\s\S]*?\};/)[0];
   for (const s of ['connecting', 'retrying', 'offline']) {
     assert.ok(labels.includes(s), `${s} lost its label`);
@@ -551,14 +544,14 @@ check('every state that is NOT live still spells itself out', () => {
 });
 
 check('a broken feed says the WORK is unaffected, not just that the page is', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   const titles = app.match(/const CONN_TITLE = \{[\s\S]*?\};/)[0];
   assert.match(titles, /keep running|unaffected/,
     'the obvious fear on seeing a red badge is that the work stopped, and it has not');
 });
 
 check('the device pill reports the EXCEPTION, not the agreement', () => {
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /\$\{down\} offline/,
     'repeating the count already shown beside it makes a badge nobody reads on the day it disagrees');
   assert.match(app, /availPill\.hidden = down === 0/);
@@ -591,7 +584,7 @@ check('the Squad pill is not repeated by the active-member chip beside it', () =
   // literal string "Squad" -- there is simply no name to render in that case.
   // The chip is only ever built from `am.name`, and `am.name` is null exactly
   // when the coordinator is acting or nothing is known.
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /const activeName = am && am\.name \? am\.name : '';/,
     'the active-member chip no longer reads its name solely from activeMember.name, so a duplicated ' +
     '"Squad" (or an invented name) could reappear');
@@ -602,7 +595,7 @@ check('Agent and Model offer what the device actually has, and fall back when it
   // — they arrive with the device's heartbeat. Where a list exists, a
   // free-text box asks someone to already know what to type, and a typo only
   // surfaces when the session comes back reporting something else.
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /function choicesField/, 'the picker helper is gone');
   assert.match(app, /choicesField\('nsAgentSelect', 'nsAgent', device && device\.agents/,
     'the Agent picker must be driven by what the DEVICE reported');
@@ -751,7 +744,7 @@ check('the Connect dialog can put device flags into the command it hands you', (
   // cannot apply them -- the only place they take effect is the command that
   // gets pasted. Without them a device connects and then cannot open a file,
   // with nothing having said it wouldn't.
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /cnFilesAll'\)\.checked\) flags\.push\('--allow-files-all'\)/,
     'the "anywhere" option does not reach the command');
   assert.match(app, /else if \(\$\('cnFiles'\)\.checked\) flags\.push\('--allow-files'\)/,
@@ -768,7 +761,7 @@ check('the detail view says WHY the agent is not the one that was asked for', ()
   // The row already reports the disagreement. The reason was recorded on the
   // session and displayed nowhere, so the obvious next question had no answer
   // anywhere in the product.
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /applied \|\| \{\}\)\.warnings/, 'the applied warnings are never read');
   assert.match(app, /dtWarn'\)\.hidden = warnings\.length === 0/,
     'the warning line must disappear when there is nothing wrong');
@@ -778,7 +771,7 @@ check('a document written on Windows is not double-spaced', () => {
   // These files come from whatever machine the Squad runs on. Splitting on \n
   // alone leaves a \r on the end of every line, which inside <pre> renders as
   // an extra blank line -- a charter appeared double-spaced until this.
-  const app = fs.readFileSync(APP_JS, 'utf8');
+  const app = web;
   assert.match(app, /String\(r\.text \|\| ''\)\.split\(\/\\r\?\\n\/\)/,
     'the document renderer must split on CRLF as well as LF');
 });

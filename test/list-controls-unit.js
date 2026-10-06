@@ -13,8 +13,7 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -29,18 +28,9 @@ function check(name, fn) {
   }
 }
 
-const APP_JS = path.join(__dirname, '..', 'web', 'app.js');
-const src = fs.readFileSync(APP_JS, 'utf8');
-const MARKER = '(async function main()';
-const idx = src.indexOf(MARKER);
-if (idx < 0) {
-  console.log(`  FAIL could not find the "${MARKER}" extraction anchor in web/app.js -- it moved`);
-  console.log('RESULT\tfail\tweb/app.js extraction anchor is present\tanchor not found');
-  console.log('\n0 passed, 1 failed');
-  process.exit(1);
-}
+const src = readWebSource();
 const mod = { exports: {} };
-new Function('module', 'exports', `${src.slice(0, idx)}
+new Function('module', 'exports', `${src}
 module.exports = { esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, sessionKey, needsAttention, organizationsIn, repositoriesIn,
   TIME_WINDOWS, SORTS, GROUPINGS, sessionRow };`)(mod, mod.exports);

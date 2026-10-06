@@ -91,8 +91,12 @@ check('the pages the UI actually requests are present, by name', () => {
   const cssFiles = fs.readdirSync(path.join(ROOT, 'web/css'))
     .filter((f) => f.endsWith('.css'))
     .map((f) => `web/css/${f}`);
+  const jsFiles = fs.readdirSync(path.join(ROOT, 'web/js'))
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => `web/js/${f}`);
   assert.ok(cssFiles.length >= 1, 'found no css files under web/css; the scan is broken');
-  const required = ['web/index.html', 'web/app.js', 'web/app.webmanifest', ...cssFiles];
+  assert.ok(jsFiles.length >= 1, 'found no js files under web/js; the scan is broken');
+  const required = ['web/index.html', 'web/app.js', 'web/app.webmanifest', ...cssFiles, ...jsFiles];
   const missing = required.filter((f) => !inPackage(f));
   assert.deepStrictEqual(missing, [], `missing: ${missing.join(', ')}`);
 });
@@ -742,15 +746,18 @@ check("the service worker's shell lists the split css, not the old single file",
   const shell = [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
   assert.ok(!shell.includes('/app.css'), 'SHELL still lists the deleted /app.css');
   const cssFiles = fs.readdirSync(path.join(ROOT, 'web', 'css')).filter((f) => f.endsWith('.css'));
+  const jsFiles = fs.readdirSync(path.join(ROOT, 'web', 'js')).filter((f) => f.endsWith('.js'));
   const missing = cssFiles.filter((f) => !shell.includes(`/css/${f}`));
   assert.deepStrictEqual(missing, [], `SHELL is missing: ${missing.map((f) => `/css/${f}`).join(', ')}`);
+  const missingJs = jsFiles.filter((f) => !shell.includes(`/js/${f}`));
+  assert.deepStrictEqual(missingJs, [], `SHELL is missing: ${missingJs.map((f) => `/js/${f}`).join(', ')}`);
 });
 
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v2';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v3';/,
     'CACHE is not the expected post-split value -- did it get bumped?');
 });
 

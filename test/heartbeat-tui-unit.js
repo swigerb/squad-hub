@@ -34,6 +34,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readWebApp, readWebSource } = require('./helpers/web-source');
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sqbeat-'));
 process.env.SQUAD_HUB_HOME = HOME;
@@ -423,7 +424,7 @@ check('THE UI ITSELF SURVIVES A NUMBER, so no single device can blank the page',
   // Belt and braces on purpose. The store normalises on ingest now, but a
   // viewer that cannot survive one odd field from one device is a viewer any
   // device can take down.
-  const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  const src = `${readWebSource()}\n${readWebApp()}`;
   assert.match(src, /function asList\(v\) \{\s*return Array\.isArray\(v\) \? v : \[\];/,
     'web/app.js has no list coercion helper');
   const risky = src.match(/\((?:s && s\.|s\.|a\.|b\.)(?:pending|expired|answered)Approvals \|\| \[\]\)\.(map|some|filter|forEach)\(/g);
@@ -468,7 +469,7 @@ check('AN OLD DEVICE\'S APPROVAL CARD STILL RENDERS A WORKING BUTTON', () => {
 });
 
 check('THE UI READS BOTH SPELLINGS, so no single device can render a dead button', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
+  const src = `${readWebSource()}\n${readWebApp()}`;
   assert.match(src, /const optionId = o\.optionId \|\| o\.id;/,
     'web/app.js reads only the current option spelling');
   assert.match(src, /o\.name \|\| o\.label \|\|/,

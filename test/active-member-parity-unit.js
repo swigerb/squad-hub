@@ -18,6 +18,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -41,18 +42,9 @@ const { approvalCard } = require('../src/notify/teams');
 // pure, DOM-free prefix is sliced out and evaluated directly rather than
 // pulled in through jsdom.
 // ---------------------------------------------------------------------------
-const APP_JS = path.join(__dirname, '..', 'web', 'app.js');
-const appSrc = fs.readFileSync(APP_JS, 'utf8');
-const MARKER = '(async function main()';
-const idx = appSrc.indexOf(MARKER);
-if (idx < 0) {
-  console.log(`  FAIL could not find the "${MARKER}" extraction anchor in web/app.js -- it moved`);
-  console.log('RESULT\tfail\tweb/app.js extraction anchor is present\tanchor not found');
-  console.log(`\n0 passed, 1 failed`);
-  process.exit(1);
-}
+const src = readWebSource();
 const sandboxModule = { exports: {} };
-const load = new Function('module', 'exports', `${appSrc.slice(0, idx)}\nmodule.exports = { sessionRow };`);
+const load = new Function('module', 'exports', `${src}\nmodule.exports = { sessionRow };`);
 load(sandboxModule, sandboxModule.exports);
 const { sessionRow } = sandboxModule.exports;
 
@@ -170,7 +162,7 @@ check('a non-Squad session produces no "Squad" fact on the Teams card', () => {
 // disagree the way two independent re-derivations could.
 // ---------------------------------------------------------------------------
 check('the session detail panel reads activeMember from the same field the row does', () => {
-  assert.match(appSrc, /sq\.activeMember\s*&&\s*sq\.activeMember\.name\s*===\s*m\.name/,
+  assert.match(readWebSource(), /sq\.activeMember\s*&&\s*sq\.activeMember\.name\s*===\s*m\.name/,
     'renderSquadPanel no longer reads sq.activeMember -- it and the row could now disagree');
 });
 
