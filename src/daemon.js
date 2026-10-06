@@ -873,7 +873,14 @@ class Daemon extends EventEmitter {
           result = await this.handle({ op: 'stop-session', sessionId: m.sessionId });
           break;
         case 'transcript':
-          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit });
+          // `since` is forwarded alongside `limit` so a caller that read a
+          // cursor from a prior reply (the MCP server's get_transcript, or
+          // the hub's own reconnect path) can ask for "everything after seq
+          // N" over the hub channel, not only a plain tail. Dropping it here
+          // would silently downgrade every hub-driven transcript read to a
+          // tail-only read, even though `_transcriptSince` has supported a
+          // cursor all along -- see the local IPC `handle()` case above.
+          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit, since: m.since });
           break;
         case 'steer':
           result = await this.handle({ op: 'steer', sessionId: m.sessionId, text: m.text });

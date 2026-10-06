@@ -3644,6 +3644,89 @@ if ($health.accessStore -ne 'durable') {`,
     if (!process.env.MUTANT && INJECTION_RE.test(title)) return null; // MUTATION`,
     mustFail: 'an injection-shaped title is rejected',
   },
+  {
+    name: 'squad-hub mcp accepts a device token instead of refusing it',
+    file: 'src/cli.js',
+    find: `  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (DeviceTokens.looksLikeDeviceToken(token)) {
+    err(\`refusing to start: that is a device token (the "\${DEVICE_TOKEN_PREFIX}." prefix), not yours.\`);`,
+    replace: `  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (!process.env.MUTANT && DeviceTokens.looksLikeDeviceToken(token)) { // MUTATION
+    err(\`refusing to start: that is a device token (the "\${DEVICE_TOKEN_PREFIX}." prefix), not yours.\`);`,
+    mustFail: 'squad-hub mcp refuses a sqhd1. token',
+  },
+  {
+    name: 'send_message accepts empty/whitespace-only text',
+    file: 'src/mcp-hub-client.js',
+    find: `      if (typeof text !== 'string' || !text.trim()) throw new Error('text is required');`,
+    replace: `      if (!process.env.MUTANT && (typeof text !== 'string' || !text.trim())) throw new Error('text is required'); // MUTATION`,
+    mustFail: 'send_message refuses empty text before any network call',
+  },
+  {
+    name: 'splitKey accepts a key with no colon',
+    file: 'src/mcp-hub-client.js',
+    find: `  const i = key.indexOf(':');
+  if (i <= 0 || i === key.length - 1) {`,
+    replace: `  const i = key.indexOf(':');
+  if (!process.env.MUTANT && (i <= 0 || i === key.length - 1)) { // MUTATION`,
+    mustFail: 'splitKey refuses a key with no colon',
+  },
+  {
+    name: 'tools/call silently no-ops on an unknown tool instead of erroring',
+    file: 'src/mcp-server.js',
+    find: `        if (typeof handler !== 'function') {
+          return replyError(id, JSONRPC_INVALID_PARAMS, \`unknown tool: \${name}\`);
+        }`,
+    replace: `        if (typeof handler !== 'function') {
+          if (process.env.MUTANT) return reply(id, { content: [{ type: 'text', text: '' }] }); // MUTATION
+          return replyError(id, JSONRPC_INVALID_PARAMS, \`unknown tool: \${name}\`);
+        }`,
+    mustFail: 'tools/call refuses an unknown tool name with a JSON-RPC error, not a crash',
+  },
+  {
+    // `null` is valid JSON and must get an answer, not silence or a crash.
+    name: 'a non-object JSON line goes unanswered',
+    file: 'src/mcp-server.js',
+    find: `      replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object');`,
+    replace: `      if (!process.env.MUTANT) replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object'); // MUTATION`,
+    mustFail: 'a JSON null, number or array line gets Invalid Request, not a crash',
+  },
+  {
+    // `HANDLERS.constructor` is Object itself; only own tool names may resolve.
+    name: 'a tool name inherited from Object.prototype resolves to a handler',
+    file: 'src/mcp-server.js',
+    find: `        const handler = typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name)
+          ? HANDLERS[name] : null;`,
+    replace: `        const handler = process.env.MUTANT ? HANDLERS[name] // MUTATION
+          : (typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name) ? HANDLERS[name] : null);`,
+    mustFail: 'a tool name inherited from Object.prototype is an unknown tool',
+  },
+  {
+    // The CLI exits the moment `serve` resolves, so resolving before the
+    // in-flight replies are written drops them.
+    name: 'serve resolves at stdin close without waiting for in-flight replies',
+    file: 'src/mcp-server.js',
+    find: `      Promise.allSettled([...inflight]).then(() => resolve());`,
+    replace: `      if (process.env.MUTANT) { resolve(); return; } // MUTATION
+      Promise.allSettled([...inflight]).then(() => resolve());`,
+    mustFail: 'a request in flight when stdin closes is still answered',
+  },
+  {
+    name: 'the daemon drops "since" from a hub-driven transcript read, downgrading it to a tail',
+    file: 'src/daemon.js',
+    find: `          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit, since: m.since });`,
+    replace: `          result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit, since: process.env.MUTANT ? undefined : m.since }); // MUTATION`,
+    mustFail: 'a hub transcript command forwards `since` through `_hubCommand`, proven against `_transcriptSince` directly',
+  },
+  {
+    name: 'the hub client swallows a non-2xx response instead of throwing HubApiError',
+    file: 'src/mcp-hub-client.js',
+    find: `  if (res.status >= 200 && res.status < 300) return res.body;
+  throw new HubApiError(res.status, res.body, res.raw);`,
+    replace: `  if (process.env.MUTANT || (res.status >= 200 && res.status < 300)) return res.body; // MUTATION
+  throw new HubApiError(res.status, res.body, res.raw);`,
+    mustFail: "dispatch_aca passes the hub's error through, not a synthesized one",
+  },
 ];
 
 /**
