@@ -616,6 +616,20 @@ runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser');
 }
 
 /**
+ * Issue #177: the hub's own GitHub App, and direct ACA dispatch.
+ *
+ * JWT claims and GitHub's 10-minute cap, installation-token caching, the
+ * repo allow-list, input validation (src/aca-dispatch.js), the rate limiter,
+ * per-user dispatch tracking, and -- the one this whole feature stands or
+ * falls on -- that neither the private key nor any live token this module
+ * mints ever reaches a log line or an API response.
+ */
+async function suiteGitHubApp() {
+  console.log('\n[GITHUB APP] JWT, token caching, the repo allow-list, and no leaked secret');
+  runChildSuite(path.join(__dirname, 'github-app-unit.js'), 'github-app');
+}
+
+/**
  * E2: automatic, per-session Squad custom-agent selection. Precedence
  * (explicit > project > auto > default), .squad-hub.json schema/validation,
  * array-safe argv building, and a real daemon proving selection happens per
@@ -1033,6 +1047,7 @@ async function suiteStaleApprovals() {
   await suiteActiveMemberParity();
   await suiteTeams();
   await suiteGitHubAuth();
+  await suiteGitHubApp();
   await suiteAgentSelect();
   await suiteConnect();
   await suiteInteractive();

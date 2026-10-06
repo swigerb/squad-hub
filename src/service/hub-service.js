@@ -28,6 +28,10 @@ const { AccessAudit } = require('./access-audit');
 const { PrefsStore } = require('./prefs-store');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
+const { GitHubApp } = require('./github-app');
+const { RateLimiter } = require('./rate-limiter');
+const { DispatchTracker } = require('./dispatch-tracker');
+const { sanitizeDispatchRequest } = require('../aca-dispatch');
 const { Store } = require('./store');
 const { FileBacking, MemoryBacking } = require('./store-backing');
 const ws = require('./ws');
@@ -324,6 +328,17 @@ function originIsAllowed(req, configuredOrigin) {
 const MAX_DEVICE_TOKEN_HOURS = 90 * 24;
 
 /**
+ * How many `POST /api/aca/dispatch` calls one signed-in user may make before
+ * being refused with 429 -- issue #177. This starts real Azure compute
+ * through a credential the hub itself now holds (a GitHub App installation
+ * token), unlike every device-facing route, so the floor a runaway script or
+ * a stuck UI button bumps into belongs here. Five in five minutes is
+ * generous for a person clicking a button and tight for a loop.
+ */
+const ACA_DISPATCH_RATE_LIMIT = 5;
+const ACA_DISPATCH_RATE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
  * Am I one of several instances?
  *
  * This matters because state is in memory. A device attaches to ONE instance;
@@ -464,6 +479,23 @@ class HubService {
     this.oauth = opts.oauth || new GitHubOAuth();
     this.teams = opts.teams || new (require('../notify/teams').TeamsNotifier)({
       hubUrl: process.env.SQUAD_HUB_PUBLIC_URL || null,
+    });
+
+    /**
+     * Issue #177: the hub's own GitHub App identity, for `/api/aca/*`.
+     * Disabled by default -- `SQUAD_HUB_GH_APP_ID` / `_PRIVATE_KEY` are not
+     * set in any environment until the real app exists (see the issue) -- in
+     * which case every route below answers 501 with a short reason and
+     * nothing else about the hub changes. `opts.githubApp` is the usual
+     * test/embedder escape hatch.
+     */
+    this.githubApp = opts.githubApp || new GitHubApp();
+    // Per-user, in-memory: see dispatch-tracker.js.
+    this.dispatchTracker = opts.dispatchTracker || new DispatchTracker();
+    // Per-user, in-memory: see rate-limiter.js. The constant lives above,
+    // near MAX_DEVICE_TOKEN_HOURS, so both are easy to find and tune together.
+    this.acaRateLimiter = opts.acaRateLimiter || new RateLimiter({
+      limit: ACA_DISPATCH_RATE_LIMIT, windowMs: ACA_DISPATCH_RATE_WINDOW_MS,
     });
 
     /** subject -> deviceId -> WsConnection */
@@ -735,6 +767,83 @@ class HubService {
 
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(200, { sessions: this.store.listSessions(me.key) });
+    }
+
+    // -- starting an ACA job directly: the GitHub App path (issue #177) -------
+    //
+    // Reached only by a verified `KIND_USER` principal -- the same gate every
+    // route in this file sits behind (see the big comment just above `_api`).
+    // A device token can never reach here, exactly like every other
+    // `/api/*` route: starting work stays a thing only a signed-in person
+    // does, not a credential shipped to a cloud job.
+    //
+    // All three answer 501 with a short, human `reason` -- not `error` -- when
+    // the App is not configured, per the issue. This is expected to be the
+    // normal state until the real App exists; the web UI's existing
+    // "Review on GitHub..." / "Copy command" fallback (docs/security.md)
+    // needs no changes to keep working in that case.
+    if (p === '/api/aca/repos' && req.method === 'GET') {
+      if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      try {
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });
+      } catch (e) {
+        return send(e.status || 502, { error: e.message });
+      }
+    }
+
+    if (p === '/api/aca/dispatches' && req.method === 'GET') {
+      if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      try {
+        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });
+      } catch (e) {
+        return send(e.status || 502, { error: e.message });
+      }
+    }
+
+    if (p === '/api/aca/dispatch' && req.method === 'POST') {
+      if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+
+      // Rate-limited PER PRINCIPAL, before the body is even read: a caller
+      // already over the limit gets 429 without this hub spending a GitHub
+      // API call to tell them so.
+      const limited = this.acaRateLimiter.check(me.key);
+      if (!limited.allowed) {
+        return send(429, {
+          error: `too many cloud dispatches from this account; try again in ${Math.ceil(limited.retryAfterMs / 1000)}s`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
+
+      const body = await readJson(req);
+      const validated = sanitizeDispatchRequest(body);
+      if (!validated.ok) return send(400, { error: validated.reason });
+
+      const [owner, repoName] = validated.value.repo.split('/');
+      let installation;
+      try {
+        installation = await this.githubApp.findInstallation(owner, repoName);
+      } catch (e) {
+        return send(e.status || 502, { error: e.message });
+      }
+      // THE ALLOW-LIST. A repo the App is not installed on is refused here,
+      // never dispatched against -- this is the entire new trust boundary
+      // docs/security.md documents: not "is this caller a collaborator",
+      // but "did whoever installed the App choose this repository".
+      if (!installation) {
+        return send(403, { error: `the GitHub App is not installed on ${validated.value.repo}` });
+      }
+
+      try {
+        const result = await this.githubApp.dispatch({
+          ...validated.value, owner, repo: repoName, installationId: installation.installationId,
+        });
+        this.dispatchTracker.record(me.key, {
+          owner, repo: repoName, installationId: installation.installationId, workflowFile: result.workflowFile,
+        });
+        return send(200, { issue: result.issue, runUrl: result.runUrl });
+      } catch (e) {
+        return send(e.status || 502, { error: e.message });
+      }
     }
 
     // -- per-user preferences --------------------------------------------------

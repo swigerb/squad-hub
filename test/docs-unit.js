@@ -248,6 +248,29 @@ check('the token-precedence claim matches what the code does', () => {
   assert.ok(cloud.includes('COPILOT_GITHUB_TOKEN'), 'the cloud doc does not mention it');
 });
 
+// Issue #177: the hub gained a second way to start an ACA job -- a GitHub
+// App calling workflow_dispatch directly -- which moves who may trigger a
+// job from "is this person a collaborator on the repo" to "is the App
+// installed on the repo". That is a real widening of who can act, not an
+// implementation detail, and the brief for #177 requires it be stated
+// plainly rather than left to be inferred from the API shape.
+check('security.md states the new GitHub-App trust boundary plainly', () => {
+  // The sentence wraps across lines, and the source blockquotes it (each
+  // line prefixed with "> "), so normalize both before checking.
+  const normalized = security.replace(/\*\*/g, '').replace(/^>\s?/gm, '').replace(/\s+/g, ' ');
+  assert.ok(normalized.includes('any signed-in hub user can dispatch a job on it directly'),
+    'the new rule -- App installation, not per-user collaborator status, gates a dispatch -- is not stated plainly');
+  assert.match(security, /SQUAD_HUB_GH_APP_ID/, 'the App env var is not documented in security.md');
+  assert.match(security, /never Azure/i, 'security.md must say the App token is a GitHub credential, never Azure');
+});
+
+check('aca.md documents the hub dispatching a job directly (issue #177)', () => {
+  const aca = read('docs/aca.md');
+  assert.match(aca, /workflow_dispatch/, 'aca.md does not mention workflow_dispatch');
+  assert.match(aca, /\/api\/aca\/dispatch/, 'aca.md does not mention the dispatch endpoint');
+  assert.match(aca, /squad-on-aca#135/, 'aca.md does not cite the forward-compatibility issue (#135)');
+});
+
 // ---------------------------------------------------------------------------
 // Links and files
 // ---------------------------------------------------------------------------

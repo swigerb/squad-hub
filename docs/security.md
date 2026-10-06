@@ -70,6 +70,10 @@ additions it will forget on the next restart.
 
 ## Starting a cloud job from the hub
 
+Two paths exist. Which one a repository gets depends on whether its operator
+installed the hub's GitHub App on it — see "The GitHub App path" below for
+that one. Absent an installation, this is what happens:
+
 **+ New → Start a new ACA job…**, or the same button on a session, opens a
 prefilled new issue on GitHub. You press Create; the label triggers the
 workflow, which starts the job.
@@ -86,9 +90,15 @@ can be typed for any repository.
 To use an issue that already exists, open the dialog's second section: GitHub
 cannot prefill a comment, so the `/squad-aca` command is offered to copy.
 
+This is also the fallback for every repository the GitHub App below is not
+installed on: the web UI's "Review on GitHub…" / "Copy command" controls work
+exactly as described here whether or not the App is configured at all.
+
 ### Adding someone here does not let them run your cloud jobs
 
-**Squad Hub grants nothing on ACA. The repository does.**
+**Squad Hub grants nothing on ACA. The repository does.** This remains true
+for any repository using the link-based path just above — read on for the
+one case where it changes.
 
 The action writes a URL and opens it. Whether a job actually runs is decided
 entirely by the target repository on GitHub:
@@ -114,6 +124,54 @@ who once landed a pull request.
 
 See [Squad on ACA: who may trigger a run](https://github.com/swigerb/squad-on-aca/blob/main/docs/actions-trigger.md#who-may-trigger-a-run).
 
+### The GitHub App path (issue #177): a NEW trust boundary
+
+`POST /api/aca/dispatch`, and the "installed repos" / "recent dispatches"
+reads beside it, are a second, direct way to start a job — only for
+repositories where an administrator installed the hub's own GitHub App.
+Configuring it is `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY`; see
+[commands.md](commands.md#the-service) and [aca.md](aca.md). Unset (the
+default, until the App exists at all), these routes answer `501` and nothing
+above changes — every repository behaves exactly as described in "Starting a
+cloud job from the hub".
+
+**State the new rule plainly, because it is a real change, not a detail:**
+
+> For a repository where the App is installed, **any signed-in hub user can
+> dispatch a job on it directly** — not just a collaborator on that
+> repository.
+
+Previously the gate was *"is the repository's own GitHub access control
+satisfied for this specific person"* — the hub only ever opened a prefilled
+issue, so GitHub itself refused the dispatch unless that person already had
+collaborator access (or better) on the target repository. **App-installed
+repositories work differently: the gate moves from per-user collaborator
+status to a single yes/no decided once, by whoever installed the App.**
+
+| | Link-based path (always available) | GitHub App path (opt-in per repo) |
+|---|---|---|
+| Who decides | The target repository's own collaborator list, per person | Whoever installed the App, once, for the whole repository |
+| What a hub user needs | Their own collaborator access on that repository | Nothing beyond being signed in to this hub |
+| Revoking access | Remove them as a collaborator | Uninstall the App from that repository |
+
+So the "Adding someone here does not let them run your cloud jobs" framing
+above is no longer unconditionally true. For a repository the App is
+installed on, adding someone to **Who has access** on this hub is now
+sufficient by itself to let them dispatch a job there — there is no second,
+per-repository gate left to check. Install the App only on repositories where
+every current and future hub user is someone you would trust with that.
+
+This does **not** relax the hub's own ground rule that it never holds an Azure
+credential. The App token this adds is a GitHub credential, scoped to
+Actions/Issues/Contents/Metadata on the repositories the App is installed on
+— nothing in Azure, and nothing new reaches it: Azure is still reached only
+through the workflow's own OIDC login and the shared dispatch lease,
+unchanged, exactly as the link-based path has always worked.
+
+Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
+reset on a hub restart) so one account cannot exhaust Actions minutes or spam
+a repository's issue tracker through this endpoint.
+
 ## Which identifiers work
 
 Entries can be an Entra **object id**, a **UPN**, or an **email**, matched
@@ -129,7 +187,7 @@ az ad signed-in-user show --query id -o tsv
 
 ## The credentials, and what each is for
 
-Three, and they stay separate. Conflating any two is how a credential ends up
+Four, and they stay separate. Conflating any two is how a credential ends up
 able to do more than its job.
 
 | | What it is | Where it lives |
@@ -137,9 +195,12 @@ able to do more than its job.
 | **Your sign-in** | Proves who *you* are. Whichever provider the hub runs in — GitHub, Entra, or dev. | Your browser, or `--token` on the CLI |
 | **A device token** | Lets a machine **be a device** and nothing else. Cannot read the API or drive your other devices. | On the device: `SQUAD_HUB_TOKEN` |
 | **An agent token** | Authorises the *agent* to GitHub and spends a **Copilot entitlement**. | On the device: `SQUAD_HUB_AGENT_TOKEN` |
+| **The GitHub App's own token** (issue #177) | Lets the hub itself call GitHub — list installed repos, create an issue, dispatch `squad-dispatch.yml` — on repositories an administrator installed the App on. A GitHub credential, scoped to Actions/Issues/Contents/Metadata; never Azure, and never returned by any hub endpoint. | On the hub, held only in memory: `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` |
 
-The last two are separate even when both are GitHub tokens: one says which
-device this is, the other spends quota.
+The first three are separate even when more than one is a GitHub token: one
+says which device this is, the other spends quota, and so on. The fourth is
+the odd one out deliberately — see "The GitHub App path" above for the
+trust-boundary change that comes with the hub holding it at all.
 
 ## External Squad state
 

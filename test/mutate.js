@@ -3644,6 +3644,165 @@ if ($health.accessStore -ne 'durable') {`,
     if (!process.env.MUTANT && INJECTION_RE.test(title)) return null; // MUTATION`,
     mustFail: 'an injection-shaped title is rejected',
   },
+
+  // -- Issue #177: the hub's own GitHub App, and direct ACA dispatch --------
+  {
+    name: 'the App JWT exp is let past GitHub\'s 10-minute cap',
+    file: 'src/service/github-app.js',
+    find: `const JWT_TTL_SEC = 540; // 9 minutes from the backdated \`iat\`.`,
+    replace: `const JWT_TTL_SEC = process.env.MUTANT ? 900 : 540; // MUTATION`,
+    mustFail: 'exp - iat stays within GitHub\'s 10-minute cap',
+  },
+  {
+    name: 'the App JWT iat is not backdated for clock drift',
+    file: 'src/service/github-app.js',
+    find: `    const iat = nowSec - JWT_BACKDATE_SEC;`,
+    replace: `    const iat = process.env.MUTANT ? nowSec : (nowSec - JWT_BACKDATE_SEC); // MUTATION`,
+    mustFail: 'iat is backdated to absorb clock drift, not set to "now"',
+  },
+  {
+    name: 'an installation token is re-minted on every call instead of cached',
+    file: 'src/service/github-app.js',
+    find: `    const cached = this._tokenCache.get(installationId);
+    if (cached && cached.expiresAtMs - TOKEN_REFRESH_BUFFER_MS > now) {
+      return cached.token;
+    }`,
+    replace: `    const cached = this._tokenCache.get(installationId);
+    if (!process.env.MUTANT && cached && cached.expiresAtMs - TOKEN_REFRESH_BUFFER_MS > now) { // MUTATION
+      return cached.token;
+    }`,
+    mustFail: 'the same installation token is reused across calls, not re-minted',
+  },
+  {
+    name: 'an installation token near expiry is still reused rather than refreshed',
+    file: 'src/service/github-app.js',
+    find: `const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;`,
+    replace: `const TOKEN_REFRESH_BUFFER_MS = process.env.MUTANT ? 0 : 60 * 1000; // MUTATION`,
+    mustFail: 'a token close to expiry is refreshed, not reused',
+  },
+  {
+    // The whole point of findInstallation: a repo not in the App's own
+    // installation list must never resolve to a token. Short-circuiting it
+    // to "always found" is the exact failure a dispatch allow-list exists to
+    // prevent.
+    name: 'the repo allow-list is bypassed -- any repo resolves to an installation',
+    file: 'src/service/github-app.js',
+    find: `    const repos = await this.listInstalledRepos();
+    const target = \`\${owner}/\${repo}\`.toLowerCase();
+    return repos.find((r) => r.fullName.toLowerCase() === target) || null;`,
+    replace: `    const repos = await this.listInstalledRepos();
+    const target = \`\${owner}/\${repo}\`.toLowerCase();
+    if (process.env.MUTANT) return repos[0] || null; // MUTATION
+    return repos.find((r) => r.fullName.toLowerCase() === target) || null;`,
+    mustFail: 'a repo the App is NOT installed on is refused, not guessed at',
+  },
+  {
+    name: 'a missing squad-dispatch.yml does not block a dispatch',
+    file: 'src/service/github-app.js',
+    find: `    const hasWorkflow = await this._hasDispatchWorkflow(owner, repo, token);
+    if (!hasWorkflow) {`,
+    replace: `    const hasWorkflow = await this._hasDispatchWorkflow(owner, repo, token);
+    if (!process.env.MUTANT && !hasWorkflow) { // MUTATION`,
+    mustFail: 'a repo with no squad-dispatch.yml refuses the dispatch',
+  },
+  {
+    name: 'a 404 checking for squad-dispatch.yml is treated as an error instead of "no"',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status === 200) return true;
+    // A missing file is an ordinary, expected answer -- NOT an error, and
+    // must not be conflated with one: a repo without this workflow yet is not
+    // the same fact as "GitHub could not be reached".
+    if (res.status === 404) return false;`,
+    replace: `    if (res.status === 200) return true;
+    if (!process.env.MUTANT && res.status === 404) return false; // MUTATION`,
+    mustFail: 'GET /api/aca/repos reports hasDispatchWorkflow: false for a real 404, not assumed',
+  },
+  {
+    name: 'an unexpected status checking squad-dispatch.yml is silently treated as "no" instead of an error',
+    file: 'src/service/github-app.js',
+    find: `    throw this._err(res.status, \`could not check for \${WORKFLOW_FILE} in \${owner}/\${repo} (GitHub returned \${res.status})\`);`,
+    replace: `    if (process.env.MUTANT) return false; // MUTATION
+    throw this._err(res.status, \`could not check for \${WORKFLOW_FILE} in \${owner}/\${repo} (GitHub returned \${res.status})\`);`,
+    mustFail: 'a non-404 error checking for squad-dispatch.yml surfaces as an error, not a silent false',
+  },
+  {
+    // The private key / live token hygiene property this whole feature is
+    // judged on: breaking the custom inspect override must be caught by the
+    // leak-detection tests, not just asserted never to regress by review.
+    name: 'util.inspect on a GitHubApp instance is no longer overridden, so it may print internals',
+    file: 'src/service/github-app.js',
+    find: `  [util.inspect.custom]() {
+    return \`GitHubApp { enabled: \${this.enabled}\${this.appId ? \`, appId: \${this.appId}\` : ''} }\`;
+  }`,
+    replace: `  [util.inspect.custom]() {
+    if (process.env.MUTANT) return { enabled: this.enabled, appId: this.appId, tokenCache: [...this._tokenCache.entries()] }; // MUTATION
+    return \`GitHubApp { enabled: \${this.enabled}\${this.appId ? \`, appId: \${this.appId}\` : ''} }\`;
+  }`,
+    mustFail: 'util.inspect on a GitHubApp instance never shows the private key or any cached token',
+  },
+  {
+    name: 'toJSON on a GitHubApp instance is no longer overridden, so it may serialize internals',
+    file: 'src/service/github-app.js',
+    find: `  toJSON() {
+    return { enabled: this.enabled, appId: this.appId || null };
+  }`,
+    replace: `  toJSON() {
+    if (process.env.MUTANT) return { enabled: this.enabled, appId: this.appId, tokenCache: [...this._tokenCache.entries()] }; // MUTATION
+    return { enabled: this.enabled, appId: this.appId || null };
+  }`,
+    mustFail: 'JSON.stringify on a GitHubApp instance never shows the private key or any cached token',
+  },
+  {
+    name: 'a bad/missing App config is NOT reported as disabled',
+    file: 'src/service/github-app.js',
+    find: `    this.enabled = !this._disabledReason;`,
+    replace: `    this.enabled = process.env.MUTANT ? true : !this._disabledReason; // MUTATION`,
+    mustFail: 'GET /api/aca/repos answers 501 with a reason when the App env vars are absent',
+  },
+  {
+    name: 'the dispatch rate limit does not actually refuse once the window fills',
+    file: 'src/service/rate-limiter.js',
+    find: `    if (hits.length >= this.limit) {`,
+    replace: `    if (!process.env.MUTANT && hits.length >= this.limit) { // MUTATION`,
+    mustFail: 'the dispatch route actually enforces the rate limit end to end',
+  },
+  {
+    name: 'a refused rate-limit attempt is recorded as a hit anyway, extending the lockout',
+    file: 'src/service/rate-limiter.js',
+    find: `    if (hits.length >= this.limit) {
+      this._hits.set(key, hits);
+      return { allowed: false, retryAfterMs: Math.max(0, hits[0] + this.windowMs - now) };
+    }`,
+    replace: `    if (hits.length >= this.limit) {
+      if (process.env.MUTANT) hits.push(now); // MUTATION: a refused attempt now also counts as a hit
+      this._hits.set(key, hits);
+      return { allowed: false, retryAfterMs: Math.max(0, hits[0] + this.windowMs - now) };
+    }`,
+    mustFail: 'the window actually slides: after it elapses, the caller is allowed again',
+  },
+  {
+    // GET /api/aca/* must stay behind the KIND_USER gate every other /api/*
+    // route sits behind -- a device token must never reach it, exactly like
+    // every other route in this file. This mutation re-opens that specific
+    // gate for the dispatch route only, which a narrower review than
+    // "grep every route" could otherwise miss.
+    name: 'a device token can reach POST /api/aca/dispatch',
+    file: 'src/service/hub-service.js',
+    find: `      if (principal.kind !== KIND_USER) {`,
+    replace: `      if (principal.kind !== KIND_USER && !(process.env.MUTANT && url.pathname === '/api/aca/dispatch')) { // MUTATION`,
+    mustFail: 'a device token can never reach /api/aca/dispatch',
+  },
+  {
+    name: 'a dispatch request for a repo the App is not installed on is no longer refused by the route',
+    file: 'src/service/hub-service.js',
+    find: `      if (!installation) {
+        return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
+      }`,
+    replace: `      if (!process.env.MUTANT && !installation) { // MUTATION
+        return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
+      }`,
+    mustFail: 'the dispatch route refuses a repo the App is not installed on, with 403',
+  },
 ];
 
 /**
