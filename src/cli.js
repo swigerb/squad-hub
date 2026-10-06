@@ -1933,13 +1933,21 @@ async function cmdReportPr(argv) {
   const wsUrl = hub.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ws';
   const link = new HubLink({ url: wsUrl, token, deviceId });
   try {
-    await link.connect();
+    // `HubLink.connect()` has no timeout of its own -- right for the daemon,
+    // which lives for as long as the machine does and is happy to keep
+    // retrying, wrong for a short-lived process with a caller (a Squad on ACA
+    // worker) waiting on it to exit. A hub that is up but not answering (a
+    // firewalled port, a hung listener) would otherwise hang this command
+    // forever instead of failing it.
+    await withTimeout(link.connect(), connectTimeoutMs(),
+      'timed out connecting to the hub');
   } catch (e) {
     // Never the token. A device credential leaking into a job's log output is
     // exactly the failure `--prefix`-scoped tokens exist to contain, and an
     // error message is not exempt from that just because it is trying to be
     // helpful.
     err(`could not attach to the hub as this device: ${e.message}`);
+    link.stop();
     return 1;
   }
 
@@ -1957,6 +1965,32 @@ async function cmdReportPr(argv) {
   } finally {
     link.stop();
   }
+}
+
+const REPORT_PR_CONNECT_TIMEOUT_MS = 15000;
+
+/** How long `report-pr` waits for the hub to upgrade the socket before giving
+ * up, overridable only for tests -- a real caller has no reason to want this
+ * shorter than the default, and a job platform that wants it longer should
+ * fix its network instead. */
+function connectTimeoutMs() {
+  const n = Number(process.env.SQUAD_HUB_REPORT_PR_CONNECT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : REPORT_PR_CONNECT_TIMEOUT_MS;
+}
+
+/** Race a promise against a timeout, without leaving the loser's rejection
+ * unhandled -- `promise` may still settle after `ms` elapses (connecting to
+ * the hub is not cancellable mid-flight; the caller aborts the underlying
+ * socket itself), so a bare `Promise.race` would print a second, unhandled
+ * rejection once it finally does. */
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
 }
 
 /**

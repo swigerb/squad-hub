@@ -1360,6 +1360,38 @@ class HubService {
         this.store.syncSessions(me.key, deviceId, msg.sessions || []);
         break;
       case 'session': {
+        const sessionPayload = (msg.session && typeof msg.session === 'object') ? msg.session : {};
+        /**
+         * `report-pr` (squad-hub#201) sends a `session` message carrying only
+         * `{ id, pullRequest }` -- no `status` -- alongside a `correlationId`
+         * it waits on for a reply. That shape is unique to it: the daemon's
+         * own heartbeat/reconnect republish always carries a `status`, and
+         * never waits on a reply at all. Detecting that shape here, rather
+         * than threading a new message type through the wire protocol, keeps
+         * every existing publisher byte-for-byte unchanged.
+         */
+        const isReportOnly = Boolean(msg.correlationId) && !('status' in sessionPayload);
+        if (isReportOnly && sessionPayload.id && !this.store.hasSessionRecord(me.key, deviceId, sessionPayload.id)) {
+          /**
+           * Without this check, `_upsertSessionRecord` happily creates a
+           * status-less "ghost" record for a session the hub never actually
+           * saw -- and `_pruneStale` can never age it out, because it only
+           * ages out TERMINAL-status sessions. Refusing instead of upserting
+           * means `report-pr` learns (and exits non-zero) that it reported
+           * against a session the hub has no memory of, rather than the hub
+           * silently fabricating one and saying `ok: true`.
+           */
+          if (conn) {
+            conn.sendJson({
+              type: 'reply',
+              correlationId: msg.correlationId,
+              ok: false,
+              found: false,
+              error: 'no existing session to report a pull request against',
+            });
+          }
+          break;
+        }
         const rec = this.store.upsertSession(me.key, deviceId, msg.session);
         /**
          * Acknowledged only when the SENDER asked for it (a `correlationId`

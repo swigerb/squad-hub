@@ -153,11 +153,30 @@ async function startHub() {
     assert.ok(r.error && !r.pullRequest);
   });
 
+  await check('a hex, float or scientific-notation --number is rejected, not coerced', () => {
+    // `Number()` would happily turn any of these into the integer 5 --
+    // "0x5", "5.0" and "5e0" are not what a CLI's --number flag means by "a
+    // number", only decimal digits are.
+    for (const numberText of ['0x5', '5.0', '5e0', '+5', ' 5']) {
+      const r = parsePullRequestArgs(['--url', `https://github.com/o/r/pull/${numberText}`, '--number', numberText]);
+      assert.ok(r.error && !r.pullRequest, `--number ${JSON.stringify(numberText)} must be rejected`);
+      assert.match(r.error, /decimal integer/);
+    }
+  });
+
   await check('an injection-shaped --title is rejected', () => {
     const r = parsePullRequestArgs([
       '--url', 'https://github.com/o/r/pull/5', '--number', '5', '--title', '<script>alert(1)</script>',
     ]);
     assert.ok(r.error && !r.pullRequest);
+  });
+
+  await check('a --title that looks like a dropped flag is rejected, not silently dropped', () => {
+    const r = parsePullRequestArgs([
+      '--url', 'https://github.com/o/r/pull/5', '--number', '5', '--title', '--session', 'sneaky',
+    ]);
+    assert.ok(r.error && !r.pullRequest, 'a --title value starting with -- must be rejected');
+    assert.match(r.error, /--title/);
   });
 
   // -------------------------------------------------------------------------
@@ -209,7 +228,7 @@ async function startHub() {
     }
   });
 
-  await check('cloudDeviceId honours an explicit SQUAD_HUB_DEVICE_ID', () => {
+  await check('cloudDeviceId honors an explicit SQUAD_HUB_DEVICE_ID', () => {
     assert.strictEqual(
       cloudDeviceId({ SQUAD_HUB_DEVICE_ID: 'pinned-1', CONTAINER_APP_NAME: '', SQUAD_HUB_DEVICE_NAME: '' }),
       'pinned-1'
@@ -264,6 +283,35 @@ async function startHub() {
     const r = await run([BIN, 'report-pr', '--url', 'https://github.com/o/r/pull/5', '--number', '5'], env);
     assert.notStrictEqual(r.code, 0);
     assert.match(r.out, /SQUAD_HUB_TOKEN/);
+  });
+
+  await check('connecting to a hub that never upgrades the socket times out, instead of hanging', async () => {
+    // A hub that accepts the TCP connection but never answers the WebSocket
+    // upgrade (a firewalled port that still completes the handshake, a hung
+    // listener) must not hang this short-lived command forever -- a real
+    // daemon would just keep retrying, but report-pr has a caller waiting on
+    // it to exit.
+    const net = require('net');
+    const srv = net.createServer((socket) => { /* accept and go silent */ });
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const { port } = srv.address();
+    try {
+      const env = {
+        ...process.env,
+        SQUAD_HUB_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'report-pr-home-')),
+        SQUAD_HUB_URL: `http://127.0.0.1:${port}`,
+        SQUAD_HUB_TOKEN: 'does-not-matter',
+        SQUAD_HUB_DEVICE_ID: 'timeout-1',
+        SQUAD_HUB_REPORT_PR_CONNECT_TIMEOUT_MS: '200',
+      };
+      const r = await run([BIN, 'report-pr', '--url', 'https://github.com/o/r/pull/5',
+        '--number', '5', '--session', 'sess-1'], env, 5000);
+      assert.strictEqual(r.exited, true, 'the connect timeout must make the process exit, not hang');
+      assert.notStrictEqual(r.code, 0);
+      assert.match(r.out, /timed out connecting/);
+    } finally {
+      srv.close();
+    }
   });
 
   await check('an invalid --url is rejected before anything is sent, with exit code 2', async () => {
@@ -397,13 +445,43 @@ async function startHub() {
     assert.match(r.out, /--session/);
   });
 
+  await check('a report against a session the hub has never seen fails, rather than creating one', async () => {
+    // The bug this guards against: `_upsertSessionRecord` starts from
+    // `existing || {}`, so a report naming an unknown `{deviceId}:{id}` used
+    // to create a status-less, never-ending ("ghost") record and ack success
+    // anyway. Triggers include a mistyped `--session`, a device id that
+    // drifted between the `oneshot` run and this report, or a hub restart on
+    // a non-durable store in between.
+    const { auth, svc, hub, subject } = await startHub();
+    const devTok = auth.mintDeviceToken({ key: subject, label: 'jobs', didPrefix: 'ghost-' });
+    const env = {
+      ...process.env,
+      SQUAD_HUB_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'report-pr-home-')),
+      SQUAD_HUB_URL: hub,
+      SQUAD_HUB_TOKEN: devTok,
+      SQUAD_HUB_DEVICE_ID: 'ghost-1',
+    };
+    const r = await run([BIN, 'report-pr', '--url', 'https://github.com/swigerb/squad-hub/pull/201',
+      '--number', '201', '--session', 'never-existed'], env);
+    assert.notStrictEqual(r.code, 0, r.out);
+    assert.match(r.out, /no existing session|could not report/i);
+
+    const ghost = svc.store.listSessions(subject).find((s) => s.deviceId === 'ghost-1');
+    assert.strictEqual(ghost, undefined,
+      'reporting against an unknown session must not create one as a side effect');
+  });
+
   await check('a token for device A cannot set pullRequest on device B\'s session', async () => {
     const { auth, svc, hub, subject } = await startHub();
-    // Device B already has a session on the hub -- as though its own oneshot
-    // run had published it earlier.
+    // Both devices happen to have run a session with the SAME id (plausible:
+    // session ids are short and device-local) -- so BOTH have a genuine,
+    // pre-existing record to report against. This isolates the session store's
+    // device-id scoping from the ghost-prevention check above: if records were
+    // ever keyed by session id alone, device A's report would land in (and
+    // overwrite) device B's record instead of its own.
     svc.store.upsertSession(subject, 'device-b', { id: 'shared-id', status: 'done' });
+    svc.store.upsertSession(subject, 'device-a', { id: 'shared-id', status: 'done' });
 
-    // Device A's own token, scoped to ITS OWN prefix, pointed at B's session id.
     const tokA = auth.mintDeviceToken({ key: subject, label: 'A', didPrefix: 'device-a' });
     const env = {
       ...process.env,
@@ -414,19 +492,17 @@ async function startHub() {
     };
     const r = await run([BIN, 'report-pr', '--url', 'https://github.com/swigerb/squad-hub/pull/201',
       '--number', '201', '--session', 'shared-id'], env);
-    // It "succeeds" from A's own point of view -- the hub accepted a session
-    // report keyed to A's OWN device id, exactly as it would for a session A
-    // genuinely ran under that id. The property under test is not A's exit
-    // code; it is that B's record is untouched.
     assert.strictEqual(r.code, 0, r.out);
 
     const bSession = svc.store.listSessions(subject).find((s) => s.deviceId === 'device-b');
+    assert.ok(bSession, 'device B\'s own record must still exist, untouched');
     assert.strictEqual(bSession.pullRequest, null,
       'device A must not be able to set a pull request on device B\'s session');
 
     const aSession = svc.store.listSessions(subject).find((s) => s.deviceId === 'device-a');
-    assert.ok(aSession, 'device A got its own (separate) record, not B\'s');
-    assert.ok(aSession.pullRequest, 'device A\'s own record is the one that was updated');
+    assert.ok(aSession, 'device A\'s own record must still exist');
+    assert.strictEqual(aSession.pullRequest.number, 201,
+      'device A\'s report must land on device A\'s own session');
   });
 
   await check('a token may not even attach as a device id outside its own prefix', async () => {

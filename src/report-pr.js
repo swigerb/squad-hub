@@ -35,6 +35,23 @@ function value(argv, name, dflt = null) {
 }
 
 /**
+ * Was `--name` given a value that itself looks like another flag (starts
+ * with `--`)? `value()` above silently treats that the same as "no value at
+ * all" -- the right call for an optional flag with nothing after it, wrong
+ * for one that was given a suspicious value: `--title --session abc` is far
+ * more likely a missing title that swallowed `--session` as its argument
+ * than a deliberate empty one, and dropping it silently means
+ * `sanitizePullRequest`'s checks never see it at all. Used only for
+ * `--title`, this command's one optional, free-text argument.
+ */
+function hasDashedValue(argv, name) {
+  const i = argv.indexOf(`--${name}`);
+  return i !== -1 && String(argv[i + 1] || '').startsWith('--');
+}
+
+const NUMBER_RE = /^[0-9]+$/;
+
+/**
  * Parse and validate the command line into a `{ url, number, title }` pull
  * request, or `null` with an explanatory message if any part is missing or
  * fails `sanitizePullRequest`'s checks -- the exact same validation the hub
@@ -47,6 +64,15 @@ function parsePullRequestArgs(argv) {
   const title = value(argv, 'title');
   if (!url || !numberText) {
     return { error: 'usage: squad-hub report-pr --url <https://github.com/o/r/pull/N> --number <N> [--title <text>] [--session <sessionId>]' };
+  }
+  if (hasDashedValue(argv, 'title')) {
+    return { error: 'report-pr: --title looks like a dropped flag (it starts with --); pass an actual title or omit --title' };
+  }
+  // Decimal digits only -- `Number()` would otherwise happily accept
+  // "0x10" (hex), "1e2" (scientific notation) or "5.0" (a float that
+  // happens to be integral), none of which anyone typing a PR number means.
+  if (!NUMBER_RE.test(numberText)) {
+    return { error: `report-pr: --number must be a positive, decimal integer, not ${JSON.stringify(numberText)}` };
   }
   const number = Number(numberText);
   const pullRequest = sanitizePullRequest({ url, number, title: title === null ? undefined : title });
