@@ -881,7 +881,7 @@ const MUTATIONS = [
     // proves the row and the panel read the same field rather than two
     // independent (and driftable) re-derivations.
     name: 'the session detail panel stops reading the same activeMember field as the row',
-    file: 'web/app.js',
+    file: 'web/js/detail.js',
     find: `class="sq-member \${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
     replace: `class="sq-member \${sq.lastKnownActor /* MUTATION */ && sq.lastKnownActor.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
     mustFail: 'the session detail panel reads activeMember from the same field the row does',
@@ -1144,7 +1144,7 @@ const MUTATIONS = [
   },
   {
     name: 'the browser reconnects every two seconds forever',
-    file: 'web/app.js',
+    file: 'web/js/ws.js',
     find: `    const wait = Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000);`,
     replace: `    const wait = process.env.MUTANT ? 2000 : Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000); // MUTATION`,
     mustFail: 'the connection state backs off instead of strobing',
@@ -2457,7 +2457,7 @@ const MUTATIONS = [
     // block is keyed on the attribute's absence, so an attribute of ANY value
     // overrides the very system preference it exists to follow.
     name: 'the system theme sets an attribute, overriding the system it follows',
-    file: 'web/app.js',
+    file: 'web/js/ws.js',
     find: `  if (state.theme === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', state.theme);`,
     replace: `  document.documentElement.setAttribute('data-theme', state.theme); // MUTATION`,
@@ -2467,7 +2467,7 @@ const MUTATIONS = [
     // Collapsing three states into two freezes whatever the system happened
     // to be on first load, so a laptop that switches at sunset stops.
     name: 'the theme cycle drops "system" and toggles between two',
-    file: 'web/app.js',
+    file: 'web/js/ws.js',
     find: `const THEMES = ['system', 'dark', 'light'];`,
     replace: `const THEMES = ['dark', 'light']; // MUTATION`,
     mustFail: 'the theme toggle cycles system, dark and light, and sticks',
@@ -2496,14 +2496,14 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'an ambiguous deep link opens whichever session matched first',
-    file: 'web/app.js',
+    file: 'web/js/ws.js',
     find: `  if (byId.length === 1) return { status: 'found', key: byId[0] };`,
     replace: `  if (byId.length === 1 || process.env.MUTANT) return { status: 'found', key: byId[0] }; // MUTATION`,
     mustFail: 'an AMBIGUOUS bare id is refused rather than guessed',
   },
   {
     name: 'a deep link to a session that has gone does nothing at all',
-    file: 'web/app.js',
+    file: 'web/js/ws.js',
     find: `  return { status: 'missing' };`,
     replace: `  return { status: process.env.MUTANT ? 'none' : 'missing' }; // MUTATION`,
     mustFail: 'a session that has gone is reported, not silently ignored',
@@ -2600,7 +2600,10 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/dropdowns.js',
   '/js/cleanup.js',
   '/js/composer.js',
+  '/js/notifications.js',
   '/js/devices.js',
+  '/js/detail.js',
+  '/js/ws.js',
   '/app.js',
   '/app.webmanifest',
   '/favicon.svg',
@@ -2617,7 +2620,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v4';`,
+    find: `const CACHE = 'squad-hub-shell-v5';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -2633,7 +2636,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // a dashboard fail is that the work it was watching has failed too, and
     // here that is precisely backwards.
     name: 'the offline page drops the line saying sessions keep running',
-    file: 'web/app.js',
+    file: 'web/js/ws.js',
     find: `      <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
          Anything waiting on an approval is still waiting.</p>`,
     replace: `      <!-- MUTATION -->`,
