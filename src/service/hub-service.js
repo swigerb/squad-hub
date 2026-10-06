@@ -1413,7 +1413,7 @@ class HubService {
       // copy of "what did we already know" just to spot what is new.
       for (const a of s.answeredApprovals || []) {
         this.teams.notifyResolution({
-          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy,
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy, answeredVia: a.answeredVia,
         }).catch(() => {});
       }
       for (const a of s.expiredApprovals || []) {

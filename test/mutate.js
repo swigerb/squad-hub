@@ -3651,9 +3651,30 @@ if ($health.accessStore -ne 'durable') {`,
     // event nobody there saw happen.
     name: 'a resolution follow-up is posted even when no card was ever sent',
     file: 'src/notify/teams.js',
-    find: `    if (!this.sent.has(approval.approvalId)) return { skipped: 'no card was sent for this approval' };`,
-    replace: `    if (!process.env.MUTANT && !this.sent.has(approval.approvalId)) return { skipped: 'no card was sent for this approval' }; // MUTATION`,
+    find: `    if (!this.posted.has(approval.approvalId)) return { skipped: 'no card was posted for this approval' };`,
+    replace: `    if (!process.env.MUTANT && !this.posted.has(approval.approvalId)) return { skipped: 'no card was posted for this approval' }; // MUTATION`,
     mustFail: 'no follow-up when no card was sent',
+  },
+  {
+    // A card that failed to post never reached the channel, so a follow-up
+    // would reply to a message nobody there ever saw.
+    name: 'a failed approval card is still recorded as posted',
+    file: 'src/notify/teams.js',
+    find: `    this.sent.add(approval.approvalId);
+    if (this.sent.size > 500) this.sent.delete(this.sent.values().next().value);`,
+    replace: `    this.sent.add(approval.approvalId);
+    if (process.env.MUTANT) this.posted.add(approval.approvalId); // MUTATION
+    if (this.sent.size > 500) this.sent.delete(this.sent.values().next().value);`,
+    mustFail: 'no follow-up when the original card failed to post',
+  },
+  {
+    // An answer typed at the device's own terminal must never be reported to
+    // the channel as having come from the hub.
+    name: 'a terminal answer is reported as coming from the hub',
+    file: 'src/notify/teams.js',
+    find: `  else if (answeredVia === 'terminal') headline = \`Answered: \${verb} from the terminal.\`;`,
+    replace: `  else if (answeredVia === 'terminal' && !process.env.MUTANT) headline = \`Answered: \${verb} from the terminal.\`; // MUTATION`,
+    mustFail: 'an answer given at the terminal says so, and never claims the hub',
   },
   {
     name: 'the same resolution is followed up more than once',
@@ -3685,12 +3706,8 @@ if ($health.accessStore -ne 'durable') {`,
     // is claim one happened with nobody named for it.
     name: 'an expiry follow-up is worded as if someone answered it',
     file: 'src/notify/teams.js',
-    find: `  const headline = outcome === 'expired'
-    ? 'Expired: no one answered in time.'
-    : \`Answered: \${ANSWER_VERB[outcome] || \`Answered (\${outcome})\`} by \${truncate(redact(answeredBy || 'someone'), 60)} from the hub.\`;`,
-    replace: `  const headline = (outcome === 'expired' && !process.env.MUTANT)
-    ? 'Expired: no one answered in time.'
-    : \`Answered: \${ANSWER_VERB[outcome] || \`Answered (\${outcome})\`} by \${truncate(redact(answeredBy || 'someone'), 60)} from the hub.\` /* MUTATION */;`,
+    find: `  if (outcome === 'expired') headline = 'Expired: no one answered in time.';`,
+    replace: `  if (outcome === 'expired' && !process.env.MUTANT) headline = 'Expired: no one answered in time.'; // MUTATION`,
     mustFail: 'an expired resolution names no answerer, since nobody answered',
   },
   {
@@ -3712,12 +3729,12 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/hub-service.js',
     find: `      for (const a of s.answeredApprovals || []) {
         this.teams.notifyResolution({
-          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy,
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy, answeredVia: a.answeredVia,
         }).catch(() => {});
       }`,
     replace: `      for (const a of (process.env.MUTANT ? [] : (s.answeredApprovals || []))) { // MUTATION
         this.teams.notifyResolution({
-          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy,
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy, answeredVia: a.answeredVia,
         }).catch(() => {});
       }`,
     mustFail: 'the hub posts a resolution follow-up for an answered approval',

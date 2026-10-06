@@ -248,6 +248,15 @@ check('a missing answeredBy still renders something readable', () => {
   assert.match(JSON.stringify(c), /by someone from the hub/);
 });
 
+check('an answer given at the terminal says so, and never claims the hub', () => {
+  const c = resolutionCard({
+    session, device, approval, outcome: 'reject_once', answeredBy: 'someone', answeredVia: 'terminal', hubUrl: null,
+  });
+  const json = JSON.stringify(c);
+  assert.match(json, /Answered: Denied from the terminal\./);
+  assert.ok(!json.includes('from the hub'), 'a local answer was reported as coming from the hub');
+});
+
 check('the resolution card still links to the live session', () => {
   const c = resolutionCard({
     session, device, approval, outcome: 'allow_once', answeredBy: 'swigerb', hubUrl: 'https://hub.example.com',
@@ -460,6 +469,33 @@ check('a very long command is truncated rather than posted whole', () => {
     assert.strictEqual(received.length, before + 1);
     const payload = JSON.parse(received[received.length - 1].body);
     assert.match(JSON.stringify(payload), /Expired/i);
+  });
+
+  await checkAsync('no follow-up when the original card failed to post', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/fail` });
+    const failed = { approvalId: 'a-card-failed' };
+    const first = await n.notifyApproval({ session, device, approval: failed });
+    assert.strictEqual(first.sent, false, 'the card post was expected to fail');
+    n.webhookUrl = `http://127.0.0.1:${port}/hook`;
+    const before = received.length;
+    const r = await n.notifyResolution({
+      session, device, approval: failed, outcome: 'allow_once', answeredBy: 'swigerb',
+    });
+    assert.ok(r.skipped, 'a follow-up was posted for a card that never arrived');
+    assert.strictEqual(received.length, before, 'something was posted for a failed card');
+  });
+
+  await checkAsync('a terminal answer reaches the channel as "from the terminal"', async () => {
+    const n = new TeamsNotifier({ webhookUrl: `http://127.0.0.1:${port}/hook` });
+    const local = { approvalId: 'a-local' };
+    await n.notifyApproval({ session, device, approval: local });
+    const r = await n.notifyResolution({
+      session, device, approval: local, outcome: 'allow_once', answeredBy: 'someone', answeredVia: 'terminal',
+    });
+    assert.strictEqual(r.sent, true, JSON.stringify(r));
+    const payload = JSON.stringify(JSON.parse(received[received.length - 1].body));
+    assert.match(payload, /Allowed once from the terminal/);
+    assert.ok(!payload.includes('from the hub'));
   });
 
   // A flaky server: fails the first `failTimes` requests to a given path,

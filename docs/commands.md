@@ -921,8 +921,9 @@ process — an approval prompt is exactly where a token pasted onto a command
 line would otherwise show up.
 
 **A short follow-up posts to the same channel once the approval is answered or
-expires** — e.g. *"Answered: Allowed once by Brian from the hub."* or
-*"Expired: no one answered in time."* — with the same **View live session**
+expires** — e.g. *"Answered: Allowed once by Brian from the hub."*,
+*"Answered: Denied from the terminal."* (answered with `squad-hub approve` or
+`/approve` on the device itself) or *"Expired: no one answered in time."* — with the same **View live session**
 link and the same redaction rules as the original card. It only posts for an
 approval this hub actually sent a card for; answering something that never
 produced a card (webhooks were off, or the card itself failed to send)

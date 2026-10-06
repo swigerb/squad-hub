@@ -184,14 +184,20 @@ const ANSWER_VERB = {
  * what happened to it, and where to look if they want the detail again.
  */
 function resolutionCard({
-  session, device, approval, outcome, answeredBy, hubUrl,
+  session, device, approval, outcome, answeredBy, answeredVia, hubUrl,
 }) {
   const deepLink = sessionDeepLink({ session, device, hubUrl });
   const title = truncate(redact(approval.title || approval.kind || 'a tool call'), 160);
 
-  const headline = outcome === 'expired'
-    ? 'Expired: no one answered in time.'
-    : `Answered: ${ANSWER_VERB[outcome] || `Answered (${outcome})`} by ${truncate(redact(answeredBy || 'someone'), 60)} from the hub.`;
+  // A device marks an answer given at its own terminal (`squad-hub approve`,
+  // `/approve`) as `answeredVia: 'terminal'`, so the channel never claims a
+  // local answer came from the hub. Older devices send no marker; those
+  // answers can only have come through the hub's approve route.
+  const verb = ANSWER_VERB[outcome] || `Answered (${outcome})`;
+  let headline;
+  if (outcome === 'expired') headline = 'Expired: no one answered in time.';
+  else if (answeredVia === 'terminal') headline = `Answered: ${verb} from the terminal.`;
+  else headline = `Answered: ${verb} by ${truncate(redact(answeredBy || 'someone'), 60)} from the hub.`;
 
   const body = [
     {
@@ -254,7 +260,13 @@ function postJson(urlString, payload, { timeoutMs = 10000 } = {}) {
   });
 }
 
-function wait(ms) { return new Promise((r) => { setTimeout(r, ms); }); }
+function wait(ms) {
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    // A follow-up waiting out its backoff must never hold the process open.
+    if (t && typeof t.unref === 'function') t.unref();
+  });
+}
 
 /**
  * `postJson`, retried a bounded number of times with exponential backoff.
@@ -299,6 +311,10 @@ class TeamsNotifier {
     this.hubUrl = hubUrl || process.env.SQUAD_HUB_PUBLIC_URL || null;
     this.log = log || (() => {});
     this.sent = new Set();
+    // Approvals whose card actually reached the channel. `sent` above is
+    // marked before the post (so a heartbeat never double-posts while one is
+    // in flight); a follow-up must only ever reply to a card that arrived.
+    this.posted = new Set();
     // Which approvals already got a resolution follow-up, kept separately
     // from `sent` above: a card that was posted and an answer that was
     // reported are two different events, each wanting its own once-only rule.
@@ -321,6 +337,8 @@ class TeamsNotifier {
     const card = approvalCard({ session, device, approval, hubUrl: this.hubUrl });
     try {
       const r = await postJson(this.webhookUrl, webhookPayload(card));
+      this.posted.add(approval.approvalId);
+      if (this.posted.size > 500) this.posted.delete(this.posted.values().next().value);
       this.log(`teams: notified for ${approval.approvalId}`);
       return { sent: true, status: r.status };
     } catch (e) {
@@ -337,23 +355,23 @@ class TeamsNotifier {
    * is the literal string `'expired'`).
    *
    * Only fires for an approval this notifier actually posted a card for --
-   * `this.sent` is the record of that, so inline approval that was always
+   * `this.posted` is the record of that, so inline approval that was always
    * declined before notifications were ever enabled, or an approval from a
    * session nobody's webhook knew about, produces no follow-up. There is
    * nothing to follow up ON.
    */
   async notifyResolution({
-    session, device, approval, outcome, answeredBy,
+    session, device, approval, outcome, answeredBy, answeredVia,
   }) {
     if (!this.enabled) return { skipped: 'no webhook configured' };
     if (!approval || !approval.approvalId) return { skipped: 'no approval id' };
-    if (!this.sent.has(approval.approvalId)) return { skipped: 'no card was sent for this approval' };
+    if (!this.posted.has(approval.approvalId)) return { skipped: 'no card was posted for this approval' };
     if (this.resolved.has(approval.approvalId)) return { skipped: 'already notified' };
     this.resolved.add(approval.approvalId);
     if (this.resolved.size > 500) this.resolved.delete(this.resolved.values().next().value);
 
     const card = resolutionCard({
-      session, device, approval, outcome, answeredBy, hubUrl: this.hubUrl,
+      session, device, approval, outcome, answeredBy, answeredVia, hubUrl: this.hubUrl,
     });
     try {
       const r = await postJsonWithRetry(this.webhookUrl, webhookPayload(card), this.retry);
@@ -366,7 +384,9 @@ class TeamsNotifier {
   }
 
   /** Allow a re-notification, e.g. after a card was dismissed. */
-  forget(approvalId) { this.sent.delete(approvalId); this.resolved.delete(approvalId); }
+  forget(approvalId) {
+    this.sent.delete(approvalId); this.posted.delete(approvalId); this.resolved.delete(approvalId);
+  }
 }
 
 module.exports = {
