@@ -1255,9 +1255,10 @@ function editorCommand() {
  * is how someone ends up saving an empty buffer over their defaults, or
  * quietly editing nothing at all.
  *
- * Validates afterwards and reports a broken file rather than leaving the next
- * command to silently fall back to defaults, which is exactly how a mistyped
- * comma turns into "my hub setting vanished".
+ * Validates afterwards and RESTORES the previous file rather than leaving a
+ * broken one in place -- a mistyped comma must not be the thing that turns
+ * "my hub setting" into "every setting, silently reading as its default"
+ * until someone notices and goes back to fix the JSON by hand.
  */
 async function cmdConfigEdit() {
   paths.ensureHome();
@@ -1291,8 +1292,14 @@ async function cmdConfigEdit() {
   try {
     JSON.parse(after);
   } catch (e) {
+    // Restored, not left broken: the previous, valid file is written back
+    // before this returns, so the NEXT command to read it sees what was there
+    // before the edit, not every setting silently reading as its default.
+    fs.writeFileSync(file, before);
+    config.invalidate();
     err(`${file} is no longer valid JSON: ${e.message}`);
-    err('Every setting will read as its default until that is fixed.');
+    err(`Restored the previous, valid file -- nothing you had is lost.`);
+    err(`Re-run "squad-hub config edit" to try again.`);
     return 1;
   }
 
@@ -1575,6 +1582,211 @@ async function cmdAccess(argv) {
   if (result.pendingRevocations.length && !applyRevocations) {
     out(`${result.pendingRevocations.length} revocation(s) in the file were not applied (pass --apply-revocations):`);
     for (const login of result.pendingRevocations) out(`  - ${login}`);
+  }
+  return 0;
+}
+
+/**
+ * `squad-hub sessions [--json] [--scope local|cloud] [--status <status>]`
+ *
+ * YOUR sessions across every device attached to the hub, not just the one
+ * running under this CLI -- the same list the web app's session view reads,
+ * fetched over the same `/api/sessions` the hub exposes to anything holding
+ * your sign-in token (see `mcp-hub-client.js`, already proven against a real
+ * hub by the MCP server's own tests).
+ *
+ * Authenticated with YOUR token, never a device token, for the same reason
+ * `mcp` and `device-token` refuse one: a device token can be a device and
+ * nothing else, and "list every session I own" is squarely outside that.
+ *
+ * `--scope` filters on this side of the wire, the same way `mcp-hub-client`
+ * already filters `status`/`keyword`/`actionNeeded` -- the hub's
+ * `/api/sessions` has no `scope` concept of its own, only sessions and the
+ * devices they belong to, so this cross-references `/api/devices` locally
+ * rather than asking the hub for a filter it does not have.
+ */
+async function cmdSessions(argv) {
+  const hub = value(argv, 'hub', effectiveServer());
+  const token = value(argv, 'token', process.env.SQUAD_HUB_USER_TOKEN);
+  const json = flag(argv, 'json');
+  const scope = value(argv, 'scope');
+  const status = value(argv, 'status');
+
+  if (!hub || !token) {
+    err('usage: squad-hub sessions [--json] [--scope local|cloud] [--status <status>]');
+    err('                          [--hub <url>] [--token <your own token>]');
+    err('');
+    err('Lists YOUR sessions across every device connected to the hub -- not just');
+    err('this one. The token is your own sign-in credential, not a device token;');
+    err('mint one for yourself from the hub, or export SQUAD_HUB_USER_TOKEN.');
+    return 2;
+  }
+  if (!looksLikeUrl(hub)) {
+    err(`--hub must be an http:// or https:// URL, got: ${hub}`);
+    return 2;
+  }
+  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (DeviceTokens.looksLikeDeviceToken(token)) {
+    err(`refusing: that is a device token (the "${DEVICE_TOKEN_PREFIX}." prefix), not yours.`);
+    err('A device token can be a device and nothing else -- it cannot list sessions');
+    err('on your behalf. Use your own sign-in token instead.');
+    return 2;
+  }
+  if (scope && scope !== 'local' && scope !== 'cloud') {
+    err(`--scope must be "local" or "cloud", got: ${scope}`);
+    return 2;
+  }
+
+  const { createHubClient, HubApiError } = require('./mcp-hub-client');
+  const hubClient = createHubClient({ hub, token });
+  let sessions;
+  let kindByDevice = new Map();
+  try {
+    ({ sessions } = await hubClient.listSessions(status ? { status } : undefined));
+    if (scope) {
+      const { devices } = await hubClient.listDevices();
+      kindByDevice = new Map((devices || []).map((d) => [d.deviceId, d.kind]));
+    }
+  } catch (e) {
+    if (e instanceof HubApiError) err(`the hub refused: ${e.message}`);
+    else err(`could not reach the hub: ${e.message}`);
+    return 1;
+  }
+
+  if (scope) {
+    sessions = sessions.filter((s) => {
+      const kind = kindByDevice.get(s.deviceId) || 'local';
+      return scope === 'cloud' ? kind !== 'local' : kind === 'local';
+    });
+  }
+
+  if (json) { out(JSON.stringify({ sessions }, null, 2)); return 0; }
+
+  if (!sessions.length) { out('no sessions'); return 0; }
+  out(`${sessions.length} session(s):`);
+  for (const s of sessions) {
+    out(`  ${s.key}  ${sessionBadge(s)}`);
+    if (s.prompt) out(`    ${s.prompt}`);
+    const where = sessionWhere(s);
+    out(`    ${where ? `${where}  ` : ''}${s.agent || ''}`.trimEnd());
+    if (s.pendingApprovals && s.pendingApprovals.length) {
+      out(`    -> wants to run: ${s.pendingApprovals[0].command || s.pendingApprovals[0].title || 'a tool call'}`);
+    }
+  }
+  return 0;
+}
+
+/**
+ * The browser to launch for `squad-hub open`.
+ *
+ * `SQUAD_HUB_BROWSER` overrides on every platform -- the same escape hatch
+ * `$EDITOR`/`$VISUAL` give `config edit`, and the only way a test can prove
+ * this without actually opening a window. It may carry its own arguments
+ * (`"/path/to/browser" --new-window`); it is split into argv here and run
+ * WITHOUT a shell. Absent that, the platform default: `open` on macOS,
+ * `rundll32 url.dll,FileProtocolHandler` on Windows (never `cmd /c start`,
+ * which would let cmd.exe reinterpret `&`, `|` and `^` in the URL), and
+ * `xdg-open` everywhere else.
+ *
+ * Returns an argv array; the URL is always appended as its own final argument.
+ */
+function browserCommand() {
+  const override = process.env.SQUAD_HUB_BROWSER;
+  if (override && override.trim()) return splitCommandLine(override.trim());
+  if (process.platform === 'darwin') return ['open'];
+  if (process.platform === 'win32') return ['rundll32', 'url.dll,FileProtocolHandler'];
+  return ['xdg-open'];
+}
+
+/**
+ * Split a command line into argv the simple, predictable way: whitespace
+ * separates words, and single or double quotes group a word that contains
+ * spaces. No escapes, variables or other shell syntax -- nothing here is ever
+ * handed to a shell.
+ */
+function splitCommandLine(line) {
+  const words = [];
+  let cur = '';
+  let quote = null;
+  let started = false;
+  for (const ch of line) {
+    if (quote) {
+      if (ch === quote) quote = null; else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch; started = true;
+    } else if (/\s/.test(ch)) {
+      if (started) { words.push(cur); cur = ''; started = false; }
+    } else {
+      cur += ch; started = true;
+    }
+  }
+  if (started) words.push(cur);
+  return words;
+}
+
+/**
+ * Launch a URL in the chosen browser, never throwing: a browser that will not
+ * launch is a reason to print the link and say so, not a reason to fail a
+ * command whose real job -- naming the URL -- already succeeded.
+ *
+ * The URL comes from config, flags and environment variables, so it is
+ * re-validated and canonicalized here and always passed as ONE argv entry to
+ * a process started without a shell: shell metacharacters in it are inert.
+ */
+async function openUrlInBrowser(url) {
+  let href;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return -1;
+    href = parsed.href;
+  } catch { return -1; }
+  const [file, ...args] = browserCommand();
+  if (!file) return -1;
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(file, [...args, href], { stdio: 'ignore', windowsHide: true, shell: false });
+    } catch { resolve(-1); return; }
+    child.on('error', () => resolve(-1));
+    // A launcher killed by a signal did not open anything.
+    child.on('exit', (c) => resolve(c === null ? -1 : c));
+  });
+}
+
+/**
+ * `squad-hub open [<session>]` -- the hub, or one session's deep link, in a
+ * browser.
+ *
+ * Builds exactly the URL the web app's own `takeDeepLinkSession` reads: a
+ * bare `?session=<key-or-id>` on the hub's root, the same shape a Teams
+ * card's "View live session" link already uses (see web/app.js). No token is
+ * ever embedded in it -- unlike the one-off dev-auth link `squad-hub serve`
+ * prints at startup, this command does not know which auth mode the hub
+ * runs, and a URL is exactly the kind of thing that ends up pasted into a
+ * chat; signing in happens in the browser, the normal way, every time.
+ *
+ * The URL is always printed, whether or not a browser could be launched --
+ * printing it is the part of this command's job that can never fail, so an
+ * environment with no browser at all (a devbox over SSH) still gets
+ * something useful out of running it.
+ */
+async function cmdOpen(argv) {
+  const hub = value(argv, 'hub', effectiveServer());
+  const [session] = positionals(argv);
+  if (!hub) {
+    err('no hub is configured. Run `squad-hub connect` first, or pass --hub <url>.');
+    return 2;
+  }
+  if (!looksLikeUrl(hub)) {
+    err(`the hub is not an http:// or https:// URL: ${hub}`);
+    return 2;
+  }
+  const base = hub.replace(/\/+$/, '');
+  const url = session ? `${base}/?session=${encodeURIComponent(session)}` : `${base}/`;
+  out(url);
+  const code = await openUrlInBrowser(url);
+  if (code !== 0) {
+    err('could not open a browser automatically; open the link above yourself.');
   }
   return 0;
 }
@@ -1864,6 +2076,10 @@ function usage() {
   squad-hub device-token --hub <url> --token <your token> --list
   squad-hub device-token --hub <url> --token <your token> --revoke <id>
 
+  ACROSS EVERY DEVICE (the hub, not just this one)
+  squad-hub sessions [--json] [--scope local|cloud] [--status <s>] [--hub <url>] [--token <your token>]
+  squad-hub open [<session>]   open the hub, or one session's deep link, in a browser
+
   MCP SERVER (for an agent that wants to see and drive YOUR sessions)
   squad-hub mcp --hub <url> --token <your token>   stdio MCP server; SQUAD_HUB_USER_TOKEN also works
                         tools: list_sessions, get_session, get_transcript, start_session,
@@ -2090,6 +2306,8 @@ async function main(argv) {
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);
     case 'mcp': return cmdMcp(rest);
+    case 'sessions': return cmdSessions(rest);
+    case 'open': return cmdOpen(rest);
     case 'access': return cmdAccess(rest);
     case 'autostart': return cmdAutostart(rest);
     // The pre-`autostart` spellings. Kept working forever: they are in scripts,

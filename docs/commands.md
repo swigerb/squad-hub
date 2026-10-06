@@ -728,8 +728,9 @@ general "safe for every clone" setting.
 
 `config edit` creates the file first if it does not exist — an editor opened on
 a path that is not there is how someone ends up editing nothing at all — and
-re-parses it afterwards. Invalid JSON is reported as a failure rather than left
-for the next command to silently read as defaults.
+re-parses it afterward. Invalid JSON is reported as a failure, and the
+previous, valid file is RESTORED rather than left broken for the next command
+to silently read as defaults.
 
 ## Global options
 
@@ -988,6 +989,55 @@ the container will not stop, the token reached a log.
 
 See [security.md](security.md#device-tokens).
 
+## Sessions across every device
+
+```
+squad-hub sessions [--json] [--scope local|cloud] [--status <status>]
+                    [--hub <url>] [--token <yours>]
+```
+
+Your sessions across **every device** connected to the hub, not just the one
+you happen to be standing in front of — the same list the web app's session
+view reads, over the same `/api/sessions` the hub exposes to anything holding
+your sign-in token.
+
+Authenticated with **your** token, never a device token, for the same reason
+`mcp` and `device-token` refuse one above: a device token can be a device and
+nothing else, and "list everything I own" is squarely outside that. A
+`sqhd1.`-prefixed token is refused immediately, by its shape alone.
+`SQUAD_HUB_USER_TOKEN` supplies `--token` here too, and `--hub` falls back to
+whatever `squad-hub config` already has pinned or resolved from `--env`.
+
+`--scope local` or `--scope cloud` filters by the KIND of device a session is
+running on — `cloud` includes both a generic cloud device and an Azure
+Container Apps job execution, since both are "not a machine you are sitting
+at". `--status` filters by the session's own status (`active`,
+`waiting_approval`, `idle`, `done`, and so on — the same values `status`
+prints locally). `--json` prints the raw session objects, for scripting.
+
+## Open the hub in a browser
+
+```
+squad-hub open [<session>]
+```
+
+Opens the hub's web app in a browser — or, given a session id or a
+`deviceId:sessionId` key (as `sessions` above prints it), opens straight to
+that session, the same deep link a Teams card's "View live session" button
+uses.
+
+The URL is always printed first, whether or not a browser could actually be
+launched — useful over SSH, or on a machine with no desktop at all, where the
+link is the whole point. No token is ever embedded in it: signing in happens
+in the browser, the normal way, every time. `SQUAD_HUB_BROWSER` overrides the
+command used to launch it (the platform default otherwise: `open` on macOS,
+`rundll32 url.dll,FileProtocolHandler` on Windows, `xdg-open` elsewhere) —
+mostly useful for scripting and tests, since a real browser is already on
+everyone's `$PATH` by whatever name the platform gives it. The override may
+include its own arguments (quote a path with spaces); it is split into words
+and run without a shell, and the URL is always passed as one separate
+argument, so nothing in the hub URL is ever interpreted by a shell.
+
 ## MCP server
 
 `squad-hub mcp` runs a stdio [MCP](https://modelcontextprotocol.io) server, so
@@ -1129,6 +1179,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
+| `SQUAD_HUB_BROWSER` | Command `squad-hub open` launches instead of the platform default, run without a shell with the URL as its last argument. Mostly for scripting and tests. |
 | `SQUAD_HUB_DEVICE_META_JSON` | Optional device metadata as JSON: `displayName`, `repo`, `issue`, `executionName`, `jobName`. Validated, size-capped (4KB total, 200 chars per field) and string-only -- anything else is dropped silently rather than refusing to start, since metadata is cosmetic. |
 | `SQUAD_HUB_DEVICE_ID` | This device's identity. Default is a hash of the app name — stable, so a restart re-attaches as itself. **Set it explicitly** when the token is bound to a device-id prefix, or when more than one process attaches: two attachments sharing an id fight over the same slot. |
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
