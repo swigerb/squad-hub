@@ -1390,7 +1390,9 @@ class HubService {
   }
 
   /**
-   * Push a Teams card for anything newly waiting on a human.
+   * Push a Teams card for anything newly waiting on a human, and a short
+   * follow-up for anything that card already asked about and has since been
+   * answered or has expired.
    *
    * Failures are swallowed on purpose. A notification is a convenience; the
    * approval is already in the hub, and a broken webhook must not take the
@@ -1403,6 +1405,21 @@ class HubService {
     for (const s of this.store.listSessions(subject, { deviceId })) {
       for (const a of s.pendingApprovals || []) {
         this.teams.notifyApproval({ session: s, device, approval: a }).catch(() => {});
+      }
+      // `notifyResolution` is idempotent (it tracks what it has already
+      // posted for, same as `notifyApproval`), so calling it for every entry
+      // on every heartbeat -- rather than trying to diff against what was
+      // reported last time -- is safe, and far simpler than keeping a second
+      // copy of "what did we already know" just to spot what is new.
+      for (const a of s.answeredApprovals || []) {
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy,
+        }).catch(() => {});
+      }
+      for (const a of s.expiredApprovals || []) {
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: 'expired',
+        }).catch(() => {});
       }
     }
   }

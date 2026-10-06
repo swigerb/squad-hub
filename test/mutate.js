@@ -2430,8 +2430,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // affordance opened the default view and lost the session it was about.
     name: 'the Teams deep link carries a session id no device can be told from',
     file: 'src/notify/teams.js',
-    find: `  const sessionKey = device.deviceId ? \`\${device.deviceId}:\${session.id}\` : session.id;`,
-    replace: `  const sessionKey = (device.deviceId && !process.env.MUTANT) ? \`\${device.deviceId}:\${session.id}\` : session.id; // MUTATION`,
+    find: `  const sessionKey = device && device.deviceId ? \`\${device.deviceId}:\${session.id}\` : session.id;`,
+    replace: `  const sessionKey = (device && device.deviceId && !process.env.MUTANT) ? \`\${device.deviceId}:\${session.id}\` : session.id; // MUTATION`,
     mustFail: 'the deep link carries the hub key, not the bare session id',
   },
   {
@@ -3643,6 +3643,99 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `    if (!process.env.MUTANT && (typeof title !== 'string' || !title.length || title.length > MAX_TITLE_LEN)) return null; // MUTATION
     if (!process.env.MUTANT && INJECTION_RE.test(title)) return null; // MUTATION`,
     mustFail: 'an injection-shaped title is rejected',
+  },
+  {
+    // Issue #176: a resolution follow-up must never be posted for an
+    // approval the hub never sent a card about -- there is nothing on the
+    // channel to follow up ON, and posting anyway would be a message about an
+    // event nobody there saw happen.
+    name: 'a resolution follow-up is posted even when no card was ever sent',
+    file: 'src/notify/teams.js',
+    find: `    if (!this.sent.has(approval.approvalId)) return { skipped: 'no card was sent for this approval' };`,
+    replace: `    if (!process.env.MUTANT && !this.sent.has(approval.approvalId)) return { skipped: 'no card was sent for this approval' }; // MUTATION`,
+    mustFail: 'no follow-up when no card was sent',
+  },
+  {
+    name: 'the same resolution is followed up more than once',
+    file: 'src/notify/teams.js',
+    find: `    if (this.resolved.has(approval.approvalId)) return { skipped: 'already notified' };`,
+    replace: `    if (!process.env.MUTANT && this.resolved.has(approval.approvalId)) return { skipped: 'already notified' }; // MUTATION`,
+    mustFail: 'the same resolution is not posted twice',
+  },
+  {
+    // "Allowed once" and "Always allowed" read as the same answer to anyone
+    // skimming a channel, when they are two very different grants -- one
+    // tool call, versus every future one like it, unattended.
+    name: 'allow_always reads exactly like allow_once in a resolution follow-up',
+    file: 'src/notify/teams.js',
+    find: `const ANSWER_VERB = {
+  allow_once: 'Allowed once',
+  allow_always: 'Always allowed',
+  reject_once: 'Denied',
+};`,
+    replace: `const ANSWER_VERB = {
+  allow_once: 'Allowed once',
+  allow_always: process.env.MUTANT ? 'Allowed once' : 'Always allowed', // MUTATION
+  reject_once: 'Denied',
+};`,
+    mustFail: 'an allow_always resolution says "Always allowed", not "Allowed"',
+  },
+  {
+    // An expiry is not an answer, and the one thing a follow-up must never do
+    // is claim one happened with nobody named for it.
+    name: 'an expiry follow-up is worded as if someone answered it',
+    file: 'src/notify/teams.js',
+    find: `  const headline = outcome === 'expired'
+    ? 'Expired: no one answered in time.'
+    : \`Answered: \${ANSWER_VERB[outcome] || \`Answered (\${outcome})\`} by \${truncate(redact(answeredBy || 'someone'), 60)} from the hub.\`;`,
+    replace: `  const headline = (outcome === 'expired' && !process.env.MUTANT)
+    ? 'Expired: no one answered in time.'
+    : \`Answered: \${ANSWER_VERB[outcome] || \`Answered (\${outcome})\`} by \${truncate(redact(answeredBy || 'someone'), 60)} from the hub.\` /* MUTATION */;`,
+    mustFail: 'an expired resolution names no answerer, since nobody answered',
+  },
+  {
+    // The retry loop is the whole point of #176's "bounded retry and
+    // backoff" requirement. Collapsing it to a single attempt turns a
+    // transient webhook hiccup into a silently lost follow-up.
+    name: 'a resolution post gives up after one attempt instead of retrying',
+    file: 'src/notify/teams.js',
+    find: `  const tries = Math.max(1, attempts);`,
+    replace: `  const tries = process.env.MUTANT ? 1 : Math.max(1, attempts); // MUTATION`,
+    mustFail: 'a resolution post survives transient failures via bounded retry',
+  },
+  {
+    // The hub already has an idempotent gate for approval cards (`this.sent`);
+    // the same gate has to cover resolutions, or an answered/expired
+    // approval gets re-posted on every heartbeat for as long as the device
+    // keeps it in its last-20 list.
+    name: 'the hub stops posting resolution follow-ups for answered approvals',
+    file: 'src/service/hub-service.js',
+    find: `      for (const a of s.answeredApprovals || []) {
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy,
+        }).catch(() => {});
+      }`,
+    replace: `      for (const a of (process.env.MUTANT ? [] : (s.answeredApprovals || []))) { // MUTATION
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: a.optionId, answeredBy: a.answeredBy,
+        }).catch(() => {});
+      }`,
+    mustFail: 'the hub posts a resolution follow-up for an answered approval',
+  },
+  {
+    name: 'the hub stops posting resolution follow-ups for expired approvals',
+    file: 'src/service/hub-service.js',
+    find: `      for (const a of s.expiredApprovals || []) {
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: 'expired',
+        }).catch(() => {});
+      }`,
+    replace: `      for (const a of (process.env.MUTANT ? [] : (s.expiredApprovals || []))) { // MUTATION
+        this.teams.notifyResolution({
+          session: s, device, approval: a, outcome: 'expired',
+        }).catch(() => {});
+      }`,
+    mustFail: 'the hub posts a resolution follow-up for an answered approval',
   },
 ];
 

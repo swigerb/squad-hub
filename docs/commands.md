@@ -920,6 +920,17 @@ is truncated and anything credential-shaped is redacted before it leaves the
 process — an approval prompt is exactly where a token pasted onto a command
 line would otherwise show up.
 
+**A short follow-up posts to the same channel once the approval is answered or
+expires** — e.g. *"Answered: Allowed once by Brian from the hub."* or
+*"Expired: no one answered in time."* — with the same **View live session**
+link and the same redaction rules as the original card. It only posts for an
+approval this hub actually sent a card for; answering something that never
+produced a card (webhooks were off, or the card itself failed to send)
+produces no follow-up. Posting the follow-up is retried a few times with
+backoff before it is given up on quietly — same as the original card, a
+failure here never blocks the approval itself. Inline approval from inside
+Teams stays out of scope, for the reasons above.
+
 ## Installing it as an app
 
 The web UI is a PWA: install it from the account menu, or with your browser's
