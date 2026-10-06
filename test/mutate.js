@@ -3805,6 +3805,22 @@ if ($health.accessStore -ne 'durable') {`,
     // DispatchTracker must-fix #2: once a record has a bound run, it must
     // only ever refresh that exact run by id -- re-running the matching
     // search risks handing a different (or the same, twice) run to it later.
+    name: 'unmatched dispatches are resolved newest first, so close dispatches swap runs',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
+    replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
+    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+  },
+  {
+    name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (ids.has(o.id) || o.boundRunId != null) continue;`,
+    replace: `        continue; // MUTATION`,
+    mustFail: 'close dispatches by two users bind oldest first, whichever user polls first',
+  },
+  {
+    // DispatchTracker must-fix #2: once a record has a bound run, it must
+    // only ever refresh that exact run by id.
     name: 'a bound dispatch re-runs the matching search instead of refreshing its own run by id',
     file: 'src/service/dispatch-tracker.js',
     find: `        if (r.boundRunId != null) {

@@ -120,7 +120,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         repo: { type: 'string', description: 'owner/repo to dispatch into.' },
-        baseBranch: { type: 'string', description: 'Branch the workflow runs from.' },
+        baseBranch: { type: 'string', description: 'Base branch for the session (the workflow base_branch input). The workflow itself always runs from the default branch.' },
         prompt: { type: 'string', description: 'What to ask the agent to do.' },
         model: { type: 'string' },
         issue: { type: 'integer', description: 'An existing issue number to work from.' },

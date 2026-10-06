@@ -86,12 +86,19 @@ class DispatchTracker {
    * unmatched searches excluding every run id already bound to any other
    * record, live or stale, so two close dispatches on one repo never both
    * claim the same run.
+   *
+   * Unmatched records are resolved OLDEST dispatch first (see
+   * `_resolveOrder`), because `resolveRunStatus` picks the earliest run in a
+   * window that, for close dispatches, also covers the other dispatch's run.
+   * Resolving the newest first would let it take the older dispatch's run
+   * and swap the two bindings for good.
    */
   async listWithStatus(userKey, githubApp) {
     const recs = this.list(userKey);
     const boundElsewhere = this._allBoundRunIds();
-    const out = [];
-    for (const r of recs) {
+    const mine = new Set(recs.map((r) => r.id));
+    const statusById = new Map();
+    for (const r of this._resolveOrder(recs)) {
       let status;
       try {
         if (r.boundRunId != null) {
@@ -106,9 +113,31 @@ class DispatchTracker {
       } catch (e) {
         status = { state: 'error', reason: e.message };
       }
-      out.push({ ...r, status });
+      if (mine.has(r.id)) statusById.set(r.id, status);
     }
-    return out;
+    return recs.map((r) => ({ ...r, status: statusById.get(r.id) }));
+  }
+
+  /**
+   * The records `listWithStatus` resolves, oldest dispatch first: the
+   * caller's own, plus any OTHER user's still-unmatched record on the same
+   * repository and ref that was dispatched no later than one of the caller's
+   * unmatched records. Binding those first means the earliest dispatch on a
+   * repository always claims the earliest run, whichever user polls first.
+   * Only the binding is shared; another user's status is never returned.
+   */
+  _resolveOrder(recs) {
+    const ids = new Set(recs.map((r) => r.id));
+    const mineUnbound = recs.filter((r) => r.boundRunId == null);
+    const sameTarget = (a, b) => a.owner === b.owner && a.repo === b.repo && (a.ref || null) === (b.ref || null);
+    const others = [];
+    for (const list of this._byUser.values()) {
+      for (const o of list) {
+        if (ids.has(o.id) || o.boundRunId != null) continue;
+        if (mineUnbound.some((m) => sameTarget(m, o) && o.dispatchedAt <= m.dispatchedAt)) others.push(o);
+      }
+    }
+    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);
   }
 }
 

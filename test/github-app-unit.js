@@ -1128,8 +1128,32 @@ function apiRequest(port, path, token, opts = {}) {
     const list = await tracker.listWithStatus('alice', app);
     server.close();
     assert.strictEqual(list.length, 2);
-    const runIds = list.map((r) => r.status.runId).sort();
-    assert.deepStrictEqual(runIds, [900, 901], 'both dispatches must each bind their own run, not the same one twice');
+    // Newest first: the later dispatch must hold the later run, and the
+    // earlier dispatch the earlier run -- never swapped.
+    assert.deepStrictEqual(list.map((r) => r.status.runId), [901, 900], 'each dispatch must bind its own run, earliest dispatch to earliest run');
+  });
+
+  await checkAsync('close dispatches by two users bind oldest first, whichever user polls first', async () => {
+    const now = Date.now();
+    const runs = [
+      { id: 910, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(now).toISOString() },
+      { id: 911, status: 'queued', conclusion: null, head_branch: 'main', created_at: new Date(now + 200).toISOString() },
+    ];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const tracker = new DispatchTracker();
+    tracker.record('bob', {
+      owner: 'acme', repo: 'widgets', installationId: 1, workflowFile: 'squad-dispatch.yml', ref: 'main', dispatchedAt: now - 1000,
+    });
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, workflowFile: 'squad-dispatch.yml', ref: 'main', dispatchedAt: now - 900,
+    });
+    const aliceList = await tracker.listWithStatus('alice', app);
+    server.close();
+    assert.strictEqual(aliceList.length, 1, 'alice sees only her own dispatch');
+    assert.strictEqual(aliceList[0].status.runId, 911, 'the later dispatch must not take the earlier dispatch\'s run');
+    assert.strictEqual(tracker.list('bob')[0].boundRunId, 910, 'the earlier dispatch keeps the earlier run');
   });
 
   await checkAsync('once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)', async () => {
