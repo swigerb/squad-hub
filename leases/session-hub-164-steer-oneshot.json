@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-164-steer-oneshot",
+  "sessionId": "hub-164-steer-oneshot",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-06T06:04:41.813Z",
+  "lastHeartbeatAt": "2026-10-06T06:04:41.813Z",
+  "updatedAt": "2026-10-06T06:04:41.813Z",
+  "terminalReason": null,
+  "executionRef": null
+}
