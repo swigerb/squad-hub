@@ -1834,6 +1834,13 @@ function usage() {
                         SQUAD_HUB_URL / _TOKEN / _PROMPT / _CWD
                         exits 0 done, 1 failed, 64 no prompt,
                               75 nobody could approve, 77 hub refused the device
+  squad-hub report-pr --url <https://github.com/o/r/pull/N> --number <N>
+                       [--title <text>] [--session <sessionId>]
+                       attach a pull request to a session after it ended, as
+                       the same device that ran it (SQUAD_HUB_URL / _TOKEN);
+                       --session defaults to this device's most recent one
+                       exits 0 reported (or no-op with no hub), 1 failed,
+                             2 a missing/invalid --url, --number or --title
 
   LOGIN STARTUP (optional; never needs admin/root)
   squad-hub autostart enable [--dry-run] [--json]
@@ -1895,6 +1902,116 @@ File access is off by default. --allow-files scopes it to the directory you run
 the command from; --allow-files-all lifts that limit. To name the root instead
 of relying on where you are standing, use "squad-hub config allow-files <root>".
 The confinement path stays on this device and is never sent to the hub service.`);
+}
+
+/**
+ * `squad-hub report-pr` -- a device reports its session's pull request after
+ * the session has already ended (#201). See `src/report-pr.js` for why this
+ * has to be its own command, reconnecting as its own short-lived device,
+ * rather than something the session itself could have done.
+ *
+ * Configured the same way `oneshot` is, because it runs in the same
+ * container, moments after the same `squad-hub oneshot` process exited:
+ *
+ *   SQUAD_HUB_URL     the hub
+ *   SQUAD_HUB_TOKEN   the same device token the oneshot run used
+ *
+ * Exit codes: 0 reported (or a deliberate no-op with no hub configured),
+ * 1 failed, 2 a usage error (a missing or invalid --url/--number/--title).
+ */
+async function cmdReportPr(argv) {
+  const {
+    parsePullRequestArgs, mostRecentLocalSessionId, sendPullRequest, cloudDeviceId,
+  } = require('./report-pr');
+
+  const parsed = parsePullRequestArgs(argv);
+  if (parsed.error) { err(parsed.error); return 2; }
+  const { pullRequest } = parsed;
+
+  const hub = process.env.SQUAD_HUB_URL;
+  if (!hub) {
+    // Not an error: a device run with no hub configured never had anywhere to
+    // report to, same posture `cloud-device.js` takes everywhere else -- the
+    // hub is an observer, never a dependency, so its absence cannot fail a
+    // caller's job.
+    out('no hub configured (SQUAD_HUB_URL is unset); nothing to report');
+    return 0;
+  }
+  const token = process.env.SQUAD_HUB_TOKEN;
+  if (!token) {
+    err('SQUAD_HUB_TOKEN is required to report a pull request (none set)');
+    return 1;
+  }
+
+  const sessionId = value(argv, 'session', null) || mostRecentLocalSessionId();
+  if (!sessionId) {
+    err('no session to report against; pass --session <sessionId>, or run this where a session just ran');
+    return 1;
+  }
+
+  const deviceId = cloudDeviceId(process.env);
+  const { HubLink } = require('./hub-link');
+  const wsUrl = hub.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ws';
+  const link = new HubLink({ url: wsUrl, token, deviceId });
+  try {
+    // `HubLink.connect()` has no timeout of its own -- right for the daemon,
+    // which lives for as long as the machine does and is happy to keep
+    // retrying, wrong for a short-lived process with a caller (a Squad on ACA
+    // worker) waiting on it to exit. A hub that is up but not answering (a
+    // firewalled port, a hung listener) would otherwise hang this command
+    // forever instead of failing it.
+    await withTimeout(link.connect(), connectTimeoutMs(),
+      'timed out connecting to the hub');
+  } catch (e) {
+    // Never the token. A device credential leaking into a job's log output is
+    // exactly the failure `--prefix`-scoped tokens exist to contain, and an
+    // error message is not exempt from that just because it is trying to be
+    // helpful.
+    err(`could not attach to the hub as this device: ${e.message}`);
+    link.stop();
+    return 1;
+  }
+
+  try {
+    const result = await sendPullRequest(link, sessionId, pullRequest);
+    if (!result || !result.pullRequest) {
+      err('the hub accepted the report but did not store the pull request (rejected as invalid)');
+      return 1;
+    }
+    out(`reported pull request #${result.pullRequest.number} on session ${sessionId}`);
+    return 0;
+  } catch (e) {
+    err(`could not report the pull request: ${e.message}`);
+    return 1;
+  } finally {
+    link.stop();
+  }
+}
+
+const REPORT_PR_CONNECT_TIMEOUT_MS = 15000;
+
+/** How long `report-pr` waits for the hub to upgrade the socket before giving
+ * up, overridable only for tests -- a real caller has no reason to want this
+ * shorter than the default, and a job platform that wants it longer should
+ * fix its network instead. */
+function connectTimeoutMs() {
+  const n = Number(process.env.SQUAD_HUB_REPORT_PR_CONNECT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : REPORT_PR_CONNECT_TIMEOUT_MS;
+}
+
+/** Race a promise against a timeout, without leaving the loser's rejection
+ * unhandled -- `promise` may still settle after `ms` elapses (connecting to
+ * the hub is not cancellable mid-flight; the caller aborts the underlying
+ * socket itself), so a bare `Promise.race` would print a second, unhandled
+ * rejection once it finally does. */
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
 }
 
 /**
@@ -1968,6 +2085,7 @@ async function main(argv) {
     case 'kill': return cmdStopSession(rest);
     case 'forget': return cmdForget(rest);
     case 'oneshot': return cmdOneshot(rest);
+    case 'report-pr': return cmdReportPr(rest);
     case 'track-all': return cmdTrackAll(rest);
     case 'config': return cmdConfig(rest);
     case 'device-token': return cmdDeviceToken(rest);

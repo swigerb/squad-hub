@@ -346,3 +346,44 @@ timeouts on hosting platforms.
 A **1008** close is a policy refusal — an expired or revoked token, or a device
 id the token may not register. The reason is in the close frame. Retrying a 1008
 never succeeds; reconnect only after fixing what it names.
+
+### Device messages
+
+A `role=device` socket sends JSON frames of its own; the ones relevant here:
+
+| `type` | |
+|---|---|
+| `register` | First message after `welcome`: this device's identity and (optionally) its full session list. |
+| `heartbeat` | Periodic presence, carrying `device` metadata and (optionally) the session list again. |
+| `sessions` | Republish the device's **whole** session list wholesale — removals included. |
+| `session` | Upsert **one** session, merged onto whatever the hub already has for it (see below). |
+
+A `session` message carries `{ type: 'session', session: { id, ... } }`. Only
+the fields present in `session` are changed; anything omitted is left exactly
+as the hub already had it — so a caller that wants to attach a `pullRequest`
+to a session without touching its `status` or anything else sends only
+`{ id, pullRequest }`. This is how `squad-hub report-pr` attaches a pull
+request to a session from a short-lived process that has no heartbeat of its
+own to republish the rest of the session from (see
+[commands.md](commands.md#reporting-a-pull-request-after-the-session-ends)).
+
+Adding a `correlationId` to a `session` message asks the hub to acknowledge
+it: the hub replies on the same socket with
+`{ type: 'reply', correlationId, ok: true, result: { id, pullRequest } }`,
+where `result.pullRequest` is the value the hub actually stored (`null` if
+what was sent failed validation). Every other publisher of `session` —
+the daemon's own heartbeat and status-change pushes — sends no
+`correlationId` and gets no reply, exactly as before; the field is opt-in.
+A `session` message with a `correlationId`, no `status`, and an `id` the hub
+has no record of for this device is refused rather than stored: the hub replies
+`{ type: 'reply', correlationId, ok: false, found: false, error }` and creates
+nothing, and `squad-hub report-pr` exits 1.
+
+Whichever device id a socket registered as (`deviceId` on the `/ws` query, and
+subject to the connecting token's own prefix — see "Device ids and
+prefix-bound tokens" in [commands.md](commands.md)) is the **only** device a
+`session` message on it can ever affect: the hub keys every session by
+`{deviceId}:{session.id}`, so one device's token can no more upsert another
+device's session than it can attach as that device in the first place.
+
+

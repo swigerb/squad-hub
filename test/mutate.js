@@ -3645,6 +3645,135 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an injection-shaped title is rejected',
   },
   {
+    name: 'report-pr picks the earliest local session instead of the most recent',
+    file: 'src/report-pr.js',
+    find: `    if (!best || at > best.at) best = { id: s.id, at };`,
+    replace: `    if (!best || (process.env.MUTANT ? at < best.at : at > best.at)) best = { id: s.id, at }; // MUTATION`,
+    mustFail: 'the most recently ENDED session wins over an earlier one',
+  },
+  {
+    name: 'report-pr ignores startedAt and only ever reads endedAt',
+    file: 'src/report-pr.js',
+    find: `    const at = s.endedAt || s.startedAt || 0;`,
+    replace: `    const at = process.env.MUTANT ? (s.endedAt || 0) : (s.endedAt || s.startedAt || 0); // MUTATION`,
+    mustFail: 'a session with no endedAt yet falls back to startedAt',
+  },
+  {
+    name: 'report-pr tries to report even with no hub configured',
+    file: 'src/cli.js',
+    find: `  const hub = process.env.SQUAD_HUB_URL;
+  if (!hub) {`,
+    replace: `  const hub = process.env.SQUAD_HUB_URL;
+  if (process.env.MUTANT ? false : !hub) { // MUTATION`,
+    mustFail: 'with no hub configured, it is a no-op that exits 0',
+  },
+  {
+    name: 'report-pr proceeds with no device token at all',
+    file: 'src/cli.js',
+    find: `  const token = process.env.SQUAD_HUB_TOKEN;
+  if (!token) {`,
+    replace: `  const token = process.env.SQUAD_HUB_TOKEN;
+  if (process.env.MUTANT ? false : !token) { // MUTATION`,
+    mustFail: 'a missing device token is a clear, non-zero failure',
+  },
+  {
+    name: 'report-pr proceeds with no session to report against',
+    file: 'src/cli.js',
+    find: `  const sessionId = value(argv, 'session', null) || mostRecentLocalSessionId();
+  if (!sessionId) {`,
+    replace: `  const sessionId = value(argv, 'session', null) || mostRecentLocalSessionId();
+  if (process.env.MUTANT ? false : !sessionId) { // MUTATION`,
+    mustFail: 'with no session at all to report against, it fails rather than guessing',
+  },
+  {
+    name: 'report-pr sends an unvalidated pull request straight to the hub',
+    file: 'src/report-pr.js',
+    find: `  const pullRequest = sanitizePullRequest({ url, number, title: title === null ? undefined : title });
+  if (!pullRequest) {`,
+    replace: `  const pullRequest = sanitizePullRequest({ url, number, title: title === null ? undefined : title });
+  if (process.env.MUTANT ? false : !pullRequest) { // MUTATION`,
+    mustFail: 'an invalid --url is rejected before anything is sent, with exit code 2',
+  },
+  {
+    name: 'report-pr sends the whole session payload instead of just id + pullRequest',
+    file: 'src/report-pr.js',
+    find: `    const sent = link.send({ type: 'session', session: { id: sessionId, pullRequest }, correlationId });`,
+    replace: `    const sent = link.send({ type: 'session', session: process.env.MUTANT ? { id: sessionId, pullRequest, status: 'active' } : { id: sessionId, pullRequest }, correlationId }); // MUTATION`,
+    mustFail: 'a valid report lands on the named session, and nothing else about it changes',
+  },
+  {
+    name: 'the hub replies to every session message, not only one that asked via correlationId',
+    file: 'src/service/hub-service.js',
+    find: `        if (msg.correlationId && conn) {`,
+    replace: `        if (process.env.MUTANT ? conn : (msg.correlationId && conn)) { // MUTATION`,
+    mustFail: 'a session message with no correlationId gets no reply, exactly as before report-pr existed',
+  },
+  {
+    name: 'a report-only session message creates a ghost record for a session the hub has never seen',
+    file: 'src/service/hub-service.js',
+    find: `        const isReportOnly = Boolean(msg.correlationId) && !('status' in sessionPayload);`,
+    replace: `        const isReportOnly = process.env.MUTANT ? false : (Boolean(msg.correlationId) && !('status' in sessionPayload)); // MUTATION`,
+    mustFail: 'a report against a session the hub has never seen fails, rather than creating one',
+  },
+  {
+    name: 'session records are not scoped by device id, letting one device touch another\'s',
+    file: 'src/service/store.js',
+    find: `    const key = \`\${deviceId}:\${session.id}\`;`,
+    replace: `    const key = process.env.MUTANT ? \`\${session.id}\` : \`\${deviceId}:\${session.id}\`; // MUTATION`,
+    mustFail: 'a token for device A cannot set pullRequest on device B\'s session',
+  },
+  {
+    name: 'a device-id-prefix-bound token may still register a device id outside its prefix',
+    file: 'src/service/hub-service.js',
+    find: `    if (!DeviceTokens.allowsDeviceId({ did: me.didPrefix }, deviceId)) {`,
+    replace: `    if (process.env.MUTANT ? false : !DeviceTokens.allowsDeviceId({ did: me.didPrefix }, deviceId)) { // MUTATION`,
+    mustFail: 'a token may not even attach as a device id outside its own prefix',
+  },
+  {
+    name: '--help no longer lists report-pr, so a worker cannot feature-detect it',
+    file: 'src/cli.js',
+    find: `  squad-hub report-pr --url <https://github.com/o/r/pull/N> --number <N>`,
+    replace: `  squad-hub \${process.env.MUTANT ? 'attach-session-link' : 'report-pr'} --url <https://github.com/o/r/pull/N> --number <N> // MUTATION`,
+    mustFail: '--help lists report-pr, so a worker can feature-detect it',
+  },
+  {
+    name: 'cloudDeviceId ignores an explicit SQUAD_HUB_DEVICE_ID',
+    file: 'src/device-identity.js',
+    find: `  if (SQUAD_HUB_DEVICE_ID) return SQUAD_HUB_DEVICE_ID;`,
+    replace: `  if (process.env.MUTANT ? false : SQUAD_HUB_DEVICE_ID) return SQUAD_HUB_DEVICE_ID; // MUTATION`,
+    mustFail: 'cloudDeviceId honors an explicit SQUAD_HUB_DEVICE_ID',
+  },
+  {
+    name: 'cloudDeviceId\'s hash fallback no longer matches cloud-device.js',
+    file: 'src/device-identity.js',
+    find: `  return crypto.createHash('sha1').update(\`cloud|\${appName}\`).digest('hex').slice(0, 16);`,
+    replace: `  return crypto.createHash('sha1').update(\`cloud|\${appName}\${process.env.MUTANT ? '-mutated' : ''}\`).digest('hex').slice(0, 16); // MUTATION`,
+    mustFail: 'cloudDeviceId falls back to a hash of the app name, matching cloud-device.js',
+  },
+  {
+    name: 'report-pr accepts a --title value that looks like a dropped flag',
+    file: 'src/report-pr.js',
+    find: `  if (hasDashedValue(argv, 'title')) {`,
+    replace: `  if (process.env.MUTANT ? false : hasDashedValue(argv, 'title')) { // MUTATION`,
+    mustFail: 'a --title that looks like a dropped flag is rejected, not silently dropped',
+  },
+  {
+    name: 'report-pr accepts a hex, float or scientific-notation --number',
+    file: 'src/report-pr.js',
+    find: `  if (!NUMBER_RE.test(numberText)) {`,
+    replace: `  if (process.env.MUTANT ? false : !NUMBER_RE.test(numberText)) { // MUTATION`,
+    mustFail: 'a hex, float or scientific-notation --number is rejected, not coerced',
+  },
+  {
+    name: 'report-pr has no connect timeout, so a hung hub hangs the command forever',
+    file: 'src/cli.js',
+    find: `    await withTimeout(link.connect(), connectTimeoutMs(),
+      'timed out connecting to the hub');`,
+    replace: `    await (process.env.MUTANT ? link.connect() : withTimeout(link.connect(), connectTimeoutMs(),
+      'timed out connecting to the hub')); // MUTATION`,
+    mustFail: 'connecting to a hub that never upgrades the socket times out, instead of hanging',
+  },
+  {
     // Issue #176: a resolution follow-up must never be posted for an
     // approval the hub never sent a card about -- there is nothing on the
     // channel to follow up ON, and posting anyway would be a message about an

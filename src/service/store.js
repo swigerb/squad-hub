@@ -422,6 +422,22 @@ class Store extends EventEmitter {
   }
 
   /**
+   * Does this device already have a record for this session? Read-only --
+   * takes no lock, mutates nothing, unlike `upsertSession`.
+   *
+   * Keyed identically to `_upsertSessionRecord`, so a caller can check
+   * "would this create a new record?" BEFORE deciding whether to call it --
+   * which is exactly what `report-pr`'s hub-side reply (`HubService.
+   * _fromDevice`'s `session` case, squad-hub#201) needs: a report that
+   * carries no `status` has nothing to establish a brand-new session with,
+   * so it must refuse rather than upsert when there is no existing record to
+   * attach the pull request to.
+   */
+  hasSessionRecord(subject, deviceId, sessionId) {
+    return this._bucket(subject).sessions.has(`${deviceId}:${sessionId}`);
+  }
+
+  /**
    * A transcript entry arrived for a session whose status did not change.
    *
    * A `transcript` message is a separate wire message from a session snapshot

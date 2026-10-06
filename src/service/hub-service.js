@@ -1315,7 +1315,7 @@ class HubService {
     this._devices.get(me.key).set(deviceId, conn);
     if (existing && existing !== conn) existing.close(1000);
 
-    conn.on('message', (msg) => this._fromDevice(me, deviceId, msg));
+    conn.on('message', (msg) => this._fromDevice(me, deviceId, msg, conn));
     conn.on('close', () => {
       const map = this._devices.get(me.key);
       if (map && map.get(deviceId) === conn) {
@@ -1346,7 +1346,7 @@ class HubService {
     conn.sendJson({ type: 'overview', ...this.store.overview(me.key) });
   }
 
-  _fromDevice(me, deviceId, msg) {
+  _fromDevice(me, deviceId, msg, conn) {
     switch (msg.type) {
       case 'register':
         this.store.registerDevice(me.key, { ...msg.device, deviceId });
@@ -1359,9 +1359,66 @@ class HubService {
       case 'sessions':
         this.store.syncSessions(me.key, deviceId, msg.sessions || []);
         break;
-      case 'session':
-        this.store.upsertSession(me.key, deviceId, msg.session);
+      case 'session': {
+        const sessionPayload = (msg.session && typeof msg.session === 'object') ? msg.session : {};
+        /**
+         * `report-pr` (squad-hub#201) sends a `session` message carrying only
+         * `{ id, pullRequest }` -- no `status` -- alongside a `correlationId`
+         * it waits on for a reply. That shape is unique to it: the daemon's
+         * own heartbeat/reconnect republish always carries a `status`, and
+         * never waits on a reply at all. Detecting that shape here, rather
+         * than threading a new message type through the wire protocol, keeps
+         * every existing publisher byte-for-byte unchanged.
+         */
+        const isReportOnly = Boolean(msg.correlationId) && !('status' in sessionPayload);
+        if (isReportOnly && (!sessionPayload.id || !this.store.hasSessionRecord(me.key, deviceId, sessionPayload.id))) {
+          /**
+           * Without this check, `_upsertSessionRecord` happily creates a
+           * status-less "ghost" record for a session the hub never actually
+           * saw -- and `_pruneStale` can never age it out, because it only
+           * ages out TERMINAL-status sessions. Refusing instead of upserting
+           * means `report-pr` learns (and exits non-zero) that it reported
+           * against a session the hub has no memory of, rather than the hub
+           * silently fabricating one and saying `ok: true`.
+           */
+          if (conn) {
+            conn.sendJson({
+              type: 'reply',
+              correlationId: msg.correlationId,
+              ok: false,
+              found: false,
+              error: 'no existing session to report a pull request against',
+            });
+          }
+          break;
+        }
+        const rec = this.store.upsertSession(me.key, deviceId, msg.session);
+        /**
+         * Acknowledged only when the SENDER asked for it (a `correlationId`
+         * present), reusing the same `reply`/`correlationId` convention the
+         * hub already uses the other direction (device -> hub command replies,
+         * handled below). Every other publisher of a `session` message -- the
+         * daemon's heartbeat and status-change pushes -- sends none and gets
+         * none, exactly as before.
+         *
+         * `report-pr` (squad-hub#201) is the one caller that NEEDS this: it is
+         * a short-lived process with no heartbeat to retry on, reporting a
+         * fact (a pull request) nobody will re-send if it silently did not
+         * land. Replying with the validated record -- not just `ok: true` --
+         * means a caller that sent an invalid pull request learns that from
+         * the hub's own answer (`pullRequest: null`) rather than believing it
+         * shipped.
+         */
+        if (msg.correlationId && conn) {
+          conn.sendJson({
+            type: 'reply',
+            correlationId: msg.correlationId,
+            ok: true,
+            result: { id: msg.session && msg.session.id, pullRequest: rec.pullRequest },
+          });
+        }
         break;
+      }
       case 'transcript':
         this.store.touchSessionActivity(me.key, deviceId, msg.sessionId);
         this._broadcast(me.key, { type: 'transcript', deviceId, sessionId: msg.sessionId, entries: msg.entries });

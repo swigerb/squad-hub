@@ -658,6 +658,7 @@ test suite verifies this behaviour without ever installing a real login task.
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
 | `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
+| `squad-hub report-pr --url <pr-url> --number <N> [--title <t>] [--session <id>]` | Attach a pull request to a session after it ended, as the same device that ran it. |
 | `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
 | `squad-hub forget --all` | Remove the record of every session that has ended. |
 
@@ -1137,6 +1138,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
 | `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
 | `SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS` | How long a **watched** (hook-supervised) session's tool call waits for an answer. Default 120s — much shorter than the TTL above, because an agent is blocked in somebody's terminal for the whole of it. When it expires the answer is `ask`, never `allow`. Must stay below the `preToolUse` `timeoutSec` in the installed hook file (300s); if Copilot gives up first the hook prints nothing, and nothing falls through to the session's own permission handling. |
+| `SQUAD_HUB_REPORT_PR_CONNECT_TIMEOUT_MS` | How long `squad-hub report-pr` waits for its hub connection to upgrade before giving up. Default 15000ms. Lower it only to make the timeout behavior cheap to test. |
 | `SQUAD_HUB_HOOK_IPC_TIMEOUT_MS` | How long the `squad-hub hook` shim waits for the daemon to answer an approval. Default 270s. Sits between the two above: longer than the daemon's wait so the daemon answers first, shorter than Copilot's so the shim always gets to print something. |
 | `SQUAD_HUB_STEER_HOLD_MS` | How long `agentStop` may hold a **watched** session (see "Steering a watched session" above) waiting for a queued steer to arrive. Default 3000ms. Paid only when the session was recently confirmed watched — never a flat cost on every turn end. |
 | `SQUAD_HUB_STEER_POLL_MS` | How often the hold above re-checks the queue while waiting. Default 200ms. |
@@ -1217,6 +1219,63 @@ dispatch that run unattended.
 
 Copilot CLI itself reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` in
 that order. `SQUAD_HUB_AGENT_TOKEN` is copied into the first of those.
+
+### Reporting a pull request after the session ends
+
+```
+squad-hub report-pr --url <https://github.com/o/r/pull/N> --number <N> [--title <text>] [--session <sessionId>]
+```
+
+A Squad on ACA worker opens its pull request only **after** the agent — and
+`squad-hub oneshot` with it — has already exited, so there is no daemon left
+to tell "attach this URL to the session you just finished". `report-pr` is the
+one thing such a worker can still run, in the same container, to reach the hub
+and say so anyway.
+
+It reconnects to the hub **as the same device** the session ran on — using
+`SQUAD_HUB_URL` and `SQUAD_HUB_TOKEN`, the same two variables `oneshot` used,
+and deriving the same device id `cloud-device.js` would have — so the update
+lands on the session that device already published, not a new device the hub
+has never seen. `--session` is optional; without it, the target is this
+device's own most recently ended session, read from its local session
+record. The pull request itself is validated client-side before anything is
+sent (the same checks `src/pull-request.js` applies on the hub side): a
+missing or non-GitHub `--url`, a `--number` that is not a positive, decimal
+integer or does not match the one in `--url`, or an injection-shaped or
+dropped-flag-shaped `--title`, is refused with exit **2** before any network
+call.
+
+Because it attaches as the same device id, running `report-pr` while a
+long-lived daemon is still attached under that id takes over its socket: the
+hub allows one connection per device id, so the daemon is disconnected (and
+will reconnect on its own retry schedule) for the moment `report-pr` holds
+it. This is expected in the scenario this command exists for — the daemon
+that ran the session has already exited by the time an ACA worker runs
+`report-pr` — but running it manually alongside a live daemon on the same
+device will briefly bump that daemon off.
+
+A report against a session the hub has no record of for this device — a
+mistyped `--session`, a device id that drifted between the `oneshot` run and
+this report, or a hub restart on a non-durable store — is refused rather
+than silently creating a new, status-less session record; `report-pr` exits
+**1** with a clear message instead of printing success for a session that
+does not exist.
+
+Exactly one session update is sent, carrying the pull request and nothing
+else — every other field of the session (status included) is left exactly as
+the hub already had it.
+
+With `SQUAD_HUB_URL` unset there is nowhere to report to; this is a no-op that
+exits **0**, not an error, matching `oneshot`'s posture that the hub is an
+observer, never a dependency. Exit codes: **0** reported (or that no-op),
+**1** failed (no token, no session to report against, or the hub refused the
+report), **2** a missing or invalid `--url`/`--number`/`--title`.
+
+The hub enforces the same isolation as everywhere else a device token
+reaches it: a token may only ever attach as a device id its own prefix
+allows (see "Device ids and prefix-bound tokens" above), so a token for one
+device can no more report a pull request onto another device's session than
+it could spawn work on it.
 
 ## Exit codes
 
