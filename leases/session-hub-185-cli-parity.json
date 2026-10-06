@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-185-cli-parity",
+  "sessionId": "hub-185-cli-parity",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-06T05:39:10.866Z",
+  "lastHeartbeatAt": "2026-10-06T05:39:10.866Z",
+  "updatedAt": "2026-10-06T05:39:10.866Z",
+  "terminalReason": null,
+  "executionRef": null
+}
