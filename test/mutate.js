@@ -3674,16 +3674,42 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'tools/call silently no-ops on an unknown tool instead of erroring',
     file: 'src/mcp-server.js',
-    find: `        const handler = HANDLERS[name];
-        if (!handler) {
+    find: `        if (typeof handler !== 'function') {
           return replyError(id, JSONRPC_INVALID_PARAMS, \`unknown tool: \${name}\`);
         }`,
-    replace: `        const handler = HANDLERS[name];
-        if (!handler) {
+    replace: `        if (typeof handler !== 'function') {
           if (process.env.MUTANT) return reply(id, { content: [{ type: 'text', text: '' }] }); // MUTATION
           return replyError(id, JSONRPC_INVALID_PARAMS, \`unknown tool: \${name}\`);
         }`,
     mustFail: 'tools/call refuses an unknown tool name with a JSON-RPC error, not a crash',
+  },
+  {
+    // `null` is valid JSON and must get an answer, not silence or a crash.
+    name: 'a non-object JSON line goes unanswered',
+    file: 'src/mcp-server.js',
+    find: `      replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object');`,
+    replace: `      if (!process.env.MUTANT) replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object'); // MUTATION`,
+    mustFail: 'a JSON null, number or array line gets Invalid Request, not a crash',
+  },
+  {
+    // `HANDLERS.constructor` is Object itself; only own tool names may resolve.
+    name: 'a tool name inherited from Object.prototype resolves to a handler',
+    file: 'src/mcp-server.js',
+    find: `        const handler = typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name)
+          ? HANDLERS[name] : null;`,
+    replace: `        const handler = process.env.MUTANT ? HANDLERS[name] // MUTATION
+          : (typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name) ? HANDLERS[name] : null);`,
+    mustFail: 'a tool name inherited from Object.prototype is an unknown tool',
+  },
+  {
+    // The CLI exits the moment `serve` resolves, so resolving before the
+    // in-flight replies are written drops them.
+    name: 'serve resolves at stdin close without waiting for in-flight replies',
+    file: 'src/mcp-server.js',
+    find: `      Promise.allSettled([...inflight]).then(() => resolve());`,
+    replace: `      if (process.env.MUTANT) { resolve(); return; } // MUTATION
+      Promise.allSettled([...inflight]).then(() => resolve());`,
+    mustFail: 'a request in flight when stdin closes is still answered',
   },
   {
     name: 'the daemon drops "since" from a hub-driven transcript read, downgrading it to a tail',

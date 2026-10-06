@@ -349,6 +349,34 @@ await (async () => {
     assert.strictEqual(unknownMethodReply.error.code, -32601);
   });
 
+  // Valid JSON that is not a request object must be answered, not crash.
+  const beforeNull = lines.length;
+  input.write('null\n');
+  input.write('42\n');
+  input.write('[]\n');
+  await sleep(150);
+  check('a JSON null, number or array line gets Invalid Request, not a crash', () => {
+    const invalid = lines.slice(beforeNull);
+    assert.strictEqual(invalid.length, 3, JSON.stringify(invalid));
+    for (const l of invalid) {
+      assert.strictEqual(l.id, null);
+      assert.strictEqual(l.error.code, -32600);
+    }
+  });
+
+  send({ jsonrpc: '2.0', id: 7, method: 'ping' });
+  const pingAfterNull = await waitForId(7);
+  check('the server still answers after a non-object line', () => {
+    assert.deepStrictEqual(pingAfterNull.result, {});
+  });
+
+  send({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'constructor', arguments: {} } });
+  const inheritedReply = await waitForId(8);
+  check('a tool name inherited from Object.prototype is an unknown tool', () => {
+    assert.ok(inheritedReply.error, JSON.stringify(inheritedReply));
+    assert.match(inheritedReply.error.message, /unknown tool/);
+  });
+
   check('nothing but valid JSON-RPC, one object per line, was ever written to stdout', () => {
     // Already proven by `JSON.parse` succeeding for every captured line above
     // (a malformed line would have thrown while buffering); this asserts the
@@ -357,8 +385,15 @@ await (async () => {
     assert.ok(lines.length >= 6, `only captured ${lines.length} lines`);
   });
 
+  // A request still in flight when stdin closes is answered before `serve`
+  // resolves (the CLI exits the process the moment it does).
+  send({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'list_devices', arguments: {} } });
   input.end();
   await done;
+  check('a request in flight when stdin closes is still answered', () => {
+    const r = lines.find((l) => l.id === 9);
+    assert.ok(r && r.result, 'the in-flight reply was dropped at stdin close');
+  });
   await new Promise((resolve) => svc.server.close(resolve));
 })();
 

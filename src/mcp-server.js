@@ -147,6 +147,7 @@ const HANDLERS = {
 };
 
 const JSONRPC_METHOD_NOT_FOUND = -32601;
+const JSONRPC_INVALID_REQUEST = -32600;
 const JSONRPC_INVALID_PARAMS = -32602;
 const JSONRPC_INTERNAL_ERROR = -32603;
 
@@ -158,6 +159,9 @@ const JSONRPC_INTERNAL_ERROR = -32603;
 function serve({ hub, token, input, output, log = () => {} }) {
   const client = createHubClient({ hub, token });
   const rl = readline.createInterface({ input, terminal: false });
+  // Requests still in flight when stdin closes are answered before `serve`
+  // resolves, since the CLI exits the process as soon as it does.
+  const inflight = new Set();
 
   const write = (msg) => output.write(`${JSON.stringify(msg)}\n`);
   const reply = (id, result) => write({ jsonrpc: '2.0', id, result });
@@ -179,8 +183,11 @@ function serve({ hub, token, input, output, log = () => {} }) {
       if (method === 'tools/list') return reply(id, { tools: TOOLS });
       if (method === 'tools/call') {
         const name = params && params.name;
-        const handler = HANDLERS[name];
-        if (!handler) {
+        // Own properties only: a name like `constructor` or `__proto__` must
+        // never resolve to something inherited from Object.prototype.
+        const handler = typeof name === 'string' && Object.prototype.hasOwnProperty.call(HANDLERS, name)
+          ? HANDLERS[name] : null;
+        if (typeof handler !== 'function') {
           return replyError(id, JSONRPC_INVALID_PARAMS, `unknown tool: ${name}`);
         }
         const args = (params && params.arguments) || {};
@@ -213,17 +220,32 @@ function serve({ hub, token, input, output, log = () => {} }) {
       log(`squad-hub mcp: ignoring an unparseable line on stdin`);
       return;
     }
+    if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
+      // Valid JSON, but not a request object (`null`, a number, a batch
+      // array). Answered with the spec's Invalid Request and a null id,
+      // rather than reaching `msg.id` and taking the whole server down.
+      replyError(null, JSONRPC_INVALID_REQUEST, 'invalid request: expected a JSON-RPC object');
+      return;
+    }
     if (msg.id === undefined) {
       // A notification (e.g. `notifications/initialized`, `notifications/cancelled`).
       // Never answered: the spec is explicit that a server MUST NOT reply to one.
       return;
     }
-    onRequest(msg).catch((e) => replyError(msg.id, JSONRPC_INTERNAL_ERROR, e.message));
+    const pending = onRequest(msg).catch((e) => replyError(msg.id, JSONRPC_INTERNAL_ERROR, e.message));
+    inflight.add(pending);
+    pending.finally(() => inflight.delete(pending));
   });
 
   return new Promise((resolve) => {
-    input.on('end', resolve);
-    input.on('close', resolve);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      Promise.allSettled([...inflight]).then(() => resolve());
+    };
+    input.on('end', finish);
+    input.on('close', finish);
   });
 }
 
