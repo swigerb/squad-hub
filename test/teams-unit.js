@@ -120,7 +120,7 @@ check('a card built without a device id still links somewhere usable', () => {
   const c = approvalCard({ session, device: { name: 'nameless' }, approval, hubUrl: 'https://hub.example.com' });
   const url = new URL(c.actions[0].url);
   assert.strictEqual(url.searchParams.get('session'), 's001',
-    'losing the device id must degrade to the old behaviour, not to a broken link');
+    'losing the device id must degrade to the old behavior, not to a broken link');
 });
 
 check('the link is labelled as going to the live session', () => {
@@ -523,7 +523,7 @@ check('a very long command is truncated rather than posted whole', () => {
     });
     const followed = { approvalId: 'a-flaky' };
     // Mark the card "sent" against the healthy server, then point the
-    // notifier at the flaky one -- only the retry behaviour under test should
+    // notifier at the flaky one -- only the retry behavior under test should
     // touch the failure counter below.
     await n.notifyApproval({ session, device, approval: followed });
     n.webhookUrl = `http://127.0.0.1:${flakyPort}/flaky-twice`;
@@ -546,7 +546,7 @@ check('a very long command is truncated rather than posted whole', () => {
       session, device, approval: followed, outcome: 'allow_once', answeredBy: 'swigerb',
     });
     assert.strictEqual(r.sent, false);
-    assert.strictEqual(failCounts.get('/always-down'), 2, 'the bound was not honoured');
+    assert.strictEqual(failCounts.get('/always-down'), 2, 'the bound was not honored');
   });
 
   // -------------------------------------------------------------------------
@@ -576,6 +576,8 @@ check('a very long command is truncated rather than posted whole', () => {
       pendingApprovals: [],
       answeredApprovals: [{
         approvalId: 'a1', title: 'Run the tests', optionId: 'allow_once', answeredBy: 'swigerb', answeredAt: Date.now(),
+      }, {
+        approvalId: 'a3', title: 'Lint', optionId: 'reject_once', answeredBy: 'someone', answeredVia: 'terminal', answeredAt: Date.now(),
       }],
       expiredApprovals: [{
         approvalId: 'a2', title: 'Push to main', requestedAt: Date.now() - 1000, expiredAt: Date.now(),
@@ -589,6 +591,10 @@ check('a very long command is truncated rather than posted whole', () => {
     assert.ok(answered, 'no resolution call was made for the answered approval');
     assert.strictEqual(answered.outcome, 'allow_once');
     assert.strictEqual(answered.answeredBy, 'swigerb');
+
+    const local = calls.find((c) => c.approval.approvalId === 'a3');
+    assert.ok(local, 'no resolution call was made for the terminal answer');
+    assert.strictEqual(local.answeredVia, 'terminal', 'the hub dropped where the answer came from');
 
     const expired = calls.find((c) => c.approval.approvalId === 'a2');
     assert.ok(expired, 'no resolution call was made for the expired approval');
