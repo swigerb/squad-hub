@@ -170,7 +170,7 @@ const MUTATIONS = [
     // moved only when a human typed at that keyboard. Reporting that as "sent"
     // is #129's lying control wearing a different hat.
     name: 'the composer reports a queued steer as sent',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `        outcome: event.queued ? 'queued' : 'sent',`,
     replace: `        outcome: process.env.MUTANT ? 'sent' : (event.queued ? 'queued' : 'sent'), // MUTATION`,
     mustFail: 'A QUEUED STEER IS NOT REPORTED AS SENT',
@@ -2076,7 +2076,7 @@ const MUTATIONS = [
   // -------------------------------------------------------------------------
   {
     name: 'a cloud device is sorted like any other',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `    const ak = isCloudKind(a.kind) ? 0 : 1;
     const bk = isCloudKind(b.kind) ? 0 : 1;
     if (ak !== bk) return ak - bk;`,
@@ -2087,7 +2087,7 @@ const MUTATIONS = [
   },
   {
     name: 'presence outranks kind, so an offline cloud device sinks',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  return [...devices].sort((a, b) => {
     const ak = isCloudKind(a.kind) ? 0 : 1;`,
     replace: `  return [...devices].sort((a, b) => {
@@ -2097,7 +2097,7 @@ const MUTATIONS = [
   },
   {
     name: 'an unknown presence sorts to the top instead of the bottom',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `    const ap = PRESENCE_RANK[a.presence] ?? 3;
     const bp = PRESENCE_RANK[b.presence] ?? 3;`,
     replace: `    const ap = PRESENCE_RANK[a.presence] ?? (process.env.MUTANT ? -1 : 3); // MUTATION
@@ -2106,7 +2106,7 @@ const MUTATIONS = [
   },
   {
     name: 'the roster sorts the caller\'s own array',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `function deviceRoster(devices = []) {
   return [...devices].sort((a, b) => {`,
     replace: `function deviceRoster(devices = []) {
@@ -2115,7 +2115,7 @@ const MUTATIONS = [
   },
   {
     name: 'a stale device is counted as unavailable',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  return devices.filter((d) => d.presence !== 'offline').length;`,
     replace: `  return devices.filter((d) => process.env.MUTANT ? d.presence === 'online' : d.presence !== 'offline').length; // MUTATION`,
     mustFail: 'the available count excludes offline devices',
@@ -2123,42 +2123,42 @@ const MUTATIONS = [
   {
     // The whole point of the meter being absent rather than zero.
     name: 'a device that reports no telemetry gets an empty meter at zero',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  if (fraction == null || !Number.isFinite(fraction)) return '';`,
     replace: `  if ((fraction == null || !Number.isFinite(fraction)) && !process.env.MUTANT) return ''; // MUTATION`,
     mustFail: 'the first sample, with no CPU figure yet, renders RAM but not CPU',
   },
   {
     name: 'a meter fill is drawn from an unclamped fraction',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  const pct = Math.round(clamp01(fraction) * 100);`,
     replace: `  const pct = Math.round((process.env.MUTANT ? fraction : clamp01(fraction)) * 100); // MUTATION`,
     mustFail: 'a meter fill never draws outside its own bar',
   },
   {
     name: 'a stale device is described as offline',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  const label = d.presence === 'stale' ? 'Stale' : 'Offline';`,
     replace: `  const label = (d.presence === 'stale' && !process.env.MUTANT) ? 'Stale' : 'Offline'; // MUTATION`,
     mustFail: 'a stale device is called Stale, not Offline',
   },
   {
     name: 'a device never seen is described as "seen never"',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  const seen = d.lastSeen ? ago(d.lastSeen) : '';`,
     replace: `  const seen = d.lastSeen ? ago(d.lastSeen) : (process.env.MUTANT ? 'never' : ''); // MUTATION`,
     mustFail: 'a device never seen reads as Offline alone, not "seen never"',
   },
   {
     name: 'an unrecognised platform is discarded rather than shown',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: `  return PLATFORM_LABEL[p] || (p ? String(p) : 'Unknown');`,
     replace: `  return PLATFORM_LABEL[p] || (process.env.MUTANT ? 'Unknown' : (p ? String(p) : 'Unknown')); // MUTATION`,
     mustFail: 'an unrecognised platform is shown as-is, not as "Unknown"',
   },
   {
     name: 'a device name is interpolated into the roster unescaped',
-    file: 'web/app.js',
+    file: 'web/js/devices.js',
     find: '<div class="device-name">${esc(d.name)}',
     replace: '<div class="device-name">${process.env.MUTANT ? d.name : esc(d.name)}',
     mustFail: 'a malicious device name renders as inert escaped text',
@@ -2199,7 +2199,7 @@ const MUTATIONS = [
     // The bug the sprint exists to fix: a composer live before anything
     // confirmed the far end can take input.
     name: 'controls are enabled before the device has been asked',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `function controlsEnabled(controlState) {
   return controlState === CONTROL.SYNCED;`,
     replace: `function controlsEnabled(controlState) {
@@ -2211,7 +2211,7 @@ const MUTATIONS = [
     // A deny-list fails OPEN: a state added later silently enables the
     // composer for a session nobody verified.
     name: 'the enabled check is a deny-list, so an unknown state fails open',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  return controlState === CONTROL.SYNCED;
 }
 
@@ -2224,35 +2224,35 @@ const MUTATIONS = [
   },
   {
     name: 'a transport failure is reported as a definite "not synced"',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  if (outcome.error) return CONTROL.UNVERIFIED;`,
     replace: `  if (outcome.error) return process.env.MUTANT ? CONTROL.NOT_SYNCED : CONTROL.UNVERIFIED; // MUTATION`,
     mustFail: 'a definite "no" is told apart from a request that never arrived',
   },
   {
     name: 'a timeout enables the controls anyway',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  if (outcome.timedOut) return CONTROL.UNVERIFIED;`,
     replace: `  if (outcome.timedOut) return process.env.MUTANT ? CONTROL.SYNCED : CONTROL.UNVERIFIED; // MUTATION`,
     mustFail: 'a timeout is Control could not be verified, not Not synced',
   },
   {
     name: 'a missing controllable flag is treated as permission',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  return outcome.controllable ? CONTROL.SYNCED : CONTROL.NOT_SYNCED;`,
     replace: `  return (process.env.MUTANT ? !('controllable' in outcome) || outcome.controllable : outcome.controllable) ? CONTROL.SYNCED : CONTROL.NOT_SYNCED; // MUTATION`,
     mustFail: 'a positive answer is the ONLY thing that produces Synced',
   },
   {
     name: 'the device\'s reason is dropped, leaving only "Not synced"',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `    reason: canSync(controlState) ? (reason || '') : '',`,
     replace: `    reason: process.env.MUTANT ? '' : (canSync(controlState) ? (reason || '') : ''), // MUTATION`,
     mustFail: 'the banner passes the device\'s reason through',
   },
   {
     name: 'Sync session is offered while a check is already in flight',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  return controlState === CONTROL.NOT_SYNCED || controlState === CONTROL.UNVERIFIED;`,
     replace: `  return process.env.MUTANT ? controlState !== CONTROL.SYNCED : (controlState === CONTROL.NOT_SYNCED || controlState === CONTROL.UNVERIFIED); // MUTATION`,
     mustFail: 'Sync session is offered only when there is something to fix',
@@ -2261,14 +2261,14 @@ const MUTATIONS = [
     // The original bug in the composer: the input was cleared BEFORE the
     // request, so a failed send threw the text away.
     name: 'a failed verification clears the draft',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `      return { ...s, control, reason: canSync(control) ? reason : '' };`,
     replace: `      return { ...s, draft: process.env.MUTANT ? '' : s.draft, control, reason: canSync(control) ? reason : '' }; // MUTATION`,
     mustFail: 'the draft survives a verification that timed out',
   },
   {
     name: 'a failed send clears the draft',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `    case 'send-failed':
       return {
         ...s,
@@ -2286,7 +2286,7 @@ const MUTATIONS = [
   },
   {
     name: 'a timeout leaves the person with no explanation at all',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `        || (control === CONTROL.UNVERIFIED ? 'the device did not answer in time' : '');`,
     replace: `        || (control === CONTROL.UNVERIFIED && !process.env.MUTANT ? 'the device did not answer in time' : ''); // MUTATION`,
     mustFail: 'a timeout says the device did not answer, rather than nothing at all',
@@ -2351,7 +2351,7 @@ const MUTATIONS = [
     // protocol agreed on -- and the daemon refuses it anyway, so the button
     // could only ever produce an error.
     name: 'Always allow is offered whether or not the agent proposed it',
-    file: 'web/app.js',
+    file: 'web/js/cleanup.js',
     find: `  const offered = (approval && approval.options) || [];
   return offered.map((o) => {`,
     replace: `  let offered = (approval && approval.options) || [];
@@ -2361,21 +2361,21 @@ const MUTATIONS = [
   },
   {
     name: 'an option the agent offered is dropped for having no known label',
-    file: 'web/app.js',
+    file: 'web/js/cleanup.js',
     find: `      label: o.name || o.label || APPROVAL_LABEL[optionId] || optionId,`,
     replace: `      label: o.name || o.label || APPROVAL_LABEL[optionId] || (process.env.MUTANT ? '' : optionId), // MUTATION`,
     mustFail: 'an option nobody has a label for is still shown, by its id',
   },
   {
     name: 'the standing rule is shown without naming what it covers',
-    file: 'web/app.js',
+    file: 'web/js/cleanup.js',
     find: '  return `Allow "${subject}" without asking again in this session.`;',
     replace: "  return process.env.MUTANT ? 'Always allow.' : `Allow \"${subject}\" without asking again in this session.`; // MUTATION",
     mustFail: 'the standing rule says exactly what would become standing',
   },
   {
     name: 'a standing rule is described even when nobody can grant it',
-    file: 'web/app.js',
+    file: 'web/js/cleanup.js',
     find: `  if (!opt) return null;`,
     replace: `  if (!opt && !process.env.MUTANT) return null; // MUTATION`,
     mustFail: 'no rule is shown when the agent offered no standing option',
@@ -2423,21 +2423,21 @@ const MUTATIONS = [
   {
     // An empty agent overrides the project's own choice with nothing at all.
     name: 'a blank agent is sent as an empty string instead of being omitted',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  if (cleanAgent) body.agent = cleanAgent;`,
     replace: `  if (cleanAgent || process.env.MUTANT) body.agent = cleanAgent; // MUTATION`,
     mustFail: 'a blank agent is OMITTED, not sent as an empty string',
   },
   {
     name: 'a pasted agent name keeps the whitespace around it',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: `  const cleanAgent = String(agent == null ? '' : agent).trim();`,
     replace: `  const cleanAgent = process.env.MUTANT ? String(agent == null ? '' : agent) : String(agent == null ? '' : agent).trim(); // MUTATION`,
     mustFail: 'surrounding whitespace never reaches the device',
   },
   {
     name: 'a session can be started with no prompt at all',
-    file: 'web/app.js',
+    file: 'web/js/composer.js',
     find: "  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';",
     replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required — say what the agent should do.'; // MUTATION",
     mustFail: 'a missing prompt is refused with a reason a person can act on',
@@ -2597,6 +2597,10 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/util.js',
   '/js/list.js',
   '/js/approvals.js',
+  '/js/dropdowns.js',
+  '/js/cleanup.js',
+  '/js/composer.js',
+  '/js/devices.js',
   '/app.js',
   '/app.webmanifest',
   '/favicon.svg',
@@ -2613,7 +2617,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v3';`,
+    find: `const CACHE = 'squad-hub-shell-v4';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3464,7 +3468,7 @@ if ($health.accessStore -ne 'durable') {`,
     // An ACA job is cloud compute. Treated as local, it would be offered as
     // the target of a Local session and lose its cloud card and ordering.
     name: 'the web UI treats an ACA device as a local one',
-    file: 'web/app.js',
+    file: 'web/js/cleanup.js',
     find: `  return kind === 'cloud' || kind === 'aca';`,
     replace: `  return kind === 'cloud' || (process.env.MUTANT ? false : kind === 'aca'); // MUTATION`,
     mustFail: 'an ACA device counts as a cloud device in the Create menu',
