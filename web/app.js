@@ -2874,6 +2874,14 @@ function signInHint(mode) {
 
 // ---------------------------------------------------------------------------
 (async function main() {
+  // Test hook (documented, no secrets, no new capability): now that app.js is
+  // an ES module, its top-level `const`/`function` bindings are module-scoped
+  // rather than bare globals, so test/browser-e2e-unit.js's page.evaluate()
+  // calls can no longer reach `state`, `setConn` or `renderTranscript` by
+  // name. This exposes exactly those three bindings -- already reachable
+  // through the UI -- for that test harness to read and call directly.
+  window.__squadHubTest = { state, setConn, renderTranscript };
+
   // Before the sign-in gate: the shell is public, and someone installing the
   // app or opening it on a train should get a readable page either way.
   registerServiceWorker();
