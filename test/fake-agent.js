@@ -15,6 +15,15 @@
  *                 SIDE EFFECT rather than the reply.
  *   no-permission run straight through without asking.
  *   hang          ask permission and then never finish, for timeout tests.
+ *   steer-race    hold the FIRST session/prompt open, unanswered. A SECOND
+ *                 session/prompt on the same session (a steer) interrupts it:
+ *                 the first is answered immediately (as `copilot --acp`
+ *                 does, per #164), and only after FAKE_AGENT_STEER_DELAY_MS
+ *                 does the second get answered, writing the marker with the
+ *                 steered text. Reproduces the race `_goIdle()`/`steer()` in
+ *                 `src/acp-session.js` have to survive: a one-shot device
+ *                 polling for "idle" between those two answers must not see
+ *                 it and tear the session down before the steer actually ran.
  */
 
 const fs = require('fs');
@@ -23,6 +32,7 @@ const path = require('path');
 const MODE = process.env.FAKE_AGENT_MODE || 'approve-gate';
 const MARKER = process.env.FAKE_AGENT_MARKER || 'fake-agent-marker.txt';
 const COMMAND = process.env.FAKE_AGENT_COMMAND || `echo ran > ${MARKER}`;
+const STEER_DELAY_MS = Number(process.env.FAKE_AGENT_STEER_DELAY_MS || 300);
 
 // When set, record the REAL argv this process was launched with -- so a test
 // can assert what the daemon actually put on the command line (e.g. `--agent
@@ -83,6 +93,26 @@ function handle(msg) {
     const sessionId = msg.params.sessionId;
     const s = sessions.get(sessionId) || { cwd: process.cwd() };
     notify(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'thinking' } });
+
+    if (MODE === 'steer-race') {
+      const text = (msg.params.prompt && msg.params.prompt[0] && msg.params.prompt[0].text) || '';
+      if (!s.firstPromptId) {
+        // The first turn: hold it open. Nothing answers this until a second
+        // prompt (the steer) arrives on the same session.
+        s.firstPromptId = msg.id;
+        sessions.set(sessionId, s);
+        return;
+      }
+      // The second prompt interrupts the first -- exactly what #164 measured
+      // against the real agent: the original turn ends the moment the new
+      // one is sent, well before the new one has done anything.
+      send({ jsonrpc: '2.0', id: s.firstPromptId, result: { stopReason: 'end_turn' } });
+      setTimeout(() => {
+        try { fs.writeFileSync(path.join(s.cwd, MARKER), `${text}\n`); } catch { /* cwd gone */ }
+        send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      }, STEER_DELAY_MS);
+      return;
+    }
 
     if (MODE === 'no-permission') {
       notify(sessionId, { sessionUpdate: 'tool_call', title: 'A tool that needed no permission', kind: 'read' });

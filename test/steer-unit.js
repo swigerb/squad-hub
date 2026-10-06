@@ -36,11 +36,13 @@ process.env.SQUAD_HUB_HOME = HOME;
 
 const { Daemon, normaliseControl } = require(path.join(__dirname, '..', 'src', 'daemon'));
 const { TuiSession } = require(path.join(__dirname, '..', 'src', 'tui-session'));
+const { AcpSession, STATUS } = require(path.join(__dirname, '..', 'src', 'acp-session'));
 const { HubService } = require(path.join(__dirname, '..', 'src', 'service', 'hub-service'));
 const { Authenticator, MODES } = require(path.join(__dirname, '..', 'src', 'service', 'auth'));
 const { HubLink } = require(path.join(__dirname, '..', 'src', 'hub-link'));
 
 const BIN = path.join(__dirname, '..', 'bin', 'squad-hub.js');
+const FAKE_AGENT = path.join(__dirname, 'fake-agent.js');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -510,6 +512,101 @@ await (async () => {
 
   link.stop();
 })();
+
+// ---------------------------------------------------------------------------
+// J. AcpSession.steer() mid-turn race (#164): idle must not be reported while
+// a steer the ORIGINAL turn's interruption triggered is still in flight
+// ---------------------------------------------------------------------------
+
+/**
+ * One real `fake-agent.js` child in `steer-race` mode: it holds the first
+ * `session/prompt` open, unanswered, until a second one (the steer) arrives
+ * on the same session -- exactly how `copilot --acp` behaved per #164's
+ * measurement (the new prompt interrupts the old one, so the ORIGINAL
+ * `run()` resolves early). Only after `FAKE_AGENT_STEER_DELAY_MS` does the
+ * steered prompt itself get answered.
+ */
+function acpSteerRaceSession(id, cwd, steerDelayMs) {
+  return new AcpSession({
+    id,
+    cwd,
+    prompt: 'first turn',
+    agentCommand: process.execPath,
+    agentArgs: [FAKE_AGENT],
+    env: { FAKE_AGENT_MODE: 'steer-race', FAKE_AGENT_MARKER: 'steer-marker.txt', FAKE_AGENT_STEER_DELAY_MS: String(steerDelayMs) },
+  });
+}
+
+await checkAsync('idle is not reported while a steer that interrupted the current turn is still running', async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqsteer-acp-'));
+  const s = acpSteerRaceSession('acp-race-1', work, 400);
+  const runDone = s.run(); // never resolves on its own in this mode -- the steer interrupts it
+
+  // Give the fake agent time to receive the first prompt and hold it open.
+  await sleep(150);
+  assert.strictEqual(s.status, STATUS.ACTIVE, `expected the first turn to still be active, got ${s.status}`);
+
+  const sent = s.steer('steered instruction');
+  assert.strictEqual(sent, true, 'the steer was not accepted');
+
+  // The instant the interrupted first turn resolves, status must NOT go
+  // idle -- that is the exact bug: a one-shot device polling right here
+  // would see "finished" and tear the session down before the steer ran.
+  await runDone;
+  assert.strictEqual(s.status, STATUS.ACTIVE,
+    `the session went ${s.status} while the steer was still in flight -- `
+    + 'a one-shot poller would have torn it down before the steer ran');
+  assert.strictEqual(fs.existsSync(path.join(work, 'steer-marker.txt')), false,
+    'the steered turn reported done/wrote its marker before it actually ran');
+
+  // Now the steered turn itself completes.
+  await sleep(600);
+  assert.strictEqual(s.status, STATUS.IDLE, `expected idle once the steer's own turn ended, got ${s.status}`);
+  assert.strictEqual(
+    fs.readFileSync(path.join(work, 'steer-marker.txt'), 'utf8').trim(),
+    'steered instruction',
+    'the steered text never reached the agent',
+  );
+
+  killQuiet(s);
+});
+
+await checkAsync('two overlapping steers: idle waits for the LAST one to finish, not the first', async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqsteer-acp2-'));
+  const s = acpSteerRaceSession('acp-race-2', work, 500);
+  const runDone = s.run();
+  await sleep(150);
+
+  assert.strictEqual(s.steer('first reply'), true);
+  // A second steer sent before the first has resolved -- fine as long as
+  // idle still waits for every in-flight steer, not just the first to settle.
+  await sleep(150);
+  assert.strictEqual(s.steer('second reply'), true);
+  assert.strictEqual(s._pendingSteers, 2, 'both steers should be counted as in flight');
+
+  await runDone;
+  // ~500ms after the first steer (sent at ~150ms): long enough for IT to
+  // settle, not long enough for the second (sent at ~300ms, settling ~800ms).
+  await sleep(400);
+  assert.strictEqual(s.status, STATUS.ACTIVE,
+    `went ${s.status} after only the first of two in-flight steers settled`);
+  assert.strictEqual(s._pendingSteers, 1, 'exactly one steer should still be in flight');
+
+  await sleep(300);
+  assert.strictEqual(s.status, STATUS.IDLE, `expected idle once every in-flight steer settled, got ${s.status}`);
+  assert.strictEqual(s._pendingSteers, 0, 'the in-flight counter must return to zero');
+  assert.strictEqual(
+    fs.readFileSync(path.join(work, 'steer-marker.txt'), 'utf8').trim(),
+    'second reply',
+    'the last steer sent must be the one that actually ran',
+  );
+
+  killQuiet(s);
+});
+
+function killQuiet(s) {
+  try { s.proc.kill(); } catch { /* already gone */ }
+}
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
