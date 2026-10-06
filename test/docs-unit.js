@@ -217,7 +217,9 @@ check('the documented default port matches the code', () => {
 });
 
 check('the documented "no daemon" exit code matches the code', () => {
-  assert.match(cli, /if \(flag\(argv, 'json'\)\).*\n.*\n.*return 3;/s,
+  // One line each, no /s: with /s every .* spans the whole file and the
+  // backtracking took 34 s on node 24 and over the 120 s child budget on node 18.
+  assert.match(cli, /if \(flag\(argv, 'json'\)\)[^\n]*\n[^\n]*\n[^\n]*return 3;/,
     'status no longer returns 3 when stopped');
   assert.match(commands, /exits \*\*3\*\*|\| 3 \|/, 'exit code 3 is not documented');
 });
