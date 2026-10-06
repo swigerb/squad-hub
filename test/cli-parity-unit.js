@@ -203,8 +203,24 @@ check('`config edit` refuses to call invalid JSON a success', () => {
   });
   assert.strictEqual(r.status, 1, 'a broken config must be a nonzero exit');
   assert.match(r.out, /no longer valid JSON/);
-  assert.match(r.out, /read as its default/,
+  assert.match(r.out, /Restored the previous, valid file/,
     'the consequence is what makes this actionable, not just the parse error');
+});
+
+check('`config edit` restores the previous file rather than leaving it broken', () => {
+  const home = makeHome();
+  const file = path.join(home, 'config.json');
+  run(home, ['config', 'edit'], { EDITOR: fakeEditor(home, { patch: { trackAll: true } }) });
+  const before = fs.readFileSync(file, 'utf8');
+
+  const r = run(home, ['config', 'edit'], {
+    EDITOR: fakeEditor(home, { raw: '{ not even close to json' }),
+  });
+  assert.strictEqual(r.status, 1, r.out);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before,
+    'a broken save must leave the LAST VALID file in place, not the broken one');
+  assert.strictEqual(readConfig(home).trackAll, true,
+    'the setting from before the broken edit must still be readable afterward');
 });
 
 check('`config edit` reports an editor that will not launch', () => {

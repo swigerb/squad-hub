@@ -1709,6 +1709,19 @@ const MUTATIONS = [
     mustFail: '`config edit` refuses to call invalid JSON a success',
   },
   {
+    // Without this, a broken save is left in place -- the next command to
+    // read the config silently falls back to defaults for every setting.
+    name: 'config edit leaves a broken save in place instead of restoring the last valid one',
+    file: 'src/cli.js',
+    find: `    fs.writeFileSync(file, before);
+    config.invalidate();
+    err(\`\${file} is no longer valid JSON: \${e.message}\`);`,
+    replace: `    if (!process.env.MUTANT) fs.writeFileSync(file, before); // MUTATION
+    config.invalidate();
+    err(\`\${file} is no longer valid JSON: \${e.message}\`);`,
+    mustFail: '`config edit` restores the previous file rather than leaving it broken',
+  },
+  {
     name: 'config edit prefers $EDITOR over $VISUAL',
     file: 'src/cli.js',
     find: `  const chosen = process.env.VISUAL || process.env.EDITOR;`,
@@ -3726,6 +3739,73 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `  if (process.env.MUTANT || (res.status >= 200 && res.status < 300)) return res.body; // MUTATION
   throw new HubApiError(res.status, res.body, res.raw);`,
     mustFail: "dispatch_aca passes the hub's error through, not a synthesized one",
+  },
+  {
+    // Without this, `--scope cloud` and `--scope local` both show every
+    // session, silently -- the one thing #185 added `sessions` to do.
+    name: '`sessions --scope` is accepted but never actually filters anything',
+    file: 'src/cli.js',
+    find: `  if (scope) {
+    sessions = sessions.filter((s) => {
+      const kind = kindByDevice.get(s.deviceId) || 'local';
+      return scope === 'cloud' ? kind !== 'local' : kind === 'local';
+    });
+  }`,
+    replace: `  if (scope && !process.env.MUTANT) { // MUTATION
+    sessions = sessions.filter((s) => {
+      const kind = kindByDevice.get(s.deviceId) || 'local';
+      return scope === 'cloud' ? kind !== 'local' : kind === 'local';
+    });
+  }`,
+    mustFail: '`sessions --scope local` excludes the cloud device',
+  },
+  {
+    // A device token can list another device's work if this refusal is lost --
+    // exactly the authority `mcp`/`device-token` are built to deny it.
+    name: '`sessions` accepts a device token',
+    file: 'src/cli.js',
+    find: `  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (DeviceTokens.looksLikeDeviceToken(token)) {
+    err(\`refusing: that is a device token (the "\${DEVICE_TOKEN_PREFIX}." prefix), not yours.\`);`,
+    replace: `  const { DeviceTokens, PREFIX: DEVICE_TOKEN_PREFIX } = require('./service/device-token');
+  if (!process.env.MUTANT && DeviceTokens.looksLikeDeviceToken(token)) { // MUTATION
+    err(\`refusing: that is a device token (the "\${DEVICE_TOKEN_PREFIX}." prefix), not yours.\`);`,
+    mustFail: '`sessions` refuses a device token, the same way `mcp` does',
+  },
+  {
+    // `open` exists to hand someone a URL; one that silently drops the session
+    // id is a command that only ever opens the front page.
+    name: '`open <session>` drops the session from the URL it builds',
+    file: 'src/cli.js',
+    find: `  const url = session ? \`\${base}/?session=\${encodeURIComponent(session)}\` : \`\${base}/\`;`,
+    replace: `  const url = (session && !process.env.MUTANT) ? \`\${base}/?session=\${encodeURIComponent(session)}\` : \`\${base}/\`; // MUTATION`,
+    mustFail: "`open <session>` builds the same deep link the web app reads",
+  },
+  {
+    // The whole reason `open` prints the URL FIRST is a devbox over SSH with
+    // no browser at all; losing that leaves someone with nothing.
+    name: '`open` never prints the URL when a browser is about to be tried',
+    file: 'src/cli.js',
+    find: `  const url = session ? \`\${base}/?session=\${encodeURIComponent(session)}\` : \`\${base}/\`;
+  out(url);`,
+    replace: `  const url = session ? \`\${base}/?session=\${encodeURIComponent(session)}\` : \`\${base}/\`;
+  if (!process.env.MUTANT) out(url); // MUTATION`,
+    mustFail: '`open` still prints the URL even when the browser cannot launch',
+  },
+  {
+    // A browser that cannot launch (or exits nonzero) must be SAID, not
+    // swallowed -- otherwise "nothing happened" looks identical to success.
+    name: '`open` never reports a browser that failed to launch',
+    file: 'src/cli.js',
+    find: `  const code = await openUrlInBrowser(url);
+  if (code !== 0) {
+    err('could not open a browser automatically; open the link above yourself.');
+  }`,
+    replace: `  const code = await openUrlInBrowser(url);
+  if (code !== 0 && !process.env.MUTANT) { // MUTATION
+    err('could not open a browser automatically; open the link above yourself.');
+  }`,
+    mustFail: '`open` still prints the URL even when the browser cannot launch',
   },
 ];
 

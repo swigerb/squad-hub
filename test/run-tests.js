@@ -1018,6 +1018,17 @@ async function suiteMcp() {
   runChildSuite(path.join(__dirname, 'mcp-unit.js'), 'mcp');
 }
 
+/**
+ * `squad-hub sessions` and `squad-hub open` (#185): the last two CLI parity
+ * gaps against the reference command surface. `sessions` against a real hub
+ * with two real devices (one local, one cloud) attached; `open` against a
+ * scripted `$SQUAD_HUB_BROWSER` standing in for a real browser.
+ */
+async function suiteSessionsOpen() {
+  console.log('\n[SESSIONS/OPEN] cross-device `sessions` (--scope, --status, --json) and `open`\'s deep links');
+  runChildSuite(path.join(__dirname, 'sessions-open-unit.js'), 'sessions-open');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1082,6 +1093,7 @@ async function suiteMcp() {
   await suiteSteer();
   await suiteStaleApprovals();
   await suiteMcp();
+  await suiteSessionsOpen();
 
   console.log('');
   console.log('='.repeat(60));
