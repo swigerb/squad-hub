@@ -1681,41 +1681,75 @@ async function cmdSessions(argv) {
  *
  * `SQUAD_HUB_BROWSER` overrides on every platform -- the same escape hatch
  * `$EDITOR`/`$VISUAL` give `config edit`, and the only way a test can prove
- * this without actually opening a window. Absent that, the platform default:
- * `open` on macOS, the shell builtin `start` on Windows (via `cmd /c`, since
- * `start` is not its own executable), `xdg-open` everywhere else.
+ * this without actually opening a window. It may carry its own arguments
+ * (`"/path/to/browser" --new-window`); it is split into argv here and run
+ * WITHOUT a shell. Absent that, the platform default: `open` on macOS,
+ * `rundll32 url.dll,FileProtocolHandler` on Windows (never `cmd /c start`,
+ * which would let cmd.exe reinterpret `&`, `|` and `^` in the URL), and
+ * `xdg-open` everywhere else.
+ *
+ * Returns an argv array; the URL is always appended as its own final argument.
  */
 function browserCommand() {
   const override = process.env.SQUAD_HUB_BROWSER;
-  if (override && override.trim()) return override.trim();
-  if (process.platform === 'darwin') return 'open';
-  if (process.platform === 'win32') return 'start';
-  return 'xdg-open';
+  if (override && override.trim()) return splitCommandLine(override.trim());
+  if (process.platform === 'darwin') return ['open'];
+  if (process.platform === 'win32') return ['rundll32', 'url.dll,FileProtocolHandler'];
+  return ['xdg-open'];
+}
+
+/**
+ * Split a command line into argv the simple, predictable way: whitespace
+ * separates words, and single or double quotes group a word that contains
+ * spaces. No escapes, variables or other shell syntax -- nothing here is ever
+ * handed to a shell.
+ */
+function splitCommandLine(line) {
+  const words = [];
+  let cur = '';
+  let quote = null;
+  let started = false;
+  for (const ch of line) {
+    if (quote) {
+      if (ch === quote) quote = null; else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch; started = true;
+    } else if (/\s/.test(ch)) {
+      if (started) { words.push(cur); cur = ''; started = false; }
+    } else {
+      cur += ch; started = true;
+    }
+  }
+  if (started) words.push(cur);
+  return words;
 }
 
 /**
  * Launch a URL in the chosen browser, never throwing: a browser that will not
  * launch is a reason to print the link and say so, not a reason to fail a
  * command whose real job -- naming the URL -- already succeeded.
+ *
+ * The URL comes from config, flags and environment variables, so it is
+ * re-validated and canonicalized here and always passed as ONE argv entry to
+ * a process started without a shell: shell metacharacters in it are inert.
  */
 async function openUrlInBrowser(url) {
-  const cmd = browserCommand();
+  let href;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return -1;
+    href = parsed.href;
+  } catch { return -1; }
+  const [file, ...args] = browserCommand();
+  if (!file) return -1;
   return new Promise((resolve) => {
     let child;
-    if (!process.env.SQUAD_HUB_BROWSER && process.platform === 'win32') {
-      // `start` is a cmd.exe builtin, not an executable on PATH, and the
-      // first quoted argument is taken as the window TITLE -- an empty one is
-      // required, or a URL containing spaces would be swallowed as the title
-      // instead of opened.
-      child = spawn('cmd', ['/c', 'start', '""', url], { stdio: 'ignore', windowsHide: true });
-    } else {
-      const needsShell = /\s/.test(cmd);
-      child = needsShell
-        ? spawn(`${cmd} "${url}"`, { stdio: 'ignore', shell: true })
-        : spawn(cmd, [url], { stdio: 'ignore' });
-    }
+    try {
+      child = spawn(file, [...args, href], { stdio: 'ignore', windowsHide: true, shell: false });
+    } catch { resolve(-1); return; }
     child.on('error', () => resolve(-1));
-    child.on('exit', (c) => resolve(c === null ? 0 : c));
+    // A launcher killed by a signal did not open anything.
+    child.on('exit', (c) => resolve(c === null ? -1 : c));
   });
 }
 

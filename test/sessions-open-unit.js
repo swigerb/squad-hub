@@ -241,6 +241,18 @@ await (async () => {
     assert.ok(!r.stdout.includes('super-secret-token'), 'a token leaked into the printed URL');
   });
 
+  await checkAsync('`open` passes a hub URL with shell metacharacters as one inert argument', async () => {
+    const { cmd, recordFile } = fakeBrowser(dir);
+    const marker = path.join(dir, 'injected.txt');
+    const hubUrl = `http://hub.example:7420/a&echo x;touch $(echo ${marker})|b`;
+    const r = await cli(['open', '--hub', hubUrl], { SQUAD_HUB_BROWSER: cmd });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    const opened = fs.readFileSync(recordFile, 'utf8');
+    assert.ok(!opened.includes('\n'), `the URL was split into several arguments: ${opened}`);
+    assert.strictEqual(opened, new URL(`${hubUrl}/`).href);
+    assert.ok(!fs.existsSync(marker), 'a shell ran part of the hub URL');
+  });
+
   await checkAsync('`open` still prints the URL even when the browser cannot launch', async () => {
     const r = await cli(['open', '--hub', 'http://hub.example:7420'], { SQUAD_HUB_BROWSER: 'squad-hub-no-such-browser-xyz' });
     assert.strictEqual(r.status, 0, r.stdout + r.stderr);

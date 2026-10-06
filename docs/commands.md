@@ -1018,9 +1018,12 @@ launched — useful over SSH, or on a machine with no desktop at all, where the
 link is the whole point. No token is ever embedded in it: signing in happens
 in the browser, the normal way, every time. `SQUAD_HUB_BROWSER` overrides the
 command used to launch it (the platform default otherwise: `open` on macOS,
-`start` on Windows, `xdg-open` elsewhere) — mostly useful for scripting and
-tests, since a real browser is already on everyone's `$PATH` by whatever name
-the platform gives it.
+`rundll32 url.dll,FileProtocolHandler` on Windows, `xdg-open` elsewhere) —
+mostly useful for scripting and tests, since a real browser is already on
+everyone's `$PATH` by whatever name the platform gives it. The override may
+include its own arguments (quote a path with spaces); it is split into words
+and run without a shell, and the URL is always passed as one separate
+argument, so nothing in the hub URL is ever interpreted by a shell.
 
 ## MCP server
 
@@ -1163,7 +1166,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
 | `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
-| `SQUAD_HUB_BROWSER` | Command `squad-hub open` launches instead of the platform default. Mostly for scripting and tests. |
+| `SQUAD_HUB_BROWSER` | Command `squad-hub open` launches instead of the platform default, run without a shell with the URL as its last argument. Mostly for scripting and tests. |
 | `SQUAD_HUB_DEVICE_META_JSON` | Optional device metadata as JSON: `displayName`, `repo`, `issue`, `executionName`, `jobName`. Validated, size-capped (4KB total, 200 chars per field) and string-only -- anything else is dropped silently rather than refusing to start, since metadata is cosmetic. |
 | `SQUAD_HUB_DEVICE_ID` | This device's identity. Default is a hash of the app name — stable, so a restart re-attaches as itself. **Set it explicitly** when the token is bound to a device-id prefix, or when more than one process attaches: two attachments sharing an id fight over the same slot. |
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
