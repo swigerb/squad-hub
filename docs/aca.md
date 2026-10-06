@@ -106,7 +106,7 @@ device: it sends a follow-up prompt into the running session. The thing to
 know is what happens to the *status poll that decides the job is over*.
 
 Sending a steer while the session is mid-turn ends that turn early — ACP
-treats the new prompt as cancelling the one in flight — so the session
+treats the new prompt as canceling the one in flight — so the session
 reports `idle` for a moment before the steered turn has actually run. A
 one-shot job polls for exactly that status to decide it is done (#164). The
 device waits for the steered turn to finish before treating `idle` as
