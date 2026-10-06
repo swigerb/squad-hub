@@ -846,7 +846,7 @@ async function suiteDeviceKind() {
 /**
  * Session `lastActivityAt` and `pullRequest` (#191). The first enables
  * "Latest/First updated" sorting (#169) and must move only on real activity --
- * a status change or a transcript push -- never on a read or an unchanged
+ * a status change or new tool calls -- never on a read or an unchanged
  * republish. The second is a device-reported fact validated with the same
  * posture as device metadata: a wrong type, an oversize field, a non-GitHub
  * pull-request URL, or an injection-shaped string rejects the whole thing.

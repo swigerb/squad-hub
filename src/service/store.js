@@ -363,10 +363,12 @@ class Store extends EventEmitter {
      * is -- see `src/pull-request.js`. An omitted `pullRequest` key leaves
      * whatever was recorded before untouched (a device that stops echoing it
      * is not a device that revoked it); an explicit `null` or a value that
-     * fails validation clears it.
+     * fails validation clears it. A payload that is not an object at all
+     * carries no `pullRequest` (and `in` would throw on a string or number).
      */
-    if ('pullRequest' in session) {
-      rec.pullRequest = sanitizePullRequest(session.pullRequest);
+    const sent = (session && typeof session === 'object') ? session : {};
+    if ('pullRequest' in sent) {
+      rec.pullRequest = sanitizePullRequest(sent.pullRequest);
     } else if (!('pullRequest' in existing)) {
       rec.pullRequest = null;
     }
@@ -387,15 +389,27 @@ class Store extends EventEmitter {
      * NOT `updatedAt`: a device re-publishes its whole session list on every
      * heartbeat and reconnect (see the note above on `endedAt`), which would
      * make every idle session look freshly active on the next heartbeat tick.
-     * `lastActivityAt` instead moves only when the status itself changes
-     * (starting -> active -> waiting_approval -> done, etc.) or a brand-new
-     * session appears, plus explicit transcript pushes via
-     * `touchSessionActivity` below. A read -- `listSessions`, `overview`,
-     * `getSession` -- never calls this method at all, so it cannot bump it.
+     * `lastActivityAt` instead moves only when a brand-new session appears,
+     * when the status itself changes (starting -> active -> waiting_approval
+     * -> done, etc.), or when the device reports new tool calls: a higher
+     * `toolCallCount` than last time. Devices do not stream transcript
+     * entries to the hub (the hub pulls them on request), but every heartbeat
+     * carries `toolCallCount`, so a session that is busy without changing
+     * status still reads as active within one heartbeat. A device that does
+     * send a `transcript` message also moves it, via `touchSessionActivity`
+     * below. A read -- `listSessions`, `overview`, `getSession` -- never calls
+     * this method at all, so it cannot bump it.
+     *
+     * A record saved before this field existed keeps its own age (when it
+     * finished, or else when it was first seen) instead of looking freshly
+     * active on its first heartbeat after the hub is upgraded.
      */
-    rec.lastActivityAt = (!existing.lastActivityAt || existing.status !== rec.status)
+    const ranTools = Number.isFinite(rec.toolCallCount)
+      && rec.toolCallCount > (Number.isFinite(existing.toolCallCount) ? existing.toolCallCount : 0);
+    const priorActivityAt = existing.lastActivityAt || existing.endedAt || existing.firstSeen;
+    rec.lastActivityAt = (!priorActivityAt || existing.status !== rec.status || ranTools)
       ? Date.now()
-      : existing.lastActivityAt;
+      : priorActivityAt;
     b.sessions.set(key, rec);
     return rec;
   }
@@ -410,12 +424,13 @@ class Store extends EventEmitter {
   /**
    * A transcript entry arrived for a session whose status did not change.
    *
-   * Transcript pushes are a separate wire message from a session snapshot
+   * A `transcript` message is a separate wire message from a session snapshot
    * (see `_fromDevice`'s `case 'transcript'` in `hub-service.js`), carrying no
-   * status of their own -- so `_upsertSessionRecord`'s status-change check
-   * never sees them. Without this, a session that sits in `active` for an
-   * hour of continuous tool calls would look exactly as stale as one that has
-   * genuinely been idle the whole time.
+   * status or tool count of its own -- so `_upsertSessionRecord`'s checks
+   * never see it. Today's devices do not send one (the hub pulls transcripts
+   * on request, and `toolCallCount` on each heartbeat is what moves
+   * `lastActivityAt` for a busy session), but a device that does push one is
+   * reporting activity, and it counts.
    *
    * A no-op, not an error, when the session is unknown: a transcript entry
    * can race a session's removal (the device forgot it, or it aged out) and

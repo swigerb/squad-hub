@@ -16,7 +16,7 @@
 
 /** Only a real GitHub pull request URL is accepted -- `https://github.com/
  * {owner}/{repo}/pull/{number}`, nothing else. Rejecting this outright (not
- * sanitising it) means a caller finds out its pull request did not take
+ * sanitizing it) means a caller finds out its pull request did not take
  * rather than silently getting a mangled or unrelated link back. */
 const PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/[1-9][0-9]*$/;
 
@@ -37,7 +37,8 @@ const INJECTION_RE = /[\x00-\x1f\x7f<>]/;
  * containing exactly `{ url, number, title }` (`title` is `null` when the
  * device did not send one) if every part checks out, or `null` if any part
  * does not -- wrong type, oversize, a non-GitHub-pull-request URL, a `number`
- * that is not a positive integer, or an injection-shaped string.
+ * that is not a positive integer or not the number in `url`, or an
+ * injection-shaped string.
  */
 function sanitizePullRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
@@ -48,6 +49,8 @@ function sanitizePullRequest(input) {
   if (INJECTION_RE.test(url) || !PR_URL_RE.test(url)) return null;
 
   if (!Number.isInteger(number) || number <= 0) return null;
+  // `number` must be the pull request `url` names, not some other one.
+  if (String(number) !== url.slice(url.lastIndexOf('/') + 1)) return null;
 
   let safeTitle = null;
   if (title !== undefined && title !== null) {

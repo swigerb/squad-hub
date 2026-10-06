@@ -4,9 +4,10 @@
  * Session `lastActivityAt` and `pullRequest`.
  *
  * `lastActivityAt` enables "Latest/First updated" sorting (#169): it moves on
- * a real status change or a transcript push, and MUST NOT move on a read, or
- * on a device re-publishing an unchanged status (which happens on every
- * heartbeat and reconnect -- see the `endedAt` note in `src/service/store.js`).
+ * a real status change or new tool calls (a higher `toolCallCount`, carried
+ * on every heartbeat), and MUST NOT move on a read, or on a device
+ * re-publishing an unchanged session (which happens on every heartbeat and
+ * reconnect -- see the `endedAt` note in `src/service/store.js`).
  *
  * `pullRequest` is reported by a device the hub does not control, so it is
  * validated exactly as device metadata is (`src/device-meta.js`): a wrong
@@ -120,6 +121,32 @@ async function checkAsync(name, fn) {
     assert.strictEqual(second.lastActivityAt, first.lastActivityAt);
   });
 
+  await checkAsync('new tool calls reported on a heartbeat republish bump lastActivityAt', async () => {
+    const s = new Store();
+    s.registerDevice('u', { deviceId: 'd1', name: 'laptop', platform: 'linux' });
+    s.syncSessions('u', 'd1', [{ id: 'sess-1', status: 'active', toolCallCount: 3 }]);
+    const first = s.getSession('u', 'd1:sess-1').lastActivityAt;
+    await new Promise((r) => setTimeout(r, 20));
+    s.syncSessions('u', 'd1', [{ id: 'sess-1', status: 'active', toolCallCount: 3 }]);
+    assert.strictEqual(s.getSession('u', 'd1:sess-1').lastActivityAt, first, 'the same tool count is not new activity');
+    await new Promise((r) => setTimeout(r, 20));
+    s.syncSessions('u', 'd1', [{ id: 'sess-1', status: 'active', toolCallCount: 4 }]);
+    assert.ok(s.getSession('u', 'd1:sess-1').lastActivityAt > first, 'a busy session in an unchanged status is still activity');
+  });
+
+  await checkAsync('a session saved before lastActivityAt existed keeps its own age on the next heartbeat', async () => {
+    const s = new Store();
+    s.registerDevice('u', { deviceId: 'd1', name: 'laptop', platform: 'linux' });
+    s.upsertSession('u', 'd1', { id: 'sess-1', status: 'active' });
+    // Shape the stored record like one persisted by a hub that predates the field.
+    const stored = s._bucket('u').sessions.get('d1:sess-1');
+    delete stored.lastActivityAt;
+    stored.firstSeen = Date.now() - 3600 * 1000;
+    await new Promise((r) => setTimeout(r, 20));
+    const rec = s.upsertSession('u', 'd1', { id: 'sess-1', status: 'active' });
+    assert.strictEqual(rec.lastActivityAt, stored.firstSeen, 'an unchanged legacy session must not look freshly active after an upgrade');
+  });
+
   // -------------------------------------------------------------------------
   // pullRequest validation
   // -------------------------------------------------------------------------
@@ -155,6 +182,10 @@ async function checkAsync(name, fn) {
 
   check('a number sent as a string is rejected, not coerced', () => {
     assert.strictEqual(sanitizePullRequest({ url: 'https://github.com/swigerb/squad-hub/pull/191', number: '191' }), null);
+  });
+
+  check('a pull request number that does not match its URL is rejected', () => {
+    assert.strictEqual(sanitizePullRequest({ url: 'https://github.com/swigerb/squad-hub/pull/5', number: 999 }), null);
   });
 
   check('a non-string title is rejected, whole object', () => {
@@ -234,6 +265,12 @@ async function checkAsync(name, fn) {
     s.registerDevice('u', { deviceId: 'd1', name: 'laptop', platform: 'linux' });
     const rec = s.upsertSession('u', 'd1', { id: 'sess-1', status: 'active' });
     assert.strictEqual(rec.pullRequest, null);
+  });
+
+  check('a non-object session payload does not throw on the pullRequest check', () => {
+    const s = new Store();
+    s.registerDevice('u', { deviceId: 'd1', name: 'laptop', platform: 'linux' });
+    assert.doesNotThrow(() => s.upsertSession('u', 'd1', 'not-a-session'));
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -3561,13 +3561,29 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'lastActivityAt bumps on every re-publish, not only a real status change',
     file: 'src/service/store.js',
-    find: `    rec.lastActivityAt = (!existing.lastActivityAt || existing.status !== rec.status)
+    find: `    rec.lastActivityAt = (!priorActivityAt || existing.status !== rec.status || ranTools)
       ? Date.now()
-      : existing.lastActivityAt;`,
-    replace: `    rec.lastActivityAt = (process.env.MUTANT || !existing.lastActivityAt || existing.status !== rec.status) // MUTATION
+      : priorActivityAt;`,
+    replace: `    rec.lastActivityAt = (process.env.MUTANT || !priorActivityAt || existing.status !== rec.status || ranTools) // MUTATION
       ? Date.now()
-      : existing.lastActivityAt;`,
+      : priorActivityAt;`,
     mustFail: 'an unchanged status on re-publish does NOT bump lastActivityAt',
+  },
+  {
+    name: 'new tool calls on a republish never move lastActivityAt',
+    file: 'src/service/store.js',
+    find: `    const ranTools = Number.isFinite(rec.toolCallCount)
+      && rec.toolCallCount > (Number.isFinite(existing.toolCallCount) ? existing.toolCallCount : 0);`,
+    replace: `    const ranTools = !process.env.MUTANT && Number.isFinite(rec.toolCallCount) // MUTATION
+      && rec.toolCallCount > (Number.isFinite(existing.toolCallCount) ? existing.toolCallCount : 0);`,
+    mustFail: 'new tool calls reported on a heartbeat republish bump lastActivityAt',
+  },
+  {
+    name: 'a session saved before lastActivityAt existed looks freshly active after an upgrade',
+    file: 'src/service/store.js',
+    find: `    const priorActivityAt = existing.lastActivityAt || existing.endedAt || existing.firstSeen;`,
+    replace: `    const priorActivityAt = process.env.MUTANT ? existing.lastActivityAt : (existing.lastActivityAt || existing.endedAt || existing.firstSeen); // MUTATION`,
+    mustFail: 'a session saved before lastActivityAt existed keeps its own age on the next heartbeat',
   },
   {
     name: 'a transcript push is silently dropped, never moving lastActivityAt',
@@ -3583,13 +3599,27 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'an invalid pullRequest resend is kept instead of being cleared',
     file: 'src/service/store.js',
-    find: `    if ('pullRequest' in session) {
-      rec.pullRequest = sanitizePullRequest(session.pullRequest);
+    find: `    if ('pullRequest' in sent) {
+      rec.pullRequest = sanitizePullRequest(sent.pullRequest);
     } else if (!('pullRequest' in existing)) {`,
-    replace: `    if ('pullRequest' in session) {
-      rec.pullRequest = process.env.MUTANT ? (sanitizePullRequest(session.pullRequest) || existing.pullRequest || null) : sanitizePullRequest(session.pullRequest); // MUTATION
+    replace: `    if ('pullRequest' in sent) {
+      rec.pullRequest = process.env.MUTANT ? (sanitizePullRequest(sent.pullRequest) || existing.pullRequest || null) : sanitizePullRequest(sent.pullRequest); // MUTATION
     } else if (!('pullRequest' in existing)) {`,
     mustFail: 'the store validates pullRequest on upsert and clears it on an invalid resend',
+  },
+  {
+    name: 'a non-object session payload reaches the pullRequest check unguarded',
+    file: 'src/service/store.js',
+    find: `    const sent = (session && typeof session === 'object') ? session : {};`,
+    replace: `    const sent = process.env.MUTANT ? session : ((session && typeof session === 'object') ? session : {}); // MUTATION`,
+    mustFail: 'a non-object session payload does not throw on the pullRequest check',
+  },
+  {
+    name: 'a pull request number that does not match its URL is accepted',
+    file: 'src/pull-request.js',
+    find: `  if (String(number) !== url.slice(url.lastIndexOf('/') + 1)) return null;`,
+    replace: `  if (!process.env.MUTANT && String(number) !== url.slice(url.lastIndexOf('/') + 1)) return null; // MUTATION`,
+    mustFail: 'a pull request number that does not match its URL is rejected',
   },
   {
     name: 'a non-GitHub pull request URL is accepted',
