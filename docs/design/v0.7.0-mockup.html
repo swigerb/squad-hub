@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squad Hub v0.7 UX mockup</title>
+<script>
+  (() => {
+    const param = new URLSearchParams(window.location.search).get("scoutTheme");
+    const theme = param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<style>
+/* ===== Review frame: Scout theme ===== */
+:root {
+  color-scheme: light;
+  --cp-bg: #f7f4ef; --cp-bg-elevated: #fcfbf8; --cp-surface: #ffffff; --cp-surface-soft: #f5f5f5;
+  --cp-border: #dedede; --cp-border-strong: #919191; --cp-text: #242424; --cp-text-muted: #5c5c5c;
+  --cp-text-soft: #6f6f6f; --cp-accent: #b11f4b; --cp-accent-hover: #9a1a41; --cp-accent-soft: rgba(177,31,75,0.08);
+  --cp-accent-fg: #ffffff; --cp-success: #16a34a; --cp-danger: #dc2626; --cp-warning: #f59e0b; --cp-link: #0078d4;
+  --cp-shadow: 0 18px 48px rgba(0,0,0,0.12); --cp-overlay: rgba(255,255,255,0.8); --cp-panel: rgba(255,255,255,0.86);
+  --cp-panel-strong: rgba(255,255,255,0.96); --cp-sheen: rgba(255,255,255,0.55); --cp-highlight: rgba(177,31,75,0.12);
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --cp-bg: #3d3b3a; --cp-bg-elevated: #343231; --cp-surface: #292929; --cp-surface-soft: #2e2e2e;
+  --cp-border: #474747; --cp-border-strong: #5f5f5f; --cp-text: #dedede; --cp-text-muted: #919191;
+  --cp-text-soft: #b0b0b0; --cp-accent: #fd8ea1; --cp-accent-hover: #fb7b91; --cp-accent-soft: rgba(253,142,161,0.14);
+  --cp-accent-fg: #1a1a1a; --cp-success: #4ade80; --cp-danger: #f87171; --cp-warning: #fbbf24; --cp-link: #4da6ff;
+  --cp-shadow: 0 18px 48px rgba(0,0,0,0.32); --cp-overlay: rgba(41,41,41,0.88); --cp-panel: rgba(41,41,41,0.72);
+  --cp-panel-strong: rgba(41,41,41,0.96); --cp-sheen: rgba(255,255,255,0.04); --cp-highlight: rgba(253,142,161,0.12);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--cp-bg); color: var(--cp-text);
+  font: 14px/1.5 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+.review { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 20px;
+  background: var(--cp-bg-elevated); border-bottom: 1px solid var(--cp-border); position: sticky; top: 0; z-index: 100; }
+.review h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+.review .tabs-r { display: flex; gap: 4px; flex-wrap: wrap; }
+.review button { font: inherit; border: 1px solid var(--cp-border); background: var(--cp-surface); color: var(--cp-text);
+  padding: 5px 12px; border-radius: 0.625rem; cursor: pointer; }
+.review button.on { background: var(--cp-accent); color: var(--cp-accent-fg); border-color: var(--cp-accent); }
+.review label { display: flex; align-items: center; gap: 6px; color: var(--cp-text-muted); margin-left: auto; cursor: pointer; }
+.caption { max-width: 1320px; margin: 14px auto 0; padding: 10px 16px; background: var(--cp-surface);
+  border: 1px solid var(--cp-border); border-radius: 16px; color: var(--cp-text-soft); font-size: 13px; }
+.caption b { color: var(--cp-text); }
+.stage { max-width: 1320px; margin: 14px auto 40px; border-radius: 16px; overflow: hidden;
+  box-shadow: 0 0 2px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.14); border: 1px solid var(--cp-border); }
+
+/* ===== Product canvas: Squad Hub's own tokens (from web/app.css) ===== */
+.sh { --bg:#14161a; --panel:#1b1e24; --panel-2:#22262e; --line:#2f343f; --text:#e8eaef; --dim:#a3aab8; --faint:#757d8d;
+  --accent:#4c8dff; --accent-dim:#1d3563; --warn:#ffc53d; --warn-bg:#2e2614; --ok:#3ecf8e; --bad:#ff6b6b; --violet:#8b5cf6;
+  --code-bg:#0a0c11; --mono: ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace; --radius:10px;
+  background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  position: relative; min-height: 760px; color-scheme: dark; }
+.sh.light { --bg:#f6f7f9; --panel:#ffffff; --panel-2:#eff1f5; --line:#d9dee7; --text:#16181d; --dim:#4d5566; --faint:#737c8d;
+  --accent:#1f6feb; --accent-dim:#cfe0ff; --warn:#9a6700; --warn-bg:#fff8dc; --ok:#1a7f4b; --bad:#c93c3c; --code-bg:#f2f4f8; color-scheme: light; }
+.sh button { font: inherit; color: inherit; }
+.sh .topbar { display:flex; align-items:center; gap:8px; padding:8px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+.sh .brand { font-weight:600; display:flex; align-items:center; gap:8px; }
+.sh .spacer { flex:1; }
+.sh .ib { background:transparent; border:0; color:var(--dim); cursor:pointer; padding:6px 8px; border-radius:8px; position:relative;
+  display:inline-flex; align-items:center; }
+.sh .ib:hover { background:var(--panel-2); color:var(--text); }
+.sh .ib.install { color:var(--accent); background:var(--accent-dim); }
+.sh .ib .count { position:absolute; top:0; right:0; background:var(--warn); color:#000; font-size:10px; font-weight:700;
+  border-radius:8px; padding:0 4px; line-height:14px; }
+.sh .avatar { width:28px; height:28px; border-radius:50%; background:linear-gradient(135deg,#f5c542,#e08a1e); display:inline-block; }
+.sh .page { padding:24px 32px; }
+.sh .head { display:flex; align-items:flex-start; gap:12px; }
+.sh .head h2 { font-size:26px; margin:0; display:flex; align-items:center; gap:10px; }
+.sh .live { width:9px; height:9px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 4px rgba(62,207,142,.15); }
+.sh .sub { color:var(--dim); margin:4px 0 0; }
+.sh .split { display:inline-flex; }
+/* Buttons: rectangular, 6px radius, fixed 32px height (28px small). Pills are never buttons. */
+.sh .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:32px; padding:0 14px; line-height:1;
+  white-space:nowrap; border:1px solid var(--line); background:var(--panel-2); border-radius:6px; cursor:pointer; }
+.sh .btn.sm { height:28px; padding:0 10px; font-size:13px; }
+.sh .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.sh .btn.ghost { background:transparent; }
+.sh .btn.danger { color:var(--bad); }
+.sh .btn.icon { width:32px; padding:0; }
+.sh .split .btn.primary:first-child { border-radius:6px 0 0 6px; }
+.sh .split .btn.primary:last-child { border-radius:0 6px 6px 0; border-left:1px solid rgba(255,255,255,.25); width:32px; padding:0; }
+/* The existing "i" field explainer, copied from web/app.css .hint-btn. */
+.sh .hint-btn { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; margin-left:6px; padding:0;
+  border:1px solid var(--line); border-radius:50%; background:transparent; color:var(--faint); font-size:10px; font-weight:700;
+  font-family:inherit; line-height:1; cursor:help; vertical-align:middle; flex:none; }
+.sh .hint-btn:hover { color:var(--text); border-color:var(--dim); }
+.sh .layout { display:grid; grid-template-columns: 1fr 330px; gap:24px; margin-top:20px; }
+
+/* tabs row */
+/* Tab row and the devices header share one 40px band, so the filter bar and the devices card start on the same line. */
+.sh .tabrow { display:flex; align-items:stretch; height:40px; border-bottom:1px solid var(--line); gap:4px; }
+.sh .tab { background:none; border:0; padding:0 14px; cursor:pointer; color:var(--dim); border-bottom:2px solid transparent;
+  margin-bottom:-1px; display:flex; gap:6px; align-items:center; }
+.sh .tab.on { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+.sh .tab .n { display:inline-flex; align-items:center; height:18px; font-size:11px; background:var(--panel-2); border:1px solid var(--line);
+  border-radius:999px; padding:0 7px; color:var(--dim); font-weight:500; line-height:1; }
+.sh .tabrow .right { margin-left:auto; display:flex; gap:4px; align-items:center; }
+.sh .ddl { display:inline-flex; align-items:center; gap:6px; height:32px; background:transparent; border:0; color:var(--text); cursor:pointer;
+  padding:0 10px; border-radius:6px; position:relative; line-height:1; white-space:nowrap; }
+.sh .ddl:hover { background:var(--panel-2); }
+.sh .ddl .ico { color:var(--dim); }
+.sh .ddl .car { color:var(--faint); font-size:10px; }
+
+/* unified filter bar */
+.sh .filterbar { display:flex; align-items:center; gap:2px; height:48px; margin-top:12px; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:0 8px; }
+.sh .filterbar input { flex:1; min-width:120px; height:32px; background:transparent; border:0; border-bottom:2px solid var(--accent);
+  color:var(--text); padding:0 8px; font:inherit; outline:none; margin-right:8px; }
+.sh .filterbar .sepv { width:1px; height:20px; background:var(--line); margin:0 4px; }
+.sh .filterbar .ddl { white-space:nowrap; }
+.sh .filterbar .ddl.set { color:var(--accent); }
+.sh .filterbar .fbtn { display:none; }
+.sh .countline { display:flex; justify-content:space-between; color:var(--dim); font-size:13px; margin:10px 2px 8px; }
+.sh .countline .hint { color:var(--faint); }
+
+/* list */
+.sh .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); overflow:visible; }
+.sh .grp { padding:10px 14px 4px; display:flex; align-items:center; gap:8px; font-weight:600; }
+.sh .grp .meta { color:var(--faint); font-weight:400; font-size:12px; }
+.sh .grp .chev { color:var(--faint); font-size:10px; }
+.sh .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); display:inline-block; flex:none; }
+.sh .dot.online { background:var(--ok); } .sh .dot.stale { background:var(--warn); } .sh .dot.offline { background:var(--faint); }
+.sh .dot.pending { background:var(--accent); animation:pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity:.3; } }
+/* Every first-line item (star, title, status pill, ⋯) sits in the same 22px line box, so they share a center line. */
+.sh .row { display:grid; grid-template-columns: 22px 1fr auto 28px; gap:10px; padding:12px 14px; border-top:1px solid var(--line);
+  align-items:start; position:relative; cursor:pointer; }
+.sh .row > .star, .sh .row > .more { height:22px; display:inline-flex; align-items:center; justify-content:center; }
+.sh .row .title { line-height:22px; }
+.sh .row:hover { background:var(--panel-2); }
+.sh .row.attention { background:var(--warn-bg); box-shadow: inset 3px 0 0 var(--warn); }
+.sh .row.pending { box-shadow: inset 3px 0 0 var(--accent); }
+.sh .row.review { box-shadow: inset 3px 0 0 var(--violet); }
+.sh .star { background:none; border:0; color:var(--faint); cursor:pointer; font-size:15px; padding:0; }
+.sh .star.on { color:var(--warn); }
+.sh .title { font-weight:600; }
+.sh .act { color:var(--dim); font-style:italic; font-size:13px; }
+.sh .meta2 { color:var(--faint); font-size:12px; margin-top:2px; display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center; }
+.sh .chip { display:inline-flex; align-items:center; height:18px; font-family:var(--mono); font-size:11px; background:var(--panel-2);
+  border:1px solid var(--line); border-radius:4px; padding:0 5px; color:var(--dim); line-height:1; }
+.sh .badges { display:flex; gap:8px; margin-top:6px; align-items:center; flex-wrap:wrap; font-size:12px; line-height:18px; }
+.sh .sq { display:inline-flex; align-items:center; height:18px; background:var(--violet); color:#fff; font-weight:700; font-size:10px;
+  letter-spacing:.5px; border-radius:4px; padding:0 6px; line-height:1; }
+.sh .mm { color:var(--warn); }
+.sh .hp { color:var(--ok); } .sh .hf { color:var(--bad); }
+/* STATUS PILLS: fully rounded, 22px, a tinted fill and a leading dot. Never a solid
+   block, never a button shape, never clickable on their own. */
+.sh .status { display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 10px 0 8px; border-radius:999px;
+  font-size:12px; font-weight:500; line-height:1; white-space:nowrap; cursor:default; flex:none;
+  color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.sh .status::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; flex:none; }
+.sh .status.need { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); border-color:color-mix(in srgb, var(--warn) 40%, transparent); font-weight:600; }
+.sh .status.reply { color:var(--ok); background:color-mix(in srgb, var(--ok) 12%, transparent); border-color:color-mix(in srgb, var(--ok) 35%, transparent); }
+.sh .status.rev { color:var(--violet); background:color-mix(in srgb, var(--violet) 14%, transparent); border-color:color-mix(in srgb, var(--violet) 40%, transparent); }
+.sh .status.q { border-style:dashed; }
+.sh .status.q::before { animation:pulse 1.2s infinite; }
+.sh .status.off { color:var(--faint); background:transparent; border-color:var(--line); }
+.sh .more { background:none; border:0; color:var(--faint); cursor:pointer; border-radius:6px; width:28px; font-size:16px; line-height:1; }
+.sh .more:hover { background:var(--line); color:var(--text); }
+.sh .steps { display:flex; gap:4px; align-items:center; font-size:11px; color:var(--faint); margin-top:6px; }
+.sh .steps .s { display:inline-flex; align-items:center; height:20px; padding:0 8px; border-radius:4px; border:1px solid var(--line); line-height:1; }
+.sh .steps .s.done { color:var(--ok); border-color:var(--ok); }
+.sh .steps .s.now { color:var(--accent); border-color:var(--accent); }
+.sh a.lnk { color:var(--accent); text-decoration:none; }
+
+/* menus */
+.sh .menu { position:absolute; z-index:50; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  box-shadow:0 12px 32px rgba(0,0,0,.45); padding:4px; min-width:210px; display:none; }
+.sh .menu.open { display:block; }
+.sh .menu > button, .sh .menu > .mi { display:flex; width:100%; min-height:32px; text-align:left; background:none; border:0; padding:0 10px;
+  border-radius:6px; cursor:pointer; gap:8px; align-items:center; color:var(--text); }
+.sh .menu > button:hover { background:var(--panel-2); }
+.sh .menu .sep { height:1px; background:var(--line); margin:4px 0; }
+.sh .menu .hd { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--faint); padding:6px 10px 2px; }
+.sh .menu .chk { width:14px; color:var(--accent); }
+.sh .menu .dz { color:var(--bad); }
+
+/* devices rail */
+.sh .rail-h { display:flex; align-items:center; gap:8px; height:40px; margin:0; border-bottom:1px solid transparent; }
+.sh .rail-h .t { font-weight:600; display:flex; align-items:center; gap:6px; line-height:18px; }
+.sh .rail-h .s { color:var(--dim); font-size:12px; line-height:16px; }
+.sh .rail-h + .card { margin-top:12px; }
+.sh .pill { display:inline-flex; align-items:center; height:18px; font-size:11px; border-radius:999px; padding:0 7px; border:1px solid var(--line);
+  color:var(--dim); line-height:1; white-space:nowrap; }
+.sh .pill.w { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 40%, transparent); background:color-mix(in srgb, var(--warn) 10%, transparent); }
+.sh .dev { padding:10px 12px; border-top:1px solid var(--line); }
+.sh .dev:first-child { border-top:0; }
+.sh .dev .l1 { display:flex; align-items:center; gap:8px; min-height:26px; }
+.sh .dev .nm { font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sh .dev .l2 { color:var(--faint); font-size:12px; margin-left:16px; line-height:18px; }
+.sh .kind { display:inline-flex; align-items:center; height:18px; font-size:10px; letter-spacing:.5px; border:1px solid var(--line); border-radius:4px;
+  padding:0 5px; color:var(--dim); line-height:1; flex:none; }
+.sh .sbtn { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; border:1px solid var(--line);
+  background:var(--panel-2); border-radius:6px; cursor:pointer; color:var(--dim); line-height:1; flex:none; }
+.sh .sec { display:flex; align-items:center; gap:6px; min-height:42px; padding:0 12px; font-size:12px; color:var(--dim); border-top:1px solid var(--line);
+  cursor:pointer; text-transform:uppercase; letter-spacing:.5px; }
+.sh .sec .sbtn { margin-left:auto; }
+.sh .ondemand { display:flex; gap:10px; align-items:center; padding:12px; }
+.sh .ondemand .ic { width:30px; height:30px; border-radius:8px; background:var(--accent-dim); display:grid; place-items:center; color:var(--accent); flex:none; }
+.sh .meters { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:6px 0 0 16px; }
+.sh .meter { font-size:10px; color:var(--faint); }
+.sh .meter .bar { height:4px; background:var(--panel-2); border-radius:2px; margin-top:2px; overflow:hidden; }
+.sh .meter .bar i { display:block; height:100%; background:var(--accent); }
+.sh .meter.warm .bar i { background:#f59e0b; } .sh .meter.hot .bar i { background:var(--bad); }
+.sh .devx { margin:8px 0 0 16px; padding:8px 10px; background:var(--panel-2); border-radius:8px; font-size:12px; color:var(--dim); display:none; }
+.sh .devx.open { display:block; }
+.sh .devx table { width:100%; border-collapse:collapse; }
+.sh .devx td { padding:2px 0; } .sh .devx td:last-child { text-align:right; color:var(--text); }
+.sh .warnline { color:var(--warn); }
+.sh .acacard { margin-top:14px; padding:12px; }
+.sh .acacard h4 { margin:0 0 8px; font-size:14px; }
+.sh .acacard .r { display:flex; justify-content:space-between; font-size:12px; padding:3px 0; color:var(--dim); }
+.sh .acacard .r b { color:var(--text); font-weight:500; }
+.sh .acacard .ok { color:var(--ok); }
+
+/* install card */
+.sh .install-card { position:absolute; right:110px; top:46px; width:400px; background:#2b2b2b; color:#f3f3f3; border-radius:12px;
+  box-shadow:0 18px 48px rgba(0,0,0,.5); padding:20px 22px; z-index:60; display:none; font-family:"Segoe UI",sans-serif; }
+.sh .install-card.open { display:block; }
+.sh .install-card .x { position:absolute; right:12px; top:8px; background:none; border:0; color:#ccc; font-size:20px; cursor:pointer; }
+.sh .install-card h3 { margin:0; font-size:19px; display:flex; gap:12px; align-items:center; }
+.sh .install-card .pub { color:#a0a0a0; font-size:13px; margin:2px 0 10px 44px; }
+.sh .install-card ul { margin:6px 0 16px 44px; padding-left:16px; font-size:14px; }
+.sh .install-card p { margin:0 0 0 44px; font-size:14px; }
+.sh .install-card .bt { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.sh .install-card .bt button { padding:8px; border-radius:6px; border:0; cursor:pointer; font-size:14px; }
+.sh .install-card .bt .a { background:#4a4a4a; color:#fff; } .sh .install-card .bt .b { background:#efefef; color:#111; }
+
+/* bell inbox */
+.sh .inbox { right:52px; top:46px; width:400px; padding:6px; }
+.sh .inbox .it { padding:10px; border-radius:8px; }
+.sh .inbox .it + .it { border-top:1px solid var(--line); border-radius:0; }
+.sh .inbox .ih { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:22px; }
+.sh .inbox .ih b { line-height:22px; }
+.sh .inbox .it .w { font-size:12px; color:var(--faint); line-height:18px; margin-top:2px; }
+.sh .inbox .it .c { font-family:var(--mono); font-size:11px; background:var(--code-bg); padding:5px 8px; border-radius:5px; color:var(--dim); margin:8px 0; }
+.sh .inbox .acts { display:flex; gap:6px; align-items:center; }
+.sh .inbox .acts .push { margin-left:auto; }
+.sh .inbox .foot { display:flex; align-items:center; justify-content:space-between; }
+.sh .inbox .foot .k { color:var(--faint); font-size:11px; }
+
+/* modal */
+.sh .scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); display:none; align-items:flex-start; justify-content:center; padding-top:40px; z-index:70; }
+.sh .scrim.open { display:flex; }
+.sh .modal { background:var(--panel); border:1px solid var(--line); border-radius:14px; width:640px; padding:22px 24px; box-shadow:0 24px 64px rgba(0,0,0,.5); }
+.sh .modal h2 { margin:0 0 4px; font-size:22px; }
+.sh .modal .lead { color:var(--dim); margin:0 0 14px; font-size:13px; }
+.sh .fg { margin-bottom:12px; }
+.sh .fg label { display:flex; align-items:center; min-height:20px; font-weight:600; margin-bottom:6px; font-size:13px; }
+.sh .fg label .req { color:var(--bad); margin-left:3px; }
+.sh .fg small { display:block; color:var(--faint); font-size:12px; line-height:18px; margin-top:4px; }
+.sh .in { width:100%; height:36px; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:0 10px; font:inherit; }
+.sh textarea.in { height:auto; padding:8px 10px; }
+.sh select.in { appearance:auto; }
+.sh .two { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+.sh .seg { display:inline-flex; height:32px; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:8px; }
+.sh .seg button { background:transparent; border:0; padding:0 14px; cursor:pointer; color:var(--dim); }
+.sh .seg button.on { background:var(--accent-dim); color:var(--text); }
+.sh .tog { display:flex; align-items:center; gap:8px; font-size:13px; height:24px; }
+.sh .sw { width:34px; height:18px; border-radius:9px; background:var(--accent); position:relative; flex:none; cursor:pointer; }
+.sh .sw::after { content:""; position:absolute; right:2px; top:2px; width:14px; height:14px; border-radius:50%; background:#fff; }
+.sh .sw.off { background:var(--line); } .sh .sw.off::after { left:2px; right:auto; }
+.sh .toggles { display:flex; gap:24px; margin:4px 0 14px; flex-wrap:wrap; }
+.sh .route { font-size:12px; color:var(--dim); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:14px; }
+.sh .route code { font-family:var(--mono); font-size:11px; color:var(--text); }
+.sh .mfoot { display:flex; align-items:center; gap:8px; }
+.sh .mfoot .alt { margin-right:auto; font-size:12px; display:flex; gap:12px; }
+.sh .toast { position:absolute; left:50%; bottom:20px; transform:translateX(-50%); background:var(--panel-2); border:1px solid var(--line);
+  border-radius:10px; padding:10px 16px; display:none; z-index:80; box-shadow:0 12px 32px rgba(0,0,0,.4); }
+.sh .toast.open { display:block; }
+
+/* empty */
+.sh .empty { text-align:center; padding:40px 24px; }
+.sh .empty h3 { margin:0 0 6px; color:var(--dim); font-weight:500; }
+.sh .empty p { color:var(--dim); margin:0 0 16px; }
+.sh .empty .cta { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+.sh .empty .div { width:60%; height:1px; background:var(--line); margin:26px auto; }
+.sh .cmd { display:inline-flex; gap:8px; align-items:center; font-family:var(--mono); background:var(--code-bg); border:1px solid var(--line);
+  border-radius:6px; padding:4px 10px; font-size:12px; }
+.sh .cmd button { background:none; border:0; color:var(--dim); cursor:pointer; }
+
+/* detail */
+.sh .detail { display:grid; grid-template-columns: 280px 1fr; min-height:720px; }
+.sh .side { border-right:1px solid var(--line); padding:16px; background:var(--panel); }
+.sh .side .back { color:var(--dim); font-size:13px; cursor:pointer; margin:0 0 10px; display:flex; align-items:center; height:20px; }
+.sh .side input { width:100%; height:32px; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:0 10px; color:var(--text); font:inherit; margin-bottom:8px; }
+.sh .si { padding:8px; border-radius:8px; cursor:pointer; font-size:13px; }
+.sh .si:hover { background:var(--panel-2); }
+.sh .si.on { background:var(--accent-dim); }
+.sh .si .t { font-weight:600; display:flex; gap:6px; align-items:center; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.sh .si .m { color:var(--faint); font-size:11px; margin-left:14px; }
+.sh .main { display:flex; flex-direction:column; }
+.sh .dhead { padding:16px 24px 0; }
+.sh .dhead .tl { display:flex; align-items:center; gap:10px; min-height:32px; }
+.sh .dhead h2 { margin:0; font-size:20px; line-height:32px; }
+.sh .dhead .star { display:inline-flex; align-items:center; height:32px; font-size:17px; }
+.sh .dhead .pen { color:var(--faint); cursor:pointer; display:inline-flex; align-items:center; height:32px; }
+.sh .dhead .acts { margin-left:auto; display:flex; gap:8px; align-items:center; }
+.sh .dhead .sub2 { color:var(--faint); font-size:12px; margin-top:4px; display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; line-height:18px; }
+.sh .dtabs { display:flex; gap:4px; height:40px; border-bottom:1px solid var(--line); margin-top:12px; }
+.sh .tpane { flex:1; padding:16px 24px; display:none; overflow:auto; }
+.sh .tpane.on { display:block; }
+.sh .msg { margin-bottom:12px; }
+.sh .msg .who { font-size:11px; color:var(--faint); text-transform:uppercase; letter-spacing:.5px; }
+.sh .msg .tool { font-family:var(--mono); font-size:12px; background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; color:var(--dim); }
+.sh .appr { border:1px solid var(--warn); background:var(--warn-bg); border-radius:10px; padding:12px 14px; margin:8px 0 14px; }
+.sh .appr .h { font-weight:600; display:flex; gap:8px; align-items:center; }
+.sh .appr pre { font-family:var(--mono); font-size:12px; background:var(--code-bg); padding:8px 10px; border-radius:6px; margin:8px 0; white-space:pre-wrap; }
+.sh .appr .tools { display:flex; gap:6px; font-size:11px; margin-bottom:8px; }
+.sh .appr .ro { color:var(--ok); border:1px solid var(--ok); border-radius:4px; padding:0 4px; }
+.sh .appr .bt { display:flex; gap:8px; }
+.sh .composer { border-top:1px solid var(--line); padding:12px 24px 16px; background:var(--panel); }
+.sh .ctl { font-size:12px; color:var(--ok); margin-bottom:8px; display:flex; gap:8px; align-items:center; line-height:18px; }
+.sh .composer textarea { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--text); font:inherit; padding:8px 10px; resize:none; display:block; }
+.sh .composer .bar { display:flex; gap:8px; align-items:center; margin-top:8px; }
+.sh .composer .bar .ddl { border:1px solid var(--line); }
+.sh .composer .bar .send { margin-left:auto; }
+.sh .kv { width:100%; border-collapse:collapse; font-size:13px; margin-bottom:18px; }
+.sh .kv td { padding:6px 0; border-bottom:1px solid var(--line); }
+.sh .kv td:first-child { color:var(--dim); width:180px; }
+.sh h4.sh4 { margin:6px 0 8px; }
+.sh .members { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 16px; }
+.sh .members span { border:1px solid var(--line); border-radius:14px; padding:2px 10px; font-size:12px; }
+.sh .members span.now { border-color:var(--accent); color:var(--accent); font-weight:600; }
+
+/* mobile */
+.mframe { width:392px; margin:24px auto; border:10px solid #111; border-radius:40px; overflow:hidden; box-shadow:var(--cp-shadow); }
+.mframe .sh { min-height:780px; }
+.sh .mtop { display:flex; align-items:center; gap:6px; padding:10px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
+.sh .mtabs { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid var(--line); }
+.sh .mtabs button { background:none; border:0; padding:10px; color:var(--dim); border-bottom:2px solid transparent; cursor:pointer; }
+.sh .mtabs button.on { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+.sh .mscope { display:flex; height:40px; padding:0 12px; border-bottom:1px solid var(--line); }
+.sh .mscope button { background:none; border:0; border-bottom:2px solid transparent; margin-bottom:-1px; padding:0 12px; color:var(--dim);
+  cursor:pointer; display:flex; align-items:center; gap:6px; }
+.sh .mscope button.on { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+.sh .mscope .n { display:inline-flex; align-items:center; height:18px; font-size:11px; background:var(--panel-2); border:1px solid var(--line);
+  border-radius:999px; padding:0 7px; color:var(--dim); font-weight:500; }
+.sh .msearch { display:flex; gap:8px; padding:10px 12px; align-items:center; }
+.sh .msearch input { flex:1; height:36px; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:0 10px; color:var(--text); font:inherit; }
+.sh .msearch .fb { width:36px; height:36px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--accent);
+  position:relative; display:inline-flex; align-items:center; justify-content:center; flex:none; }
+.sh .msearch .fb i { position:absolute; top:-5px; right:-5px; background:var(--accent); color:#fff; font-style:normal; font-size:9px; border-radius:7px; padding:0 4px; line-height:14px; }
+.sh .mrow { padding:12px; border-top:1px solid var(--line); position:relative; }
+.sh .mrow.attention { background:var(--warn-bg); box-shadow:inset 3px 0 0 var(--warn); }
+.sh .mrow .t { font-weight:600; font-size:14px; line-height:20px; }
+.sh .mrow .m { color:var(--faint); font-size:12px; line-height:18px; }
+.sh .mrow .r { display:flex; justify-content:space-between; align-items:center; min-height:28px; margin-top:6px; gap:8px; }
+.sh .fab { position:absolute; right:16px; bottom:24px; width:52px; height:52px; border-radius:16px; background:var(--accent); color:#fff;
+  border:0; font-size:26px; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+
+/* annotations */
+[data-note] { position:relative; }
+body.notes [data-note]::after { content:attr(data-note); position:absolute; top:-9px; right:-6px; z-index:40;
+  background:#b11f4b; color:#fff; font:600 10px/1 "Segoe UI",sans-serif; padding:3px 6px; border-radius:8px;
+  white-space:nowrap; pointer-events:none; box-shadow:0 2px 6px rgba(0,0,0,.35); }
+body.notes [data-note].nl::after { right:auto; left:-6px; }
+.screen { display:none; } .screen.on { display:block; }
+.legend { max-width:1320px; margin:0 auto 30px; display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:8px; }
+.legend div { background:var(--cp-surface); border:1px solid var(--cp-border); border-radius:10px; padding:8px 12px; font-size:12px; color:var(--cp-text-soft); }
+.legend b { color:var(--cp-accent); margin-right:6px; }
+</style>
+</head>
+<body class="notes">
+
+<div class="review">
+  <h1>Squad Hub v0.7 · UX mockup</h1>
+  <div class="tabs-r" id="screens">
+    <button data-s="list" class="on">1 · All sessions</button>
+    <button data-s="aca">2 · New ACA job</button>
+    <button data-s="detail">3 · Session detail</button>
+    <button data-s="empty">4 · Empty state</button>
+    <button data-s="mobile">5 · Phone</button>
+  </div>
+  <label><input type="checkbox" id="lightToggle"> Hub light theme</label>
+  <label style="margin-left:12px"><input type="checkbox" id="noteToggle" checked> Show plan tags</label>
+</div>
+
+<div class="caption" id="caption"></div>
+
+<!-- ========== SCREEN 1: LIST ========== -->
+<div class="screen on" id="s-list">
+<div class="stage"><div class="sh" id="sh-list">
+  <div class="topbar">
+    <span class="brand"><svg width="20" height="20" viewBox="0 0 512 512"><defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4c8dff"/><stop offset="1" stop-color="#a05cff"/></linearGradient></defs><g fill="url(#g1)"><circle cx="256" cy="128" r="112"/><circle cx="128" cy="368" r="112"/><circle cx="384" cy="368" r="112"/></g></svg>Squad Hub</span>
+    <span class="spacer"></span>
+    <button class="ib install" data-note="E2.1" id="installBtn" title="Install Squad Hub"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg></button>
+    <button class="ib" title="Theme" id="themeBtn">◐</button>
+    <button class="ib" data-note="E6.1" id="bellBtn" title="Needs you">🔔<span class="count">2</span></button>
+    <span class="avatar"></span>
+  </div>
+
+  <div class="install-card" id="installCard">
+    <button class="x" onclick="closeAll()">×</button>
+    <h3><svg width="32" height="32" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#14161a"/><g fill="url(#g1)" transform="translate(256,256) scale(0.72) translate(-256,-256)"><circle cx="256" cy="128" r="112"/><circle cx="128" cy="368" r="112"/><circle cx="384" cy="368" r="112"/></g></svg>Install Squad Hub app</h3>
+    <div class="pub">Publisher: squad-hub.azurewebsites.net</div>
+    <p>Use this site often? Install the app which:</p>
+    <ul><li>Opens in a focused window</li><li>Has quick access options like pin to taskbar</li><li>Shows a badge when a session needs you</li><li>Keeps your pins and views in sync across devices</li></ul>
+    <div class="bt"><button class="a" onclick="toast('Installed. The icon now shows the number of sessions waiting on you.')">Install</button><button class="b" onclick="closeAll()">Not now</button></div>
+  </div>
+
+  <div class="menu inbox" id="inbox">
+    <div class="hd">Needs you · 2</div>
+    <div class="it">
+      <div class="ih"><b>Run tests</b><span class="status need">Needs approval</span></div>
+      <div class="w">#304 · AzureAIDriveThru · Unity · 3m ago</div>
+      <div class="c">dotnet test tests/Pronunciation.Tests --no-build</div>
+      <div class="acts"><button class="btn sm primary">Allow once</button><button class="btn sm">Always allow</button><button class="btn sm ghost danger">Deny</button><button class="btn sm ghost push" onclick="go('detail')">Open</button></div>
+    </div>
+    <div class="it">
+      <div class="ih"><b>Question from the agent</b><span class="status reply">Awaiting your reply</span></div>
+      <div class="w">BRSWIG-SURFACE · meridian-crest · 12m ago</div>
+      <div class="c">"Should I re-run the GCP walk too, or only Azure?"</div>
+      <div class="acts"><button class="btn sm ghost push" onclick="go('detail')">Open and reply</button></div>
+    </div>
+    <div class="sep"></div>
+    <button class="foot">↻ Show approval prompts again <span class="k">existing behavior</span></button>
+    <button class="foot" data-note="E6.2">🔔 Push to this device <span style="color:var(--ok);font-weight:600">On</span></button>
+  </div>
+
+  <div class="page">
+    <div class="head">
+      <div><h2>All sessions <span class="live"></span></h2><p class="sub">Monitor and manage your local and cloud sessions</p></div>
+      <span class="spacer"></span>
+      <div class="split" style="position:relative">
+        <button class="btn primary" onclick="openMenu('newMenu',event)">＋ New</button><button class="btn primary" onclick="openMenu('newMenu',event)">▾</button>
+        <div class="menu" id="newMenu" style="right:0;top:38px">
+          <div class="hd">Create</div>
+          <button onclick="go('aca')">☁ Start a new ACA job… <span class="kind" style="margin-left:auto">NEW DIALOG</span></button>
+          <button>On an attached cloud device</button>
+          <button>On a local device</button>
+        </div>
+      </div>
+      <div style="position:relative"><button class="btn ghost" onclick="openMenu('kebab',event)">⋮</button>
+        <div class="menu" id="kebab" style="right:0;top:38px">
+          <button>Refresh now</button><button>Connect a device…</button><button>Who has access…</button>
+          <button>Install as an app <span style="margin-left:auto;color:var(--ok)">✓ Installed</span></button>
+          <div class="sep"></div><div class="hd">Remove ended sessions</div>
+          <button>Older than 7 days</button><button>Older than 30 days</button><button class="dz">All ended sessions</button>
+          <div class="sep"></div><button class="dz">Sign out</button>
+        </div></div>
+    </div>
+
+    <div class="layout">
+      <div>
+        <div class="tabrow" data-note="E1.1" >
+          <button class="tab on" data-scope="all">All <span class="n" id="n-all"></span></button>
+          <button class="tab" data-scope="local">Local <span class="n" id="n-local"></span></button>
+          <button class="tab" data-scope="cloud">Cloud <span class="n" id="n-cloud"></span></button>
+          <div class="right" data-note="E1.3">
+            <div style="position:relative"><button class="ddl" onclick="openMenu('viewMenu',event)"><span class="ico">☰</span><span id="viewLbl">Device view</span> <span class="car">▼</span></button>
+              <div class="menu" id="viewMenu" style="right:0;top:32px">
+                <div class="hd">View</div>
+                <button data-view="default"><span class="chk"></span>Default</button>
+                <button data-view="device"><span class="chk">✓</span>Device view</button>
+                <button data-view="repo"><span class="chk"></span>Repository view</button>
+                <button data-view="status"><span class="chk"></span>Status view <span class="kind" style="margin-left:auto">NEW</span></button>
+                <button data-view="squad"><span class="chk"></span>Squad view <span class="kind" style="margin-left:auto">NEW</span></button>
+              </div></div>
+            <div style="position:relative"><button class="ddl" onclick="openMenu('sortMenu',event)"><span class="ico">⇅</span><span id="sortLbl">Latest started</span> <span class="car">▼</span></button>
+              <div class="menu" id="sortMenu" style="right:0;top:32px">
+                <div class="hd">Sort</div>
+                <button data-sort="upd_d"><span class="chk"></span>Latest updated <span class="kind" style="margin-left:auto">NEW</span></button>
+                <button data-sort="upd_a"><span class="chk"></span>First updated <span class="kind" style="margin-left:auto">NEW</span></button>
+                <button data-sort="st_d"><span class="chk">✓</span>Latest started</button>
+                <button data-sort="st_a"><span class="chk"></span>First started</button>
+                <button data-sort="name_a"><span class="chk"></span>Name A–Z <span class="kind" style="margin-left:auto">NEW</span></button>
+                <button data-sort="name_d"><span class="chk"></span>Name Z–A <span class="kind" style="margin-left:auto">NEW</span></button>
+                <button data-sort="tools"><span class="chk"></span>Most tool calls</button>
+                <button data-sort="repo"><span class="chk"></span>Repository</button>
+              </div></div>
+          </div>
+        </div>
+
+        <div class="filterbar" data-note="E1.2">
+          <input id="kw" placeholder="Filter by keyword" aria-label="Filter by keyword">
+          <button class="ddl set">Last 24 hours <span class="car">▼</span></button>
+          <button class="ddl" id="statusDdl" onclick="openMenu('statusMenu',event)" style="position:relative">Status <span class="car">▼</span></button>
+          <button class="ddl">Device <span class="car">▼</span></button>
+          <button class="ddl">Repository <span class="car">▼</span></button>
+          <button class="ddl">Organization <span class="car">▼</span></button>
+          <div class="menu" id="statusMenu" style="right:200px;top:46px">
+            <button data-status=""><span class="chk">✓</span>All statuses</button>
+            <button data-status="action"><span class="chk"></span><b>Action needed</b> <span class="kind" style="margin-left:auto">NEW</span></button>
+            <div class="sep"></div>
+            <button data-status="need"><span class="chk"></span>Needs approval</button>
+            <button data-status="active"><span class="chk"></span>Working</button>
+            <button data-status="reply"><span class="chk"></span>Awaiting your reply</button>
+            <button data-status="queued"><span class="chk"></span>Queued on ACA <span class="kind" style="margin-left:auto">NEW</span></button>
+            <button data-status="review"><span class="chk"></span>Ready for review <span class="kind" style="margin-left:auto">NEW</span></button>
+            <button data-status="done"><span class="chk"></span>Finished</button>
+            <button data-status="failed"><span class="chk"></span>Failed</button>
+            <button data-status="stopped"><span class="chk"></span>Stopped</button>
+          </div>
+        </div>
+        <div class="countline"><span id="countTxt"></span><span class="hint">Sessions waiting on you always show, whatever the time window</span></div>
+        <div class="card" id="list"></div>
+      </div>
+
+      <!-- devices rail -->
+      <aside>
+        <div class="rail-h" data-note="E3.1"><span class="chev" style="color:var(--faint)">▾</span>🖥 <div><div class="t">Connected devices <span class="pill">6</span></div><div class="s">5 online · 7 sessions</div></div><span class="spacer"></span><span class="pill w">1 offline</span></div>
+        <div class="card">
+          <div class="ondemand" data-note="E3.2">
+            <div class="ic">☁</div><div style="flex:1"><b>ACA jobs</b><div style="color:var(--dim);font-size:12px">On-demand · Always available</div></div>
+            <button class="sbtn" title="Start a new ACA job" onclick="go('aca')">＋</button>
+          </div>
+          <div class="sec" onclick="toggleSec(this)">▾ Squad on ACA executions (4)</div>
+          <div class="secbody">
+            <div class="dev"><div class="l1"><span class="dot online"></span><span class="nm">#306 · AzureAIDriveThru</span><span class="kind">ACA</span></div><div class="l2">Linux · Online · 1 session</div></div>
+            <div class="dev"><div class="l1"><span class="dot online"></span><span class="nm">#305 · AzureAIDriveThru</span><span class="kind">ACA</span></div><div class="l2">Linux · Online · 1 session</div></div>
+            <div class="dev" data-note="E3.3"><div class="l1"><span class="dot online"></span><span class="nm">#304 · AzureAIDriveThru</span><span class="kind">ACA</span></div><div class="l2">Linux · Online · 1 session · <span style="font-family:var(--mono)">49-st5tr</span></div></div>
+            <div class="dev"><div class="l1"><span class="dot pending"></span><span class="nm">#130 · squad-on-aca</span><span class="kind">ACA</span></div><div class="l2">Starting · lease claimed 40s ago</div></div>
+          </div>
+          <div class="sec" onclick="toggleSec(this)">▾ Cloud devices (2) <button class="sbtn" onclick="event.stopPropagation()">＋</button></div>
+          <div class="secbody">
+            <div class="dev"><div class="l1"><span class="dot online"></span><span class="nm">squad-aca watcher</span><span class="kind">CLOUD</span><button class="sbtn">＋</button><button class="sbtn">×</button></div><div class="l2">Linux · Online · files: off · watch-only</div></div>
+            <div class="dev"><div class="l1"><span class="dot online"></span><span class="nm">squad-aca ralph</span><span class="kind">CLOUD</span><button class="sbtn">＋</button><button class="sbtn">×</button></div><div class="l2">Linux · Online · 1 session · files: off</div></div>
+          </div>
+          <div class="sec" onclick="toggleSec(this)">▾ Local machines (2) <button class="sbtn" onclick="event.stopPropagation()">＋</button></div>
+          <div class="secbody">
+            <div class="dev" data-note="E3.4">
+              <div class="l1"><span class="dot online"></span><span class="nm" style="cursor:pointer" onclick="document.getElementById('devx1').classList.toggle('open')">▸ BRSWIG-SURFACE</span><span class="kind">LOCAL</span><button class="sbtn">＋</button><button class="sbtn">×</button></div>
+              <div class="l2">Windows · Online · 1 session · files: scoped</div>
+              <div class="meters">
+                <div class="meter">CPU 34%<div class="bar"><i style="width:34%"></i></div></div>
+                <div class="meter warm">RAM 71%<div class="bar"><i style="width:71%"></i></div></div>
+                <div class="meter hot">Disk C: 91%<div class="bar"><i style="width:91%"></i></div></div>
+              </div>
+              <div class="devx" id="devx1" data-note="E3.5">
+                <table>
+                  <tr><td>C: (workspace volume)</td><td>42 GB free of 476 GB</td></tr>
+                  <tr><td>Cores · RAM</td><td>12 · 32 GB</td></tr>
+                  <tr><td>squad-hub</td><td>0.6.0 <span class="warnline">· hub is 0.7.0</span></td></tr>
+                  <tr><td>Copilot CLI</td><td>1.0.73</td></tr>
+                  <tr><td>File access · track-all</td><td>scoped · on</td></tr>
+                  <tr><td>Token</td><td>"Surface" · expires in 23 days</td></tr>
+                </table>
+              </div>
+            </div>
+            <div class="dev"><div class="l1"><span class="dot offline"></span><span class="nm">brswig-mbp</span><span class="kind">LOCAL</span><button class="sbtn">＋</button><button class="sbtn">×</button></div><div class="l2">macOS · Offline · seen 2 days ago · files: off</div></div>
+          </div>
+        </div>
+        <div class="card acacard" data-note="E3.6">
+          <h4>Squad on ACA</h4>
+          <div class="r"><span>Status</span><b class="ok">● Connected</b></div>
+          <div class="r"><span>Issue watcher</span><b>Online · watch-only</b></div>
+          <div class="r"><span>Ralph</span><b>Last sweep 4 min ago</b></div>
+          <div class="r"><span>Last dispatch</span><b>#130 · lease claimed ✓</b></div>
+          <div class="r"><span></span><span><a class="lnk" href="#">Retry</a> · <a class="lnk" href="#">Learn more</a></span></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="menu" id="rowMenu" data-note="E1.5">
+    <button onclick="go('detail')">↗ Open</button>
+    <button>★ Pin</button>
+    <button>✎ Rename…</button>
+    <button>🔗 Copy link</button>
+    <div class="sep"></div>
+    <button onclick="go('aca')">☁ Run on ACA…</button>
+    <button>⇱ Open pull request</button>
+    <button>📈 Open in Aspire</button>
+    <div class="sep"></div>
+    <button class="dz">■ Stop session</button>
+    <button class="dz" disabled style="opacity:.45">🗑 Remove (ended only)</button>
+  </div>
+  <div class="toast" id="toast"></div>
+</div></div>
+</div>
+
+<!-- ========== SCREEN 2: ACA DIALOG ========== -->
+<div class="screen" id="s-aca">
+<div class="stage"><div class="sh" id="sh-aca" style="min-height:860px">
+  <div class="topbar"><span class="brand">Squad Hub</span><span class="spacer"></span><span class="avatar"></span></div>
+  <div class="scrim open" style="position:absolute">
+    <div class="modal">
+      <h2>New ACA job</h2>
+      <p class="lead">Starts a Squad session in its own Azure Container Apps job. It runs through the repository's own <code>squad-dispatch.yml</code>, so Azure access stays with that repository.</p>
+      <div class="two">
+        <div class="fg" data-note="E4.1"><label>Repository<span class="req">*</span><button type="button" class="hint-btn" aria-label="About Repository"
+          title="The GitHub repository the job runs for, as owner/repo.&#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub.&#10;&#10;The list holds repositories seen in your sessions; you can also type one.">i</button></label>
+          <select class="in"><option>swigerb/AzureAIDriveThru</option><option>swigerb/squad-on-aca</option><option>swigerb/squad-hub</option><option>swigerb/meridian-crest-properties-demo</option></select>
+          <small style="color:var(--ok)">✓ Squad on ACA installed · squad-dispatch.yml found</small></div>
+        <div class="fg"><label>Base branch<span class="req">*</span><button type="button" class="hint-btn" aria-label="About Base branch"
+          title="The branch the session checks out and opens its pull request against.&#10;&#10;Defaults to the repository's default branch.">i</button></label>
+          <select class="in"><option>dev (default)</option><option>main</option></select>
+          <small>The pull request targets this branch</small></div>
+      </div>
+      <div class="fg"><label>Issue<button type="button" class="hint-btn" aria-label="About Issue"
+          title="Every ACA job is tied to an issue: it holds the lease that stops a second job starting for the same work, and it is where the session reports back.&#10;&#10;New issue: one is created from your instructions.&#10;Existing issue: the job works that issue, and its body and comments are added to the brief.">i</button></label>
+        <div class="seg" id="issueSeg"><button class="on" data-iss="new">New issue</button><button data-iss="existing">Existing issue</button></div>
+        <div id="issNew"><input class="in" placeholder="Issue title (defaults to the first line of the instructions)"></div>
+        <div id="issExisting" style="display:none"><input class="in" value="#310 · Drive-thru: add Spanish voice for Ava"><small>The issue's body and comments are added to the session's brief.</small></div>
+      </div>
+      <div class="two">
+        <div class="fg"><label>Model<button type="button" class="hint-btn" aria-label="About Model"
+          title="Leave on the squad default and each member uses the model its charter and .squad config assign.&#10;&#10;Pick a model to override it for this job only. The squad's cost policy still caps the tier.">i</button></label>
+          <select class="in"><option>Squad default (from .squad config)</option><option>claude-opus-5.5</option><option>claude-sonnet-5</option><option>gpt-5.6-sol</option></select>
+          <small>Cost policy still applies: powerful tier</small></div>
+        <div class="fg" data-note="E4.1"><label>Required reviewer<button type="button" class="hint-btn" aria-label="About Required reviewer"
+          title="The squad member who must review the pull request before it can merge.&#10;&#10;Defaults to the squad's reviewer, so no ACA job ships unreviewed. Pick security for changes that touch credentials or policy.">i</button></label>
+          <select class="in"><option>Squad reviewer (reviewer)</option><option>Squad security (security)</option><option>None</option></select>
+          <small>Added to the pull request as required</small></div>
+      </div>
+      <div class="toggles">
+        <span class="tog"><span class="sw" onclick="this.classList.toggle('off')"></span>Publish PR when done<button type="button" class="hint-btn" aria-label="About Publish PR"
+          title="On: the session pushes its branch and opens a pull request when it finishes.&#10;&#10;Off: it pushes the branch only, and you open the pull request yourself.">i</button></span>
+        <span class="tog"><span class="sw off" onclick="this.classList.toggle('off')"></span>Watch-only<button type="button" class="hint-btn" aria-label="About Watch-only"
+          title="Off (default): every ungated tool waits for your approval here.&#10;&#10;On: the session stays visible and stoppable, but runs tools without asking. The deny list still applies (SQUAD_HUB_APPROVAL=auto).">i</button></span>
+      </div>
+      <div class="fg"><label>Instructions<span class="req">*</span><button type="button" class="hint-btn" aria-label="About Instructions"
+          title="What you want done, in plain language. This becomes the session's prompt and, for a new issue, the issue body.&#10;&#10;You can keep talking to the session afterwards from its detail view.">i</button></label>
+        <textarea class="in" rows="4">Add a Spanish voice for Ava in the guest persona. Keep the English default. Add a test that covers the voice selection.</textarea></div>
+      <div class="route" data-note="E4.2">
+        <b>How it runs</b>: Squad Hub → GitHub <code>workflow_dispatch</code> (via the Squad Hub GitHub App, on repos you choose) → shared dispatch lease → Azure OIDC inside Actions → ACA job. <b>Squad Hub never holds Azure credentials.</b>
+      </div>
+      <div class="mfoot">
+        <span class="alt"><a class="lnk" href="#">Review on GitHub instead…</a><a class="lnk" href="#">Copy /squad-aca command</a></span>
+        <button class="btn ghost" onclick="go('list')">Cancel</button>
+        <button class="btn primary" onclick="go('list');toast('Dispatched: #310 is queued on ACA. It appears under Cloud until its job attaches.')">Start job</button>
+      </div>
+    </div>
+  </div>
+</div></div>
+</div>
+
+<!-- ========== SCREEN 3: DETAIL ========== -->
+<div class="screen" id="s-detail">
+<div class="stage"><div class="sh" id="sh-detail">
+  <div class="topbar"><span class="brand">Squad Hub</span><span class="spacer"></span><button class="ib install" title="Install Squad Hub"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg></button><button class="ib">◐</button><button class="ib">🔔<span class="count">2</span></button><span class="avatar"></span></div>
+  <div class="detail">
+    <div class="side" data-note="E5.1">
+      <span class="back" onclick="go('list')">← All sessions</span>
+      <input placeholder="Filter sessions">
+      <div class="si"><div class="t"><span class="dot online"></span>#306 · default realtime model</div><div class="m">Working · 15m</div></div>
+      <div class="si"><div class="t"><span class="dot online"></span>#305 · per-person settings</div><div class="m">Working · 16m</div></div>
+      <div class="si on"><div class="t"><span class="dot" style="background:var(--warn)"></span>#304 · pronunciation lexicon</div><div class="m">Needs approval · 3m</div></div>
+      <div class="si"><div class="t"><span class="dot" style="background:var(--violet)"></span>#129 · safe prompt dispatch</div><div class="m">Ready for review · PR #133</div></div>
+      <div class="si"><div class="t"><span class="dot online"></span>Meridian demo rehearsal</div><div class="m">Awaiting your reply · 12m</div></div>
+    </div>
+    <div class="main">
+      <div class="dhead">
+        <div class="tl" data-note="E5.4">
+          <button class="star on">★</button>
+          <h2>#304 · Pronunciation lexicon</h2><span class="pen" title="Rename">✎</span>
+          <span class="status need">Needs approval</span>
+          <div class="acts"><button class="btn ghost">☁ Run on ACA…</button><button class="btn ghost danger">■ Stop</button><button class="btn ghost icon" aria-label="More">⋯</button></div>
+        </div>
+        <div class="sub2">#304 · AzureAIDriveThru (ACA) · swigerb/AzureAIDriveThru · <span class="chip">squad/304-lexicon</span> · squad, auto · started 16m ago · 154 tools</div>
+        <div class="dtabs" data-note="E5.2">
+          <button class="tab on" data-dt="chat">Chat</button>
+          <button class="tab" data-dt="squad">Squad</button>
+          <button class="tab" data-dt="info">Info</button>
+          <button class="tab" disabled style="opacity:.4" title="Spike only: appears when the device allows file access">Files</button>
+        </div>
+      </div>
+      <div class="tpane on" id="dt-chat">
+        <div class="msg"><div class="who">You · 16m</div>Implement issue 304: pronunciation lexicon for menu items. Follow the brief and open a PR with the squad reviewer.</div>
+        <div class="msg"><div class="who">Unity (lead) · 14m</div>Routing: Summer builds the lexicon loader, Beth writes the conformance tests.</div>
+        <div class="msg"><div class="who">Tool · Summer</div><div class="tool">edit src/Voice/Lexicon/LexiconLoader.cs (+142 −3)</div></div>
+        <div class="appr" data-note="E5.2">
+          <div class="h">⚠ Permission needed <span style="color:var(--faint);font-weight:400;font-size:12px">· also shown in the approval pop-up and the bell · expires in 27 min</span></div>
+          <pre>dotnet test tests/Pronunciation.Tests --no-build</pre>
+          <div class="tools"><span class="chip">shell</span><span class="chip">dotnet</span><span class="ro">read-only: tests/**</span></div>
+          <div class="bt"><button class="btn primary">Allow once</button><button class="btn">Always allow <span style="color:var(--faint);font-size:11px">(offered)</span></button><button class="btn ghost danger">Deny</button></div>
+        </div>
+      </div>
+      <div class="tpane" id="dt-squad">
+        <div style="color:var(--dim);font-size:13px">The existing Squad panel, unchanged: <b>AzureAIDriveThru</b> · 6/6 members · mixed models · cost ceiling: powerful</div>
+        <div class="members"><span class="now">Unity · lead</span><span>Summer · engineer</span><span>Beth · tester</span><span>Morty · engineer</span><span>Squanchy · docs</span><span>Birdperson · reviewer</span></div>
+        <div style="display:flex;gap:6px;margin-bottom:12px"><span class="chip">team</span><span class="chip">decisions</span><span class="chip">routing</span><span class="chip">config</span></div>
+        <h4 class="sh4">Recent decisions (2)</h4>
+        <ol style="color:var(--dim);font-size:13px"><li>2026-10-04 · Keep realtime model default at gpt-realtime-2.1-mini</li><li>2026-10-03 · Demo Mode uses Ava as the guest voice</li></ol>
+      </div>
+      <div class="tpane" id="dt-info" data-note="E4.6">
+        <table class="kv">
+          <tr><td>Device</td><td>#304 · AzureAIDriveThru (ACA, execution 49-st5tr)</td></tr>
+          <tr><td>Repository · branch</td><td>swigerb/AzureAIDriveThru · squad/304-lexicon (base dev)</td></tr>
+          <tr><td>Agent · model · mode</td><td>squad · mixed (default claude-opus-5.5) · agent</td></tr>
+          <tr><td>Started · last activity</td><td>11:22 · 11:35</td></tr>
+          <tr><td>Squad health</td><td><span class="hp">● pass</span> team · charters · routing · state-backend · env-vars</td></tr>
+          <tr><td>ACA</td><td><a class="lnk" href="#">Issue #304</a> · <a class="lnk" href="#">Aspire dashboard</a> · lease active</td></tr>
+        </table>
+        <h4 class="sh4">Approval history</h4>
+        <table class="kv">
+          <tr><td>11:31 · Allowed once</td><td><span class="chip">dotnet build</span> by @swigerb from phone</td></tr>
+          <tr><td>11:27 · Always allowed</td><td><span class="chip">git status</span> by @swigerb</td></tr>
+          <tr><td>11:24 · Expired</td><td><span class="chip">npm ci</span> not answered within 30 min</td></tr>
+        </table>
+      </div>
+      <div class="composer" data-note="E5.3">
+        <div class="ctl">● Synced: you control this session <span style="color:var(--faint)">· a draft is kept if sync is lost</span></div>
+        <textarea rows="2" placeholder="Steer the session…"></textarea>
+        <div class="bar">
+          <button class="ddl">Mode: Agent <span class="car">▼</span></button><button type="button" class="hint-btn" style="margin-left:-2px" aria-label="About Mode"
+            title="How the agent handles your next message.&#10;&#10;Agent: asks before each tool. Plan: thinks it through and changes nothing. Autopilot: runs without asking.&#10;&#10;Leave it alone and the session keeps its current mode.">i</button>
+          <button class="ddl">Model: claude-opus-5.5 <span class="car">▼</span></button><button type="button" class="hint-btn" style="margin-left:-2px" aria-label="About Model"
+            title="The model for your next turn. The list comes from the device, since only it knows what its Copilot CLI can use.&#10;&#10;In a Squad session, members keep the models their charters assign.">i</button>
+          <button class="btn primary send">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></div>
+</div>
+
+<!-- ========== SCREEN 4: EMPTY ========== -->
+<div class="screen" id="s-empty">
+<div class="stage"><div class="sh">
+  <div class="topbar"><span class="brand">Squad Hub</span><span class="spacer"></span><button class="ib install" title="Install Squad Hub"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg></button><button class="ib">◐</button><button class="ib">🔔</button><span class="avatar"></span></div>
+  <div class="page">
+    <div class="head"><div><h2>All sessions <span class="live"></span></h2><p class="sub">Monitor and manage your local and cloud sessions</p></div><span class="spacer"></span><div class="split"><button class="btn primary">＋ New</button><button class="btn primary">▾</button></div></div>
+    <div class="layout">
+      <div>
+        <div class="tabrow"><button class="tab on">All <span class="n">0</span></button><button class="tab">Local <span class="n">0</span></button><button class="tab">Cloud <span class="n">0</span></button>
+          <div class="right"><button class="ddl">☰ Device view <span class="car">▼</span></button><button class="ddl">⇅ Latest started <span class="car">▼</span></button></div></div>
+        <div class="filterbar"><input placeholder="Filter by keyword"><button class="ddl">Last 24 hours <span class="car">▼</span></button><button class="ddl">Status <span class="car">▼</span></button><button class="ddl">Device <span class="car">▼</span></button><button class="ddl">Repository <span class="car">▼</span></button><button class="ddl">Organization <span class="car">▼</span></button></div>
+        <div class="card empty" style="margin-top:14px" data-note="E3.7">
+          <h3>No sessions yet</h3>
+          <p>Start a Squad on ACA job, use an attached cloud device, or start a local session on one of your machines.</p>
+          <div class="cta"><button class="btn primary" onclick="go('aca')">☁ Start ACA job</button><button class="btn">＋ On an attached cloud device</button><button class="btn">＋ New local session</button></div>
+          <div class="div"></div>
+          <h3>No local devices connected</h3>
+          <p>Local sessions show up here once Squad Hub is running on a device. Start it from a terminal:</p>
+          <div class="cmd">npx squad-hub start --hub https://squad-hub.azurewebsites.net <button title="Copy">⧉</button></div>
+          <p style="margin-top:14px"><button class="btn">Connect a device…</button> &nbsp; <a class="lnk" href="#">Learn more</a></p>
+        </div>
+      </div>
+      <aside>
+        <div class="rail-h">🖥 <div><div class="t">Connected devices <span class="pill">0</span></div><div class="s">0 online · 0 sessions</div></div></div>
+        <div class="card">
+          <div class="ondemand"><div class="ic">☁</div><div style="flex:1"><b>ACA jobs</b><div style="color:var(--dim);font-size:12px">On-demand · Always available</div></div><button class="sbtn" onclick="go('aca')">＋</button></div>
+          <div class="sec">▾ Cloud devices (0)</div>
+          <div class="sec">▾ Local machines (0)</div>
+          <div style="padding:14px;text-align:center;color:var(--dim);font-size:13px"><b style="color:var(--text)">No local devices connected</b><br>Start Squad Hub from a terminal:<br><span class="cmd" style="margin:8px 0">npx squad-hub start</span><br><a class="lnk" href="#">Learn more</a></div>
+        </div>
+        <div class="card acacard"><h4>Squad on ACA</h4><div class="r"><span>Status</span><b style="color:var(--faint)">Not connected</b></div>
+          <div style="font-size:12px;color:var(--dim);margin:4px 0">Install the Squad Hub GitHub App on a repo that has Squad on ACA.</div><div class="r"><span></span><a class="lnk" href="#">Set up</a></div></div>
+      </aside>
+    </div>
+  </div>
+</div></div>
+</div>
+
+<!-- ========== SCREEN 5: MOBILE ========== -->
+<div class="screen" id="s-mobile">
+<div class="mframe"><div class="sh" style="min-height:780px">
+  <div class="mtop"><span class="brand">Squad Hub</span><span class="spacer"></span><button class="ib">◐</button><button class="ib">🔔<span class="count">2</span></button><span class="avatar" style="width:24px;height:24px"></span></div>
+  <div class="mtabs"><button class="on">Sessions</button><button>Devices · 5</button></div>
+  <div class="mscope" data-note="E1.1"><button class="on">All <span class="n">8</span></button><button>Local <span class="n">2</span></button><button>Cloud <span class="n">6</span></button></div>
+  <div class="msearch" data-note="E1.2"><input placeholder="Filter by keyword"><button class="fb">⚲<i>1</i></button></div>
+  <div style="padding:0 12px 6px;color:var(--faint);font-size:12px">8 sessions · Last 24 hours</div>
+  <div class="mrow attention"><div class="t">#304 · Pronunciation lexicon</div><div class="m">ACA · AzureAIDriveThru · 3m</div><div class="r"><span class="status need">Needs approval</span><button class="btn sm primary">Review</button></div></div>
+  <div class="mrow attention"><div class="t">Meridian demo rehearsal</div><div class="m">BRSWIG-SURFACE · meridian-crest · 12m</div><div class="r"><span class="status reply">Awaiting your reply</span></div></div>
+  <div class="mrow"><div class="t">★ #306 · Default realtime model</div><div class="m">ACA · AzureAIDriveThru · 15m · 90 tools</div><div class="r"><span class="status">Working</span><span class="sq">SQUAD</span></div></div>
+  <div class="mrow"><div class="t">#130 · Real PR titles</div><div class="m">ACA · squad-on-aca · lease claimed</div><div class="r"><span class="status q">Queued on ACA</span></div></div>
+  <div class="mrow"><div class="t">#129 · Safe prompt dispatch</div><div class="m">ACA · squad-on-aca · 1h</div><div class="r"><span class="status rev">Ready for review</span><a class="lnk" href="#" style="font-size:12px">PR #133 ↗</a></div></div>
+  <button class="fab">＋</button>
+</div></div>
+</div>
+
+<div class="legend" id="legend"></div>
+
+<script>
+const CAPTIONS = {
+  list: '<b>All sessions.</b> Click the tabs, type in the keyword box, open Status, View and Sort, the ⋯ on any row, the ⤓ install icon, the 🔔 bell, and ▸ BRSWIG-SURFACE in Devices. Nothing has been removed: Pinned, the action-needed float, CPU/RAM meters, the + New items and the ⋮ menu all stay.',
+  aca: '<b>New ACA job (E4).</b> This replaces the "Start a new ACA job…" modal. The two old routes stay as links at the bottom left. Start job dispatches directly and adds a "Queued on ACA" row.',
+  detail: '<b>Session detail (E5).</b> A full page that Teams "View live session" links open directly. Sidebar on the left, Chat / Squad / Info tabs, and the approval card shown inside the chat as well. The composer gets Mode and Model menus. The Squad tab is the existing panel, unchanged.',
+  empty: '<b>Empty state (E3.7).</b> Three ways to start, plus the start command with a copy button. "Connect a device…" opens the existing modal unchanged.',
+  mobile: '<b>Phone (installed app).</b> Sessions and Devices tabs, scope chips, the keyword box with a filter button that opens the dropdowns as a sheet, and a + button. Sessions waiting on you stay at the top.'
+};
+const LEGEND = {
+  'E1.1':'All / Local / Cloud scope tabs, with counts. ACA executions count as Cloud.',
+  'E1.2':'One aligned filter bar: keyword on the left; Time, Status, Device, Repository, Organization on the right. Spelling moves to American English everywhere ("organisation" in today\'s UI becomes "organization").',
+  'E1.3':'View and Sort moved up to the tab row. New: Status and Squad views; Updated and Name sorts.',
+  'E1.5':'Per-session ⋯ menu: Open, Pin, Rename, Copy link, Run on ACA, PR and Aspire links, Stop, Remove.',
+  'E2.1':'Header install icon, shown only when the app can be installed and is not yet. Shows the browser\'s card, or ours on iOS and Firefox.',
+  'E3.1':'Devices header summary: N online · N sessions.',
+  'E3.2':'"ACA jobs · On-demand" listed first, then Squad on ACA executions, cloud devices and local machines.',
+  'E3.3':'ACA executions named after their issue and repo; the raw execution id is a detail.',
+  'E3.4':'Disk meter showing the fullest volume, beside the existing CPU and RAM.',
+  'E3.5':'Expandable device details: volumes, specs, versions (with mismatch warning), file access, token expiry.',
+  'E3.6':'Squad on ACA status card: watcher, Ralph, last dispatch.',
+  'E3.7':'Empty state with three ways to start and a copyable start command.',
+  'E4.1':'New ACA job: repository, base branch, new or existing issue, model, required reviewer, Publish PR.',
+  'E4.2':'Direct dispatch through workflow_dispatch using a GitHub App. Azure credentials never reach the hub.',
+  'E4.6':'Squad health shown in the UI. The data is already reported but never displayed.',
+  'E5.1':'Full-page session view with a sidebar; deep-linkable by URL.',
+  'E5.2':'Chat / Squad / Info tabs; approval cards also shown inside the chat; approval history in Info.',
+  'E5.3':'Composer with Mode and Model menus for the next turn. The existing sync state and kept draft stay.',
+  'E5.4':'Rename, star and ⋯ in the header. Run on ACA and Stop stay.',
+  'E6.1':'Bell inbox: everything waiting on you, with Allow and Deny inline.',
+  'E6.2':'Web Push to the installed app, opt-in per device.'
+};
+document.getElementById('legend').innerHTML = Object.entries(LEGEND).map(([k,v])=>`<div><b>${k}</b>${v}</div>`).join('');
+
+const S = [
+  {id:'s3', t:'Squanchy with Unity: implement issue 306 default gpt-realtime-2.1-mini', dev:'#306 · AzureAIDriveThru', kind:'cloud', repo:'swigerb/AzureAIDriveThru', br:'dev', st:'active', act:'Running Confirm baseline also has these 20 pre-existing failures', age:15, upd:1, tools:90, pin:true, sq:'6/6 members · 2 decisions', mixed:true, health:'pass'},
+  {id:'s2', t:'Unity with Summer and Beth: implement issue 304 pronunciation lexicon', dev:'#304 · AzureAIDriveThru', kind:'cloud', repo:'swigerb/AzureAIDriveThru', br:'squad/304-lexicon', st:'need', act:'Waiting for approval: dotnet test tests/Pronunciation.Tests', age:16, upd:3, tools:154, sq:'6/6 members · 2 decisions', mixed:true, health:'pass'},
+  {id:'s6', t:'Meridian demo rehearsal: run the live demo-script walk', dev:'BRSWIG-SURFACE', kind:'local', repo:'swigerb/meridian-crest-properties-demo', br:'main', st:'reply', act:'Should I re-run the GCP walk too, or only Azure?', age:40, upd:12, tools:61, sq:'4/4 members · 52 decisions', health:'fail'},
+  {id:'s1', t:'Morty with Summer, Beth and Birdperson: implement issue 305 per-person settings', dev:'#305 · AzureAIDriveThru', kind:'cloud', repo:'swigerb/AzureAIDriveThru', br:'dev', st:'active', act:'Running Run settings store operations test', age:16, upd:2, tools:303, sq:'6/6 members · 2 decisions', mixed:true, health:'pass'},
+  {id:'s5', t:'Show real PR titles and bodies in remote session PRs', dev:'#130 · squad-on-aca', kind:'cloud', repo:'swigerb/squad-on-aca', br:'main', st:'queued', age:1, upd:0, tools:0, steps:['Dispatched','Lease claimed','Starting job','Attached']},
+  {id:'s4', t:'Remote Squad session 129-safe-prompt-dispatch', dev:'#129 · squad-on-aca', kind:'cloud', repo:'swigerb/squad-on-aca', br:'squad/129-safe-prompt-dispatch', st:'review', act:'Finished; opened PR #133 with the squad reviewer required', age:95, upd:30, tools:212, sq:'7/7 members · 14 decisions', health:'pass', pr:133},
+  {id:'s8', t:'Ralph: triage sweep for squad-aca labels', dev:'squad-aca ralph', kind:'cloud', repo:'swigerb/squad-on-aca', br:'main', st:'active', act:'Processing…', age:4, upd:1, tools:9},
+  {id:'s7', t:'Health and scaling probe from Scout. Do not modify, create, or delete', dev:'brswig-mbp', kind:'local', repo:'swigerb/meridian-crest-properties-demo', br:'fix/squad-health-0.13', st:'off', act:'Device disconnected', age:1260, upd:1260, tools:1, sq:'0/0 members · 52 decisions', expired:true},
+];
+const ST = { active:['Working',''], need:['Needs approval','need'], reply:['Awaiting your reply','reply'], queued:['Queued on ACA','q'], review:['Ready for review','rev'], off:['Device disconnected','off'] };
+let scope='all', view='device', sort='st_d', status='';
+const attn = s => s.st==='need' || s.st==='reply';
+function rowHtml(s){
+  const cls = attn(s)?'attention':s.st==='queued'?'pending':s.st==='review'?'review':'';
+  const [lbl,sc]=ST[s.st];
+  let body = `<div class="title">${s.t}</div>`;
+  if (s.act) body += `<div class="act">${s.act}</div>`;
+  body += `<div class="meta2">${s.dev} · ${s.repo} · <span class="chip">${s.br}</span> · squad, auto · ${s.age<60?s.age+'m':Math.round(s.age/60)+'h'} ago${s.tools?' · '+s.tools+' tools':''}${s.pr?` · <a class="lnk" href="#">PR #${s.pr} ↗</a>`:''}</div>`;
+  if (s.steps) body += `<div class="steps">${s.steps.map((x,i)=>`<span class="s ${i<2?'done':i==2?'now':''}">${i<2?'✓ ':''}${x}</span>`).join('›')}</div>`;
+  if (s.sq) body += `<div class="badges">${s.expired?'<span class="pill">Expired</span>':''}<span class="sq">SQUAD</span><span style="color:var(--dim)">${s.sq}</span>${s.mixed?'<span class="mm">mixed models</span>':''}${s.health? (s.health==='pass'?'<span class="hp" title="squad health">● healthy</span>':'<span class="hf" title="squad health: routing check failed">● health: 1 failing</span>'):''}</div>`;
+  return `<div class="row ${cls}" data-id="${s.id}" onclick="go('detail')"><button class="star ${s.pin?'on':''}" onclick="event.stopPropagation();this.classList.toggle('on');this.textContent=this.classList.contains('on')?'★':'☆'">${s.pin?'★':'☆'}</button><div>${body}</div><span class="status ${sc}">${lbl}</span><button class="more" onclick="rowMenu(event)">⋯</button></div>`;
+}
+function render(){
+  const q=document.getElementById('kw').value.toLowerCase();
+  const inScope = s => scope==='all' || s.kind===scope;
+  const stOk = s => !status || (status==='action'?attn(s):s.st===status);
+  let list=S.filter(s=>inScope(s)&&stOk(s)&&(!q||(s.t+s.dev+s.repo).toLowerCase().includes(q)));
+  document.getElementById('n-all').textContent=S.length;
+  document.getElementById('n-local').textContent=S.filter(s=>s.kind==='local').length;
+  document.getElementById('n-cloud').textContent=S.filter(s=>s.kind==='cloud').length;
+  const cmp={st_d:(a,b)=>a.age-b.age, st_a:(a,b)=>b.age-a.age, upd_d:(a,b)=>a.upd-b.upd, upd_a:(a,b)=>b.upd-a.upd,
+    name_a:(a,b)=>a.t.localeCompare(b.t), name_d:(a,b)=>b.t.localeCompare(a.t), tools:(a,b)=>b.tools-a.tools, repo:(a,b)=>a.repo.localeCompare(b.repo)}[sort];
+  list.sort((a,b)=>(attn(b)-attn(a))||cmp(a,b));
+  document.getElementById('countTxt').textContent=`${list.length} session${list.length===1?'':'s'}${status||q||scope!=='all'?' (filtered)':''}`;
+  const pinned=list.filter(s=>s.pin), rest=list.filter(s=>!s.pin);
+  let html='';
+  if (pinned.length) html+=`<div class="grp" data-note="kept: Pinned"><span style="color:var(--warn)">★</span>Pinned <span class="meta">${pinned.length}</span></div>`+pinned.map(rowHtml).join('');
+  const key = {device:s=>s.dev, repo:s=>s.repo, status:s=>ST[s.st][0], squad:s=>s.repo.split('/')[1]+' squad', default:()=>''}[view];
+  const groups={}; rest.forEach(s=>{(groups[key(s)]=groups[key(s)]||[]).push(s);});
+  for (const [g,items] of Object.entries(groups)){
+    if (g) { const d = items[0]; const dot = view==='device' ? `<span class="dot ${d.st==='queued'?'pending':d.st==='off'?'offline':'online'}"></span>`:''; 
+      html+=`<div class="grp">${dot}${g} <span class="meta">${items.length} session${items.length>1?'s':''}${view==='device'?' · '+(d.kind==='local'?(d.dev.includes('SURFACE')?'windows':'macos'):'linux'):''}</span></div>`; }
+    html+=items.map(rowHtml).join('');
+  }
+  if (!list.length) html='<div class="empty"><h3>No sessions match these filters</h3><p>Clear the keyword or change the tab.</p></div>';
+  document.getElementById('list').innerHTML=html;
+}
+function closeAll(){ document.querySelectorAll('.sh .menu.open,.install-card.open').forEach(m=>m.classList.remove('open')); }
+function openMenu(id,e){ e.stopPropagation(); const m=document.getElementById(id); const was=m.classList.contains('open'); closeAll(); if(!was) m.classList.add('open'); }
+function rowMenu(e){ e.stopPropagation(); closeAll(); const m=document.getElementById('rowMenu'); const host=document.getElementById('sh-list').getBoundingClientRect(); const r=e.target.getBoundingClientRect();
+  m.style.left=(r.right-host.left-220)+'px'; m.style.top=(r.bottom-host.top+4)+'px'; m.classList.add('open'); }
+function toggleSec(el){ const b=el.nextElementSibling; b.style.display = b.style.display==='none'?'':'none'; el.firstChild.textContent = el.firstChild.textContent.replace(/^[▾▸]/, b.style.display==='none'?'▸':'▾'); }
+function toast(t){ const el=document.getElementById('toast'); el.textContent=t; el.classList.add('open'); closeAll(); setTimeout(()=>el.classList.remove('open'),3200); }
+function go(s){ closeAll(); document.querySelectorAll('.screen').forEach(x=>x.classList.toggle('on',x.id==='s-'+s));
+  document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
+  document.getElementById('caption').innerHTML=CAPTIONS[s]; window.scrollTo(0,0); }
+document.querySelectorAll('#screens button').forEach(b=>b.onclick=()=>go(b.dataset.s));
+document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>{scope=b.dataset.scope;document.querySelectorAll('[data-scope]').forEach(x=>x.classList.toggle('on',x===b));render();});
+document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;document.getElementById('viewLbl').textContent=b.textContent.replace('NEW','').trim();
+  document.querySelectorAll('[data-view] .chk').forEach(c=>c.textContent='');b.querySelector('.chk').textContent='✓';closeAll();render();});
+document.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{sort=b.dataset.sort;document.getElementById('sortLbl').textContent=b.textContent.replace('NEW','').trim();
+  document.querySelectorAll('[data-sort] .chk').forEach(c=>c.textContent='');b.querySelector('.chk').textContent='✓';closeAll();render();});
+document.querySelectorAll('[data-status]').forEach(b=>b.onclick=()=>{status=b.dataset.status;document.getElementById('statusDdl').firstChild.textContent=(status?b.textContent.replace('NEW','').trim():'Status')+' ';
+  document.getElementById('statusDdl').classList.toggle('set',!!status);document.querySelectorAll('[data-status] .chk').forEach(c=>c.textContent='');b.querySelector('.chk').textContent='✓';closeAll();render();});
+document.querySelectorAll('[data-dt]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-dt]').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('.tpane').forEach(p=>p.classList.toggle('on',p.id==='dt-'+b.dataset.dt));});
+document.querySelectorAll('[data-iss]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-iss]').forEach(x=>x.classList.toggle('on',x===b));document.getElementById('issNew').style.display=b.dataset.iss==='new'?'':'none';document.getElementById('issExisting').style.display=b.dataset.iss==='new'?'none':'';});
+document.getElementById('kw').oninput=render;
+document.getElementById('installBtn').onclick=e=>{e.stopPropagation();const c=document.getElementById('installCard');const was=c.classList.contains('open');closeAll();if(!was)c.classList.add('open');};
+document.getElementById('bellBtn').onclick=e=>openMenu('inbox',e);
+document.getElementById('installCard').onclick=e=>e.stopPropagation();
+document.getElementById('inbox').onclick=e=>e.stopPropagation();
+document.addEventListener('click',closeAll);
+const setLight=on=>document.querySelectorAll('.sh').forEach(x=>x.classList.toggle('light',on));
+document.getElementById('lightToggle').onchange=e=>setLight(e.target.checked);
+document.getElementById('themeBtn').onclick=()=>{const t=document.getElementById('lightToggle');t.checked=!t.checked;setLight(t.checked);};
+document.getElementById('noteToggle').onchange=e=>document.body.classList.toggle('notes',e.target.checked);
+render(); go('list');
+</script>
+</body>
+</html>

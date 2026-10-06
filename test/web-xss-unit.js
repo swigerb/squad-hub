@@ -20,8 +20,7 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -36,17 +35,8 @@ function check(name, fn) {
   }
 }
 
-const APP_JS = path.join(__dirname, '..', 'web', 'app.js');
-const src = fs.readFileSync(APP_JS, 'utf8');
-const MARKER = '(async function main()';
-const idx = src.indexOf(MARKER);
-if (idx < 0) {
-  console.log(`  FAIL could not find the "${MARKER}" extraction anchor in web/app.js -- it moved`);
-  console.log('RESULT\tfail\tweb/app.js extraction anchor is present\tanchor not found');
-  console.log(`\n0 passed, 1 failed`);
-  process.exit(1);
-}
-const pureSource = src.slice(0, idx);
+const src = readWebSource();
+const pureSource = src;
 
 // A sandbox with no `document`/`window` at all: if any of this prefix ever
 // touched the DOM directly (rather than only inside functions main() calls

@@ -19,8 +19,7 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 const { EventEmitter } = require('events');
 
 let pass = 0; let fail = 0;
@@ -164,10 +163,9 @@ check('a project config cannot set the mode for whoever runs the session', () =>
 
 // --- the row tells the truth about it ---------------------------------------
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
-const idx = src.indexOf('(async function main()');
+const src = readWebSource();
 const mod = { exports: {} };
-new Function('module', `${src.slice(0, idx)}\nmodule.exports = { sessionRow, spawnRequest };`)(mod);
+new Function('module', `${src}\nmodule.exports = { sessionRow, spawnRequest };`)(mod);
 const { sessionRow, spawnRequest } = mod.exports;
 
 const row = (agentSelection, applied) => sessionRow({

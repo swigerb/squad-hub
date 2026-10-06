@@ -656,13 +656,14 @@ async function watchCsp(pg) {
     await check('choosing an option drives the underlying select AND the app state', async () => {
       await page.click('.sp-opt >> text=Awaiting your reply');
       const after = await until(async () => {
-        // `state` is a script-scope const, so it is a bare binding rather than
-        // a property of window. Reading it as `window.state` returns undefined
-        // and would make this pass for the wrong reason.
+        // `state` is an ES module binding, not a property of `window`, so
+        // app.js exposes it (and a couple of other internals this suite
+        // needs) through `window.__squadHubTest` -- see the comment at the
+        // top of app.js's `main()`.
         const r = await page.evaluate(() => ({
           value: document.getElementById('statusFilter').value,
           label: document.querySelector('#statusFilter').closest('.selectpill').querySelector('.sp-value').textContent,
-          filter: state.filters.status,
+          filter: window.__squadHubTest.state.filters.status,
           open: document.getElementById('statusFilter').closest('.selectpill').getAttribute('aria-expanded'),
         }));
         return r.value === 'idle' ? r : null;
@@ -856,7 +857,7 @@ async function watchCsp(pg) {
       for (let i = 0; i < 3; i += 1) {
         await page.click('#themeBtn');
         seen.push(await page.evaluate(() => ({
-          theme: state.theme,
+          theme: window.__squadHubTest.state.theme,
           attr: document.documentElement.getAttribute('data-theme'),
           saved: localStorage.getItem('squad-hub-theme'),
           icons: document.querySelectorAll('#themeBtn svg').length,
@@ -961,14 +962,14 @@ async function watchCsp(pg) {
         assert.ok(live.title.length > 0, 'a coloured dot with no explanation is a mark, not a signal');
       }
       const off = await page.evaluate(() => {
-        setConn('offline');
+        window.__squadHubTest.setConn('offline');
         const c = document.getElementById('conn');
         return { text: c.textContent.trim(), title: c.title };
       });
       assert.match(off.text, /unreachable/i, 'a broken feed must say so in words');
       assert.match(off.title, /unaffected|keep running/i,
         'the obvious fear on seeing a red badge is that the work stopped');
-      await page.evaluate(() => setConn('live'));
+      await page.evaluate(() => window.__squadHubTest.setConn('live'));
     });
 
     await check('no list control is left opening the operating system popup', async () => {
@@ -1270,7 +1271,7 @@ async function watchCsp(pg) {
         el.hidden = false;
         // The application's own render, not markup written by this test --
         // otherwise the test could pass while the app emitted something else.
-        renderTranscript([{ update: { sessionUpdate: 'tool_call_update', content: [{ type: 'text', text }] } }]);
+        window.__squadHubTest.renderTranscript([{ update: { sessionUpdate: 'tool_call_update', content: [{ type: 'text', text }] } }]);
         const clipped = el.querySelector('.t-clipped');
         const details = el.querySelector('details');
         const summary = el.querySelector('summary');

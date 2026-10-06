@@ -17,10 +17,11 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readWebClient } = require('./helpers/web-source');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
-const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+const read = (p) => (p === 'web/app.js' ? readWebClient() : fs.readFileSync(path.join(ROOT, p), 'utf8'));
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -142,7 +143,7 @@ check('every mutation still anchors to real source', () => {
   for (const m of MUTATIONS) {
     if (m.skip) continue;
     let body;
-    try { body = read(m.file); } catch { drifted.push(`${m.name} -> ${m.file} does not exist`); continue; }
+    try { body = fs.readFileSync(path.join(ROOT, m.file), 'utf8'); } catch { drifted.push(`${m.name} -> ${m.file} does not exist`); continue; }
     if (!nl(body).includes(nl(m.find))) drifted.push(`${m.name} -> anchor gone from ${m.file}`);
   }
   assert.deepStrictEqual(drifted, [],
@@ -170,7 +171,7 @@ check('every mutation anchor matches EXACTLY ONE place in its file', () => {
   for (const m of MUTATIONS) {
     if (m.skip) continue;
     let body;
-    try { body = nl(read(m.file)); } catch { continue; }
+    try { body = nl(fs.readFileSync(path.join(ROOT, m.file), 'utf8')); } catch { continue; }
     const find = nl(m.find);
     if (!body.includes(find)) continue;   // absence is the other test's job
     const hits = body.split(find).length - 1;

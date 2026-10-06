@@ -19,8 +19,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readWebClient } = require('./helpers/web-source');
 const ROOT = path.join(__dirname, '..');
-const read = (p) => { try { return fs.readFileSync(path.join(ROOT, p), 'utf8'); } catch { return ''; } };
+const read = (p) => {
+  if (p === 'web/app.js') return readWebClient();
+  try { return fs.readFileSync(path.join(ROOT, p), 'utf8'); } catch { return ''; }
+};
 
 const app = read('web/app.js');
 const html = read('web/index.html');

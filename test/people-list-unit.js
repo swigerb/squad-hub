@@ -13,8 +13,7 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -29,10 +28,9 @@ function check(name, fn) {
   }
 }
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
-const idx = src.indexOf('(async function main()');
+const src = readWebSource();
 const mod = { exports: {} };
-new Function('module', `${src.slice(0, idx)}\nmodule.exports = { peopleVisible, peopleRows, peopleSummary };`)(mod);
+new Function('module', `${src}\nmodule.exports = { peopleVisible, peopleRows, peopleSummary };`)(mod);
 const { peopleVisible, peopleRows, peopleSummary } = mod.exports;
 
 /** A hub with an owner, a couple of deployment entries, and 60 added people. */

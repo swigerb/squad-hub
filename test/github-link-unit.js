@@ -16,8 +16,7 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
+const { readWebSource } = require('./helpers/web-source');
 const {
   newIssueLink, sessionIssueLink, issueLink, acaComment, githubRepo, repoFromName, issueTitle,
 } = require('../src/github-link');
@@ -210,10 +209,9 @@ check('issueTitle is a title, not the whole instruction', () => {
  * this through the hub would put the hub in the path of an action it
  * deliberately has no part in. Duplication is only safe while the two agree.
  */
-const appSrc = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8');
-const anchor = appSrc.indexOf('(async function main()');
+const src = readWebSource();
 const browser = { exports: {} };
-new Function('module', `${appSrc.slice(0, anchor)}\nmodule.exports = { acaNewIssueLink, acaComment, acaIssueLink, acaSessionRepo, acaRepoName };`)(browser);
+new Function('module', `${src}\nmodule.exports = { acaNewIssueLink, acaComment, acaIssueLink, acaSessionRepo, acaRepoName };`)(browser);
 
 check('the browser copy produces the same new-issue link', () => {
   assert.strictEqual(

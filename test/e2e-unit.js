@@ -312,7 +312,10 @@ function api(port, p, token, opts = {}) {
     assert.match(r.raw, /All sessions/);
   });
   await checkAsync('the web assets load', async () => {
-    for (const f of ['/app.js', ...cssHrefs(), '/app.webmanifest']) {
+    const jsFiles = fs.readdirSync(path.join(__dirname, '..', 'web', 'js'))
+      .filter((f) => f.endsWith('.js'))
+      .map((f) => `/js/${f}`);
+    for (const f of ['/app.js', ...jsFiles, ...cssHrefs(), '/app.webmanifest']) {
       const r = await api(port, f, null);
       assert.strictEqual(r.status, 200, `${f} did not load (${r.status})`);
     }

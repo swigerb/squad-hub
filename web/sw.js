@@ -31,7 +31,7 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v2';
+const CACHE = 'squad-hub-shell-v3';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -39,7 +39,25 @@ const CACHE = 'squad-hub-shell-v2';
  * `/` rather than `/index.html`: that is what `start_url` in the manifest
  * resolves to, and what a navigation request asks for.
  */
-const SHELL = ['/', '/css/tokens.css', '/css/topbar.css', '/css/list.css', '/css/devices.css', '/css/modals.css', '/css/detail.css', '/css/squad.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg'];
+const SHELL = [
+  '/',
+  '/css/tokens.css',
+  '/css/topbar.css',
+  '/css/list.css',
+  '/css/devices.css',
+  '/css/modals.css',
+  '/css/detail.css',
+  '/css/squad.css',
+  '/js/api.js',
+  '/js/util.js',
+  '/js/list.js',
+  '/js/approvals.js',
+  '/app.js',
+  '/app.webmanifest',
+  '/favicon.svg',
+  '/icon.svg',
+  '/logo.jpg',
+];
 
 self.addEventListener('install', (event) => {
   // `addAll` rejects the whole install if ANY asset 404s, which is the correct

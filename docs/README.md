@@ -11,6 +11,7 @@
 | [Running in the cloud](cloud.md) | App Service, Container Apps, and Kubernetes |
 | [Sessions on Container Apps](aca.md) | Supervising Squad on ACA runs, so a job can ask a human |
 | [Releasing](releasing.md) | Publishing to npm, under both of its names |
+| [v0.7.0 mockup](design/v0.7.0-mockup.html) | Raw design reference for the v0.7.0 hub UI |
 
 ## How this is tested
 
