@@ -727,7 +727,7 @@ general "safe for every clone" setting.
 
 `config edit` creates the file first if it does not exist — an editor opened on
 a path that is not there is how someone ends up editing nothing at all — and
-re-parses it afterwards. Invalid JSON is reported as a failure, and the
+re-parses it afterward. Invalid JSON is reported as a failure, and the
 previous, valid file is RESTORED rather than left broken for the next command
 to silently read as defaults.
 
