@@ -223,6 +223,24 @@ function postJson(port, urlPath, token, body) {
     assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-300)}`);
   });
 
+  await check('SQUAD_HUB_MODEL selects the model for the one-shot session', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-model-'));
+    const r = await runOneShot({
+      ...base, SQUAD_HUB_PROMPT: 'fine', SQUAD_HUB_CWD: work, SQUAD_HUB_MODEL: 'gpt-test-1',
+    });
+    assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-300)}`);
+    assert.match(r.out, /model requested: gpt-test-1/, `the model never reached the session. ${r.out.slice(-300)}`);
+  });
+
+  await check('an invalid SQUAD_HUB_MODEL is ignored, not passed to the agent', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-badmodel-'));
+    const r = await runOneShot({
+      ...base, SQUAD_HUB_PROMPT: 'fine', SQUAD_HUB_CWD: work, SQUAD_HUB_MODEL: '--allow-all-tools',
+    });
+    assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-300)}`);
+    assert.match(r.out, /model requested: none/, `an invalid model name was not refused. ${r.out.slice(-300)}`);
+  });
+
   await check('the session really ran; it did not merely exit', async () => {
     // Exiting quickly is only good if the work happened first.
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-marker-'));

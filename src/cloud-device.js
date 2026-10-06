@@ -36,6 +36,11 @@ const TOKEN = process.env.SQUAD_HUB_TOKEN;
 const ONESHOT = /^(1|true|yes|on)$/i.test(process.env.SQUAD_HUB_ONESHOT || '');
 const PROMPT = process.env.SQUAD_HUB_PROMPT || null;
 const CWD = process.env.SQUAD_HUB_CWD || null;
+// The model for the one session, e.g. a job dispatch's `model` input. It goes
+// through the same validation as `squad-hub run --model` and is applied over
+// ACP (`copilot --acp` ignores a --model flag); an invalid name is ignored
+// with a warning and the default model runs.
+const MODEL = process.env.SQUAD_HUB_MODEL || null;
 // How long to wait for the hub before starting anyway. The hub is an observer,
 // never a dependency, so this is a courtesy to the approver -- not a gate.
 const ATTACH_GRACE_MS = Number(process.env.SQUAD_HUB_ATTACH_GRACE_MS || 5000);
@@ -194,10 +199,18 @@ d.deviceName = deviceName;
 
     let started;
     try {
-      started = await d.handle({ op: 'start-session', prompt: PROMPT, cwd: CWD || process.cwd() });
+      started = await d.handle({
+        op: 'start-session', prompt: PROMPT, cwd: CWD || process.cwd(), model: MODEL || undefined,
+      });
     } catch (e) {
       process.stderr.write(`could not start the session: ${e.message}\n`);
       process.exit(1);
+    }
+    if (MODEL) {
+      const chosen = started.agentSelection && started.agentSelection.model;
+      process.stdout.write(chosen === MODEL
+        ? `model requested: ${chosen}\n`
+        : 'model requested: none (SQUAD_HUB_MODEL is not a valid model name; it was ignored)\n');
     }
     process.stdout.write(`session ${started.id} started\n`);
 
