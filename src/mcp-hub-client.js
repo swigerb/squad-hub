@@ -167,11 +167,9 @@ function createHubClient({ hub, token }) {
     },
 
     /**
-     * ACA dispatch (#177). Passed straight through: today's hub has no
-     * `/api/aca/dispatch` route at all, so this resolves to the hub's own
-     * 404 `{"error":"not found"}`. When #177 lands, this same call starts
-     * working, and if the hub ever answers 501 on a route that exists but is
-     * deliberately unfinished, THAT status and body reach the caller too --
+     * ACA dispatch (#177). Passed straight through to the hub's
+     * `POST /api/aca/dispatch`. When the hub has no GitHub App configured it
+     * answers 501 `{reason}`, and THAT status and body reach the caller --
      * never swallowed into a generic "not supported" of this tool's own
      * invention. A passthrough that quietly rewrites the hub's answer is a
      * passthrough in name only.
