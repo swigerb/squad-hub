@@ -230,11 +230,11 @@ await (async () => {
   await checkAsync("dispatch_aca passes the hub's error through, not a synthesized one", async () => {
     const e = await assertRejects(client.dispatchAca({ repo: 'o/r', prompt: 'go' }));
     assert.ok(e instanceof HubApiError, `wrong error type: ${e}`);
-    // Today's hub has no /api/aca/dispatch route at all (#177 is still open),
-    // so the honest passthrough is THIS hub's real 404 -- not a tool-invented
-    // "not supported yet" message that would keep reading the same after #177
-    // actually ships.
-    assert.strictEqual(e.status, 404, JSON.stringify(e.body));
+    // The route exists since #177, but this test hub has no GitHub App
+    // configured, so the honest passthrough is THIS hub's real 501 and its
+    // reason -- not a tool-invented "not supported" message.
+    assert.strictEqual(e.status, 501, JSON.stringify(e.body));
+    assert.ok(/GitHub App is not configured/.test(e.body && e.body.reason), JSON.stringify(e.body));
   });
 
   // -- auth boundary: a device token cannot drive another device's work ----

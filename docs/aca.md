@@ -215,19 +215,24 @@ so a week of jobs cannot bury the machines you use.
 
 They are different things, and only one of them starts anything.
 
-| | A job **attaches** to the hub | The hub **links** to a job |
-|---|---|---|
-| What happens | An ACA job runs `squad-hub oneshot` and dials the hub, so a person can answer its approvals | **+ New → Start a new ACA job…** writes a GitHub URL and opens it |
-| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue |
-| What the hub holds | A device token, minted by you | Nothing |
-| Appears in **+ New** as | **On an attached cloud device** — it is already running | **Start a new ACA job…** — it is not running yet |
+| | A job **attaches** to the hub | The hub **links** to a job | The hub **dispatches** a job (issue #177) |
+|---|---|---|---|
+| What happens | An ACA job runs `squad-hub oneshot` and dials the hub, so a person can answer its approvals | **+ New → Start a new ACA job…** writes a GitHub URL and opens it | The hub calls `workflow_dispatch` on `squad-dispatch.yml` directly, as a GitHub App |
+| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue | Whoever presses the button in the hub, signed in as any hub user |
+| What the hub holds | A device token, minted by you | Nothing | A GitHub App installation token (in memory, per request) |
+| Appears in **+ New** as | **On an attached cloud device** — it is already running | **Start a new ACA job…** — it is not running yet | Same dialog, used directly instead of as a link, on a repository the App is installed on |
 
-Neither gives the hub the ability to start compute. In the first the job comes
-to the hub; in the second the hub writes a request that a person sends.
+Neither of the first two gives the hub the ability to start compute. In the
+first the job comes to the hub; in the second the hub writes a request that a
+person sends. The third genuinely does give the hub that ability, for exactly
+the repositories an administrator chose — see the next section, and
+[security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+for the trust-boundary change that comes with it.
 
 ### Who may start a run
 
-Decided entirely by the target repository on GitHub, not by Squad Hub:
+For the first two directions, decided entirely by the target repository on
+GitHub, not by Squad Hub:
 
 - **Applying the `squad-aca` label** needs Triage or above.
 - **Commenting the command** needs Owner, organisation member, or collaborator.
@@ -242,6 +247,62 @@ anyone who has ever had a commit merged. See
 [who may trigger a run][aca-trigger].
 
 [aca-trigger]: https://github.com/swigerb/squad-on-aca/blob/main/docs/actions-trigger.md#who-may-trigger-a-run
+
+### The third direction is different, on purpose
+
+`POST /api/aca/dispatch` (and the "installed repos" / "recent dispatches"
+reads beside it) skip the repository's own collaborator check entirely, for
+any repository where the hub's GitHub App is installed. The gate becomes "is
+the App installed here", decided once by whoever installed it — **not** a
+per-person collaborator check. Any signed-in hub user can dispatch on any
+App-installed repository. Read
+[security.md's "GitHub App path"](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+before installing the App anywhere, because this is a real widening of who
+can start a job, not a detail.
+
+Configured with `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` (see
+[commands.md](commands.md#the-service)); unset, the three `/api/aca/*` routes
+answer `501` and every repository works exactly as the first two directions
+above describe, which is the only state possible today — the App itself does
+not exist yet (swigerb/squad-on-aca#135 is the matching work on the workflow
+side, open and not yet implemented, which is why only `issue` and `prompt` are
+sent until it lands).
+
+Rate-limited per signed-in user, in memory, reset on a hub restart — generous
+for a person, tight for a script.
+
+What it sends maps onto `squad-dispatch.yml`'s `workflow_dispatch` inputs:
+
+| Hub field | Workflow input |
+|---|---|
+| `issue` / the issue just created from `newIssue` | `issue` |
+| `prompt` | `prompt` |
+| `model` | `model` |
+| `baseBranch` | `base_branch` |
+| `publishPr` | `publish_pr` |
+| `reviewer` | `reviewer` |
+| `watchOnly` | `watch_only` |
+
+Only fields actually supplied are sent, and only when the target repository's
+own `squad-dispatch.yml` declares that input. GitHub's `workflow_dispatch` API
+answers `422` for an undeclared input — it does not ignore it — so the hub
+reads the workflow file off the repository's default branch before dispatching
+and refuses, with a clear `422` naming the field, if a requested option is not
+one the workflow declares. That check runs before `newIssue` ever creates
+anything; if the dispatch call itself still fails afterward, the error response
+carries the issue the hub already created so it is never silently stranded.
+`workflow_dispatch` itself replies `204` with no run id, so the hub hands back
+the workflow's own Actions page as `runUrl` — the best any caller can do until
+a run appears, which `/api/aca/dispatches` then surfaces by matching it up
+afterward.
+
+The dispatch always runs on the repository's own **default branch** — never on
+a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
+**input** above (itself subject to the declared-input check), so the workflow
+decides what to do with it; it is never used to select which ref GitHub
+actually runs the workflow from. See
+[security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+for why that distinction matters.
 
 ## Scope
 
@@ -261,5 +322,15 @@ operator makes per deployment, not a dependency either project imposes.
 
 The contract runs one way: **Squad Hub owns the device protocol and documents it
 here; squad-on-aca depends on it.** Never the reverse.
+
+The GitHub App dispatch path above is a THIRD, separate piece of scope, and is
+hub-side only: it calls `squad-dispatch.yml`'s `workflow_dispatch` trigger,
+which the workflow already supports for `issue`/`prompt` today. The additional
+inputs it can send (`model`, `base_branch`, `publish_pr`, `reviewer`,
+`watch_only`) are forward-compatible with swigerb/squad-on-aca#135, which is
+open and not yet implemented on the workflow side — sending them now does not
+block on that landing, because the hub reads the workflow's own declared
+inputs first and only ever sends the ones it actually declares, refusing the
+rest with a clear `422` rather than letting GitHub reject the whole call.
 
 

@@ -1066,7 +1066,7 @@ the hub. `SQUAD_HUB_USER_TOKEN` supplies `--token` here too.
 | `send_message(key, text)` | Steer a running session without stopping it. |
 | `stop_session(key)` | Stop a running session. |
 | `list_devices()` | Your devices, with presence, kind, and metadata. |
-| `dispatch_aca(...)` | Dispatch onto Azure Container Apps (#177). Passed straight through to `/api/aca/dispatch` — a hub that does not have that route yet answers with its own refusal, never a synthesized one. |
+| `dispatch_aca(...)` | Dispatch onto Azure Container Apps (#177). Passed straight through to `/api/aca/dispatch` — a hub with no GitHub App configured answers with its own `501` refusal, never a synthesized one. |
 
 **There is no `approve` tool.** Approvals stay human, on purpose: every other
 tool here acts on your behalf, the same as the web app would — but an approval
@@ -1157,6 +1157,8 @@ cannot mint an owner.
 | `SQUAD_HUB_GITHUB_CLIENT_ID` | OAuth App client id. Set this **and** the secret to put a "Sign in with GitHub" button on the sign-in page. Without both, the hub still accepts a pasted token but cannot start a browser sign-in. |
 | `SQUAD_HUB_REQUIRE_DEVICE_TOKENS` | Refuse a person's own credential where a **device token** belongs. Off by default so existing devices keep working; turning it on disconnects any device still using the old credential, which is the point. |
 | `SQUAD_HUB_GITHUB_CLIENT_SECRET` | OAuth App client secret. Never commit it; set it as an app setting. |
+| `SQUAD_HUB_GH_APP_ID` | App id of the hub's own GitHub App, for `/api/aca/*` direct dispatch (issue #177). Without this **and** the private key below, those three routes answer `501` and the hub falls back to the prefilled-issue link it always offered. See [security.md](security.md#starting-a-cloud-job-from-the-hub) and [aca.md](aca.md). |
+| `SQUAD_HUB_GH_APP_PRIVATE_KEY` | The App's PEM private key. Never logged, never returned by any endpoint. `\n` is accepted in place of real newlines, for pasting into a single-line app setting. |
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
 | `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" below — the connector this used to mean no longer exists. |

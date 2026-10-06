@@ -115,12 +115,12 @@ const TOOLS = [
   },
   {
     name: 'dispatch_aca',
-    description: 'Dispatch a session to run on Azure Container Apps via a GitHub Actions workflow_dispatch (#177). Passed straight through to the hub\'s /api/aca/dispatch; on a hub that does not have it yet, this returns that hub\'s own refusal (today, a 404) rather than a synthesized error.',
+    description: 'Dispatch a session to run on Azure Container Apps via a GitHub Actions workflow_dispatch (#177). Passed straight through to the hub\'s /api/aca/dispatch; on a hub with no GitHub App configured, this returns that hub\'s own 501 refusal rather than a synthesized error.',
     inputSchema: {
       type: 'object',
       properties: {
         repo: { type: 'string', description: 'owner/repo to dispatch into.' },
-        baseBranch: { type: 'string', description: 'Branch the workflow runs from.' },
+        baseBranch: { type: 'string', description: 'Base branch for the session (the workflow base_branch input). The workflow itself always runs from the default branch.' },
         prompt: { type: 'string', description: 'What to ask the agent to do.' },
         model: { type: 'string' },
         issue: { type: 'integer', description: 'An existing issue number to work from.' },
