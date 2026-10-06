@@ -108,6 +108,22 @@ health object is intentionally small and computed on the device; only `status`
 and check ids/statuses cross to the hub, not diagnostic messages, stderr, or
 local paths.
 
+Every session also carries `lastActivityAt` (epoch ms) -- when it last did
+something, for "Latest/First updated" sorting. It moves on a real status
+change (`starting` -> `active` -> `waiting_approval` -> `done`, and so on) and
+on a transcript push, never on a device merely re-publishing an unchanged
+status, which happens on every heartbeat and reconnect -- that would make
+every idle session look freshly active on the next tick.
+
+A session may also carry `pullRequest`, an optional `{ url, number, title }`
+the device reported, naming a pull request the session's work produced or is
+aimed at. Validated the same way as device metadata (see above): `url` must be
+a real `https://github.com/{owner}/{repo}/pull/{number}` URL, `number` a
+positive integer, and `title` (optional) a string capped at 200 characters.
+Anything that fails validation -- wrong type, oversize, a non-GitHub-pull-
+request URL, or an injection-shaped string -- is rejected outright; `pullRequest`
+reads `null` rather than holding a partially-valid value.
+
 ### `GET /api/prefs`, `PUT /api/prefs`
 
 Per-user preferences -- pins, renames, and the saved view -- so they follow you

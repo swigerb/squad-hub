@@ -35,6 +35,25 @@ That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`) is
 optional, validated and size-capped in [`src/device-meta.js`](../src/device-meta.js),
 and never trusted as sent.
 
+### Session activity and pull requests
+
+Each session carries `lastActivityAt` (epoch ms), used for "Latest/First
+updated" sorting. It is deliberately not the same signal as a session's
+`updatedAt`: a device re-sends its whole session list on every heartbeat and
+reconnect (see "What follows from it" below), which would refresh `updatedAt`
+for sessions that have done nothing. `lastActivityAt` instead moves only on a
+real status change or a transcript push, so an hour of silence still reads as
+an hour of silence after the next heartbeat tick.
+
+A session may also carry an optional `pullRequest` the device reports --
+`{ url, number, title }` -- naming a pull request its work produced or is
+aimed at. Validated with the same posture as device metadata, in
+[`src/pull-request.js`](../src/pull-request.js): `url` must be a real GitHub
+pull request URL, `number` a positive integer, and `title` capped at 200
+characters. Unlike device metadata's independent fields, a pull request is one
+fact with three parts, so an invalid field rejects the whole thing rather than
+surviving with a dropped piece.
+
 ### What follows from it
 
 **You can redeploy the hub in the middle of a working day.** The agent never

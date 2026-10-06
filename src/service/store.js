@@ -16,6 +16,7 @@
 const { EventEmitter } = require('events');
 const { MemoryBacking } = require('./store-backing');
 const { sanitizeDeviceMeta } = require('../device-meta');
+const { sanitizePullRequest } = require('../pull-request');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
@@ -355,6 +356,21 @@ class Store extends EventEmitter {
       firstSeen: existing.firstSeen || Date.now(),
     };
     /**
+     * The pull request a device reports for this session, if any.
+     *
+     * A device IS NOT THIS PROCESS (see the note on `normaliseSession` above),
+     * so `{ url, number, title }` is validated here exactly as device metadata
+     * is -- see `src/pull-request.js`. An omitted `pullRequest` key leaves
+     * whatever was recorded before untouched (a device that stops echoing it
+     * is not a device that revoked it); an explicit `null` or a value that
+     * fails validation clears it.
+     */
+    if ('pullRequest' in session) {
+      rec.pullRequest = sanitizePullRequest(session.pullRequest);
+    } else if (!('pullRequest' in existing)) {
+      rec.pullRequest = null;
+    }
+    /**
      * When this session FINISHED, stamped once.
      *
      * Retention cannot use updatedAt: a device re-publishes its whole session
@@ -364,12 +380,53 @@ class Store extends EventEmitter {
      */
     if (TERMINAL.has(rec.status) && !rec.endedAt) rec.endedAt = Date.now();
     if (!TERMINAL.has(rec.status)) rec.endedAt = null;
+    /**
+     * When this session last did something, for "Latest/First updated"
+     * sorting (#169).
+     *
+     * NOT `updatedAt`: a device re-publishes its whole session list on every
+     * heartbeat and reconnect (see the note above on `endedAt`), which would
+     * make every idle session look freshly active on the next heartbeat tick.
+     * `lastActivityAt` instead moves only when the status itself changes
+     * (starting -> active -> waiting_approval -> done, etc.) or a brand-new
+     * session appears, plus explicit transcript pushes via
+     * `touchSessionActivity` below. A read -- `listSessions`, `overview`,
+     * `getSession` -- never calls this method at all, so it cannot bump it.
+     */
+    rec.lastActivityAt = (!existing.lastActivityAt || existing.status !== rec.status)
+      ? Date.now()
+      : existing.lastActivityAt;
     b.sessions.set(key, rec);
     return rec;
   }
 
   upsertSession(subject, deviceId, session) {
     const rec = this._upsertSessionRecord(subject, deviceId, session);
+    this._persist(subject);
+    this.emit('session', { subject, session: rec });
+    return rec;
+  }
+
+  /**
+   * A transcript entry arrived for a session whose status did not change.
+   *
+   * Transcript pushes are a separate wire message from a session snapshot
+   * (see `_fromDevice`'s `case 'transcript'` in `hub-service.js`), carrying no
+   * status of their own -- so `_upsertSessionRecord`'s status-change check
+   * never sees them. Without this, a session that sits in `active` for an
+   * hour of continuous tool calls would look exactly as stale as one that has
+   * genuinely been idle the whole time.
+   *
+   * A no-op, not an error, when the session is unknown: a transcript entry
+   * can race a session's removal (the device forgot it, or it aged out) and
+   * arriving a moment late is not a fault worth surfacing.
+   */
+  touchSessionActivity(subject, deviceId, sessionId) {
+    const b = this._bucket(subject);
+    const key = `${deviceId}:${sessionId}`;
+    const rec = b.sessions.get(key);
+    if (!rec) return null;
+    rec.lastActivityAt = Date.now();
     this._persist(subject);
     this.emit('session', { subject, session: rec });
     return rec;
