@@ -3644,6 +3644,70 @@ if ($health.accessStore -ne 'durable') {`,
     if (!process.env.MUTANT && INJECTION_RE.test(title)) return null; // MUTATION`,
     mustFail: 'an injection-shaped title is rejected',
   },
+  {
+    name: 'report-pr picks the earliest local session instead of the most recent',
+    file: 'src/report-pr.js',
+    find: `    if (!best || at > best.at) best = { id: s.id, at };`,
+    replace: `    if (!best || (process.env.MUTANT ? at < best.at : at > best.at)) best = { id: s.id, at }; // MUTATION`,
+    mustFail: 'the most recently ENDED session wins over an earlier one',
+  },
+  {
+    name: 'report-pr ignores startedAt and only ever reads endedAt',
+    file: 'src/report-pr.js',
+    find: `    const at = s.endedAt || s.startedAt || 0;`,
+    replace: `    const at = process.env.MUTANT ? (s.endedAt || 0) : (s.endedAt || s.startedAt || 0); // MUTATION`,
+    mustFail: 'a session with no endedAt yet falls back to startedAt',
+  },
+  {
+    name: 'report-pr tries to report even with no hub configured',
+    file: 'src/cli.js',
+    find: `  const hub = process.env.SQUAD_HUB_URL;
+  if (!hub) {`,
+    replace: `  const hub = process.env.SQUAD_HUB_URL;
+  if (process.env.MUTANT ? false : !hub) { // MUTATION`,
+    mustFail: 'with no hub configured, it is a no-op that exits 0',
+  },
+  {
+    name: 'report-pr proceeds with no device token at all',
+    file: 'src/cli.js',
+    find: `  const token = process.env.SQUAD_HUB_TOKEN;
+  if (!token) {`,
+    replace: `  const token = process.env.SQUAD_HUB_TOKEN;
+  if (process.env.MUTANT ? false : !token) { // MUTATION`,
+    mustFail: 'a missing device token is a clear, non-zero failure',
+  },
+  {
+    name: 'report-pr proceeds with no session to report against',
+    file: 'src/cli.js',
+    find: `  const sessionId = value(argv, 'session', null) || mostRecentLocalSessionId();
+  if (!sessionId) {`,
+    replace: `  const sessionId = value(argv, 'session', null) || mostRecentLocalSessionId();
+  if (process.env.MUTANT ? false : !sessionId) { // MUTATION`,
+    mustFail: 'with no session at all to report against, it fails rather than guessing',
+  },
+  {
+    name: 'report-pr sends an unvalidated pull request straight to the hub',
+    file: 'src/report-pr.js',
+    find: `  const pullRequest = sanitizePullRequest({ url, number, title: title === null ? undefined : title });
+  if (!pullRequest) {`,
+    replace: `  const pullRequest = sanitizePullRequest({ url, number, title: title === null ? undefined : title });
+  if (process.env.MUTANT ? false : !pullRequest) { // MUTATION`,
+    mustFail: 'an invalid --url is rejected before anything is sent, with exit code 2',
+  },
+  {
+    name: 'report-pr sends the whole session payload instead of just id + pullRequest',
+    file: 'src/report-pr.js',
+    find: `    const sent = link.send({ type: 'session', session: { id: sessionId, pullRequest }, correlationId });`,
+    replace: `    const sent = link.send({ type: 'session', session: process.env.MUTANT ? { id: sessionId, pullRequest, status: 'active' } : { id: sessionId, pullRequest }, correlationId }); // MUTATION`,
+    mustFail: 'a valid report lands on the named session, and nothing else about it changes',
+  },
+  {
+    name: 'the hub replies to every session message, not only one that asked via correlationId',
+    file: 'src/service/hub-service.js',
+    find: `        if (msg.correlationId && conn) {`,
+    replace: `        if (process.env.MUTANT ? conn : (msg.correlationId && conn)) { // MUTATION`,
+    mustFail: 'a session message with no correlationId gets no reply, exactly as before report-pr existed',
+  },
 ];
 
 /**

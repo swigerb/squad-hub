@@ -17,12 +17,12 @@
  * case with its own code path.
  */
 
-const crypto = require('crypto');
 const os = require('os');
 
 const { Daemon } = require('./daemon');
 const config = require('./config');
 const { parseDeviceMetaEnv } = require('./device-meta');
+const { cloudDeviceId } = require('./device-identity');
 
 const HUB = process.env.SQUAD_HUB_URL;
 const TOKEN = process.env.SQUAD_HUB_TOKEN;
@@ -127,9 +127,13 @@ if (!hasAgentCredential && !process.env.SQUAD_HUB_AGENT) {
  * Scaling past one replica needs per-replica identity instead; set
  * SQUAD_HUB_DEVICE_ID explicitly (for example to the pod name) in that case.
  * Two replicas sharing one id would fight over the same device slot.
+ *
+ * Derived in `./device-identity` rather than inline, so `squad-hub report-pr`
+ * -- a separate process that runs after this one has already exited -- can
+ * resolve the exact same id from the exact same environment instead of
+ * carrying its own copy of this logic.
  */
-const deviceId = process.env.SQUAD_HUB_DEVICE_ID
-  || crypto.createHash('sha1').update(`cloud|${appName}`).digest('hex').slice(0, 16);
+const deviceId = cloudDeviceId(process.env);
 
 const d = new Daemon();
 d.deviceName = deviceName;

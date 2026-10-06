@@ -857,6 +857,19 @@ async function suiteSessionActivity() {
 }
 
 /**
+ * `squad-hub report-pr` (#201): a device reports its session's pull request
+ * after the session has already ended -- the CLI verb a Squad on ACA worker
+ * runs once the agent (and `squad-hub oneshot`) has already exited, so there
+ * is no daemon left to tell. Covers argument validation, the "most recent
+ * local session" default, and -- the security-sensitive part -- that a
+ * device token can only ever land its report on its own device's session.
+ */
+async function suiteReportPr() {
+  console.log('\n[REPORT PR] report-pr: device identity, validation, cross-device isolation');
+  runChildSuite(path.join(__dirname, 'report-pr-unit.js'), 'report-pr');
+}
+
+/**
  * The device roster: ordering, presence wording, load meters, and the
  * telemetry that feeds them -- which is off by default, like every other thing
  * the daemon could report about the machine it runs on.
@@ -1056,6 +1069,7 @@ async function suiteStaleApprovals() {
   await suiteListControls();
   await suiteDeviceKind();
   await suiteSessionActivity();
+  await suiteReportPr();
   await suiteDeviceRoster();
   await suiteControlVerification();
   await suiteApprovalDepth();

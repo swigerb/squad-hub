@@ -658,6 +658,7 @@ test suite verifies this behaviour without ever installing a real login task.
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
 | `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
+| `squad-hub report-pr --url <pr-url> --number <N> [--title <t>] [--session <id>]` | Attach a pull request to a session after it ended, as the same device that ran it. |
 | `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
 | `squad-hub forget --all` | Remove the record of every session that has ended. |
 
@@ -1152,6 +1153,46 @@ dispatch that run unattended.
 
 Copilot CLI itself reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` in
 that order. `SQUAD_HUB_AGENT_TOKEN` is copied into the first of those.
+
+### Reporting a pull request after the session ends
+
+```
+squad-hub report-pr --url <https://github.com/o/r/pull/N> --number <N> [--title <text>] [--session <sessionId>]
+```
+
+A Squad on ACA worker opens its pull request only **after** the agent — and
+`squad-hub oneshot` with it — has already exited, so there is no daemon left
+to tell "attach this URL to the session you just finished". `report-pr` is the
+one thing such a worker can still run, in the same container, to reach the hub
+and say so anyway.
+
+It reconnects to the hub **as the same device** the session ran on — using
+`SQUAD_HUB_URL` and `SQUAD_HUB_TOKEN`, the same two variables `oneshot` used,
+and deriving the same device id `cloud-device.js` would have — so the update
+lands on the session that device already published, not a new device the hub
+has never seen. `--session` is optional; without it, the target is this
+device's own most recently ended session, read from its local session
+record. The pull request itself is validated client-side before anything is
+sent (the same checks `src/pull-request.js` applies on the hub side): a
+missing or non-GitHub `--url`, a `--number` that is not a positive integer or
+does not match the one in `--url`, or an injection-shaped `--title`, is
+refused with exit **2** before any network call.
+
+Exactly one session update is sent, carrying the pull request and nothing
+else — every other field of the session (status included) is left exactly as
+the hub already had it.
+
+With `SQUAD_HUB_URL` unset there is nowhere to report to; this is a no-op that
+exits **0**, not an error, matching `oneshot`'s posture that the hub is an
+observer, never a dependency. Exit codes: **0** reported (or that no-op),
+**1** failed (no token, no session to report against, or the hub refused the
+report), **2** a missing or invalid `--url`/`--number`/`--title`.
+
+The hub enforces the same isolation as everywhere else a device token
+reaches it: a token may only ever attach as a device id its own prefix
+allows (see "Device ids and prefix-bound tokens" above), so a token for one
+device can no more report a pull request onto another device's session than
+it could spawn work on it.
 
 ## Exit codes
 
