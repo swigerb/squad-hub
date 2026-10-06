@@ -22,7 +22,7 @@ const assert = require('assert');
 const crypto = require('crypto');
 const http = require('http');
 
-const { GitHubApp } = require('../src/service/github-app');
+const { GitHubApp, parseDeclaredWorkflowInputs, upstreamStatus } = require('../src/service/github-app');
 const { RateLimiter } = require('../src/service/rate-limiter');
 const { DispatchTracker } = require('../src/service/dispatch-tracker');
 const { sanitizeDispatchRequest, buildWorkflowInputs } = require('../src/aca-dispatch');
@@ -70,16 +70,59 @@ function b64urlDecode(s) {
 }
 
 /**
+ * A minimal `squad-dispatch.yml` body declaring exactly `inputNames` under
+ * `workflow_dispatch.inputs`, with enough surrounding structure (a `name:`
+ * key, a `jobs:` block after `on:`) to exercise the indentation-boundary
+ * logic in `parseDeclaredWorkflowInputs` the same way a real workflow file
+ * would, not just a single trivial block.
+ */
+function squadDispatchYaml(inputNames) {
+  const lines = ['name: Squad dispatch', 'on:', '  workflow_dispatch:'];
+  if (inputNames && inputNames.length) {
+    lines.push('    inputs:');
+    for (const name of inputNames) {
+      lines.push(`      ${name}:`);
+      lines.push('        description: auto-generated for tests');
+      lines.push(`        required: ${name === 'issue' || name === 'prompt'}`);
+      lines.push('        type: string');
+    }
+  }
+  lines.push('jobs:', '  dispatch:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo hi');
+  return `${lines.join('\n')}\n`;
+}
+
+/** Today's real `squad-dispatch.yml` declares only these two -- the rest are
+ * additive for swigerb/squad-on-aca#135, open and not yet implemented. Most
+ * tests use the FULL forward-compatible set (below) so existing assertions
+ * about `model`/`publishPr`/etc. keep working; tests about the undeclared-
+ * input refusal itself set `declaredInputs: TODAYS_DECLARED_INPUTS`. */
+const TODAYS_DECLARED_INPUTS = ['issue', 'prompt'];
+const FORWARD_COMPATIBLE_DECLARED_INPUTS = ['issue', 'prompt', 'model', 'base_branch', 'publish_pr', 'reviewer', 'watch_only'];
+
+/**
  * A stand-in for api.github.com covering exactly the endpoints a GitHub App
  * calls: `/app/installations`, `/app/installations/:id/access_tokens`,
  * `/installation/repositories`, repo contents/metadata, issues, and the
  * Actions dispatch/runs endpoints. Counts calls per path so caching claims
  * can be asserted rather than asserted-about.
  */
-function fakeGitHubApp({ installations = [{ id: 1, login: 'acme' }], reposByInstallation = { 1: ['acme/widgets'] }, hasWorkflow = true, now = () => Date.now() } = {}) {
+function fakeGitHubApp({
+  installations = [{ id: 1, login: 'acme' }],
+  reposByInstallation = { 1: ['acme/widgets'] },
+  hasWorkflow = true,
+  declaredInputs = FORWARD_COMPATIBLE_DECLARED_INPUTS,
+  defaultBranch = 'main',
+  dispatchStatus = 204,
+  installationsStatus = 200,
+  runs = null,
+  now = () => Date.now(),
+} = {}) {
   const calls = { total: 0, byPath: {} };
   const seenAuthHeaders = [];
   const state = { tokenMints: 0, dispatches: [], createdIssues: [] };
+  const defaultRuns = () => [{
+    id: 555, status: 'in_progress', conclusion: null, head_branch: defaultBranch, created_at: new Date().toISOString(),
+  }];
 
   const server = http.createServer((req, res) => {
     let body = '';
@@ -96,6 +139,7 @@ function fakeGitHubApp({ installations = [{ id: 1, login: 'acme' }], reposByInst
       };
 
       if (req.url.startsWith('/app/installations') && req.method === 'GET') {
+        if (installationsStatus !== 200) return json(installationsStatus, { message: 'upstream refused in fake' });
         return json(200, installations.map((i) => ({ id: i.id, account: { login: i.login } })));
       }
 
@@ -120,12 +164,28 @@ function fakeGitHubApp({ installations = [{ id: 1, login: 'acme' }], reposByInst
 
       if (req.url.includes('/contents/.github/workflows/squad-dispatch.yml')) {
         if (hasWorkflow === 'error') return json(500, { message: 'internal error' });
-        return hasWorkflow ? json(200, { sha: 'deadbeef' }) : json(404, { message: 'Not Found' });
+        if (!hasWorkflow) return json(404, { message: 'Not Found' });
+        const yaml = squadDispatchYaml(declaredInputs);
+        return json(200, { sha: 'deadbeef', content: Buffer.from(yaml, 'utf8').toString('base64'), encoding: 'base64' });
+      }
+
+      const singleRunMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)$/);
+      if (singleRunMatch && req.method === 'GET') {
+        const id = Number(singleRunMatch[3]);
+        const list = runs || defaultRuns();
+        const match = list.find((r) => r.id === id);
+        if (!match) return json(404, { message: 'not found' });
+        return json(200, {
+          id: match.id,
+          status: match.status,
+          conclusion: match.conclusion || null,
+          html_url: match.html_url || `https://github.com/${singleRunMatch[1]}/${singleRunMatch[2]}/actions/runs/${match.id}`,
+        });
       }
 
       const repoMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)$/);
       if (repoMatch && req.method === 'GET') {
-        return json(200, { default_branch: 'main' });
+        return json(200, { default_branch: defaultBranch });
       }
 
       const issuesMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/issues$/);
@@ -142,20 +202,25 @@ function fakeGitHubApp({ installations = [{ id: 1, login: 'acme' }], reposByInst
         let parsed = {};
         try { parsed = JSON.parse(body); } catch { /* ignore */ }
         state.dispatches.push({ owner: dispatchMatch[1], repo: dispatchMatch[2], ...parsed });
+        if (dispatchStatus !== 204) {
+          return json(dispatchStatus, { message: 'dispatch refused in fake' });
+        }
         res.writeHead(204);
         return res.end();
       }
 
       const runsMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/actions\/workflows\/squad-dispatch\.yml\/runs/);
       if (runsMatch && req.method === 'GET') {
+        const list = runs || defaultRuns();
         return json(200, {
-          workflow_runs: [
-            {
-              id: 555, status: 'in_progress', conclusion: null,
-              html_url: 'https://github.com/acme/widgets/actions/runs/555',
-              created_at: new Date().toISOString(),
-            },
-          ],
+          workflow_runs: list.map((r) => ({
+            id: r.id,
+            status: r.status,
+            conclusion: r.conclusion || null,
+            html_url: r.html_url || `https://github.com/acme/widgets/actions/runs/${r.id}`,
+            created_at: r.created_at || new Date().toISOString(),
+            head_branch: r.head_branch || defaultBranch,
+          })),
         });
       }
 
@@ -164,6 +229,7 @@ function fakeGitHubApp({ installations = [{ id: 1, login: 'acme' }], reposByInst
   });
   return { server, calls, state, seenAuthHeaders };
 }
+
 
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
@@ -493,6 +559,159 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(state.dispatches[0].inputs.issue, '101');
   });
 
+  // =========================================================================
+  // Must-fix #1 (re-dispatch review): send only inputs the workflow declares
+  // =========================================================================
+
+  await checkAsync('an option the workflow does not declare is refused with 4xx, before any side effect', async () => {
+    const { server, state } = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: TODAYS_DECLARED_INPUTS,
+    });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go', model: 'claude' },
+    });
+    await svc.close();
+    server.close();
+    assert.ok(r.status >= 400 && r.status < 500, `expected a 4xx, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.match(r.body.error, /model/);
+    assert.strictEqual(state.dispatches.length, 0, 'the undeclared-input refusal still dispatched the workflow');
+  });
+
+  await checkAsync('the undeclared-input refusal runs before newIssue ever creates anything', async () => {
+    const { server, state } = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: TODAYS_DECLARED_INPUTS,
+    });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'should never exist' }, prompt: 'go', reviewer: 'alice' },
+    });
+    await svc.close();
+    server.close();
+    assert.ok(r.status >= 400 && r.status < 500, JSON.stringify(r));
+    assert.strictEqual(state.createdIssues.length, 0, 'an issue was created despite the request being refused');
+    assert.strictEqual(state.dispatches.length, 0);
+  });
+
+  await checkAsync('a dispatch that fails after creating a newIssue returns the created issue in the error body', async () => {
+    const { server, state } = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, dispatchStatus: 500,
+    });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'orphaned on failure' }, prompt: 'go' },
+    });
+    await svc.close();
+    server.close();
+    assert.notStrictEqual(r.status, 200, JSON.stringify(r));
+    assert.strictEqual(state.createdIssues.length, 1, 'the issue should still have been created before the dispatch call');
+    assert.ok(r.body.issue, 'the error response does not carry the issue the hub already created');
+    assert.strictEqual(r.body.issue.number, 101);
+    assert.match(r.body.issue.url, /\/issues\/101$/);
+  });
+
+  // =========================================================================
+  // Must-fix #3 (re-dispatch review): never dispatch on baseBranch as ref
+  // =========================================================================
+
+  await checkAsync('the dispatch always runs on the repo default branch, never the caller-supplied baseBranch', async () => {
+    const { server, state } = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, defaultBranch: 'develop',
+    });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go', baseBranch: 'feature-x' },
+    });
+    await svc.close();
+    server.close();
+    assert.strictEqual(r.status, 200, JSON.stringify(r));
+    assert.strictEqual(state.dispatches[0].ref, 'develop', 'the dispatch ref must be the repo default branch, never baseBranch');
+    assert.strictEqual(state.dispatches[0].inputs.base_branch, 'feature-x', 'baseBranch should still travel as the base_branch INPUT');
+  });
+
+  await checkAsync('parseDeclaredWorkflowInputs reads workflow_dispatch.inputs from real workflow YAML', () => {
+    const yaml = [
+      'name: Squad dispatch',
+      'on:',
+      '  workflow_dispatch:',
+      '    inputs:',
+      '      issue:',
+      '        required: true',
+      '      prompt:',
+      '        required: true',
+      'jobs:',
+      '  dispatch:',
+      '    runs-on: ubuntu-latest',
+    ].join('\n');
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt']);
+  });
+
+  check('parseDeclaredWorkflowInputs returns null when the workflow has no workflow_dispatch trigger at all', () => {
+    const yaml = 'name: CI\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n';
+    assert.strictEqual(parseDeclaredWorkflowInputs(yaml), null);
+  });
+
+  check('upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is', () => {
+    assert.strictEqual(upstreamStatus(401), 502);
+    assert.strictEqual(upstreamStatus(403), 502);
+    assert.strictEqual(upstreamStatus(301), 502);
+    assert.strictEqual(upstreamStatus(302), 502);
+    assert.strictEqual(upstreamStatus(404), 404);
+    assert.strictEqual(upstreamStatus(422), 422);
+    assert.strictEqual(upstreamStatus(500), 500);
+  });
+
+  await checkAsync('a GitHub 403 while listing installations never reaches the caller as a 403 of their own', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, installationsStatus: 403 });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go' },
+    });
+    await svc.close();
+    server.close();
+    // GitHub's own 403 (the App credential rejected) must not be passed
+    // straight through as this hub's 403 -- that status already means
+    // something specific here ("the App is not installed on this repo"),
+    // and reusing it for an unrelated upstream failure would look exactly
+    // like the signed-in caller's own authorization failing.
+    assert.strictEqual(r.status, 502, JSON.stringify(r));
+  });
+
   await checkAsync('a repo with no squad-dispatch.yml refuses the dispatch', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: false });
     const port = await listen(server);
@@ -509,7 +728,11 @@ function apiRequest(port, path, token, opts = {}) {
     await svc.close();
     server.close();
     assert.notStrictEqual(r.status, 200);
-    assert.match(r.body.error, /squad-dispatch\.yml/);
+    // Specifically "has no .../squad-dispatch.yml at all" -- NOT the
+    // separate "does not declare this input" refusal below, which also
+    // happens to mention the same filename and would otherwise mask this
+    // mutation.
+    assert.match(r.body.error, /has no \.github\/workflows\/squad-dispatch\.yml/);
   });
 
   await checkAsync('GET /api/aca/repos reports hasDispatchWorkflow honestly', async () => {
@@ -601,6 +824,17 @@ function apiRequest(port, path, token, opts = {}) {
       sanitizeDispatchRequest({ repo: 'a/b', issue: 1, newIssue: { title: 't' }, prompt: 'x' }).ok, false,
       'both given',
     );
+  });
+
+  check('issue must be a strict integer, not a coerced truthy/numeric-looking value', () => {
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 42, prompt: 'x' }).ok, true, 'a real integer must still pass');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: true, prompt: 'x' }).ok, false, 'true must not become 1');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: false, prompt: 'x' }).ok, false, 'false must not become 0');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: '0x10', prompt: 'x' }).ok, false, 'hex strings must not coerce');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: '42', prompt: 'x' }).ok, false, 'numeric strings must not coerce');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: [42], prompt: 'x' }).ok, false, 'a single-element array must not coerce');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1.5, prompt: 'x' }).ok, false, 'a non-integer number must be refused');
+    assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: null, prompt: 'x' }).ok, false);
   });
 
   check('prompt is required and size-capped', () => {
@@ -752,6 +986,32 @@ function apiRequest(port, path, token, opts = {}) {
     assert.ok(typeof r3.body.retryAfterMs === 'number');
   });
 
+  await checkAsync('a malformed body is rejected without ever consuming rate-limit quota', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+      acaRateLimiter: new RateLimiter({ limit: 1, windowMs: 60000 }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    // Two invalid requests in a row -- if validation consumed quota, the
+    // second would 429 instead of repeating the same validation error.
+    const bad1 = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'not-a-repo' } });
+    const bad2 = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'not-a-repo' } });
+    // The limiter's one slot of quota must still be free for a valid request.
+    const good = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go' },
+    });
+    await svc.close();
+    server.close();
+    assert.strictEqual(bad1.status, 400, JSON.stringify(bad1));
+    assert.strictEqual(bad2.status, 400, JSON.stringify(bad2));
+    assert.strictEqual(good.status, 200, JSON.stringify(good));
+  });
+
   // =========================================================================
   // DispatchTracker: per-user partitioning, and status resolution
   // =========================================================================
@@ -793,6 +1053,109 @@ function apiRequest(port, path, token, opts = {}) {
     });
     server.close();
     assert.strictEqual(status.state, 'pending');
+  });
+
+  // =========================================================================
+  // Must-fix #2 (re-dispatch review): run matching -- ref, tolerance, and
+  // never double-binding a run already claimed by another recorded dispatch
+  // =========================================================================
+
+  await checkAsync('resolveRunStatus matches on ref, ignoring a run on a different branch', async () => {
+    const now = Date.now();
+    const runs = [
+      { id: 600, status: 'in_progress', conclusion: null, head_branch: 'other-branch', created_at: new Date(now).toISOString() },
+      { id: 601, status: 'queued', conclusion: null, head_branch: 'main', created_at: new Date(now).toISOString() },
+    ];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, dispatchedAt: now - 1000, ref: 'main',
+    });
+    server.close();
+    assert.strictEqual(status.runId, 601, 'the run on a different branch should never match');
+  });
+
+  await checkAsync('resolveRunStatus tolerates a run GitHub timestamps a couple of seconds early (clock drift)', async () => {
+    const dispatchedAt = Date.now();
+    // GitHub reports this run as created 2s BEFORE the recorded dispatch
+    // instant -- inside the small tolerance, so it must still match.
+    const runs = [{
+      id: 700, status: 'queued', conclusion: null, head_branch: 'main', created_at: new Date(dispatchedAt - 2000).toISOString(),
+    }];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, dispatchedAt, ref: 'main',
+    });
+    server.close();
+    assert.strictEqual(status.runId, 700);
+  });
+
+  await checkAsync('resolveRunStatus never binds a run id already bound to another recorded dispatch', async () => {
+    const now = Date.now();
+    const runs = [
+      { id: 800, status: 'completed', conclusion: 'success', head_branch: 'main', created_at: new Date(now).toISOString() },
+      { id: 801, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(now + 500).toISOString() },
+    ];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, dispatchedAt: now - 1000, ref: 'main', excludeRunIds: new Set([800]),
+    });
+    server.close();
+    assert.strictEqual(status.runId, 801, 'a run already bound elsewhere must be skipped, not re-bound');
+  });
+
+  await checkAsync('two close dispatches on one repo each bind to their own run, never double-claiming', async () => {
+    const now = Date.now();
+    const runs = [
+      { id: 900, status: 'completed', conclusion: 'success', head_branch: 'main', created_at: new Date(now).toISOString() },
+      { id: 901, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(now + 200).toISOString() },
+    ];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, workflowFile: 'squad-dispatch.yml', ref: 'main', dispatchedAt: now - 1000,
+    });
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, workflowFile: 'squad-dispatch.yml', ref: 'main', dispatchedAt: now - 900,
+    });
+    const list = await tracker.listWithStatus('alice', app);
+    server.close();
+    assert.strictEqual(list.length, 2);
+    const runIds = list.map((r) => r.status.runId).sort();
+    assert.deepStrictEqual(runIds, [900, 901], 'both dispatches must each bind their own run, not the same one twice');
+  });
+
+  await checkAsync('once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)', async () => {
+    const now = Date.now();
+    const runs = [{ id: 950, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(now).toISOString() }];
+    const { server, calls } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, workflowFile: 'squad-dispatch.yml', ref: 'main', dispatchedAt: now - 1000,
+    });
+    const first = await tracker.listWithStatus('alice', app);
+    const searchCallsAfterFirst = calls.byPath['GET /repos/acme/widgets/actions/workflows/squad-dispatch.yml/runs'] || 0;
+    const second = await tracker.listWithStatus('alice', app);
+    server.close();
+    assert.strictEqual(first[0].status.runId, 950);
+    assert.strictEqual(second[0].status.runId, 950);
+    // The run-list search endpoint must not be hit again once a run is
+    // bound -- only the single-run refresh endpoint should be used.
+    assert.strictEqual(
+      calls.byPath['GET /repos/acme/widgets/actions/workflows/squad-dispatch.yml/runs'] || 0,
+      searchCallsAfterFirst,
+      'a bound dispatch re-ran the matching search instead of refreshing its own run',
+    );
+    assert.ok(calls.byPath['GET /repos/acme/widgets/actions/runs/950'] >= 1, 'the bound run was never refreshed by id');
   });
 
   // =========================================================================

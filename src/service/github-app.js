@@ -50,7 +50,7 @@ const https = require('https');
 const http = require('http');
 const util = require('util');
 const { URL } = require('url');
-const { buildWorkflowInputs } = require('../aca-dispatch');
+const { buildWorkflowInputs, requestedInputNames } = require('../aca-dispatch');
 
 /** The workflow this whole feature dispatches. Named once, so a rename does
  * not have to be found by grepping literal strings through this file. */
@@ -68,6 +68,80 @@ const JWT_TTL_SEC = 540; // 9 minutes from the backdated `iat`.
  * rather than at the instant it lapses -- a request that started a few
  * milliseconds before expiry must not fail with the previous token. */
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
+
+/** `resolveRunStatus` floors the recorded dispatch timestamp to whole
+ * seconds (GitHub's own `created_at` has no sub-second precision, so
+ * comparing millisecond-precise would reject a run GitHub reports as created
+ * in the very same second as the dispatch) and then subtracts this much
+ * more, to absorb ordinary clock drift between this process and GitHub's --
+ * a run GitHub timestamps a couple of seconds before this process believes
+ * it made the call must still match. */
+const RUN_MATCH_TOLERANCE_MS = 5000;
+
+/**
+ * Upstream GitHub status -> the status this hub reports for it. A 401 or 403
+ * from GitHub means the APP'S OWN credential was rejected, not that the
+ * signed-in hub user failed to authenticate -- passed straight through it
+ * would look exactly like the caller's own sign-in failing, which it is not.
+ * A 3xx is GitHub asking this server to follow a redirect it never should
+ * blindly follow with an Authorization header attached. Both become 502:
+ * clearly this hub's problem talking to GitHub, never the caller's.
+ */
+function upstreamStatus(status) {
+  if (status === 401 || status === 403) return 502;
+  if (status >= 300 && status < 400) return 502;
+  return status || 502;
+}
+
+/**
+ * The input names declared under a `squad-dispatch.yml`'s own
+ * `on.workflow_dispatch.inputs:` block, read with a narrow, purpose-built
+ * scan rather than a general YAML parser (house style: no dependency where a
+ * few lines of plain text handling does the job -- see the JWT above).
+ * GitHub Actions workflow YAML is well-defined enough that this is safe:
+ * this only ever needs to tell `name:` keys apart from everything else, by
+ * indentation, inside one specific block.
+ *
+ * Returns the array of declared names, or `null` if the file does not
+ * declare `workflow_dispatch` at all (a workflow that triggers only on
+ * `push`, say -- a caller cannot dispatch it either way, but that is a
+ * different refusal than "every input is undeclared").
+ */
+function parseDeclaredWorkflowInputs(yamlText) {
+  const lines = String(yamlText).replace(/\r\n/g, '\n').split('\n');
+  const indentOf = (line) => line.match(/^[ \t]*/)[0].length;
+
+  let wfIdx = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim() === 'workflow_dispatch:') { wfIdx = i; break; }
+  }
+  if (wfIdx === -1) return null;
+  const wfIndent = indentOf(lines[wfIdx]);
+
+  let inputsIdx = -1;
+  let inputsIndent = -1;
+  for (let i = wfIdx + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    if (indentOf(line) <= wfIndent) break; // left the workflow_dispatch block
+    if (line.trim() === 'inputs:') { inputsIdx = i; inputsIndent = indentOf(line); break; }
+  }
+  if (inputsIdx === -1) return []; // workflow_dispatch declared, but no inputs block at all
+
+  const names = [];
+  let childIndent = -1;
+  for (let i = inputsIdx + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const ind = indentOf(line);
+    if (ind <= inputsIndent) break; // left the inputs block
+    if (childIndent === -1) childIndent = ind;
+    if (ind !== childIndent) continue; // a nested key (description:, required:, ...), not an input name
+    const m = line.trim().match(/^([A-Za-z0-9_-]+):/);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
 
 function b64url(obj) {
   return Buffer.from(JSON.stringify(obj)).toString('base64url');
@@ -202,7 +276,7 @@ class GitHubApp {
   async _listInstallations() {
     const jwt = this._appJwt();
     const res = await this._request({ method: 'GET', path: '/app/installations?per_page=100', token: jwt });
-    if (res.status !== 200) throw this._err(res.status, `could not list GitHub App installations (GitHub returned ${res.status})`);
+    if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not list GitHub App installations (GitHub returned ${res.status})`);
     return (res.json || []).map((i) => ({ id: i.id, login: i.account && i.account.login }));
   }
 
@@ -223,7 +297,7 @@ class GitHubApp {
       method: 'POST', path: `/app/installations/${installationId}/access_tokens`, token: jwt,
     });
     if (res.status !== 201) {
-      throw this._err(res.status, `could not mint an installation token for installation ${installationId} (GitHub returned ${res.status})`);
+      throw this._err(upstreamStatus(res.status), `could not mint an installation token for installation ${installationId} (GitHub returned ${res.status})`);
     }
     const token = res.json.token;
     const expiresAtMs = new Date(res.json.expires_at).getTime();
@@ -234,7 +308,7 @@ class GitHubApp {
 
   async _listInstallationRepos(token) {
     const res = await this._request({ method: 'GET', path: '/installation/repositories?per_page=100', token });
-    if (res.status !== 200) throw this._err(res.status, `could not list repositories for this installation (GitHub returned ${res.status})`);
+    if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not list repositories for this installation (GitHub returned ${res.status})`);
     return (res.json.repositories || []).map((r) => r.full_name);
   }
 
@@ -267,26 +341,48 @@ class GitHubApp {
   }
 
   async _hasDispatchWorkflow(owner, repo, token) {
+    const { exists } = await this._dispatchWorkflowFile(owner, repo, token);
+    return exists;
+  }
+
+  /**
+   * Reads `squad-dispatch.yml` off the repository's own default branch (no
+   * `ref` is passed, so GitHub's contents API answers from whatever the
+   * repository itself calls its default branch) and reports both whether it
+   * exists and which `workflow_dispatch` inputs it declares.
+   *
+   * `declaredInputs` is `null` when the file exists but does not declare
+   * `workflow_dispatch` at all (nothing to dispatch against either way), and
+   * `[]` when it declares the trigger with no inputs block.
+   */
+  async _dispatchWorkflowFile(owner, repo, token) {
     const res = await this._request({
       method: 'GET', path: `/repos/${owner}/${repo}/contents/.github/workflows/${WORKFLOW_FILE}`, token,
     });
-    if (res.status === 200) return true;
     // A missing file is an ordinary, expected answer -- NOT an error, and
     // must not be conflated with one: a repo without this workflow yet is not
     // the same fact as "GitHub could not be reached".
-    if (res.status === 404) return false;
-    throw this._err(res.status, `could not check for ${WORKFLOW_FILE} in ${owner}/${repo} (GitHub returned ${res.status})`);
+    if (res.status === 404) return { exists: false, declaredInputs: null };
+    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), `could not check for ${WORKFLOW_FILE} in ${owner}/${repo} (GitHub returned ${res.status})`);
+    }
+    let declaredInputs = null;
+    if (res.json && typeof res.json.content === 'string') {
+      const yamlText = Buffer.from(res.json.content, 'base64').toString('utf8');
+      declaredInputs = parseDeclaredWorkflowInputs(yamlText);
+    }
+    return { exists: true, declaredInputs };
   }
 
   async _defaultBranch(owner, repo, token) {
     const res = await this._request({ method: 'GET', path: `/repos/${owner}/${repo}`, token });
-    if (res.status !== 200) throw this._err(res.status, `could not read ${owner}/${repo} (GitHub returned ${res.status})`);
+    if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not read ${owner}/${repo} (GitHub returned ${res.status})`);
     return res.json.default_branch || 'main';
   }
 
   async _createIssue(owner, repo, { title }, token) {
     const res = await this._request({ method: 'POST', path: `/repos/${owner}/${repo}/issues`, token, body: { title } });
-    if (res.status !== 201) throw this._err(res.status, `could not create an issue in ${owner}/${repo} (GitHub returned ${res.status})`);
+    if (res.status !== 201) throw this._err(upstreamStatus(res.status), `could not create an issue in ${owner}/${repo} (GitHub returned ${res.status})`);
     return { number: res.json.number, htmlUrl: res.json.html_url };
   }
 
@@ -298,7 +394,7 @@ class GitHubApp {
     // hand back synchronously, which is why `runUrl` below is the workflow's
     // Actions page rather than a specific run.
     if (res.status !== 204) {
-      throw this._err(res.status, `GitHub refused the workflow dispatch for ${owner}/${repo} (status ${res.status})`);
+      throw this._err(upstreamStatus(res.status), `GitHub refused the workflow dispatch for ${owner}/${repo} (status ${res.status})`);
     }
   }
 
@@ -322,19 +418,51 @@ class GitHubApp {
    * `/api/aca/dispatch`, which resolves `installationId` via
    * `findInstallation` before this is ever called).
    *
-   * Returns `{issue, runUrl, installationId, workflowFile, ref}` -- the last
-   * three kept so `DispatchTracker` can resolve a run's status later without
-   * re-doing the allow-list lookup.
+   * Every precondition -- the workflow existing, and every requested option
+   * being one the workflow actually declares -- is checked BEFORE `newIssue`
+   * ever creates anything. If the dispatch call itself still fails after an
+   * issue was created for it, the thrown error carries `.issue` so the
+   * caller is not left unable to find an issue this call already made.
+   *
+   * Returns `{issue, runUrl, installationId, workflowFile, ref, dispatchedAt}`
+   * -- the last four kept so `DispatchTracker` can resolve a run's status
+   * later without re-doing the allow-list lookup.
    */
   async dispatch({
     owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly,
   }) {
     const token = await this._installationToken(installationId);
 
-    const hasWorkflow = await this._hasDispatchWorkflow(owner, repo, token);
+    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {
       throw this._err(422, `${owner}/${repo} has no .github/workflows/${WORKFLOW_FILE}`);
     }
+
+    // GitHub's `workflow_dispatch` API answers 422 for an input the workflow
+    // does not declare -- it does not ignore it. Refusing it here, before any
+    // side effect, gives a caller a clear reason naming the field, instead of
+    // a 422 from GitHub that never says which input it meant, reached only
+    // after an issue may already have been created for nothing.
+    const requested = requestedInputNames({
+      model, baseBranch, publishPr, reviewer, watchOnly,
+    });
+    const declared = declaredInputs || [];
+    const unsupported = requested.filter((name) => !declared.includes(name));
+    if (unsupported.length) {
+      throw this._err(
+        422,
+        `${owner}/${repo}'s ${WORKFLOW_FILE} does not declare the input(s): ${unsupported.join(', ')}. `
+          + 'Add them to the workflow\'s workflow_dispatch.inputs (see swigerb/squad-on-aca#135), or omit them from this request.',
+      );
+    }
+
+    // ALWAYS the repository's own default branch -- never the
+    // caller-supplied `baseBranch`, which travels only as the `base_branch`
+    // INPUT above (and only when the workflow declares it, per the check
+    // just above). Dispatching on anything else would let any signed-in hub
+    // user run an App-scoped workflow_dispatch against an arbitrary ref of
+    // their own choosing. See docs/security.md.
+    const ref = await this._defaultBranch(owner, repo, token);
 
     let issueNumber = issue;
     let issueUrl = issue != null ? `https://github.com/${owner}/${repo}/issues/${issue}` : null;
@@ -344,14 +472,20 @@ class GitHubApp {
       issueUrl = created.htmlUrl;
     }
 
-    const ref = baseBranch || await this._defaultBranch(owner, repo, token);
-
     const inputs = buildWorkflowInputs(
       { prompt, model, baseBranch, publishPr, reviewer, watchOnly },
       { issueNumber },
     );
 
-    await this._dispatchWorkflow(owner, repo, ref, inputs, token);
+    // Captured immediately before the call that actually starts the run --
+    // see `resolveRunStatus`, which matches a run no older than this.
+    const dispatchedAt = this._now();
+    try {
+      await this._dispatchWorkflow(owner, repo, ref, inputs, token);
+    } catch (e) {
+      if (newIssue) e.issue = { number: issueNumber, url: issueUrl };
+      throw e;
+    }
 
     return {
       issue: { number: issueNumber, url: issueUrl },
@@ -359,18 +493,45 @@ class GitHubApp {
       installationId,
       workflowFile: WORKFLOW_FILE,
       ref,
+      dispatchedAt,
+    };
+  }
+
+  /** A single Actions run by id, for refreshing a dispatch already bound to
+   * one -- see `DispatchTracker.listWithStatus`, which must never re-run the
+   * matching search (and so never risk re-binding) once a run is known. */
+  async _getRun(owner, repo, installationId, runId) {
+    const token = await this._installationToken(installationId);
+    const res = await this._request({ method: 'GET', path: `/repos/${owner}/${repo}/actions/runs/${runId}`, token });
+    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), `could not read Actions run ${runId} for ${owner}/${repo} (GitHub returned ${res.status})`);
+    }
+    return {
+      state: res.json.status,
+      conclusion: res.json.conclusion || null,
+      runId: res.json.id,
+      htmlUrl: res.json.html_url,
     };
   }
 
   /**
    * The Actions run status for one tracked dispatch, for
-   * `GET /api/aca/dispatches`. Matches the earliest run of this workflow
-   * created at-or-after the dispatch's own timestamp -- the run closest in
-   * time to the dispatch that produced it, rather than whatever is newest
-   * right now, which a LATER unrelated dispatch on the same workflow would
-   * otherwise shadow. See the open question about this in the issue summary.
+   * `GET /api/aca/dispatches`. Matches the earliest-created run of this
+   * workflow that:
+   *   - was triggered by `workflow_dispatch` (never a run some other trigger
+   *     started, which would otherwise look like this dispatch's own run),
+   *   - was created no earlier than the dispatch's own timestamp, floored to
+   *     whole seconds (GitHub's `created_at` has no finer resolution) minus
+   *     `RUN_MATCH_TOLERANCE_MS` of slack for ordinary clock drift,
+   *   - ran on the same `ref` this dispatch actually used (never a
+   *     coincidentally-close run on a different branch),
+   *   - is not already `excludeRunIds` -- a run id some OTHER recorded
+   *     dispatch has already been bound to, so two close dispatches on one
+   *     repo never both claim the same run.
    */
-  async resolveRunStatus({ owner, repo, installationId, dispatchedAt }) {
+  async resolveRunStatus({
+    owner, repo, installationId, dispatchedAt, ref, excludeRunIds,
+  }) {
     const token = await this._installationToken(installationId);
     const res = await this._request({
       method: 'GET',
@@ -378,10 +539,14 @@ class GitHubApp {
       token,
     });
     if (res.status !== 200) {
-      throw this._err(res.status, `could not read Actions runs for ${owner}/${repo} (GitHub returned ${res.status})`);
+      throw this._err(upstreamStatus(res.status), `could not read Actions runs for ${owner}/${repo} (GitHub returned ${res.status})`);
     }
+    const flooredDispatchedAt = Math.floor(dispatchedAt / 1000) * 1000;
+    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;
     const runs = (res.json.workflow_runs || [])
-      .filter((r) => new Date(r.created_at).getTime() >= dispatchedAt)
+      .filter((r) => new Date(r.created_at).getTime() >= minCreatedAt)
+      .filter((r) => !ref || r.head_branch === ref)
+      .filter((r) => !excludeRunIds || !excludeRunIds.has(r.id))
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     if (!runs.length) return { state: 'pending', reason: 'no run has appeared yet' };
     const run = runs[0];
@@ -394,4 +559,6 @@ class GitHubApp {
   }
 }
 
-module.exports = { GitHubApp, WORKFLOW_FILE };
+module.exports = {
+  GitHubApp, WORKFLOW_FILE, parseDeclaredWorkflowInputs, upstreamStatus,
+};

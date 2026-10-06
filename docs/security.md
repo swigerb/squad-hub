@@ -168,6 +168,26 @@ Actions/Issues/Contents/Metadata on the repositories the App is installed on
 through the workflow's own OIDC login and the shared dispatch lease,
 unchanged, exactly as the link-based path has always worked.
 
+**The dispatch always runs on the repository's own default branch.** A caller
+may ask for a `baseBranch`, but it is never used to pick which ref
+`workflow_dispatch` actually runs from — it travels only as the workflow's
+`base_branch` **input**, and only when the target workflow declares that
+input at all (see [aca.md](aca.md)). Letting a caller-supplied value become
+the dispatched `ref` would let any signed-in hub user run an App-scoped
+`workflow_dispatch` against an arbitrary branch of their own choosing on any
+App-installed repository — effectively picking what code that workflow's own
+job steps execute, on a trust boundary that is otherwise "the App is
+installed here", not "this particular ref is safe". The ref is always read
+back from the repository itself (`GET /repos/{owner}/{repo}`'s own
+`default_branch`), never taken from the request.
+
+**Only an input the target `squad-dispatch.yml` actually declares is ever
+sent.** GitHub's `workflow_dispatch` API answers `422` for an input a workflow
+does not declare, rather than ignoring it, so the hub reads the workflow's own
+`on.workflow_dispatch.inputs` off the repository's default branch and refuses,
+before any side effect (including creating an issue for `newIssue`), any
+requested option that is not declared there.
+
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
 a repository's issue tracker through this endpoint.

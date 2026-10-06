@@ -269,10 +269,26 @@ What it sends maps onto `squad-dispatch.yml`'s `workflow_dispatch` inputs:
 | `reviewer` | `reviewer` |
 | `watchOnly` | `watch_only` |
 
-Only fields actually supplied are sent. `workflow_dispatch` replies `204` with
-no run id, so the hub hands back the workflow's own Actions page as `runUrl`
-— the best any caller can do until a run appears, which `/api/aca/dispatches`
-then surfaces by matching it up afterward.
+Only fields actually supplied are sent, and only when the target repository's
+own `squad-dispatch.yml` declares that input. GitHub's `workflow_dispatch` API
+answers `422` for an undeclared input — it does not ignore it — so the hub
+reads the workflow file off the repository's default branch before dispatching
+and refuses, with a clear `422` naming the field, if a requested option is not
+one the workflow declares. That check runs before `newIssue` ever creates
+anything; if the dispatch call itself still fails afterward, the error response
+carries the issue the hub already created so it is never silently stranded.
+`workflow_dispatch` itself replies `204` with no run id, so the hub hands back
+the workflow's own Actions page as `runUrl` — the best any caller can do until
+a run appears, which `/api/aca/dispatches` then surfaces by matching it up
+afterward.
+
+The dispatch always runs on the repository's own **default branch** — never on
+a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
+**input** above (itself subject to the declared-input check), so the workflow
+decides what to do with it; it is never used to select which ref GitHub
+actually runs the workflow from. See
+[security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+for why that distinction matters.
 
 ## Scope
 
@@ -296,10 +312,11 @@ here; squad-on-aca depends on it.** Never the reverse.
 The GitHub App dispatch path above is a THIRD, separate piece of scope, and is
 hub-side only: it calls `squad-dispatch.yml`'s `workflow_dispatch` trigger,
 which the workflow already supports for `issue`/`prompt` today. The additional
-inputs it sends (`model`, `base_branch`, `publish_pr`, `reviewer`,
+inputs it can send (`model`, `base_branch`, `publish_pr`, `reviewer`,
 `watch_only`) are forward-compatible with swigerb/squad-on-aca#135, which is
 open and not yet implemented on the workflow side — sending them now does not
-block on that landing, and GitHub's own `workflow_dispatch` API is what
-accepts or ignores an input the workflow has not declared, not this code.
+block on that landing, because the hub reads the workflow's own declared
+inputs first and only ever sends the ones it actually declares, refusing the
+rest with a clear `422` rather than letting GitHub reject the whole call.
 
 

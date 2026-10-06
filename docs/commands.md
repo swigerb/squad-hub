@@ -1015,7 +1015,7 @@ the hub. `SQUAD_HUB_USER_TOKEN` supplies `--token` here too.
 | `send_message(key, text)` | Steer a running session without stopping it. |
 | `stop_session(key)` | Stop a running session. |
 | `list_devices()` | Your devices, with presence, kind, and metadata. |
-| `dispatch_aca(...)` | Dispatch onto Azure Container Apps (#177). Passed straight through to `/api/aca/dispatch` — a hub that does not have that route yet answers with its own refusal, never a synthesized one. |
+| `dispatch_aca(...)` | Dispatch onto Azure Container Apps (#177). Passed straight through to `/api/aca/dispatch` — a hub with no GitHub App configured answers with its own `501` refusal, never a synthesized one. |
 
 **There is no `approve` tool.** Approvals stay human, on purpose: every other
 tool here acts on your behalf, the same as the web app would — but an approval

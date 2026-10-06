@@ -105,11 +105,14 @@ function sanitizeDispatchRequest(input) {
   let safeIssue = null;
   let safeNewIssue = null;
   if (hasIssue) {
-    const n = Number(issue);
-    if (!Number.isInteger(n) || n <= 0) {
+    // `Number.isInteger` does NOT coerce -- unlike `Number(issue)`, which
+    // happily turned `true` into `1`, the string `"0x10"` into `16`, and a
+    // single-element array like `[5]` into `5`. Only an actual JSON number
+    // that is already a positive integer passes.
+    if (!Number.isInteger(issue) || issue <= 0) {
       return { ok: false, reason: 'issue must be a positive integer' };
     }
-    safeIssue = n;
+    safeIssue = issue;
   } else {
     if (typeof newIssue !== 'object' || Array.isArray(newIssue)) {
       return { ok: false, reason: 'newIssue must be an object' };
@@ -178,9 +181,15 @@ function sanitizeDispatchRequest(input) {
  * -- today's workflow declares only `issue` and `prompt` (see that file's
  * `workflow_dispatch.inputs` block); the rest are additive for
  * swigerb/squad-on-aca#135, which is open and not yet implemented there.
- * Sending a key the workflow does not yet declare is not this code's call to
- * block -- GitHub's `workflow_dispatch` API is what will eventually accept or
- * reject an input, not this mapping.
+ *
+ * GitHub's `workflow_dispatch` API answers 422 for an input the target
+ * workflow does not declare -- it does NOT silently ignore it. So sending a
+ * key the workflow does not yet declare very much IS this code's call to
+ * block, and it is blocked earlier than here: `GitHubApp.dispatch` reads the
+ * target repository's own `squad-dispatch.yml` and refuses any requested
+ * option that is not declared there, before this function (or any side
+ * effect) ever runs. `requestedInputNames` below answers exactly which
+ * input names a given value WOULD need, for that check.
  *
  * `issue` here is whichever issue number the dispatch ultimately targets --
  * the one the caller gave, or the one just created for `newIssue` -- which is
@@ -199,6 +208,26 @@ function buildWorkflowInputs(value, { issueNumber } = {}) {
   return inputs;
 }
 
+/**
+ * Exactly which `workflow_dispatch` input names a sanitized value WOULD send
+ * -- same `if (x != null)` gating as `buildWorkflowInputs`, kept as one
+ * source of truth rather than two lists that can drift apart. `issue` and
+ * `prompt` are unconditional: a dispatch always carries an issue (given or
+ * just-created) and always carries a prompt (`sanitizeDispatchRequest`
+ * requires one). Used by `GitHubApp.dispatch` to refuse, before any side
+ * effect, a request for an option the target `squad-dispatch.yml` does not
+ * declare.
+ */
+function requestedInputNames(value) {
+  const names = ['issue', 'prompt'];
+  if (value.model != null) names.push('model');
+  if (value.baseBranch != null) names.push('base_branch');
+  if (value.publishPr != null) names.push('publish_pr');
+  if (value.reviewer != null) names.push('reviewer');
+  if (value.watchOnly != null) names.push('watch_only');
+  return names;
+}
+
 module.exports = {
   INJECTION_RE,
   PROMPT_INJECTION_RE,
@@ -211,4 +240,5 @@ module.exports = {
   validRepo,
   sanitizeDispatchRequest,
   buildWorkflowInputs,
+  requestedInputNames,
 };

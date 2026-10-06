@@ -803,9 +803,14 @@ class HubService {
     if (p === '/api/aca/dispatch' && req.method === 'POST') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
 
-      // Rate-limited PER PRINCIPAL, before the body is even read: a caller
-      // already over the limit gets 429 without this hub spending a GitHub
-      // API call to tell them so.
+      const body = await readJson(req);
+      const validated = sanitizeDispatchRequest(body);
+      if (!validated.ok) return send(400, { error: validated.reason });
+
+      // Rate-limited PER PRINCIPAL, counted only once the request is known
+      // to be well-formed: a malformed body must not spend any of a caller's
+      // quota, but a caller already over the limit still gets 429 without
+      // this hub spending a GitHub API call to tell them so.
       const limited = this.acaRateLimiter.check(me.key);
       if (!limited.allowed) {
         return send(429, {
@@ -813,10 +818,6 @@ class HubService {
           retryAfterMs: limited.retryAfterMs,
         });
       }
-
-      const body = await readJson(req);
-      const validated = sanitizeDispatchRequest(body);
-      if (!validated.ok) return send(400, { error: validated.reason });
 
       const [owner, repoName] = validated.value.repo.split('/');
       let installation;
@@ -838,11 +839,21 @@ class HubService {
           ...validated.value, owner, repo: repoName, installationId: installation.installationId,
         });
         this.dispatchTracker.record(me.key, {
-          owner, repo: repoName, installationId: installation.installationId, workflowFile: result.workflowFile,
+          owner,
+          repo: repoName,
+          installationId: installation.installationId,
+          workflowFile: result.workflowFile,
+          ref: result.ref,
+          dispatchedAt: result.dispatchedAt,
         });
         return send(200, { issue: result.issue, runUrl: result.runUrl });
       } catch (e) {
-        return send(e.status || 502, { error: e.message });
+        const errBody = { error: e.message };
+        // A dispatch that failed AFTER creating an issue for `newIssue` must
+        // not strand that issue number -- the caller gets it back even
+        // though the job itself never started.
+        if (e.issue) errBody.issue = e.issue;
+        return send(e.status || 502, errBody);
       }
     }
 

@@ -3699,31 +3699,173 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a missing squad-dispatch.yml does not block a dispatch',
     file: 'src/service/github-app.js',
-    find: `    const hasWorkflow = await this._hasDispatchWorkflow(owner, repo, token);
+    find: `    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {`,
-    replace: `    const hasWorkflow = await this._hasDispatchWorkflow(owner, repo, token);
+    replace: `    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!process.env.MUTANT && !hasWorkflow) { // MUTATION`,
     mustFail: 'a repo with no squad-dispatch.yml refuses the dispatch',
   },
   {
     name: 'a 404 checking for squad-dispatch.yml is treated as an error instead of "no"',
     file: 'src/service/github-app.js',
-    find: `    if (res.status === 200) return true;
-    // A missing file is an ordinary, expected answer -- NOT an error, and
-    // must not be conflated with one: a repo without this workflow yet is not
-    // the same fact as "GitHub could not be reached".
-    if (res.status === 404) return false;`,
-    replace: `    if (res.status === 200) return true;
-    if (!process.env.MUTANT && res.status === 404) return false; // MUTATION`,
+    find: `    if (res.status === 404) return { exists: false, declaredInputs: null };`,
+    replace: `    if (!process.env.MUTANT && res.status === 404) return { exists: false, declaredInputs: null }; // MUTATION`,
     mustFail: 'GET /api/aca/repos reports hasDispatchWorkflow: false for a real 404, not assumed',
   },
   {
     name: 'an unexpected status checking squad-dispatch.yml is silently treated as "no" instead of an error',
     file: 'src/service/github-app.js',
-    find: `    throw this._err(res.status, \`could not check for \${WORKFLOW_FILE} in \${owner}/\${repo} (GitHub returned \${res.status})\`);`,
-    replace: `    if (process.env.MUTANT) return false; // MUTATION
-    throw this._err(res.status, \`could not check for \${WORKFLOW_FILE} in \${owner}/\${repo} (GitHub returned \${res.status})\`);`,
+    find: `    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), \`could not check for \${WORKFLOW_FILE} in \${owner}/\${repo} (GitHub returned \${res.status})\`);
+    }`,
+    replace: `    if (process.env.MUTANT) return { exists: false, declaredInputs: null }; // MUTATION
+    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), \`could not check for \${WORKFLOW_FILE} in \${owner}/\${repo} (GitHub returned \${res.status})\`);
+    }`,
     mustFail: 'a non-404 error checking for squad-dispatch.yml surfaces as an error, not a silent false',
+  },
+  {
+    // Re-dispatch review must-fix #1: sending an input the workflow does not
+    // declare must be refused before any side effect, not silently allowed
+    // through to GitHub (which would 422 anyway, but only after an issue may
+    // already have been created for nothing).
+    name: 'an input the workflow does not declare is sent anyway instead of being refused',
+    file: 'src/service/github-app.js',
+    find: `    const unsupported = requested.filter((name) => !declared.includes(name));
+    if (unsupported.length) {`,
+    replace: `    const unsupported = requested.filter((name) => !declared.includes(name));
+    if (!process.env.MUTANT && unsupported.length) { // MUTATION`,
+    mustFail: 'an option the workflow does not declare is refused with 4xx, before any side effect',
+  },
+  {
+    // Must-fix #3: the dispatch ref must always be the repo's OWN default
+    // branch, never the caller-supplied baseBranch -- letting any signed-in
+    // hub user run an App-scoped workflow_dispatch on an arbitrary ref of
+    // their own choosing would be exactly the privilege escalation
+    // docs/security.md says this feature must not create.
+    name: 'the dispatch ref is the caller-supplied baseBranch instead of always the default branch',
+    file: 'src/service/github-app.js',
+    find: `    const ref = await this._defaultBranch(owner, repo, token);`,
+    replace: `    const ref = (process.env.MUTANT && baseBranch) ? baseBranch : await this._defaultBranch(owner, repo, token); // MUTATION`,
+    mustFail: 'the dispatch always runs on the repo default branch, never the caller-supplied baseBranch',
+  },
+  {
+    // Must-fix #1: if the dispatch call itself fails after `newIssue`
+    // already created an issue, the caller must get that issue number/url
+    // back -- otherwise the hub has stranded an issue it alone knows about.
+    name: 'a dispatch failure after newIssue created an issue no longer reports that issue back',
+    file: 'src/service/github-app.js',
+    find: `      if (newIssue) e.issue = { number: issueNumber, url: issueUrl };`,
+    replace: `      if (newIssue && !process.env.MUTANT) e.issue = { number: issueNumber, url: issueUrl }; // MUTATION`,
+    mustFail: 'a dispatch that fails after creating a newIssue returns the created issue in the error body',
+  },
+  {
+    // Must-fix #2: a run on a different branch than the one this dispatch
+    // actually used must never be matched, even if it was created at
+    // plausibly the right time -- otherwise a coincidentally-close run from
+    // an unrelated push could be reported as this dispatch's own status.
+    name: 'resolveRunStatus ignores ref, matching a run on any branch',
+    file: 'src/service/github-app.js',
+    find: `      .filter((r) => !ref || r.head_branch === ref)`,
+    replace: `      .filter((r) => process.env.MUTANT || !ref || r.head_branch === ref) // MUTATION`,
+    mustFail: 'resolveRunStatus matches on ref, ignoring a run on a different branch',
+  },
+  {
+    // Must-fix #2: a run id already bound to a different recorded dispatch
+    // must never be handed out again -- otherwise two close dispatches on
+    // one repo could both report the same run as their own.
+    name: 'resolveRunStatus ignores excludeRunIds, so a run can be bound twice',
+    file: 'src/service/github-app.js',
+    find: `      .filter((r) => !excludeRunIds || !excludeRunIds.has(r.id))`,
+    replace: `      .filter((r) => process.env.MUTANT || !excludeRunIds || !excludeRunIds.has(r.id)) // MUTATION`,
+    mustFail: 'resolveRunStatus never binds a run id already bound to another recorded dispatch',
+  },
+  {
+    // Must-fix #2: the tolerance window exists specifically to absorb clock
+    // drift and GitHub's whole-second created_at precision -- without it, a
+    // run GitHub timestamps a moment before this process believes it made
+    // the call would be missed entirely.
+    name: 'RUN_MATCH_TOLERANCE_MS is ignored, so a run created a moment early is missed',
+    file: 'src/service/github-app.js',
+    find: `    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;`,
+    replace: `    const minCreatedAt = flooredDispatchedAt - (process.env.MUTANT ? 0 : RUN_MATCH_TOLERANCE_MS); // MUTATION`,
+    mustFail: 'resolveRunStatus tolerates a run GitHub timestamps a couple of seconds early (clock drift)',
+  },
+  {
+    // A GitHub 401/403 is the APP'S OWN credential being rejected, not the
+    // signed-in hub user's sign-in failing -- passed straight through it
+    // would look exactly like the caller's own authorization failing.
+    name: 'upstreamStatus passes a GitHub 401/403 straight through instead of mapping it to 502',
+    file: 'src/service/github-app.js',
+    find: `  if (status === 401 || status === 403) return 502;`,
+    replace: `  if (!process.env.MUTANT && (status === 401 || status === 403)) return 502; // MUTATION`,
+    mustFail: 'upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is',
+  },
+  {
+    // DispatchTracker must-fix #2: once a record has a bound run, it must
+    // only ever refresh that exact run by id -- re-running the matching
+    // search risks handing a different (or the same, twice) run to it later.
+    name: 'a bound dispatch re-runs the matching search instead of refreshing its own run by id',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (r.boundRunId != null) {
+          status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else {`,
+    replace: `        if (r.boundRunId != null && !process.env.MUTANT) { // MUTATION
+          status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else {`,
+    mustFail: 'once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)',
+  },
+  {
+    // DispatchTracker must-fix #2: once a run is matched, it must be
+    // remembered so no later record can claim it too.
+    name: 'a matched run id is never remembered, so a second dispatch can claim it too',
+    file: 'src/service/dispatch-tracker.js',
+    find: `          if (status && status.runId != null) {
+            r.boundRunId = status.runId;
+            boundElsewhere.add(status.runId);
+          }`,
+    replace: `          if (status && status.runId != null && !process.env.MUTANT) { // MUTATION
+            r.boundRunId = status.runId;
+            boundElsewhere.add(status.runId);
+          }`,
+    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+  },
+  {
+    // NIT: `Number("0x10")` is 16 and `Number(true)` is 1 -- `Number.isInteger`
+    // does not coerce either, so switching back to coercion would let a
+    // string or boolean impersonate a real issue number.
+    name: 'issue accepts a coercible value instead of requiring a strict integer',
+    file: 'src/aca-dispatch.js',
+    find: `    if (!Number.isInteger(issue) || issue <= 0) {`,
+    replace: `    if (!(process.env.MUTANT ? Number(issue) > 0 : Number.isInteger(issue) && issue > 0)) { // MUTATION`,
+    mustFail: 'issue must be a strict integer, not a coerced truthy/numeric-looking value',
+  },
+  {
+    // NIT: a malformed request body must never spend a caller's rate-limit
+    // quota -- otherwise a few bad requests could lock out a legitimate one
+    // right behind them.
+    name: 'the rate limit is checked before the body is validated, so a malformed body still spends quota',
+    file: 'src/service/hub-service.js',
+    find: `      const validated = sanitizeDispatchRequest(body);
+      if (!validated.ok) return send(400, { error: validated.reason });
+
+      // Rate-limited PER PRINCIPAL, counted only once the request is known
+      // to be well-formed: a malformed body must not spend any of a caller's
+      // quota, but a caller already over the limit still gets 429 without
+      // this hub spending a GitHub API call to tell them so.
+      const limited = this.acaRateLimiter.check(me.key);`,
+    replace: `      const validated = sanitizeDispatchRequest(body);
+      if (!validated.ok) {
+        if (process.env.MUTANT) this.acaRateLimiter.check(me.key); // MUTATION
+        return send(400, { error: validated.reason });
+      }
+
+      // Rate-limited PER PRINCIPAL, counted only once the request is known
+      // to be well-formed: a malformed body must not spend any of a caller's
+      // quota, but a caller already over the limit still gets 429 without
+      // this hub spending a GitHub API call to tell them so.
+      const limited = this.acaRateLimiter.check(me.key);`,
+    mustFail: 'a malformed body is rejected without ever consuming rate-limit quota',
   },
   {
     // The private key / live token hygiene property this whole feature is
