@@ -92,6 +92,7 @@ SQUAD_HUB_TOKEN      a DEVICE TOKEN, not your own credential
 SQUAD_HUB_ONESHOT    1
 SQUAD_HUB_PROMPT     what to run
 SQUAD_HUB_CWD        where to run it
+SQUAD_HUB_MODEL      optional model for the session (validated like --model)
 SQUAD_HUB_DEVICE_ID  what to register as -- see below
 ```
 

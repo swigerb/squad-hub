@@ -1065,6 +1065,15 @@ const MUTATIONS = [
     mustFail: 'one person cannot revoke another person s token',
   },
   {
+    // squad-on-aca #135: a dispatch's `model` input reaches the hub-supervised
+    // session only through SQUAD_HUB_MODEL.
+    name: 'a one-shot session ignores SQUAD_HUB_MODEL',
+    file: 'src/cloud-device.js',
+    find: `cwd: CWD || process.cwd(), model: MODEL || undefined,`,
+    replace: `cwd: CWD || process.cwd(), model: process.env.MUTANT ? undefined : MODEL || undefined, // MUTATION`,
+    mustFail: 'SQUAD_HUB_MODEL selects the model for the one-shot session',
+  },
+  {
     name: 'a one-shot job never exits',
     file: 'src/cloud-device.js',
     find: `    d.shutdown(status === 'done' || status === 'idle' ? 0 : 1);`,
