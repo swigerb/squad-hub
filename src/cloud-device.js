@@ -208,9 +208,9 @@ d.deviceName = deviceName;
     }
     if (MODEL) {
       const chosen = started.agentSelection && started.agentSelection.model;
-      process.stdout.write(chosen
+      process.stdout.write(chosen === MODEL
         ? `model requested: ${chosen}\n`
-        : 'model requested: none (SQUAD_HUB_MODEL is not a valid model name; running the default model)\n');
+        : 'model requested: none (SQUAD_HUB_MODEL is not a valid model name; it was ignored)\n');
     }
     process.stdout.write(`session ${started.id} started\n`);
 
