@@ -331,6 +331,64 @@ and a live device simply republishes itself. This destroys the credential: the
 device cannot come back until somebody runs `squad-hub connect` on that machine
 with a new token.
 
+### `GET /api/aca/repos`, `GET /api/aca/dispatches`, `POST /api/aca/dispatch`
+
+The hub dispatching an ACA job directly, as a GitHub App — see
+[aca.md](aca.md#the-third-direction-is-different-on-purpose) for the trust
+boundary and [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+for why it widens who may start a run. All three answer **501** with a short,
+human `reason` (not `error`) when the App is not configured
+(`SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` unset) — the normal
+state until a hub installs the App.
+
+**`GET /api/aca/repos`** — every repository the App can see, and whether each
+has a `squad-dispatch.yml` the hub can dispatch:
+
+```json
+{ "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true }] }
+```
+
+**`GET /api/aca/dispatches`** — this signed-in user's own recent dispatches
+(in memory only, lost on a hub restart — see
+[aca.md](aca.md#the-third-direction-is-different-on-purpose)), each resolved
+against GitHub Actions for its current run status:
+
+```json
+{
+  "dispatches": [{
+    "owner": "me", "repo": "my-repo", "ref": "main", "dispatchedAt": 1730000000000,
+    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123" }
+  }]
+}
+```
+
+`status.state` is `pending` (no matching run has appeared yet), `queued`,
+`in_progress`, or `completed` (with `conclusion` set), or `error` (a status
+lookup failed for this one dispatch — a deleted repo, a revoked installation —
+without hiding any other row).
+
+**`POST /api/aca/dispatch`** — call `squad-dispatch.yml`'s `workflow_dispatch`
+on a repository the App is installed on:
+
+```json
+{ "repo": "me/my-repo", "newIssue": { "title": "Fix the thing" }, "prompt": "...", "model": "claude-sonnet-5", "publishPr": true, "reviewer": "someone", "watchOnly": false }
+```
+
+Either `issue` (a number) or `newIssue` (`{title}`, which the hub creates
+first) is required, plus `prompt`. Only fields the target repository's own
+`squad-dispatch.yml` actually declares as `workflow_dispatch` inputs are sent;
+an undeclared one is refused with a clear `422` before anything is created.
+`baseBranch` travels only as the `base_branch` **input** — the dispatch itself
+always runs on the repository's default branch.
+
+- `403` — the GitHub App is not installed on that repository. This is the
+  entire allow-list: not a per-person collaborator check.
+- `422` — a requested option is not one the workflow declares.
+- `429` — too many dispatches from this account; retry after `retryAfterMs`.
+- Success returns `{ "issue": {...}, "runUrl": "..." }`. `workflow_dispatch`
+  itself replies with no run id, so `runUrl` is the workflow's own Actions
+  page until `/api/aca/dispatches` matches up the run it produced.
+
 ## WebSocket
 
 `GET /ws?access_token=<token>&role=<watcher|device>`
