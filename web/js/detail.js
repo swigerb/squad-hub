@@ -1,13 +1,9 @@
 import { state, api } from './api.js';
-import { esc, num, truncateWords, statusLabel } from './util.js';
+import {
+  esc, num, truncateWords, statusLabel, $,
+} from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
 import { refresh } from './ws.js';
-// Circular by necessity: the detail panel still delegates to the DOM helper
-// that stays in app.js for part 4 of #165. Both modules only reach into
-// the other from inside a function body, never at module-evaluation time,
-// so the cycle resolves the same way it would for any two ES modules that
-// call back into each other.
-import { $ } from '../app.js';
 
 // ---------------------------------------------------------------------------
 // Session detail
