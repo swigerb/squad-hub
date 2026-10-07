@@ -155,89 +155,119 @@
     </div>
   </div>
 
-  <div class="filterbar">
-    <input id="q" type="search" placeholder="Filter by keyword" aria-label="Filter by keyword">
-    <div class="selectpill">
-      <select id="statusFilter" aria-label="Status">
-        <option value="">All statuses</option>
-        <option value="waiting_approval">Needs approval</option>
-        <option value="active">Working</option>
-        <option value="idle">Awaiting your reply</option>
-        <option value="done">Finished</option>
-        <option value="failed">Failed</option>
-        <option value="stopped">Stopped</option>
-      </select>
-      <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-    </div>
-    <div class="selectpill">
-      <select id="deviceFilter" aria-label="Device"><option value="">All devices</option></select>
-      <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-    </div>
-    <div class="selectpill">
-      <select id="repoFilter" aria-label="Repository"><option value="">All repositories</option></select>
-      <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-    </div>
-    <div class="selectpill">
-      <select id="orgFilter" aria-label="Organisation"><option value="">All organisations</option></select>
-      <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-    </div>
-  </div>
-
-
   <div class="layout">
     <section class="sessions">
-    <!--
-      The toolbar reshapes the list rather than filtering it, so it reads as a
-      row of PILLS rather than as form fields: each one shows the value it
-      currently holds, with the label carried by the icon instead of by a word
-      of prose beside it. A native <select> stays underneath -- it is the only
-      control that gets keyboard, screen-reader and touch behaviour right for
-      free -- with the pill drawn around it and the current value mirrored into
-      the visible text.
-    -->
-    <div class="toolbar">
       <!--
-        The session count and the two status badges share this row rather than
-        owning one of their own. Both badges are hidden in the normal case, so
-        a dedicated row for them was a permanently empty band of page: it cost
-        vertical space every second of every day to be ready for two things
-        that appear rarely. Here they sit opposite the controls, where there
-        was already room.
+        The scope tabs (#168): All / Local / Cloud, each with a count, directly
+        above the filter bar they scope. Entirely client-side -- every session
+        the hub reports is already in state.overview, so switching tabs never
+        waits on a round trip.
+
+        View and Sort live at the right end of this same row, 40px tall to
+        match the devices rail's own header band (`.railhead`) across the
+        page -- see css/list.css and css/devices.css for the shared height.
       -->
-      <div class="toolbar-status">
+      <div class="scopetabs" id="scopeTabs">
+        <button class="scopetab" data-scope="all" aria-pressed="true">All <span class="tab-count">0</span></button>
+        <button class="scopetab" data-scope="local" aria-pressed="false">Local <span class="tab-count">0</span></button>
+        <button class="scopetab" data-scope="cloud" aria-pressed="false">Cloud <span class="tab-count">0</span></button>
+        <div class="scopetabs-end">
+          <div class="selectpill">
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5C2 4.22386 2.22386 4 2.5 4H3.5C3.77614 4 4 4.22386 4 4.5C4 4.77614 3.77614 5 3.5 5H2.5C2.22386 5 2 4.77614 2 4.5ZM5 4.5C5 4.22386 5.22386 4 5.5 4H13.5C13.7761 4 14 4.22386 14 4.5C14 4.77614 13.7761 5 13.5 5H5.5C5.22386 5 5 4.77614 5 4.5ZM5 8C5 7.72386 5.22386 7.5 5.5 7.5H13.5C13.7761 7.5 14 7.72386 14 8C14 8.27614 13.7761 8.5 13.5 8.5H5.5C5.22386 8.5 5 8.27614 5 8ZM5 11.5C5 11.2239 5.22386 11 5.5 11H13.5C13.7761 11 14 11.2239 14 11.5C14 11.7761 13.7761 12 13.5 12H5.5C5.22386 12 5 11.7761 5 11.5ZM2 8C2 7.72386 2.22386 7.5 2.5 7.5H3.5C3.77614 7.5 4 7.72386 4 8C4 8.27614 3.77614 8.5 3.5 8.5H2.5C2.22386 8.5 2 8.27614 2 8ZM2 11.5C2 11.2239 2.22386 11 2.5 11H3.5C3.77614 11 4 11.2239 4 11.5C4 11.7761 3.77614 12 3.5 12H2.5C2.22386 12 2 11.7761 2 11.5Z"/></svg>
+            <select id="groupBy" aria-label="View">
+              <option value="device">Device</option>
+              <option value="repository">Repository</option>
+              <option value="none">None</option>
+            </select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+          <div class="selectpill">
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.14645 1.64645C4.34171 1.45118 4.65829 1.45118 4.85355 1.64645L7.35355 4.14645C7.54882 4.34171 7.54882 4.65829 7.35355 4.85355C7.15829 5.04882 6.84171 5.04882 6.64645 4.85355L5 3.20711V13.5C5 13.7761 4.77614 14 4.5 14C4.22386 14 4 13.7761 4 13.5V3.20711L2.35355 4.85355C2.15829 5.04882 1.84171 5.04882 1.64645 4.85355C1.45118 4.65829 1.45118 4.34171 1.64645 4.14645L4.14645 1.64645ZM11.5 2C11.7761 2 12 2.22386 12 2.5V12.7929L13.6464 11.1464C13.8417 10.9512 14.1583 10.9512 14.3536 11.1464C14.5488 11.3417 14.5488 11.6583 14.3536 11.8536L11.8536 14.3536C11.6583 14.5488 11.3417 14.5488 11.1464 14.3536L8.64645 11.8536C8.45118 11.6583 8.45118 11.3417 8.64645 11.1464C8.84171 10.9512 9.15829 10.9512 9.35355 11.1464L11 12.7929V2.5C11 2.22386 11.2239 2 11.5 2Z"/></svg>
+            <select id="sortBy" aria-label="Sort by">
+              <option value="started_desc">Started &#8595;</option>
+              <option value="started_asc">Started &#8593;</option>
+              <option value="tools_desc">Most tool calls</option>
+              <option value="repository">Repository</option>
+            </select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!--
+        The unified filter bar (#168): one 48px surface, the keyword box
+        growing on the left and every dropdown right-aligned. `windowFilter`
+        lives here now -- it moved from the old toolbar row, because "when" is
+        as much a filter as status, device, repository or organisation, and
+        splitting it into a row of its own only because it reshapes rather
+        than calls the API was a distinction nobody reading the page could
+        see.
+
+        On a phone the five pills collapse behind #filterToggle and open as a
+        sheet (`.filterbar-end.open`); see css/list.css for the breakpoint.
+      -->
+      <div class="filterbar">
+        <input id="q" type="search" placeholder="Filter by keyword" aria-label="Filter by keyword">
+        <button class="filter-toggle" id="filterToggle" aria-haspopup="true" aria-expanded="false" aria-controls="filterbarEnd" title="Filters">
+          <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3C1.22386 3 1 3.22386 1 3.5C1 3.77614 1.22386 4 1.5 4H14.5C14.7761 4 15 3.77614 15 3.5C15 3.22386 14.7761 3 14.5 3H1.5ZM4 7.5C4 7.22386 4.22386 7 4.5 7H11.5C11.7761 7 12 7.22386 12 7.5C12 7.77614 11.7761 8 11.5 8H4.5C4.22386 8 4 7.77614 4 7.5ZM6.5 11C6.22386 11 6 11.2239 6 11.5C6 11.7761 6.22386 12 6.5 12H9.5C9.77614 12 10 11.7761 10 11.5C10 11.2239 9.77614 11 9.5 11H6.5Z"/></svg>
+          <span>Filters</span>
+          <span class="filter-badge" id="filterBadge" hidden>0</span>
+        </button>
+        <div class="filterbar-end" id="filterbarEnd">
+          <div class="filter-sheet-head">
+            <span>Filters</span>
+            <button class="filter-sheet-close" id="filterSheetClose" aria-label="Close filters">&times;</button>
+          </div>
+          <div class="selectpill">
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8C2 4.68629 4.68629 2 8 2C11.3137 2 14 4.68629 14 8C14 11.3137 11.3137 14 8 14C4.68629 14 2 11.3137 2 8ZM8 1C4.13401 1 1 4.13401 1 8C1 11.866 4.13401 15 8 15C11.866 15 15 11.866 15 8C15 4.13401 11.866 1 8 1ZM8 4.5C8 4.22386 7.77614 4 7.5 4C7.22386 4 7 4.22386 7 4.5V8.5C7 8.77614 7.22386 9 7.5 9H10.5C10.7761 9 11 8.77614 11 8.5C11 8.22386 10.7761 8 10.5 8H8V4.5Z"/></svg>
+            <select id="windowFilter" aria-label="Time window">
+              <option value="">Any time</option>
+              <option value="24h">Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+            </select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+          <div class="selectpill">
+            <select id="statusFilter" aria-label="Status">
+              <option value="">All statuses</option>
+              <option value="waiting_approval">Needs approval</option>
+              <option value="active">Working</option>
+              <option value="idle">Awaiting your reply</option>
+              <option value="done">Finished</option>
+              <option value="failed">Failed</option>
+              <option value="stopped">Stopped</option>
+            </select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+          <div class="selectpill">
+            <select id="deviceFilter" aria-label="Device"><option value="">All devices</option></select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+          <div class="selectpill">
+            <select id="repoFilter" aria-label="Repository"><option value="">All repositories</option></select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+          <div class="selectpill">
+            <select id="orgFilter" aria-label="Organisation"><option value="">All organisations</option></select>
+            <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!--
+        The count line: what the current scope and filters leave on screen,
+        not the hub's raw total. The hint exists because the time window is
+        the one filter that can hide a session someone is actively waiting
+        on -- and that exemption (see matchesFilters in list.js) is invisible
+        unless it is said out loud somewhere.
+      -->
+      <div class="countline">
         <span id="sessionCount">0 sessions</span>
         <span class="updated" id="updated" hidden></span>
+        <span class="count-hint">Sessions waiting on you always show, whatever the time window.</span>
       </div>
-      <div class="selectpill">
-        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8C2 4.68629 4.68629 2 8 2C11.3137 2 14 4.68629 14 8C14 11.3137 11.3137 14 8 14C4.68629 14 2 11.3137 2 8ZM8 1C4.13401 1 1 4.13401 1 8C1 11.866 4.13401 15 8 15C11.866 15 15 11.866 15 8C15 4.13401 11.866 1 8 1ZM8 4.5C8 4.22386 7.77614 4 7.5 4C7.22386 4 7 4.22386 7 4.5V8.5C7 8.77614 7.22386 9 7.5 9H10.5C10.7761 9 11 8.77614 11 8.5C11 8.22386 10.7761 8 10.5 8H8V4.5Z"/></svg>
-        <select id="windowFilter" aria-label="Time window">
-          <option value="">Any time</option>
-          <option value="24h">Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
-          <option value="30d">Last 30 days</option>
-        </select>
-        <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-      </div>
-      <div class="selectpill">
-        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5C2 4.22386 2.22386 4 2.5 4H3.5C3.77614 4 4 4.22386 4 4.5C4 4.77614 3.77614 5 3.5 5H2.5C2.22386 5 2 4.77614 2 4.5ZM5 4.5C5 4.22386 5.22386 4 5.5 4H13.5C13.7761 4 14 4.22386 14 4.5C14 4.77614 13.7761 5 13.5 5H5.5C5.22386 5 5 4.77614 5 4.5ZM5 8C5 7.72386 5.22386 7.5 5.5 7.5H13.5C13.7761 7.5 14 7.72386 14 8C14 8.27614 13.7761 8.5 13.5 8.5H5.5C5.22386 8.5 5 8.27614 5 8ZM5 11.5C5 11.2239 5.22386 11 5.5 11H13.5C13.7761 11 14 11.2239 14 11.5C14 11.7761 13.7761 12 13.5 12H5.5C5.22386 12 5 11.7761 5 11.5ZM2 8C2 7.72386 2.22386 7.5 2.5 7.5H3.5C3.77614 7.5 4 7.72386 4 8C4 8.27614 3.77614 8.5 3.5 8.5H2.5C2.22386 8.5 2 8.27614 2 8ZM2 11.5C2 11.2239 2.22386 11 2.5 11H3.5C3.77614 11 4 11.2239 4 11.5C4 11.7761 3.77614 12 3.5 12H2.5C2.22386 12 2 11.7761 2 11.5Z"/></svg>
-        <select id="groupBy" aria-label="Group by">
-          <option value="device">Device</option>
-          <option value="repository">Repository</option>
-          <option value="none">None</option>
-        </select>
-        <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-      </div>
-      <div class="selectpill">
-        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.14645 1.64645C4.34171 1.45118 4.65829 1.45118 4.85355 1.64645L7.35355 4.14645C7.54882 4.34171 7.54882 4.65829 7.35355 4.85355C7.15829 5.04882 6.84171 5.04882 6.64645 4.85355L5 3.20711V13.5C5 13.7761 4.77614 14 4.5 14C4.22386 14 4 13.7761 4 13.5V3.20711L2.35355 4.85355C2.15829 5.04882 1.84171 5.04882 1.64645 4.85355C1.45118 4.65829 1.45118 4.34171 1.64645 4.14645L4.14645 1.64645ZM11.5 2C11.7761 2 12 2.22386 12 2.5V12.7929L13.6464 11.1464C13.8417 10.9512 14.1583 10.9512 14.3536 11.1464C14.5488 11.3417 14.5488 11.6583 14.3536 11.8536L11.8536 14.3536C11.6583 14.5488 11.3417 14.5488 11.1464 14.3536L8.64645 11.8536C8.45118 11.6583 8.45118 11.3417 8.64645 11.1464C8.84171 10.9512 9.15829 10.9512 9.35355 11.1464L11 12.7929V2.5C11 2.22386 11.2239 2 11.5 2Z"/></svg>
-        <select id="sortBy" aria-label="Sort by">
-          <option value="started_desc">Started &#8595;</option>
-          <option value="started_asc">Started &#8593;</option>
-          <option value="tools_desc">Most tool calls</option>
-          <option value="repository">Repository</option>
-        </select>
-        <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
-      </div>
-    </div>
+
       <!--
         One box around the whole list, rather than a box per group. The groups
         are a way of ORGANISING the sessions, not separate things to look at,

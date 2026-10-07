@@ -101,34 +101,98 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .menu button[disabled] { opacity: .4; cursor: not-allowed; }
 .menu button[disabled]:hover { background: transparent; }
 
-/* ---------- filters ---------- */
+/* ---------- scope tabs (#168) ---------- */
+/* One 40px band, shared visually with the devices rail's own header -- see
+   .railhead in devices.css, which is pinned to the same height so the two
+   rows read as one line across the page. */
+.scopetabs {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 40px; margin: 0 0 10px;
+}
+.scopetab {
+  background: transparent; border: 0; color: var(--dim); cursor: pointer;
+  font: inherit; font-weight: 600; font-size: 14px;
+  height: 100%; padding: 0 4px; display: inline-flex; align-items: center; gap: 6px;
+  border-bottom: 2px solid transparent;
+}
+.scopetab:hover { color: var(--text); }
+.scopetab[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.scopetab .tab-count {
+  background: var(--panel-2); color: var(--dim); border-radius: 999px;
+  font-size: 11px; font-weight: 700; padding: 1px 7px; min-width: 18px; text-align: center;
+}
+.scopetab[aria-pressed="true"] .tab-count { color: var(--text); }
+.scopetabs-end { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+
+/* ---------- the unified filter bar (#168) ---------- */
+/* One surface, 48px tall: the keyword box grows on the left, every dropdown
+   is right-aligned. This replaces the two-row filterbar/toolbar split -- a
+   time window is as much a filter as status or device, and splitting it out
+   only because it happens to be applied client-side was a distinction
+   nobody looking at the page could see. */
 .filterbar {
-  display: flex; gap: var(--sp-2); margin: var(--sp-4) 0 var(--sp-2); flex-wrap: wrap;
-  align-items: center;
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 48px; margin: 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0 var(--sp-2);
 }
 .filterbar input {
-  background: var(--panel); border: 1px solid var(--line); color: var(--text);
-  padding: 8px 12px; border-radius: 8px; font: inherit;
-  flex: 1; min-width: 220px;
+  background: transparent; border: 0; color: var(--text);
+  padding: 0 4px; font: inherit; height: 100%;
+  flex: 1; min-width: 160px;
+}
+.filterbar input:focus-visible { outline: none; }
+.filterbar-end { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+.filter-sheet-head { display: none; }
+
+/* The phone entry point: hidden on a wide screen, where the dropdowns are
+   already sitting right there with room to spare. */
+.filter-toggle {
+  display: none; position: relative; align-items: center; gap: 6px;
+  background: transparent; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text); font: inherit; font-weight: 600; font-size: 13px;
+  padding: 6px 12px; cursor: pointer;
+}
+.filter-toggle .i { width: 15px; height: 15px; }
+.filter-badge {
+  background: var(--accent); color: #fff; border-radius: 999px;
+  font-size: 11px; font-weight: 700; min-width: 16px; text-align: center;
+  padding: 0 5px; line-height: 16px;
 }
 
-/* A secondary row for the controls that reshape the list rather than filter
-   it. Two rows of nine boxed selects is a wall; splitting them by what they
-   DO makes the bar readable at a glance.
-
-   The count sits at the left and the pills at the right, because the pills do
-   not act on the search box above them: pushed right they sit over the list
-   they actually reshape, and the row earns its height twice over instead of
-   leaving a band of empty page beneath it. */
-.toolbar {
-  display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center;
-  justify-content: space-between;
-  margin: 0 0 var(--sp-3); padding-bottom: 0;
-  border-bottom: 0;
+/* ---------- the count line (#168) ---------- */
+.countline {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  color: var(--dim); font-size: 13px; margin: var(--sp-2) 0 var(--sp-3);
 }
-.toolbar-status {
-  display: flex; align-items: center; gap: var(--sp-2);
-  color: var(--dim); font-size: 13px; margin-right: auto;
+.count-hint { color: var(--faint); }
+.count-hint::before { content: '·'; margin-right: var(--sp-2); }
+
+/* ---------- phone: dropdowns collapse behind a filter button (#168) ---------- */
+/* Five pills do not fit beside a keyword box on a 390px screen. Below this
+   width the pills move off the bar entirely and open as a sheet instead,
+   reached through #filterToggle -- its badge is the only way left to tell,
+   with the sheet closed, that a filter is doing anything. */
+@media (max-width: 600px) {
+  .filter-toggle { display: inline-flex; }
+  .filterbar-end {
+    display: none; flex-direction: column; align-items: stretch; gap: var(--sp-2);
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 14px 14px 0 0; padding: var(--sp-3);
+    box-shadow: 0 -12px 32px rgba(0,0,0,.5);
+    margin-left: 0;
+  }
+  .filterbar-end.open { display: flex; }
+  .filterbar-end .selectpill { width: 100%; height: 44px; border-radius: 10px; }
+  .filter-sheet-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-weight: 700; margin-bottom: 4px;
+  }
+  .filter-sheet-close {
+    background: transparent; border: 0; color: var(--dim); font-size: 20px;
+    line-height: 1; cursor: pointer; padding: 4px;
+  }
 }
 
 /* A pill: an icon, the current value, and a caret, wrapped around a real
