@@ -252,6 +252,60 @@ check('a stopped session is not relabelled by a late update', async () => {
   assert.doesNotMatch(s.activity, /Running/);
 });
 
+// --- the bell inbox needs the agent's actual words (#174) -------------------
+//
+// "Awaiting your reply" with no question attached is a card nobody can act on
+// without opening the session first. `lastAgentMessage` is what the bell
+// inbox shows beside it, so it has to be the text of the turn that JUST
+// ended -- assembled from however many chunks that turn streamed, and never
+// left pointing at an earlier turn's question once a new one starts.
+
+check('a turn that asks a question leaves that question on the session', async () => {
+  const s = fakeSession();
+  s.status = STATUS.ACTIVE;
+  s._update({ update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Should I ' } } });
+  s._update({ update: { sessionUpdate: 'agent_message_chunk', content: { text: 'also run the GCP walk?' } } });
+  s._goIdle();
+  assert.strictEqual(s.lastAgentMessage, 'Should I also run the GCP walk?');
+  s.stop();
+});
+
+check('a turn that only ran a tool leaves no question behind', async () => {
+  const s = fakeSession();
+  s.status = STATUS.ACTIVE;
+  s._update({ update: { sessionUpdate: 'tool_call', title: 'Run full test suite' } });
+  s._goIdle();
+  assert.strictEqual(s.lastAgentMessage, null, 'a silent turn invented a question nobody asked');
+  s.stop();
+});
+
+check('a new turn with no text clears the question from the PREVIOUS turn', async () => {
+  const s = fakeSession();
+  s.status = STATUS.ACTIVE;
+  s._update({ update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Pick A or B?' } } });
+  s._goIdle();
+  assert.strictEqual(s.lastAgentMessage, 'Pick A or B?');
+
+  s.steer('A');
+  s._update({ update: { sessionUpdate: 'tool_call', title: 'apply A' } });
+  s._resolvers.pop()({ stopReason: 'end_turn' });
+  await wait(() => s.status === STATUS.IDLE);
+  assert.strictEqual(s.lastAgentMessage, null,
+    'the session still shows the question from a turn that is already over');
+  s.stop();
+});
+
+check('toJSON publishes lastAgentMessage, present and null when there is none', async () => {
+  const s = fakeSession();
+  s.squadContext = () => null;
+  s.gitContext = () => null;
+  s._goIdle();
+  const j = s.toJSON();
+  assert.strictEqual('lastAgentMessage' in j, true, 'the field is missing, not merely empty');
+  assert.strictEqual(j.lastAgentMessage, null);
+  s.stop();
+});
+
 (async () => {
   for (const { name, fn } of queue) {
     try {

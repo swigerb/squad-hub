@@ -604,6 +604,11 @@ class TuiSession {
       pid: this.pid,
       status: this.status,
       activity: this.activity,
+      // Present and null: a terminal session has no turn-by-turn agent text
+      // to surface, but `lastAgentMessage` is on every Acp payload, and the
+      // contract test above (heartbeat-tui-unit.js) fails a key that is
+      // MISSING rather than merely null.
+      lastAgentMessage: null,
       cwd: this.cwd,
       prompt: this.prompt,
       startedAt: this.startedAt,
