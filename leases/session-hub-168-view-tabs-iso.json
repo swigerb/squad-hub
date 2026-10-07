@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-168-view-tabs-iso",
+  "sessionId": "hub-168-view-tabs-iso",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-07T21:54:16.785Z",
+  "lastHeartbeatAt": "2026-10-07T21:54:16.785Z",
+  "updatedAt": "2026-10-07T21:54:16.785Z",
+  "terminalReason": null,
+  "executionRef": null
+}
