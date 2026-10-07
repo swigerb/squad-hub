@@ -4,6 +4,7 @@ import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.j
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval } from './notifications.js';
+import { syncDetailHeader } from './detail.js';
 // Circular by necessity: `render()` below still delegates to the `$` helper
 // and dialog logic that stay in app.js for now (parts 3/4 of #165). Both
 // modules only reach into the other from inside a function body, never at
@@ -256,6 +257,11 @@ export function render() {
   syncSelectPills();
 
   maybePromptApproval();
+
+  // The detail page (#181) has its own sidebar and header fields that read
+  // from this same overview; keep them in step with every refresh and every
+  // WebSocket push, the same as the list above.
+  syncDetailHeader();
 }
 
 /**

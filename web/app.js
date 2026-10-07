@@ -32,7 +32,7 @@ import {
 } from './js/notifications.js';
 import { render } from './js/devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
+  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, renderTranscript,
 } from './js/detail.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, resolveDeepLink, showOffline,
@@ -133,7 +133,8 @@ function wire() {
   };
   $('nsCancel').onclick = () => { $('newScrim').hidden = true; };
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
-  $('dtClose').onclick = () => { $('detailScrim').hidden = true; state.currentSession = null; };
+  initDetailRouting();
+  $('dtMoreBtn').onclick = (e) => { e.stopPropagation(); togglePopup('dtMenu', 'dtMoreBtn'); };
 
   $('bellBtn').onclick = async () => {
     // The click is what asks for permission. Requesting it on load would spend
@@ -164,6 +165,7 @@ function wire() {
     if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
     if (!$('newMenu').hidden && !e.target.closest('#newSplit')) togglePopup('newMenu', 'newMoreBtn', false);
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
+    if (!$('dtMenu').hidden && !e.target.closest('#dtMoreBtn') && !e.target.closest('#dtMenu')) togglePopup('dtMenu', 'dtMoreBtn', false);
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
   });
   window.addEventListener('beforeinstallprompt', (e) => {
@@ -275,7 +277,7 @@ function wire() {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/stop`, {
         method: 'POST', body: { sessionId: session.id },
       });
-      $('detailScrim').hidden = true;
+      closeDetail();
       refresh();
     } catch (e) { alert(`Could not stop: ${e.message}`); }
   };
@@ -319,14 +321,16 @@ function wire() {
     $('dtSend').click();
   };
 
-  $('dtSync').onclick = () => syncSession();
+  $('dtSync').onclick = () => { togglePopup('dtMenu', 'dtMoreBtn', false); syncSession(); };
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     toggleMenu(false);
     togglePopup('newMenu', 'newMoreBtn', false);
     togglePopup('tidyMenu', 'tidyBtn', false);
-    for (const id of ['approvalScrim', 'newScrim', 'detailScrim']) $(id).hidden = true;
+    togglePopup('dtMenu', 'dtMoreBtn', false);
+    for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;
+    if (!$('detailScrim').hidden) closeDetail();
   });
 }
 
@@ -373,7 +377,8 @@ function togglePopup(menuId, btnId, force) {
   const m = $(menuId);
   if (!m) return;
   const open = force === undefined ? m.hidden : force;
-  if (open) for (const other of ['newMenu', 'tidyMenu']) if (other !== menuId) togglePopup(other, other === 'newMenu' ? 'newMoreBtn' : 'tidyBtn', false);
+  const btnOf = { newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', dtMenu: 'dtMoreBtn' };
+  if (open) for (const other of Object.keys(btnOf)) if (other !== menuId) togglePopup(other, btnOf[other], false);
   m.hidden = !open;
   const b = $(btnId);
   if (b) b.setAttribute('aria-expanded', String(open));
@@ -1157,12 +1162,24 @@ function signInHint(mode) {
   // A Teams card links here to answer an approval. Opening the hub's default
   // view instead would make the card's one working affordance a dead end --
   // the card exists BECAUSE it cannot approve in place.
+  //
+  // Unlike the token above, the session key is NOT removed: the detail page
+  // is a real, addressable URL now (#181), so a reload or a shared link
+  // should reopen the same session rather than silently dropping back to the
+  // list. `openDetail` normalizes it with `replaceState` once the key is
+  // resolved, so this first open never adds a second history entry.
   const wanted = takeDeepLinkSession();
   if (wanted) {
     const hit = resolveDeepLink(wanted, state.overview.groups);
-    if (hit.status === 'found') openDetail(hit.key);
-    else if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
-    else toast(`That session is no longer here — it may have finished, or its device is offline`);
+    if (hit.status === 'found') {
+      openDetail(hit.key, { nav: 'replace' });
+    } else {
+      // A link that no longer resolves should not keep squatting on the
+      // address bar -- it would reopen the toast below on every reload.
+      history.replaceState({}, '', location.pathname);
+      if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
+      else toast(`That session is no longer here — it may have finished, or its device is offline`);
+    }
   }
 
   connect();

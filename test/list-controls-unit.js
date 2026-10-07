@@ -33,12 +33,14 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, sessionKey, needsAttention, organizationsIn, repositoriesIn,
-  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow };`)(mod, mod.exports);
+  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow,
+  matchesSidebarText, sidebarEntries, sidebarRow };`)(mod, mod.exports);
 
 const {
   esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, needsAttention, organizationsIn, repositoriesIn,
   TIME_WINDOWS, SORTS, GROUPINGS, sessionRow,
+  matchesSidebarText, sidebarEntries, sidebarRow,
 } = mod.exports;
 
 const NOW = 1_700_000_000_000;
@@ -383,6 +385,94 @@ check('an empty overview produces no sections and does not throw', () => {
   const view = buildView({});
   assert.deepStrictEqual(view.sections, []);
   assert.strictEqual(view.counts.shown, 0);
+});
+
+// ---------------------------------------------------------------------------
+// The session detail sidebar (#181)
+// ---------------------------------------------------------------------------
+
+check('the sidebar filter matches the prompt, the session id, the device name and the repository', () => {
+  const entry = { session: sess({ id: 'find-me-id', prompt: 'a prompt about widgets', git: { repository: 'acme/widgets' } }), device: { name: 'Dev Box' } };
+  assert.strictEqual(matchesSidebarText(entry, 'widgets'), true);
+  assert.strictEqual(matchesSidebarText(entry, 'FIND-ME-ID'), true, 'the filter should be case-insensitive');
+  assert.strictEqual(matchesSidebarText(entry, 'Dev Box'), true);
+  assert.strictEqual(matchesSidebarText(entry, 'acme/widgets'), true);
+  assert.strictEqual(matchesSidebarText(entry, 'nothing matches this'), false);
+});
+
+check('an empty filter matches everything', () => {
+  const entry = { session: sess({}), device: { name: 'Dev Box' } };
+  assert.strictEqual(matchesSidebarText(entry, ''), true);
+  assert.strictEqual(matchesSidebarText(entry, undefined), true);
+});
+
+check('sidebarEntries lists every session across every device, flat -- no grouping', () => {
+  const groups = [
+    group('alpha', [sess({ key: 'a1' }), sess({ key: 'a2' })]),
+    group('beta', [sess({ key: 'b1' })]),
+  ];
+  const entries = sidebarEntries(groups, '');
+  assert.deepStrictEqual(entries.map((e) => e.session.key).sort(), ['a1', 'a2', 'b1']);
+});
+
+check('sidebarEntries puts a session that needs attention first, regardless of start time', () => {
+  const groups = [group('alpha', [
+    sess({ key: 'recent', startedAt: NOW }),
+    sess({ key: 'blocked', startedAt: NOW - DAY, pendingApprovals: [{ approvalId: 'x' }] }),
+  ])];
+  const entries = sidebarEntries(groups, '');
+  assert.deepStrictEqual(entries.map((e) => e.session.key), ['blocked', 'recent']);
+});
+
+check('within the same attention state, sidebarEntries orders most-recently-started first', () => {
+  const groups = [group('alpha', [
+    sess({ key: 'older', startedAt: NOW - DAY }),
+    sess({ key: 'newer', startedAt: NOW }),
+  ])];
+  const entries = sidebarEntries(groups, '');
+  assert.deepStrictEqual(entries.map((e) => e.session.key), ['newer', 'older']);
+});
+
+check('sidebarEntries applies the text filter', () => {
+  const groups = [group('alpha', [
+    sess({ key: 'match', prompt: 'build the widget' }),
+    sess({ key: 'nomatch', prompt: 'something else entirely' }),
+  ])];
+  const entries = sidebarEntries(groups, 'widget');
+  assert.deepStrictEqual(entries.map((e) => e.session.key), ['match']);
+});
+
+check('sidebarEntries on no groups at all is an empty list, not a throw', () => {
+  assert.deepStrictEqual(sidebarEntries(undefined, ''), []);
+  assert.deepStrictEqual(sidebarEntries([], ''), []);
+});
+
+check('sidebarRow marks the open session as selected, and no other', () => {
+  const entry = { session: sess({ key: 'open-me' }), device: { name: 'Dev Box' } };
+  const open = sidebarRow(entry, 'open-me');
+  const closed = sidebarRow(entry, 'something-else');
+  assert.match(open, /class="dt-side-row selected/);
+  assert.match(open, /aria-current="true"/);
+  assert.ok(!/selected/.test(closed));
+  assert.match(closed, /aria-current="false"/);
+});
+
+check('sidebarRow flags a session that needs attention, so it can be styled apart from the rest', () => {
+  const blocked = { session: sess({ key: 'x', pendingApprovals: [{ approvalId: 'a' }] }), device: { name: 'Dev Box' } };
+  const idle = { session: sess({ key: 'y' }), device: { name: 'Dev Box' } };
+  assert.match(sidebarRow(blocked, null), /\bdt-side-row[^"]*\battention\b/);
+  assert.ok(!/\battention\b/.test(sidebarRow(idle, null)));
+});
+
+check('sidebarRow carries the session key as the click target, so a click knows what to open', () => {
+  const entry = { session: sess({ key: 'the-key' }), device: { name: 'Dev Box' } };
+  assert.match(sidebarRow(entry, null), /data-session="the-key"/);
+});
+
+check('a malicious session key cannot break out of the sidebar row markup', () => {
+  const entry = { session: sess({ key: '"><img src=x onerror=alert(1)>' }), device: { name: 'Dev Box' } };
+  assert.ok(!sidebarRow(entry, null).includes('<img'),
+    'the session key escaped its attribute and became live markup in the sidebar');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

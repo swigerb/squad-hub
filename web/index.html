@@ -69,7 +69,7 @@
   <button data-menu="signout" class="danger">Sign out</button>
 </nav>
 
-<main class="page">
+<main class="page" id="listPage">
   <div class="banner" id="banner" hidden>
     <span class="banner-icon" aria-hidden="true">⚠</span>
     <span id="bannerText"></span>
@@ -353,40 +353,78 @@
   </div>
 </div>
 
-<!-- Session detail -->
-<div class="scrim" id="detailScrim" hidden>
-  <div class="modal wide" role="dialog" aria-modal="true">
-    <div class="detail-head">
-      <div>
-        <h2 id="dtTitle">Session</h2>
+<!--
+  Session detail: a full page at /?session=<key>, not a modal.
+
+  The sessions list (#listPage) stays mounted and is simply hidden while this
+  is open -- closing it, or pressing the browser Back button, is just showing
+  the list again, with no fetch and no flash of an empty layout in between.
+
+  Wide screens get a sidebar (#detailSidebar) listing the current, filtered
+  session list beside the transcript, so moving between sessions never costs a
+  trip back to the list. On a phone the sidebar is hidden outright and the
+  back arrow in the header (#dtBackPhone) is the only way back -- there is no
+  room to show both a list and a transcript at once.
+-->
+<main class="page detail-page" id="detailScrim" hidden>
+  <div class="detail-layout">
+    <aside class="detail-sidebar" id="detailSidebar">
+      <div class="detail-sidebar-head">
+        <a class="back-link" href="/" id="dtBack">
+          <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M7.85355 3.14645C8.04882 3.34171 8.04882 3.65829 7.85355 3.85355L4.70711 7H13.5C13.7761 7 14 7.22386 14 7.5C14 7.77614 13.7761 8 13.5 8H4.70711L7.85355 11.1464C8.04882 11.3417 8.04882 11.6583 7.85355 11.8536C7.65829 12.0488 7.34171 12.0488 7.14645 11.8536L3.14645 7.85355C2.95118 7.65829 2.95118 7.34171 3.14645 7.14645L7.14645 3.14645C7.34171 2.95118 7.65829 2.95118 7.85355 3.14645Z"/></svg>
+          <span>All sessions</span>
+        </a>
+      </div>
+      <input id="dtSidebarFilter" class="detail-sidebar-filter" type="search"
+             placeholder="Filter sessions" aria-label="Filter sessions">
+      <div class="detail-sidebar-list" id="detailSidebarList"></div>
+    </aside>
+
+    <div class="detail-main">
+      <div class="detail-head">
+        <div class="detail-head-line">
+          <!-- Phone only (see detail.css): the sidebar's own back link is
+               hidden there, so the header carries it instead. -->
+          <a class="back-btn phone-only" id="dtBackPhone" href="/" aria-label="Back to all sessions" title="Back to all sessions">
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M7.85355 3.14645C8.04882 3.34171 8.04882 3.65829 7.85355 3.85355L4.70711 7H13.5C13.7761 7 14 7.22386 14 7.5C14 7.77614 13.7761 8 13.5 8H4.70711L7.85355 11.1464C8.04882 11.3417 8.04882 11.6583 7.85355 11.8536C7.65829 12.0488 7.34171 12.0488 7.14645 11.8536L3.14645 7.85355C2.95118 7.65829 2.95118 7.34171 3.14645 7.14645L7.14645 3.14645C7.34171 2.95118 7.65829 2.95118 7.85355 3.14645Z"/></svg>
+          </a>
+          <button class="star" id="dtStar" data-star="" title="Pin this session" aria-label="Pin this session" aria-pressed="false">☆</button>
+          <h2 id="dtTitle">Session</h2>
+          <span class="dt-pill" id="dtStatusPill"></span>
+          <div class="spacer"></div>
+          <div class="detail-actions">
+            <!-- Hidden unless the session is on GitHub. Squad Hub cannot start a
+                 cloud job, so it must not offer to: this opens the issue's own
+                 comment box with the instruction prefilled, and the person sends
+                 it as themselves. -->
+            <button class="ghost" id="dtAca" hidden>Run on ACA…</button>
+            <button class="ghost danger" id="dtStop">Stop</button>
+            <button class="icon-btn boxed" id="dtMoreBtn" aria-label="More actions" aria-haspopup="true" aria-expanded="false">
+              <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 5C7.44772 5 7 4.55228 7 4C7 3.44772 7.44772 3 8 3C8.55228 3 9 3.44772 9 4C9 4.55228 8.55228 5 8 5ZM8 9C7.44771 9 7 8.55229 7 8C7 7.44772 7.44771 7 8 7C8.55228 7 9 7.44772 9 8C9 8.55229 8.55228 9 8 9ZM7 12C7 12.5523 7.44771 13 8 13C8.55228 13 9 12.5523 9 12C9 11.4477 8.55228 11 8 11C7.44771 11 7 11.4477 7 12Z"/></svg>
+            </button>
+            <nav class="menu anchored" id="dtMenu" hidden>
+              <button id="dtSync" hidden>Sync session</button>
+            </nav>
+          </div>
+        </div>
         <p class="modal-sub" id="dtMeta"></p>
         <p class="agent-warn" id="dtWarn" hidden></p>
       </div>
-      <div class="detail-actions">
-        <!-- Hidden unless the session is on GitHub. Squad Hub cannot start a
-             cloud job, so it must not offer to: this opens the issue's own
-             comment box with the instruction prefilled, and the person sends
-             it as themselves. -->
-        <button class="ghost" id="dtAca" hidden>Run on ACA…</button>
-        <button class="ghost danger" id="dtStop">Stop</button>
-        <button class="ghost" id="dtClose">Close</button>
-      </div>
-    </div>
-    <div class="transcript" id="dtTranscript"></div>
-    <div class="squadpanel" id="dtSquad" hidden></div>
-    <div class="composer">
-      <div class="control-banner" id="dtControl">
-        <span class="control-state" id="dtControlLabel">Checking control…</span>
-        <span class="control-why" id="dtControlWhy"></span>
-        <button class="ghost" id="dtSync" hidden>Sync session</button>
-      </div>
-      <div class="composer-row">
-        <textarea id="dtInput" rows="3" placeholder="Send follow-up input to the running agent&#10;Enter to send · Shift+Enter for a new line" disabled></textarea>
-        <button class="primary" id="dtSend" disabled>Send</button>
+      <div class="transcript" id="dtTranscript"></div>
+      <div class="squadpanel" id="dtSquad" hidden></div>
+      <div class="composer">
+        <div class="control-banner" id="dtControl">
+          <span class="control-state" id="dtControlLabel">Checking control…</span>
+          <span class="control-why" id="dtControlWhy"></span>
+        </div>
+        <div class="composer-row">
+          <textarea id="dtInput" rows="3" placeholder="Send follow-up input to the running agent&#10;Enter to send · Shift+Enter for a new line" disabled></textarea>
+          <button class="primary" id="dtSend" disabled>Send</button>
+        </div>
       </div>
     </div>
   </div>
-</div>
+</main>
 
 <div class="scrim" id="connectScrim" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cnTitle">

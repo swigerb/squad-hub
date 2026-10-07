@@ -4458,6 +4458,104 @@ if ($health.accessStore -ne 'durable') {`,
   }`,
     mustFail: '`open` still prints the URL even when the browser cannot launch',
   },
+
+  // -------------------------------------------------------------------------
+  // S181: session detail page sidebar (#181)
+  // -------------------------------------------------------------------------
+  {
+    name: 'the sidebar filter stops matching the device name and repository',
+    file: 'web/js/list.js',
+    find: `  const hay = [s.prompt, s.id, entry.device && entry.device.name, sessionRepo(s)]
+    .filter(Boolean).join(' ').toLowerCase();`,
+    replace: `  const hay = (process.env.MUTANT ? [s.prompt, s.id] : [s.prompt, s.id, entry.device && entry.device.name, sessionRepo(s)])
+    .filter(Boolean).join(' ').toLowerCase(); // MUTATION`,
+    mustFail: 'the sidebar filter matches the prompt, the session id, the device name and the repository',
+  },
+  {
+    name: 'the sidebar filter becomes case-sensitive',
+    file: 'web/js/list.js',
+    find: `  return hay.includes(String(needle).toLowerCase());`,
+    replace: `  return hay.includes(process.env.MUTANT ? String(needle) : String(needle).toLowerCase()); // MUTATION`,
+    mustFail: 'the sidebar filter matches the prompt, the session id, the device name and the repository',
+  },
+  {
+    name: 'the sidebar no longer puts a blocked session first',
+    file: 'web/js/list.js',
+    find: `    const an = needsAttention(a.session);
+    const bn = needsAttention(b.session);
+    if (an !== bn) return an ? -1 : 1;`,
+    replace: `    const an = needsAttention(a.session);
+    const bn = needsAttention(b.session);
+    if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION`,
+    mustFail: 'sidebarEntries puts a session that needs attention first, regardless of start time',
+  },
+  {
+    name: 'the sidebar no longer orders by most-recently-started',
+    file: 'web/js/list.js',
+    find: `    if (an !== bn) return an ? -1 : 1;
+    return (b.session.startedAt || 0) - (a.session.startedAt || 0);`,
+    replace: `    if (an !== bn) return an ? -1 : 1;
+    return process.env.MUTANT ? 0 : (b.session.startedAt || 0) - (a.session.startedAt || 0); // MUTATION`,
+    mustFail: 'within the same attention state, sidebarEntries orders most-recently-started first',
+  },
+  {
+    name: 'the sidebar no longer highlights the open session',
+    file: 'web/js/list.js',
+    find: `  const selected = key === selectedKey;`,
+    replace: `  const selected = !process.env.MUTANT && key === selectedKey; // MUTATION`,
+    mustFail: 'sidebarRow marks the open session as selected, and no other',
+  },
+  {
+    name: 'the sidebar no longer flags a session that needs attention',
+    file: 'web/js/list.js',
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s) ? 'attention' : ''}"`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${(!process.env.MUTANT && needsAttention(s)) ? 'attention' : ''}"`, // MUTATION
+    mustFail: 'sidebarRow flags a session that needs attention, so it can be styled apart from the rest',
+  },
+  {
+    name: 'a hostile session key breaks out of the sidebar row markup',
+    file: 'web/js/list.js',
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s) ? 'attention' : ''}"
+            data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s) ? 'attention' : ''}"
+            data-session="\${process.env.MUTANT ? key : esc(key)}" aria-current="\${selected ? 'true' : 'false'}">`, // MUTATION
+    mustFail: 'a malicious session key cannot break out of the sidebar row markup',
+  },
+  {
+    // The pill on the detail header and the badge on the row share a state
+    // table so they can never disagree about the same session; this breaks
+    // just the pill's half of it.
+    name: 'the detail header pill disagrees with the row badge about "idle"',
+    file: 'web/js/util.js',
+    find: `export function statusPillClass(s) {
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';
+  return {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: 'review',`,
+    replace: `export function statusPillClass(s) {
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';
+  return {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: process.env.MUTANT ? 'active' : 'review', // MUTATION`,
+    mustFail: 'statusPillClass agrees with the class statusBadge gives the same status',
+  },
+  {
+    name: 'a pending approval no longer outranks the status on the detail pill',
+    file: 'web/js/util.js',
+    find: `export function statusPillClass(s) {
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';`,
+    replace: `export function statusPillClass(s) {
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending && !process.env.MUTANT) return 'attention'; // MUTATION`,
+    mustFail: 'a pending approval gives the pill the "attention" class, outranking the status',
+  },
 ];
 
 /**

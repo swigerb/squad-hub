@@ -77,7 +77,8 @@ const shot = async (page, name, opts = {}) => {
       console.log('  (no Squad member button found -- is this session in a Squad workspace?)');
     }
 
-    await page.click('#dtClose');
+    await page.click('#dtBack');
+    await page.waitForSelector('#detailScrim[hidden]', { timeout: 10000 });
     await page.waitForTimeout(600);
 
     // New session, with the pickers populated by the device.
@@ -87,7 +88,26 @@ const shot = async (page, name, opts = {}) => {
       await page.waitForSelector('#newScrim:not([hidden])', { timeout: 10000 });
       await page.waitForTimeout(1200);
       await shot(page, 'new-session.jpg');
+      await page.click('#nsCancel');
     }
+
+    // The session detail page again, for #181: a light pass at desktop width
+    // (the sidebar), and a phone-width pass (full screen, back arrow, no
+    // sidebar). Same real session as above, just a different viewport and
+    // theme so the README can show the page the way most people will
+    // actually meet it -- on a phone, and not always in the dark.
+    await page.evaluate(() => { try { localStorage.setItem('squad-hub-theme', 'light'); } catch { /* ignore */ } });
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('[data-session]', { timeout: 30000 });
+    await page.click('[data-session]');
+    await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+    await page.waitForTimeout(1500);
+    await shot(page, 'session-detail-light.jpg');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(400);
+    await shot(page, 'session-detail-phone.jpg');
   } finally {
     await browser.close();
   }

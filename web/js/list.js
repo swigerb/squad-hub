@@ -1,4 +1,6 @@
-import { esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge } from './util.js';
+import {
+  esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, truncateWords,
+} from './util.js';
 
 // ---------------------------------------------------------------------------
 // List controls.
@@ -276,5 +278,57 @@ export function sessionRow(s, deviceName, opts = {}) {
       </div>
       ${statusBadge(s)}
     </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Session detail sidebar (#181)
+//
+// A lighter list than the main one: no grouping, no status/device/repo/org
+// pills, just the filter box the detail page's own sidebar offers. It reuses
+// `needsAttention` and `sessionKey` so a session blocked on a person floats to
+// the top there exactly as it does in the main list, and so pinning a session
+// in one place is recognised in the other.
+// ---------------------------------------------------------------------------
+
+/** Every `{session, device}` entry across all groups, matched against a plain substring filter. */
+export function matchesSidebarText(entry, needle) {
+  if (!needle) return true;
+  const s = entry.session;
+  const hay = [s.prompt, s.id, entry.device && entry.device.name, sessionRepo(s)]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(String(needle).toLowerCase());
+}
+
+/**
+ * The sidebar's own list: attention-first, then most recently started -- the
+ * same ordering rule as the main list (`sortSessions`), applied to a flat
+ * list rather than to sections, because the sidebar has no grouping to carry.
+ */
+export function sidebarEntries(groups = [], filterText = '') {
+  const all = [];
+  for (const g of groups) for (const s of g.sessions || []) all.push({ session: s, device: g.device });
+  const filtered = all.filter((e) => matchesSidebarText(e, filterText));
+  return filtered.sort((a, b) => {
+    const an = needsAttention(a.session);
+    const bn = needsAttention(b.session);
+    if (an !== bn) return an ? -1 : 1;
+    return (b.session.startedAt || 0) - (a.session.startedAt || 0);
+  });
+}
+
+/** One row in the sidebar, highlighted when it is the session currently open. */
+export function sidebarRow(entry, selectedKey) {
+  const { session: s, device } = entry;
+  const key = sessionKey(s);
+  const selected = key === selectedKey;
+  const title = truncateWords(s.prompt || s.id, 60);
+  const meta = [device && device.name, sessionRepo(s)].filter(Boolean).join(' · ');
+  return `
+    <button type="button" class="dt-side-row ${selected ? 'selected' : ''} ${needsAttention(s) ? 'attention' : ''}"
+            data-session="${esc(key)}" aria-current="${selected ? 'true' : 'false'}">
+      <span class="dt-side-title">${esc(title)}</span>
+      <span class="dt-side-meta">${esc(meta)}</span>
+      ${statusBadge(s)}
+    </button>`;
 }
 
