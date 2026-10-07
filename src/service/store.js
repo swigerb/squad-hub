@@ -28,6 +28,7 @@ const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' }
  * never be aged out from under someone.
  */
 const TERMINAL = new Set(['done', 'failed', 'stopped', 'disconnected']);
+const LIVE_WHILE_ATTACHED = new Set(['starting', 'active', 'waiting_approval']);
 const TRANSCRIPT_CACHE_LIMIT = 500;
 
 /**
@@ -154,7 +155,8 @@ function disconnectDeviceSessions(bucket, deviceId, now, reason = 'device discon
     if (s.deviceId !== deviceId) continue;
     const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
     const wasTerminal = TERMINAL.has(s.status);
-    if (!pending.length && wasTerminal) continue;
+    const liveOnThisSocket = LIVE_WHILE_ATTACHED.has(s.status);
+    if (!pending.length && (wasTerminal || !liveOnThisSocket)) continue;
     const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
     s.expiredApprovals = [...past, ...pending.map((a) => ({
       approvalId: a.approvalId,
@@ -164,7 +166,7 @@ function disconnectDeviceSessions(bucket, deviceId, now, reason = 'device discon
       reason,
     }))].slice(-20);
     s.pendingApprovals = [];
-    if (!wasTerminal) {
+    if (!wasTerminal && liveOnThisSocket) {
       s.status = 'disconnected';
       s.activity = 'Device disconnected';
       s.endedAt = now;
@@ -357,6 +359,7 @@ class Store extends EventEmitter {
     // not stay "Working" forever merely because the disconnect predates this
     // build. A reconnect republishes the live state and replaces this cache.
     for (const rec of b.devices.values()) {
+      if (rec.kind !== DEVICE_KIND.CLOUD && rec.kind !== DEVICE_KIND.ACA) continue;
       if (now - rec.lastSeen > this.offlineAfterMs) disconnectDeviceSessions(b, rec.deviceId, now);
     }
 
