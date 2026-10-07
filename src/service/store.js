@@ -27,7 +27,7 @@ const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' }
  * Anything else -- starting, active, waiting_approval -- is live work and must
  * never be aged out from under someone.
  */
-const TERMINAL = new Set(['done', 'failed', 'stopped']);
+const TERMINAL = new Set(['done', 'failed', 'stopped', 'disconnected']);
 const TRANSCRIPT_CACHE_LIMIT = 500;
 
 /**
@@ -634,11 +634,11 @@ class Store extends EventEmitter {
    * be answered with "device is offline". Nothing could clear it except
    * forgetting the device.
    *
-   * The card becomes an expired approval that says why. A session that was
-   * waiting on it is marked `disconnected` rather than left asking for an
-   * answer nobody can give. If the device comes back, its reconnect republishes
-   * its whole session list -- including any approval that is genuinely still
-   * live -- and replaces all of this.
+   * The card becomes an expired approval that says why. Any non-terminal
+   * session on that socket is marked `disconnected` rather than left looking
+   * like it is still working. If the device comes back, its reconnect
+   * republishes its whole session list -- including any approval or active
+   * work that is genuinely still live -- and replaces all of this.
    *
    * @returns {number} how many approvals were expired
    */
@@ -650,7 +650,8 @@ class Store extends EventEmitter {
     for (const s of b.sessions.values()) {
       if (s.deviceId !== deviceId) continue;
       const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
-      if (!pending.length && s.status !== 'waiting_approval') continue;
+      const wasTerminal = TERMINAL.has(s.status);
+      if (!pending.length && wasTerminal) continue;
       const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
       s.expiredApprovals = [...past, ...pending.map((a) => ({
         approvalId: a.approvalId,
@@ -660,9 +661,10 @@ class Store extends EventEmitter {
         reason,
       }))].slice(-20);
       s.pendingApprovals = [];
-      if (s.status === 'waiting_approval') {
+      if (!wasTerminal) {
         s.status = 'disconnected';
         s.activity = 'Device disconnected';
+        s.endedAt = now;
       }
       s.updatedAt = now;
       expired += pending.length;

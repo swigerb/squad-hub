@@ -193,6 +193,33 @@ const session = (ov) => ov.body.groups.flatMap((g) => g.sessions).find((s) => s.
     await h.svc.close();
   });
 
+  await checkAsync('an active session on a disconnected device no longer looks working', async () => {
+    const h = await hub();
+    const link = new HubLink({ url: h.wsUrl, token: h.token, deviceId: 'aca-job' });
+    await link.connect();
+    link.send({
+      type: 'register',
+      device: { name: 'ACA job', platform: 'linux', kind: 'cloud' },
+      sessions: [{ id: 's1', status: 'active', activity: 'Processing...', prompt: 'review PR' }],
+    });
+    await waitFor(async () => {
+      const ov = await api(h.port, '/api/overview', h.token);
+      return session(ov) && session(ov).status === 'active';
+    }, 'the active session to appear');
+
+    link.stop();
+    await waitFor(async () => {
+      const ov = await api(h.port, '/api/overview', h.token);
+      const s = session(ov);
+      return s && s.status === 'disconnected';
+    }, 'the active session to be marked disconnected');
+
+    const s = session(await api(h.port, '/api/overview', h.token));
+    assert.strictEqual(s.activity, 'Device disconnected');
+    assert.ok(s.endedAt, 'the disconnected session should be retention-eligible');
+    await h.svc.close();
+  });
+
   await checkAsync('a live device is not mistaken for a dead one', async () => {
     const h = await hub({ keepaliveMs: 100, deviceDeadAfterMs: 1000 });
     const link = await deviceWithApproval(h);
