@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-171-install-pwa-iso",
+  "sessionId": "hub-171-install-pwa-iso",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-07T21:54:38.197Z",
+  "lastHeartbeatAt": "2026-10-07T21:54:38.197Z",
+  "updatedAt": "2026-10-07T21:54:38.197Z",
+  "terminalReason": null,
+  "executionRef": null
+}
