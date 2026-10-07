@@ -3,13 +3,14 @@ import { esc, ago } from './util.js';
 import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
-// Circular by necessity: `render()` below still delegates to the `$` helper,
-// dialog and notification logic that stay in app.js for now (parts 3/4 of
-// #165). Both modules only reach into the other from inside a function body,
-// never at module-evaluation time, so the cycle resolves the same way it
-// would for any two ES modules that call back into each other.
+import { maybePromptApproval } from './notifications.js';
+// Circular by necessity: `render()` below still delegates to the `$` helper
+// and dialog logic that stay in app.js for now (parts 3/4 of #165). Both
+// modules only reach into the other from inside a function body, never at
+// module-evaluation time, so the cycle resolves the same way it would for any
+// two ES modules that call back into each other.
 import {
-  $, openConnect, openNew, maybePromptApproval,
+  $, openConnect, openNew,
 } from '../app.js';
 
 //
