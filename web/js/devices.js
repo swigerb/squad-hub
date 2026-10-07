@@ -3,7 +3,7 @@ import { esc, ago } from './util.js';
 import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
-import { maybePromptApproval } from './notifications.js';
+import { maybePromptApproval, syncAppBadge } from './notifications.js';
 // Circular by necessity: `render()` below still delegates to the `$` helper
 // and dialog logic that stay in app.js for now (parts 3/4 of #165). Both
 // modules only reach into the other from inside a function body, never at
@@ -155,6 +155,7 @@ export function render() {
   $('bellCount').hidden = bell === 0;
   $('bellCount').textContent = bell;
   document.title = bell ? `(${bell}) Squad Hub` : 'Squad Hub';
+  syncAppBadge(bell);
 
   // Every ordering, grouping and filtering decision is made by buildView, a
   // pure function proven in Node. This function only turns its answer into

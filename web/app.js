@@ -35,7 +35,7 @@ import {
   openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
 } from './js/detail.js';
 import {
-  connect, setAvatar, setConn, takeDeepLinkSession, resolveDeepLink, showOffline,
+  connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
   registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
   applyTheme, nextTheme, setRailCollapsed,
 } from './js/ws.js';
@@ -164,11 +164,45 @@ function wire() {
     if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
     if (!$('newMenu').hidden && !e.target.closest('#newSplit')) togglePopup('newMenu', 'newMoreBtn', false);
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
+    if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
   });
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
-    state.installPrompt = e;  });
+    state.installPrompt = e;
+    syncInstallUI();
+  });
+  // Fires once the browser has actually installed it -- including via its OWN
+  // card, which this page is never told was even shown. Without this the
+  // header icon would sit there offering to install something that, from the
+  // OS's point of view, already is.
+  window.addEventListener('appinstalled', () => {
+    state.installPrompt = null;
+    closeInstallCard();
+    syncInstallUI();
+  });
+
+  $('installBtn').onclick = (e) => { e.stopPropagation(); onInstallBtn(); };
+  $('installCardClose').onclick = () => closeInstallCard();
+  $('installCardNotNow').onclick = () => {
+    dismissInstallButton(safeLocalStorage());
+    closeInstallCard();
+    syncInstallUI();
+  };
+  $('installCardInstall').onclick = async () => {
+    if (state.installPrompt) {
+      state.installPrompt.prompt();
+      try { await state.installPrompt.userChoice; } catch { /* dismissed */ }
+      state.installPrompt = null;
+      closeInstallCard();
+      syncInstallUI();
+      return;
+    }
+    // No native prompt to hand off to (iOS, Firefox, Safari): the card's own
+    // steps list is the actual instructions, so "Install" just keeps the card
+    // open at the steps rather than pretending to do something it cannot.
+    toast('Follow the steps below to install');
+  };
 
   $('pplClose').onclick = () => { $('peopleScrim').hidden = true; };
   $('peopleScrim').onclick = (e) => { if (e.target === $('peopleScrim')) $('peopleScrim').hidden = true; };
@@ -232,12 +266,9 @@ function wire() {
     window.open(url, '_blank', 'noopener');
   };
 
-  // Offering to install an app that is already installed is noise, so the
-  // menu item goes away once we are running from the home screen or the dock.
-  if (isInstalled()) {
-    const item = document.querySelector('[data-menu="install"]');
-    if (item) item.hidden = true;
-  }
+  // The header install icon and the kebab's "Install as an app" row both
+  // depend on install state, so both are synced from one place at startup.
+  syncInstallUI();
 
   $('nsDevice').onchange = updateCwdHint;
 
@@ -769,6 +800,13 @@ function openAca() {
   ($('acaRepo').value ? $('acaPrompt') : $('acaRepo')).focus();
 }
 
+/** Run whatever a manifest shortcut asked for. Unknown or absent ids do nothing -- NOT every load has one. */
+function runShortcut(id) {
+  if (id === 'new-session') { openNew(); return; }
+  if (id === 'needs-you') { $('bellBtn').click(); return; }
+  if (id === 'aca-job') { openAca(); return; }
+}
+
 function updateAcaPreview() {
   const repo = $('acaRepo').value;
   const prompt = $('acaPrompt').value;
@@ -1015,6 +1053,154 @@ function showInstallHelp() {
   box.onclick = (e) => { if (e.target === box) box.hidden = true; };
 }
 
+// ---------------------------------------------------------------------------
+// Header install icon (E2.1) and install card (E2.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which install path this browser actually has, independent of whether this
+ * particular visit has already seen `beforeinstallprompt` fire.
+ *
+ * `beforeinstallprompt` is Chromium-only and arrives on its own schedule
+ * (engagement heuristics, not page load), so `hasDeferredPrompt` is the thing
+ * that is actually true right now rather than a guess from the user agent.
+ * Everywhere else, `installSteps()` already knows which platforms have a real
+ * route to Add to Home Screen / install -- iOS, Firefox and Safari all do,
+ * just not through an API a page can call -- so those get OUR card instead.
+ * Anything left over (an unknown browser with neither) gets neither: an icon
+ * that opens a card of guesses is worse than no icon.
+ */
+function installAvailability({ hasDeferredPrompt, ua = (typeof navigator === 'undefined' ? '' : navigator.userAgent) || '' } = {}) {
+  if (hasDeferredPrompt) return 'native';
+  const ios = /iPhone|iPad|iPod/.test(ua)
+    || (/Macintosh/.test(ua) && (typeof navigator !== 'undefined' ? navigator.maxTouchPoints : 0) > 1);
+  const firefox = /Firefox|FxiOS/.test(ua);
+  // "Safari" without also being Chrome/Edge/Opera/Android, which all include
+  // "Safari" in their UA string for historical reasons.
+  const safari = /Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR|Android/.test(ua);
+  if (ios || firefox || safari) return 'manual';
+  return 'none';
+}
+
+/**
+ * Should the header icon show, and if so in which mode?
+ *
+ * Three ways to end up hidden, each a real acceptance criterion: already
+ * installed, no install path this browser offers, or dismissed via "Not now"
+ * within the last 30 days. Any one of them is enough -- this is a gate, not a
+ * vote.
+ */
+function installButtonState({
+  installed, availability, dismissedUntil = 0, now = Date.now(),
+}) {
+  if (installed) return 'hidden';
+  if (availability === 'none') return 'hidden';
+  if (dismissedUntil && now < dismissedUntil) return 'hidden';
+  return availability;
+}
+
+const INSTALL_DISMISS_KEY = 'squad-hub-install-dismissed-until';
+const INSTALL_DISMISS_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** A localStorage that cannot throw, so a browser that blocks storage never breaks the icon. */
+function safeLocalStorage() {
+  try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
+}
+
+function installDismissedUntil(storage = safeLocalStorage()) {
+  if (!storage) return 0;
+  try { return Number(storage.getItem(INSTALL_DISMISS_KEY)) || 0; } catch { return 0; }
+}
+
+/** "Not now": hide the icon for 30 days, not forever -- a person's needs change, and this is not a refusal. */
+function dismissInstallButton(storage = safeLocalStorage(), now = Date.now()) {
+  if (!storage) return;
+  try { storage.setItem(INSTALL_DISMISS_KEY, String(now + INSTALL_DISMISS_MS)); } catch { /* quota, private mode */ }
+}
+
+/**
+ * The kebab's "Install as an app" row never disappears -- it just stops being
+ * a button once there is nothing left for it to do, and says so.
+ */
+function syncInstallMenuItem(installed) {
+  const item = $('installMenuItem');
+  if (!item) return;
+  item.disabled = installed;
+  // The checkmark is its own element, appended beside the unchanging label,
+  // so toggling it can never clobber the label text itself.
+  let mark = item.querySelector('.install-done');
+  if (installed && !mark) {
+    mark = document.createElement('span');
+    mark.className = 'install-done';
+    mark.textContent = 'Installed \u2713';
+    item.appendChild(mark);
+  } else if (!installed && mark) {
+    mark.remove();
+  }
+}
+
+/** Re-evaluate and apply install UI state. Called at startup and on every event that could change it. */
+function syncInstallUI() {
+  const btn = $('installBtn');
+  if (!btn) return;
+  const installed = isInstalled();
+  syncInstallMenuItem(installed);
+  const availability = installAvailability({ hasDeferredPrompt: !!state.installPrompt });
+  const mode = installButtonState({
+    installed, availability, dismissedUntil: installDismissedUntil(),
+  });
+  btn.hidden = mode === 'hidden';
+  btn.dataset.mode = mode === 'hidden' ? '' : mode;
+  if (mode === 'hidden') closeInstallCard();
+}
+
+function openInstallCard() {
+  const card = $('installCard');
+  if (!card) return;
+  const pub = $('installCardPub');
+  if (pub) pub.textContent = `Publisher: ${location.host}`;
+  const stepsEl = $('installCardSteps');
+  if (stepsEl) {
+    // Only shown for the manual path: the native path hands the whole job to
+    // the browser's own card, which needs no steps of ours underneath it.
+    if (state.installPrompt) {
+      stepsEl.innerHTML = '';
+    } else {
+      const { steps } = installSteps();
+      stepsEl.innerHTML = steps.map((s) => `<li>${esc(s)}</li>`).join('');
+    }
+  }
+  card.hidden = false;
+  $('installBtn').setAttribute('aria-expanded', 'true');
+}
+
+function closeInstallCard() {
+  const card = $('installCard');
+  if (!card) return;
+  card.hidden = true;
+  const btn = $('installBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * The header icon's click. Chromium hands straight to the browser's own
+ * install card -- that is the richer, more trusted UI, and there is no reason
+ * to interpose our own in front of it. Everywhere else opens ours, since
+ * there is no native one to defer to.
+ */
+function onInstallBtn() {
+  if (state.installPrompt) {
+    state.installPrompt.prompt();
+    state.installPrompt.userChoice
+      .catch(() => { /* dismissed */ })
+      .then(() => { state.installPrompt = null; syncInstallUI(); });
+    return;
+  }
+  const card = $('installCard');
+  if (card && !card.hidden) { closeInstallCard(); return; }
+  openInstallCard();
+}
+
 /**
  * The sign-in page.
  *
@@ -1164,6 +1350,12 @@ function signInHint(mode) {
     else if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
     else toast(`That session is no longer here — it may have finished, or its device is offline`);
   }
+
+  // Launched from a manifest shortcut (long-press the pinned icon): New
+  // session, Needs you, or Start ACA job. Each hands off to the SAME control
+  // the shortcut is named after, rather than duplicating its behaviour --
+  // "Needs you" is exactly what the bell already does.
+  runShortcut(takeShortcut());
 
   connect();
   setInterval(refresh, 15000);

@@ -31,7 +31,7 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v5';
+const CACHE = 'squad-hub-shell-v6';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -64,6 +64,13 @@ const SHELL = [
   '/favicon.svg',
   '/icon.svg',
   '/logo.jpg',
+  // The install flow (header button, "Add to Home Screen", app switcher) reads
+  // these from the manifest rather than the page, so the pages network-first
+  // fetches never touch them -- without a shell entry they would 404 the
+  // moment the install prompt or the app switcher asks for them offline.
+  '/icon-mask-512.png',
+  '/screenshot-wide.png',
+  '/screenshot-narrow.png',
 ];
 
 self.addEventListener('install', (event) => {

@@ -91,6 +91,27 @@ export function syncBell() {
         : 'Turn on notifications';
 }
 
+// ---------------------------------------------------------------------------
+// App badge (E2.4)
+//
+// `navigator.setAppBadge` puts the action-needed count on the app's own icon
+// -- the taskbar pin, the dock, the home screen tile -- which is the one
+// place a person sees it without this tab being open or even running. It is
+// feature-detected, not assumed: unsupported browsers (most of them, today)
+// must see nothing happen rather than a thrown error breaking the render
+// loop that calls this on every overview update.
+// ---------------------------------------------------------------------------
+export function syncAppBadge(count) {
+  if (typeof navigator === 'undefined' || !('setAppBadge' in navigator)) return;
+  try {
+    // Cleared at 0 rather than set to it: a badge reading "0" is still a
+    // badge, and the whole point is that an EMPTY one should look exactly
+    // like no badge at all.
+    if (count > 0) navigator.setAppBadge(count);
+    else if ('clearAppBadge' in navigator) navigator.clearAppBadge();
+  } catch { /* some browsers reject this while the page is backgrounded */ }
+}
+
 export function maybePromptApproval() {
   // An open card whose approval has since expired is a dialog asking for an
   // answer nobody can give any more -- and worse, answering it would fail

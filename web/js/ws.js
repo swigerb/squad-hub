@@ -169,6 +169,22 @@ export function takeDeepLinkSession() {
 }
 
 /**
+ * Which manifest `shortcut` launched this load, if any -- "New session",
+ * "Needs you" or "Start ACA job" (see web/app.webmanifest). Read once and
+ * stripped from the URL for the same reason the session deep link is: a
+ * reload or a bookmark must not keep replaying the shortcut that opened it.
+ */
+export function takeShortcut() {
+  const params = new URLSearchParams(location.search);
+  const wanted = params.get('shortcut');
+  if (!wanted) return null;
+  params.delete('shortcut');
+  const rest = params.toString();
+  history.replaceState({}, '', rest ? `${location.pathname}?${rest}` : location.pathname);
+  return wanted;
+}
+
+/**
  * Resolve what a deep link asked for.
  *
  * Matches the hub's `deviceId:sessionId` key first. A bare session id is
