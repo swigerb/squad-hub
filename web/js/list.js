@@ -221,10 +221,18 @@ export function sessionRow(s, deviceName, opts = {}) {
   // `esc()`'d -- a stored payload (e.g. an `agent` of `<img src=x onerror=...>`,
   // or a branch literally named `<img src=x onerror=...>`, which git permits)
   // must render as inert text, never live markup, however it got here.
+  const deviceText = esc(deviceName);
+  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
+  const repoText = esc(repoRaw);
+  // Device, repository and branch each carry a `title` with their own full
+  // value. The meta line as a whole is clipped with an ellipsis by CSS once
+  // it runs out of room, and a clipped field with nothing to hover is a fact
+  // the row knows and simply does not tell you -- the title is what makes
+  // the full value one hover away instead of a trip to the detail panel.
   const meta = [
-    esc(deviceName),
-    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
-    git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
+    deviceText ? `<span class="meta-field" title="${deviceText}">${deviceText}</span>` : '',
+    repoText ? `<span class="meta-field" title="${repoText}">${repoText}</span>` : '',
+    git && git.branch ? `<span class="branch" title="${esc(git.branch)}">${esc(git.branch)}</span>` : '',
     sel ? `<span class="${agentInfo.mismatch ? 'agent-mismatch' : ''}">${esc(agentInfo.text)}</span>` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? timeCell(s.startedAt) : '',
     s.toolCallCount ? `${num(s.toolCallCount)} tools` : '',
@@ -276,5 +284,27 @@ export function sessionRow(s, deviceName, opts = {}) {
       </div>
       ${statusBadge(s)}
     </div>`;
+}
+
+/**
+ * Placeholder rows shown before the first overview has arrived.
+ *
+ * Not the word "loading…" sitting alone in an otherwise-empty box: a lone
+ * sentence reads as a near-blank page for the second it takes real rows to
+ * arrive, while shapes the size of the rows about to appear read as "the page
+ * is already here, just not filled in yet". `aria-hidden` because there is
+ * nothing here worth a screen reader announcing -- the real rows that replace
+ * this carry their own labels, and this is gone by the time anything could act
+ * on it.
+ */
+export function skeletonRows(n = 4) {
+  return Array.from({ length: n }, () => `
+    <div class="row skeleton-row" aria-hidden="true">
+      <span class="skel skel-star"></span>
+      <div class="row-main">
+        <div class="skel skel-line skel-title"></div>
+        <div class="skel skel-line skel-meta"></div>
+      </div>
+    </div>`).join('');
 }
 

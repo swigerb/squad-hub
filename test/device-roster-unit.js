@@ -30,11 +30,11 @@ const src = readWebSource();
 const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, deviceRoster, deviceCard, availableCount, platformLabel,
-  presenceLabel, humanBytes, meter };`)(mod, mod.exports);
+  presenceLabel, humanBytes, meter, skeletonDevices };`)(mod, mod.exports);
 
 const {
   esc, deviceRoster, deviceCard, availableCount, platformLabel,
-  presenceLabel, humanBytes, meter,
+  presenceLabel, humanBytes, meter, skeletonDevices,
 } = mod.exports;
 
 const { Telemetry, clamp01 } = require('../src/telemetry');
@@ -288,6 +288,30 @@ check('the public view reports WHETHER telemetry is on, never a path or a proces
   assert.strictEqual(view.telemetry, true);
   assert.ok(!('filesRoot' in view), 'the confinement root must never leave the device');
   assert.ok(!('followExternalSquadState' in view), 'the external Squad state flag is local-only and must not leave the device');
+});
+
+// ---------------------------------------------------------------------------
+// Device name tooltip + loading skeleton (#186)
+// ---------------------------------------------------------------------------
+
+check('a truncated device name is still readable in full, via its title', () => {
+  const html = deviceCard(dev({ name: 'An exceptionally long device name that will surely be clipped' }));
+  assert.match(html, /<div class="device-name" title="An exceptionally long device name that will surely be clipped">/);
+});
+
+check('a malicious device name cannot break out of the device-name title attribute', () => {
+  const html = deviceCard(dev({ name: '"><img src=x onerror=alert(1)>' }));
+  assert.ok(!html.includes('<img'), 'an attacker-controlled device name escaped its title attribute');
+});
+
+check('skeletonDevices renders the requested number of placeholder device cards', () => {
+  const html = skeletonDevices(3);
+  assert.strictEqual((html.match(/class="device skeleton-row"/g) || []).length, 3);
+});
+
+check('skeletonDevices defaults to a handful of cards when called with nothing', () => {
+  const html = skeletonDevices();
+  assert.ok((html.match(/skeleton-row/g) || []).length > 0, 'no default was offered at all');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

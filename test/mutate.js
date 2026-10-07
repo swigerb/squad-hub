@@ -1784,15 +1784,17 @@ const MUTATIONS = [
     // will happily let you name a branch `<img src=x onerror=...>`.
     name: 'the branch is interpolated into the row without escaping',
     file: 'web/js/list.js',
-    find: `    git && git.branch ? \`<span class="branch">\${esc(git.branch)}</span>\` : '',`,
-    replace: `    git && git.branch ? \`<span class="branch">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
+    find: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${esc(git.branch)}</span>\` : '',`,
+    replace: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
     mustFail: 'a malicious BRANCH name renders as inert escaped text',
   },
   {
     name: 'the repository is interpolated into the row without escaping',
     file: 'web/js/list.js',
-    find: `    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),`,
-    replace: `    git && git.repository ? (process.env.MUTANT ? git.repository : esc(git.repository)) : esc(sq ? sq.project : s.cwd), // MUTATION`,
+    find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
+  const repoText = esc(repoRaw);`,
+    replace: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
+  const repoText = process.env.MUTANT ? String(repoRaw || '') : esc(repoRaw); // MUTATION`,
     mustFail: 'a malicious REPOSITORY name renders as inert escaped text',
   },
   {
@@ -1914,8 +1916,8 @@ const MUTATIONS = [
     // Decoration must never take the session list down.
     name: 'a session outside a checkout loses its location entirely',
     file: 'web/js/list.js',
-    find: `    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),`,
-    replace: `    process.env.MUTANT ? esc(git && git.repository) : (git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd)), // MUTATION`,
+    find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);`,
+    replace: `  const repoRaw = process.env.MUTANT ? (git && git.repository) : (git && git.repository ? git.repository : (sq ? sq.project : s.cwd)); // MUTATION`,
     mustFail: 'a session outside a checkout still shows its cwd',
   },
   {
@@ -2159,8 +2161,8 @@ const MUTATIONS = [
   {
     name: 'a device name is interpolated into the roster unescaped',
     file: 'web/js/devices.js',
-    find: '<div class="device-name">${esc(d.name)}',
-    replace: '<div class="device-name">${process.env.MUTANT ? d.name : esc(d.name)}',
+    find: '<div class="device-name" title="${esc(d.name)}">${esc(d.name)}',
+    replace: '<div class="device-name" title="${esc(d.name)}">${process.env.MUTANT ? d.name : esc(d.name)}',
     mustFail: 'a malicious device name renders as inert escaped text',
   },
   {
@@ -4457,6 +4459,104 @@ if ($health.accessStore -ne 'durable') {`,
     err('could not open a browser automatically; open the link above yourself.');
   }`,
     mustFail: '`open` still prints the URL even when the browser cannot launch',
+  },
+
+  // ---------------------------------------------------------------------
+  // #186: Undo toast, loading skeletons, truncated-metadata tooltips
+  // ---------------------------------------------------------------------
+  {
+    // Without a title, a clipped device/repository/branch has nowhere to be
+    // read in full -- the whole point of this change.
+    name: 'the session row meta fields carry no title tooltip',
+    file: 'web/js/list.js',
+    find: `  const meta = [
+    deviceText ? \`<span class="meta-field" title="\${deviceText}">\${deviceText}</span>\` : '',
+    repoText ? \`<span class="meta-field" title="\${repoText}">\${repoText}</span>\` : '',
+    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${esc(git.branch)}</span>\` : '',`,
+    replace: `  const meta = [
+    deviceText ? (process.env.MUTANT ? \`<span class="meta-field">\${deviceText}</span>\` : \`<span class="meta-field" title="\${deviceText}">\${deviceText}</span>\`) : '',
+    repoText ? (process.env.MUTANT ? \`<span class="meta-field">\${repoText}</span>\` : \`<span class="meta-field" title="\${repoText}">\${repoText}</span>\`) : '',
+    git && git.branch ? (process.env.MUTANT ? \`<span class="branch">\${esc(git.branch)}</span>\` : \`<span class="branch" title="\${esc(git.branch)}">\${esc(git.branch)}</span>\`) : '', // MUTATION`,
+    mustFail: 'the device, repository and branch each carry a title with their full value',
+  },
+  {
+    name: 'the device card drops its name tooltip',
+    file: 'web/js/devices.js',
+    find: `        <div class="device-name" title="\${esc(d.name)}">\${esc(d.name)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>`,
+    replace: `        <div class="device-name"\${process.env.MUTANT ? '' : \` title="\${esc(d.name)}"\`}>\${esc(d.name)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div> <!-- MUTATION -->`,
+    mustFail: 'a truncated device name is still readable in full, via its title',
+  },
+  {
+    // The session-list skeleton would silently stop rendering any rows at
+    // all -- an empty box, exactly the thing it exists to replace.
+    name: 'skeletonRows renders nothing',
+    file: 'web/js/list.js',
+    find: `export function skeletonRows(n = 4) {`,
+    replace: `export function skeletonRows(n = 4) {
+  if (process.env.MUTANT) return ''; // MUTATION`,
+    mustFail: 'skeletonRows renders the requested number of placeholder rows',
+  },
+  {
+    name: 'skeletonDevices renders nothing',
+    file: 'web/js/devices.js',
+    find: `export function skeletonDevices(n = 2) {`,
+    replace: `export function skeletonDevices(n = 2) {
+  if (process.env.MUTANT) return ''; // MUTATION`,
+    mustFail: 'skeletonDevices renders the requested number of placeholder device cards',
+  },
+  {
+    name: 'transcriptSkeleton renders nothing',
+    file: 'web/js/detail.js',
+    find: `export function transcriptSkeleton(n = 4) {`,
+    replace: `export function transcriptSkeleton(n = 4) {
+  if (process.env.MUTANT) return ''; // MUTATION`,
+    mustFail: 'transcriptSkeleton renders the requested number of placeholder entries',
+  },
+  {
+    // If the Undo toast forgot to name WHAT is being removed, the one thing
+    // that makes it reversible in practice -- knowing what you are about to
+    // cancel -- is gone.
+    name: 'the forget-all undo label forgets to say "all"',
+    file: 'web/js/cleanup.js',
+    find: `  const what = scope === 'all' ? 'All ended sessions' : \`Sessions older than \${scope} days\`;`,
+    replace: `  const what = (scope === 'all' && !process.env.MUTANT) ? 'All ended sessions' : \`Sessions older than \${scope} days\`; // MUTATION`,
+    mustFail: 'forgetting all ended sessions says so, by name, in the undo label',
+  },
+  {
+    name: 'the remove-device undo label drops the device name',
+    file: 'web/js/cleanup.js',
+    find: `export function removeDeviceUndoLabel(name) {
+  return \`Removing "\${name}" in a few seconds\`;
+}`,
+    replace: `export function removeDeviceUndoLabel(name) {
+  return process.env.MUTANT ? 'Removing in a few seconds' : \`Removing "\${name}" in a few seconds\`; // MUTATION
+}`,
+    mustFail: 'removing a device names the device in the undo label',
+  },
+  {
+    // The entire feature: if the commit fires immediately instead of waiting
+    // out the window, there is no undo -- just a toast that lies about there
+    // being one.
+    name: 'undoToast commits immediately instead of waiting out the window',
+    file: 'web/app.js',
+    find: `  const btn = $('toastUndo');
+  if (btn) btn.onclick = () => finish(undo);
+  undoTimer = setTimeout(() => finish(commit), undoDelayMs);`,
+    replace: `  const btn = $('toastUndo');
+  if (btn) btn.onclick = () => finish(undo);
+  undoTimer = setTimeout(() => finish(commit), process.env.MUTANT ? 0 : undoDelayMs); // MUTATION`,
+    mustFail: 'a forget sweep offers an Undo toast and waits out the window before telling the device anything',
+  },
+  {
+    // The Undo button doing nothing is worse than no button: it LOOKS
+    // cancellable and is not.
+    name: 'the Undo button no longer cancels the pending action',
+    file: 'web/app.js',
+    find: `  const btn = $('toastUndo');
+  if (btn) btn.onclick = () => finish(undo);`,
+    replace: `  const btn = $('toastUndo');
+  if (btn) btn.onclick = () => { if (!process.env.MUTANT) finish(undo); }; // MUTATION`,
+    mustFail: 'clicking Undo on a forget sweep cancels it -- the device is never told',
   },
 ];
 

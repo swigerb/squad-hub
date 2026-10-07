@@ -18,11 +18,12 @@ import {
   asList,
   ANSWER_VERB,
 } from './js/util.js';
-import { TIME_WINDOWS, SORTS, GROUPINGS } from './js/list.js';
+import { TIME_WINDOWS, SORTS, GROUPINGS, skeletonRows } from './js/list.js';
 import { approvalRows } from './js/approvals.js';
 import { enhanceAllSelects, closeAllSelectPills } from './js/dropdowns.js';
 import {
-  forgetWindowMs, forgetTargets, forgetSummary, newMenuState, approvalOptions, alwaysAllowRule,
+  forgetWindowMs, forgetTargets, forgetSummary, forgetUndoLabel, removeDeviceUndoLabel,
+  newMenuState, approvalOptions, alwaysAllowRule,
 } from './js/cleanup.js';
 import {
   spawnRequest, spawnError, controlsEnabled, canSync, controlBanner, composerReduce,
@@ -30,7 +31,7 @@ import {
 import {
   notifyState, requestNotifyPermission, syncBell, maybePromptApproval,
 } from './js/notifications.js';
-import { render } from './js/devices.js';
+import { render, skeletonDevices } from './js/devices.js';
 import {
   openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
 } from './js/detail.js';
@@ -408,6 +409,11 @@ function renderNewMenu() {
  * Sent to every reachable device, because the device is the source of truth
  * and a hub-side removal would be undone by the next heartbeat. The result is
  * assembled from what each device actually reported.
+ *
+ * The confirm dialog (for "all") still asks once, up front. What is new is
+ * the few seconds AFTER that: nothing is sent to any device until the Undo
+ * toast expires, so a mis-click on a button right beside the one you meant is
+ * recoverable for as long as the toast is on screen.
  */
 async function forgetEnded(scope) {
   const olderThanMs = forgetWindowMs(scope);
@@ -427,32 +433,69 @@ async function forgetEnded(scope) {
     + 'This clears the record of finished work. '
     + 'Sessions that are still running are not affected.')) return;
 
-  let removed = 0;
-  let failed = 0;
-  for (const d of targets) {
-    try {
-      const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
-        method: 'POST',
-        body: { olderThanMs },
-      });
-      removed += (r && r.count) || 0;
-    } catch {
-      // Counted, never swallowed: a device that refused must not be
-      // indistinguishable from one that had nothing to remove.
-      failed += 1;
+  undoToast(forgetUndoLabel(scope), async () => {
+    let removed = 0;
+    let failed = 0;
+    for (const d of targets) {
+      try {
+        const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
+          method: 'POST',
+          body: { olderThanMs },
+        });
+        removed += (r && r.count) || 0;
+      } catch {
+        // Counted, never swallowed: a device that refused must not be
+        // indistinguishable from one that had nothing to remove.
+        failed += 1;
+      }
     }
-  }
-  toast(forgetSummary({ removed, failed, skipped: 0 }));
-  await refresh();
+    toast(forgetSummary({ removed, failed, skipped: 0 }));
+    await refresh();
+  }, () => toast('Removal cancelled — nothing was removed'));
 }
 
 let toastTimer = null;
 export function toast(text) {
   const t = $('toast');
+  clearTimeout(toastTimer);
+  clearTimeout(undoTimer);
   t.textContent = text;
   t.hidden = false;
-  clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+}
+
+/** How long an Undo toast waits before committing. Shortened only by the test hook below. */
+let undoDelayMs = 5000;
+let undoTimer = null;
+
+/**
+ * A toast that offers to cancel what it announces, instead of merely
+ * reporting it after the fact.
+ *
+ * `commit` runs once the window passes untouched; `undo`, if given, runs
+ * instead when the button is pressed. Neither the server nor anything
+ * irreversible happens until exactly one of the two fires -- the confirm
+ * dialog that got someone here already asked once, so the few seconds that
+ * follow are the forgiving kind of second chance: silent unless you need it,
+ * gone the moment you do not.
+ */
+export function undoToast(text, commit, undo) {
+  const t = $('toast');
+  clearTimeout(toastTimer);
+  clearTimeout(undoTimer);
+  let settled = false;
+  t.innerHTML = `<span class="toast-text">${esc(text)}</span>`
+    + '<button type="button" class="toast-undo" id="toastUndo">Undo</button>';
+  t.hidden = false;
+  const finish = async (fn) => {
+    if (settled) return;
+    settled = true;
+    t.hidden = true;
+    if (fn) await fn();
+  };
+  const btn = $('toastUndo');
+  if (btn) btn.onclick = () => finish(undo);
+  undoTimer = setTimeout(() => finish(commit), undoDelayMs);
 }
 
 async function copy(text) {
@@ -573,7 +616,8 @@ export function openConnect() {
  *
  * That is the point: it exists for the laptop you cannot reach, the colleague
  * who has left, the container that will not stop. But it is also why a
- * mis-click here costs a trip to the machine, so it asks.
+ * mis-click here costs a trip to the machine, so it asks -- and now also
+ * waits a few seconds after asking, in case the click itself was the mistake.
  */
 async function removeDevice(deviceId) {
   const d = (state.overview.devices || []).find((x) => x.deviceId === deviceId);
@@ -585,15 +629,17 @@ async function removeDevice(deviceId) {
     + 'machine with a new token.',
   )) return;
 
-  try {
-    const r = await api(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, { method: 'POST' });
-    // Reported from the ANSWER, never from the request. A device that could not
-    // be revoked must not be announced as removed.
-    toast(r && r.removed ? `Removed ${name}` : `${name} was disconnected, but its record is still here`);
-  } catch (e) {
-    toast(`Could not remove ${name}: ${e.message}`);
-  }
-  refresh();
+  undoToast(removeDeviceUndoLabel(name), async () => {
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, { method: 'POST' });
+      // Reported from the ANSWER, never from the request. A device that could not
+      // be revoked must not be announced as removed.
+      toast(r && r.removed ? `Removed ${name}` : `${name} was disconnected, but its record is still here`);
+    } catch (e) {
+      toast(`Could not remove ${name}: ${e.message}`);
+    }
+    await refresh();
+  }, () => toast(`Keeping "${name}" — nothing was removed`));
 }
 
 async function createDeviceToken() {  const btn = $('cnCreate');
@@ -1102,7 +1148,15 @@ function signInHint(mode) {
   // calls can no longer reach `state`, `setConn` or `renderTranscript` by
   // name. This exposes exactly those three bindings -- already reachable
   // through the UI -- for that test harness to read and call directly.
-  window.__squadHubTest = { state, setConn, renderTranscript };
+  //
+  // `setUndoDelayForTest` shortens the Undo window below (real deployments
+  // keep the full 5 seconds). It changes no behaviour a person could not
+  // already see -- the window is always "however long the toast says" -- it
+  // only makes that window short enough for a test suite to wait out without
+  // every click costing five real seconds.
+  window.__squadHubTest = {
+    state, setConn, renderTranscript, setUndoDelayForTest: (ms) => { undoDelayMs = ms; },
+  };
 
   // Before the sign-in gate: the shell is public, and someone installing the
   // app or opening it on a train should get a readable page either way.
@@ -1112,6 +1166,11 @@ function signInHint(mode) {
   loadView();
   wire();
   syncControls();
+  // Rows and device cards the shape of what is about to arrive, rather than a
+  // blank box or a lone "loading…" sentence -- replaced the instant the first
+  // overview below actually resolves.
+  $('groups').innerHTML = `<div class="card">${skeletonRows()}</div>`;
+  $('deviceList').innerHTML = `<div class="card">${skeletonDevices()}</div>`;
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';

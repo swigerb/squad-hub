@@ -33,12 +33,12 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, sessionKey, needsAttention, organizationsIn, repositoriesIn,
-  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow };`)(mod, mod.exports);
+  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows };`)(mod, mod.exports);
 
 const {
   esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, needsAttention, organizationsIn, repositoriesIn,
-  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow,
+  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows,
 } = mod.exports;
 
 const NOW = 1_700_000_000_000;
@@ -383,6 +383,55 @@ check('an empty overview produces no sections and does not throw', () => {
   const view = buildView({});
   assert.deepStrictEqual(view.sections, []);
   assert.strictEqual(view.counts.shown, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Truncated metadata gets a title tooltip (#186)
+// ---------------------------------------------------------------------------
+
+check('the device, repository and branch each carry a title with their full value', () => {
+  const html = sessionRow(sess({
+    key: 'k', git: { repository: 'a-very-long-organisation-name/a-very-long-repository-name', branch: 'feature/a-rather-long-branch-name' },
+  }), 'A device with an extremely long and descriptive name', {});
+  assert.match(html, /<span class="meta-field" title="A device with an extremely long and descriptive name">/,
+    'the device name has no title, so a truncated one cannot be read in full');
+  assert.match(html, /<span class="meta-field" title="a-very-long-organisation-name\/a-very-long-repository-name">/,
+    'the repository has no title');
+  assert.match(html, /<span class="branch" title="feature\/a-rather-long-branch-name">/,
+    'the branch has no title');
+});
+
+check('a malicious device name or repository cannot break out of its title attribute', () => {
+  const html = sessionRow(
+    sess({ key: 'k', git: { repository: '"><img src=x onerror=alert(1)>', branch: '"><img src=x onerror=alert(2)>' } }),
+    '"><img src=x onerror=alert(3)>',
+    {},
+  );
+  assert.ok(!html.includes('<img'), 'an attacker-controlled field escaped its attribute and became live markup');
+});
+
+check('a session with no device, repository or branch renders no empty title spans', () => {
+  const html = sessionRow(sess({ key: 'k', cwd: '', git: undefined }), '', {});
+  assert.ok(!/title=""/.test(html), 'an empty field should not be rendered with an empty title at all');
+});
+
+// ---------------------------------------------------------------------------
+// Loading skeletons (#186)
+// ---------------------------------------------------------------------------
+
+check('skeletonRows renders the requested number of placeholder rows', () => {
+  const html = skeletonRows(3);
+  assert.strictEqual((html.match(/class="row skeleton-row"/g) || []).length, 3);
+});
+
+check('skeletonRows defaults to a handful of rows when called with nothing', () => {
+  const html = skeletonRows();
+  assert.ok((html.match(/skeleton-row/g) || []).length > 0, 'no default was offered at all');
+});
+
+check('a skeleton row is marked aria-hidden, so nothing is announced for a row with no label', () => {
+  const html = skeletonRows(1);
+  assert.match(html, /class="row skeleton-row" aria-hidden="true"/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
