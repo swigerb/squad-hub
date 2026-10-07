@@ -27,7 +27,9 @@ const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' }
  * Anything else -- starting, active, waiting_approval -- is live work and must
  * never be aged out from under someone.
  */
-const TERMINAL = new Set(['done', 'failed', 'stopped']);
+const TERMINAL = new Set(['done', 'failed', 'stopped', 'disconnected']);
+const LIVE_WHILE_ATTACHED = new Set(['starting', 'active', 'waiting_approval']);
+const TRANSCRIPT_CACHE_LIMIT = 500;
 
 /**
  * The list fields the web UI iterates on every render.
@@ -136,6 +138,44 @@ function normaliseSession(session) {
     if (Array.isArray(s[f])) s[f] = s[f].map(normaliseApproval);
   }
   return s;
+}
+
+function normaliseTranscriptEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.slice(-TRANSCRIPT_CACHE_LIMIT).map((e) => {
+    if (!e || typeof e !== 'object') return e;
+    return { ...e };
+  });
+}
+
+function disconnectDeviceSessions(bucket, deviceId, now, reason = 'device disconnected') {
+  let expired = 0;
+  let changed = false;
+  for (const s of bucket.sessions.values()) {
+    if (s.deviceId !== deviceId) continue;
+    const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
+    const wasTerminal = TERMINAL.has(s.status);
+    const liveOnThisSocket = LIVE_WHILE_ATTACHED.has(s.status);
+    if (!pending.length && (wasTerminal || !liveOnThisSocket)) continue;
+    const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
+    s.expiredApprovals = [...past, ...pending.map((a) => ({
+      approvalId: a.approvalId,
+      title: a.title || a.command || 'a tool call',
+      requestedAt: a.requestedAt,
+      expiredAt: now,
+      reason,
+    }))].slice(-20);
+    s.pendingApprovals = [];
+    if (!wasTerminal && liveOnThisSocket) {
+      s.status = 'disconnected';
+      s.activity = 'Device disconnected';
+      s.endedAt = now;
+    }
+    s.updatedAt = now;
+    expired += pending.length;
+    changed = true;
+  }
+  return { expired, changed };
 }
 
 class Store extends EventEmitter {
@@ -314,6 +354,15 @@ class Store extends EventEmitter {
       if (at && at <= finishedCutoff) b.sessions.delete(key);
     }
 
+    // A hub upgraded after a device was already gone never sees that socket's
+    // close event. Reconcile from presence too, so a historical ACA job does
+    // not stay "Working" forever merely because the disconnect predates this
+    // build. A reconnect republishes the live state and replaces this cache.
+    for (const rec of b.devices.values()) {
+      if (rec.kind !== DEVICE_KIND.CLOUD && rec.kind !== DEVICE_KIND.ACA) continue;
+      if (now - rec.lastSeen > this.offlineAfterMs) disconnectDeviceSessions(b, rec.deviceId, now);
+    }
+
     for (const [id, rec] of b.devices) {
       if (rec.lastSeen > cutoff) continue;
       const hasSessions = [...b.sessions.values()].some((s) => s.deviceId === id);
@@ -463,6 +512,68 @@ class Store extends EventEmitter {
     return rec;
   }
 
+  /**
+   * Keep the most recent transcript window for sessions whose device may leave.
+   *
+   * A Container Apps job is intentionally ephemeral: when the work is over, the
+   * container exits and there is no daemon left to answer `/transcript`. The
+   * hub already keeps the session row for history, so it also keeps a bounded
+   * transcript tail attached to that row. Bounded is load-bearing; a transcript
+   * is untrusted device input and can be arbitrarily large.
+   */
+  cacheTranscript(subject, deviceId, sessionId, entries, meta = {}) {
+    const b = this._bucket(subject);
+    const key = `${deviceId}:${sessionId}`;
+    const rec = b.sessions.get(key);
+    if (!rec) return null;
+
+    const incoming = normaliseTranscriptEntries(entries);
+    const bySeq = new Map();
+    for (const e of normaliseTranscriptEntries(rec.transcriptCache)) {
+      if (e && Number.isInteger(e.seq)) bySeq.set(e.seq, e);
+    }
+
+    const merged = [];
+    for (const e of incoming) {
+      if (e && Number.isInteger(e.seq)) bySeq.set(e.seq, e);
+      else merged.push(e);
+    }
+    const sequenced = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+    rec.transcriptCache = [...sequenced, ...merged].slice(-TRANSCRIPT_CACHE_LIMIT);
+    rec.transcriptNextSince = Number.isInteger(meta.nextSince)
+      ? meta.nextSince
+      : (rec.transcriptCache.length && Number.isInteger(rec.transcriptCache[rec.transcriptCache.length - 1].seq)
+        ? rec.transcriptCache[rec.transcriptCache.length - 1].seq
+        : (rec.transcriptNextSince || 0));
+    rec.transcriptGap = !!meta.gap;
+    rec.transcriptCachedAt = Date.now();
+    if (meta.touchActivity !== false) rec.lastActivityAt = rec.transcriptCachedAt;
+    this._persist(subject);
+    this.emit('session', { subject, session: rec });
+    return rec;
+  }
+
+  cachedTranscript(subject, deviceId, sessionId, req = {}) {
+    const rec = this._bucket(subject).sessions.get(`${deviceId}:${sessionId}`);
+    if (!rec || !Array.isArray(rec.transcriptCache)) return null;
+    const cache = rec.transcriptCache;
+    let list;
+    if (Number.isInteger(req.since)) list = cache.filter((e) => e && Number.isInteger(e.seq) && e.seq > req.since);
+    else list = cache.slice(-(req.limit || 100));
+    const nextSince = list.length && Number.isInteger(list[list.length - 1].seq)
+      ? list[list.length - 1].seq
+      : (Number.isInteger(rec.transcriptNextSince) ? rec.transcriptNextSince : (req.since || 0));
+    const oldest = cache.length && Number.isInteger(cache[0].seq) ? cache[0].seq : null;
+    const gap = !!rec.transcriptGap || (Number.isInteger(req.since) && oldest !== null && req.since < oldest - 1);
+    return {
+      transcript: list,
+      nextSince,
+      gap,
+      cached: true,
+      cachedAt: rec.transcriptCachedAt || null,
+    };
+  }
+
   /** Replace a device's sessions wholesale, so removals propagate. */
   syncSessions(subject, deviceId, sessions) {
     const b = this._bucket(subject);
@@ -563,40 +674,22 @@ class Store extends EventEmitter {
    * be answered with "device is offline". Nothing could clear it except
    * forgetting the device.
    *
-   * The card becomes an expired approval that says why. A session that was
-   * waiting on it is marked `disconnected` rather than left asking for an
-   * answer nobody can give. If the device comes back, its reconnect republishes
-   * its whole session list -- including any approval that is genuinely still
-   * live -- and replaces all of this.
+   * The card becomes an expired approval that says why. Any non-terminal
+   * session on that socket is marked `disconnected` rather than left looking
+   * like it is still working. If the device comes back, its reconnect
+   * republishes its whole session list -- including any approval or active
+   * work that is genuinely still live -- and replaces all of this.
    *
    * @returns {number} how many approvals were expired
    */
   expireDeviceApprovals(subject, deviceId, reason = 'device disconnected') {
     const b = this._bucket(subject);
     const now = Date.now();
-    let expired = 0;
-    let changed = false;
-    for (const s of b.sessions.values()) {
-      if (s.deviceId !== deviceId) continue;
-      const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
-      if (!pending.length && s.status !== 'waiting_approval') continue;
-      const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
-      s.expiredApprovals = [...past, ...pending.map((a) => ({
-        approvalId: a.approvalId,
-        title: a.title || a.command || 'a tool call',
-        requestedAt: a.requestedAt,
-        expiredAt: now,
-        reason,
-      }))].slice(-20);
-      s.pendingApprovals = [];
-      if (s.status === 'waiting_approval') {
-        s.status = 'disconnected';
-        s.activity = 'Device disconnected';
+    const { expired, changed } = disconnectDeviceSessions(b, deviceId, now, reason);
+    if (changed) {
+      for (const s of b.sessions.values()) {
+        if (s.deviceId === deviceId) this.emit('session', { subject, session: s });
       }
-      s.updatedAt = now;
-      expired += pending.length;
-      changed = true;
-      this.emit('session', { subject, session: s });
     }
     if (changed) this._persist(subject);
     return expired;
