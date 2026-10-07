@@ -97,6 +97,49 @@ async function checkAsync(name, fn) {
     assert.strictEqual(s.touchSessionActivity('u', 'd1', 'nope'), null);
   });
 
+  check('a cached transcript can be read after the device is gone', () => {
+    const s = new Store();
+    s.registerDevice('u', { deviceId: 'aca-1', name: 'job', platform: 'linux', kind: 'cloud' });
+    s.upsertSession('u', 'aca-1', { id: 'sess-1', status: 'done' });
+    s.cacheTranscript('u', 'aca-1', 'sess-1', [
+      { seq: 1, update: { sessionUpdate: 'user_message', content: { text: 'go' } } },
+      { seq: 2, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'done' } } },
+    ], { nextSince: 2 });
+
+    const cached = s.cachedTranscript('u', 'aca-1', 'sess-1', { limit: 10 });
+    assert.strictEqual(cached.cached, true);
+    assert.strictEqual(cached.nextSince, 2);
+    assert.deepStrictEqual(cached.transcript.map((e) => e.seq), [1, 2]);
+  });
+
+  check('cached transcript reads honor cursors and report gaps', () => {
+    const s = new Store();
+    s.registerDevice('u', { deviceId: 'aca-1', name: 'job', platform: 'linux', kind: 'cloud' });
+    s.upsertSession('u', 'aca-1', { id: 'sess-1', status: 'done' });
+    s.cacheTranscript('u', 'aca-1', 'sess-1', [
+      { seq: 10, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'ten' } } },
+      { seq: 11, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'eleven' } } },
+    ], { nextSince: 11 });
+
+    const newer = s.cachedTranscript('u', 'aca-1', 'sess-1', { since: 10 });
+    assert.deepStrictEqual(newer.transcript.map((e) => e.seq), [11]);
+    assert.strictEqual(newer.gap, false);
+
+    const behind = s.cachedTranscript('u', 'aca-1', 'sess-1', { since: 1 });
+    assert.strictEqual(behind.gap, true);
+  });
+
+  check('caching a transcript read does not bump lastActivityAt', () => {
+    const s = new Store();
+    s.registerDevice('u', { deviceId: 'd1', name: 'laptop', platform: 'linux' });
+    const rec = s.upsertSession('u', 'd1', { id: 'sess-1', status: 'done' });
+    const stamped = rec.lastActivityAt;
+    s.cacheTranscript('u', 'd1', 'sess-1', [
+      { seq: 1, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'already known' } } },
+    ], { nextSince: 1, touchActivity: false });
+    assert.strictEqual(s.getSession('u', 'd1:sess-1').lastActivityAt, stamped);
+  });
+
   await checkAsync('reading sessions never bumps lastActivityAt', async () => {
     const s = new Store();
     s.registerDevice('u', { deviceId: 'd1', name: 'laptop', platform: 'linux' });

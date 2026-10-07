@@ -1172,6 +1172,11 @@ class HubService {
        */
       const reachable = !!(this._devices.get(me.key) || new Map()).get(deviceId);
       if (!reachable) {
+        if (op === 'transcript') {
+          const cached = this.store.cachedTranscript(me.key, deviceId, body && body.sessionId, body || {});
+          if (cached) return send(200, cached);
+          return send(409, { error: 'device is offline' });
+        }
         if (op !== 'forget') return send(409, { error: 'device is offline' });
         const r = this.store.forgetDeviceSessions(me.key, deviceId, {
           olderThanMs: body ? body.olderThanMs : undefined,
@@ -1250,6 +1255,13 @@ class HubService {
                 : op === 'steer' ? { sessionId: body.sessionId, text: body.text }
                   : body;
         const result = await this.command(me.key, deviceId, op, withActor);
+        if (op === 'transcript' && result) {
+          this.store.cacheTranscript(me.key, deviceId, body && body.sessionId, result.transcript || [], {
+            nextSince: result.nextSince,
+            gap: result.gap,
+            touchActivity: false,
+          });
+        }
         return send(200, result);
       } catch (e) {
         return send(e.status || 502, { error: e.message });
@@ -1540,7 +1552,10 @@ class HubService {
         break;
       }
       case 'transcript':
-        this.store.touchSessionActivity(me.key, deviceId, msg.sessionId);
+        this.store.cacheTranscript(me.key, deviceId, msg.sessionId, msg.entries || [], {
+          nextSince: msg.nextSince,
+          gap: msg.gap,
+        });
         this._broadcast(me.key, { type: 'transcript', deviceId, sessionId: msg.sessionId, entries: msg.entries });
         return;
       case 'reply': {

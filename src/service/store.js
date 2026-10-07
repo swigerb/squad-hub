@@ -28,6 +28,7 @@ const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' }
  * never be aged out from under someone.
  */
 const TERMINAL = new Set(['done', 'failed', 'stopped']);
+const TRANSCRIPT_CACHE_LIMIT = 500;
 
 /**
  * The list fields the web UI iterates on every render.
@@ -136,6 +137,14 @@ function normaliseSession(session) {
     if (Array.isArray(s[f])) s[f] = s[f].map(normaliseApproval);
   }
   return s;
+}
+
+function normaliseTranscriptEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.slice(-TRANSCRIPT_CACHE_LIMIT).map((e) => {
+    if (!e || typeof e !== 'object') return e;
+    return { ...e };
+  });
 }
 
 class Store extends EventEmitter {
@@ -461,6 +470,68 @@ class Store extends EventEmitter {
     this._persist(subject);
     this.emit('session', { subject, session: rec });
     return rec;
+  }
+
+  /**
+   * Keep the most recent transcript window for sessions whose device may leave.
+   *
+   * A Container Apps job is intentionally ephemeral: when the work is over, the
+   * container exits and there is no daemon left to answer `/transcript`. The
+   * hub already keeps the session row for history, so it also keeps a bounded
+   * transcript tail attached to that row. Bounded is load-bearing; a transcript
+   * is untrusted device input and can be arbitrarily large.
+   */
+  cacheTranscript(subject, deviceId, sessionId, entries, meta = {}) {
+    const b = this._bucket(subject);
+    const key = `${deviceId}:${sessionId}`;
+    const rec = b.sessions.get(key);
+    if (!rec) return null;
+
+    const incoming = normaliseTranscriptEntries(entries);
+    const bySeq = new Map();
+    for (const e of normaliseTranscriptEntries(rec.transcriptCache)) {
+      if (e && Number.isInteger(e.seq)) bySeq.set(e.seq, e);
+    }
+
+    const merged = [];
+    for (const e of incoming) {
+      if (e && Number.isInteger(e.seq)) bySeq.set(e.seq, e);
+      else merged.push(e);
+    }
+    const sequenced = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+    rec.transcriptCache = [...sequenced, ...merged].slice(-TRANSCRIPT_CACHE_LIMIT);
+    rec.transcriptNextSince = Number.isInteger(meta.nextSince)
+      ? meta.nextSince
+      : (rec.transcriptCache.length && Number.isInteger(rec.transcriptCache[rec.transcriptCache.length - 1].seq)
+        ? rec.transcriptCache[rec.transcriptCache.length - 1].seq
+        : (rec.transcriptNextSince || 0));
+    rec.transcriptGap = !!meta.gap;
+    rec.transcriptCachedAt = Date.now();
+    if (meta.touchActivity !== false) rec.lastActivityAt = rec.transcriptCachedAt;
+    this._persist(subject);
+    this.emit('session', { subject, session: rec });
+    return rec;
+  }
+
+  cachedTranscript(subject, deviceId, sessionId, req = {}) {
+    const rec = this._bucket(subject).sessions.get(`${deviceId}:${sessionId}`);
+    if (!rec || !Array.isArray(rec.transcriptCache)) return null;
+    const cache = rec.transcriptCache;
+    let list;
+    if (Number.isInteger(req.since)) list = cache.filter((e) => e && Number.isInteger(e.seq) && e.seq > req.since);
+    else list = cache.slice(-(req.limit || 100));
+    const nextSince = list.length && Number.isInteger(list[list.length - 1].seq)
+      ? list[list.length - 1].seq
+      : (Number.isInteger(rec.transcriptNextSince) ? rec.transcriptNextSince : (req.since || 0));
+    const oldest = cache.length && Number.isInteger(cache[0].seq) ? cache[0].seq : null;
+    const gap = !!rec.transcriptGap || (Number.isInteger(req.since) && oldest !== null && req.since < oldest - 1);
+    return {
+      transcript: list,
+      nextSince,
+      gap,
+      cached: true,
+      cachedAt: rec.transcriptCachedAt || null,
+    };
   }
 
   /** Replace a device's sessions wholesale, so removals propagate. */

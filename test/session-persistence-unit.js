@@ -205,6 +205,23 @@ check("an ephemeral device's finished sessions are still listed after a restart"
   assert.strictEqual(sessions[0].status, 'done');
 });
 
+check("an ephemeral device's cached transcript survives a restart", () => {
+  const dir = tmpdir();
+  const s1 = new Store({ backing: new FileBacking({ dir }) });
+  s1.registerDevice('u', { deviceId: 'aca-1', name: 'job', platform: 'linux', kind: 'cloud' });
+  s1.upsertSession('u', 'aca-1', { id: 'x', title: 'finished job', status: 'done' });
+  s1.cacheTranscript('u', 'aca-1', 'x', [
+    { seq: 1, update: { sessionUpdate: 'user_message', content: { text: 'run' } } },
+    { seq: 2, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'finished' } } },
+  ], { nextSince: 2 });
+
+  const s2 = new Store({ backing: new FileBacking({ dir }) });
+  const cached = s2.cachedTranscript('u', 'aca-1', 'x', { limit: 10 });
+  assert.ok(cached, 'the cached transcript did not survive the restart');
+  assert.deepStrictEqual(cached.transcript.map((e) => e.seq), [1, 2]);
+  assert.strictEqual(cached.nextSince, 2);
+});
+
 check('a live device deleting a session does not have it come back after a restart', () => {
   // THE REGRESSION TO FEAR. A durable copy that resurrects a row the device
   // dropped on purpose is worse than losing it.

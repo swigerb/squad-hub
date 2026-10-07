@@ -143,6 +143,22 @@ const deviceId = cloudDeviceId(process.env);
 const d = new Daemon();
 d.deviceName = deviceName;
 
+async function publishTranscript(sessionId) {
+  if (!d.link || !d.link.connected || !sessionId) return;
+  try {
+    const r = await d.handle({ op: 'transcript', sessionId, limit: 500 });
+    d.link.send({
+      type: 'transcript',
+      sessionId,
+      entries: r.transcript || [],
+      nextSince: r.nextSince,
+      gap: r.gap,
+    });
+  } catch (e) {
+    d.log(`could not publish final transcript for ${sessionId}: ${e && e.message}`);
+  }
+}
+
 (async () => {
   await d.listen();
   const wsUrl = HUB.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ws';
@@ -256,6 +272,7 @@ d.deviceName = deviceName;
 
     const status = last ? last.status : 'vanished';
     process.stdout.write(`session ${started.id} ${status}\n`);
+    await publishTranscript(started.id);
 
     // An idle session still holds a live agent. Stop it, or the process would
     // outlive the job it belongs to and the container would not exit.

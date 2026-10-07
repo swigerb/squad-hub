@@ -118,9 +118,10 @@ class MemoryBacking {
  *
  * WHAT SURVIVES A RESTART, AND WHY THAT IS SAFE TO WRITE DOWN: everything a
  * device already publishes over its own WebSocket connection -- device
- * metadata and session state. None of it is a transcript (the hub never
- * stores those, see hub-service.js) and none of it is a secret the way a
- * token is.
+ * metadata and session state. This now includes a bounded transcript tail
+ * when an ephemeral cloud job publishes one before exiting; without that,
+ * the history row outlives the container but the readable transcript does not.
+ * None of it is a secret the way a token is.
  *
  * WHAT DOES NOT: a session's `pendingApprovals`. That is a handle onto a
  * specific agent process's specific outstanding request, not a fact about
