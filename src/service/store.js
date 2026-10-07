@@ -147,6 +147,35 @@ function normaliseTranscriptEntries(entries) {
   });
 }
 
+function disconnectDeviceSessions(bucket, deviceId, now, reason = 'device disconnected') {
+  let expired = 0;
+  let changed = false;
+  for (const s of bucket.sessions.values()) {
+    if (s.deviceId !== deviceId) continue;
+    const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
+    const wasTerminal = TERMINAL.has(s.status);
+    if (!pending.length && wasTerminal) continue;
+    const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
+    s.expiredApprovals = [...past, ...pending.map((a) => ({
+      approvalId: a.approvalId,
+      title: a.title || a.command || 'a tool call',
+      requestedAt: a.requestedAt,
+      expiredAt: now,
+      reason,
+    }))].slice(-20);
+    s.pendingApprovals = [];
+    if (!wasTerminal) {
+      s.status = 'disconnected';
+      s.activity = 'Device disconnected';
+      s.endedAt = now;
+    }
+    s.updatedAt = now;
+    expired += pending.length;
+    changed = true;
+  }
+  return { expired, changed };
+}
+
 class Store extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -321,6 +350,14 @@ class Store extends EventEmitter {
       if (!TERMINAL.has(s.status)) continue;
       const at = s.endedAt || 0;
       if (at && at <= finishedCutoff) b.sessions.delete(key);
+    }
+
+    // A hub upgraded after a device was already gone never sees that socket's
+    // close event. Reconcile from presence too, so a historical ACA job does
+    // not stay "Working" forever merely because the disconnect predates this
+    // build. A reconnect republishes the live state and replaces this cache.
+    for (const rec of b.devices.values()) {
+      if (now - rec.lastSeen > this.offlineAfterMs) disconnectDeviceSessions(b, rec.deviceId, now);
     }
 
     for (const [id, rec] of b.devices) {
@@ -645,31 +682,11 @@ class Store extends EventEmitter {
   expireDeviceApprovals(subject, deviceId, reason = 'device disconnected') {
     const b = this._bucket(subject);
     const now = Date.now();
-    let expired = 0;
-    let changed = false;
-    for (const s of b.sessions.values()) {
-      if (s.deviceId !== deviceId) continue;
-      const pending = Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [];
-      const wasTerminal = TERMINAL.has(s.status);
-      if (!pending.length && wasTerminal) continue;
-      const past = Array.isArray(s.expiredApprovals) ? s.expiredApprovals : [];
-      s.expiredApprovals = [...past, ...pending.map((a) => ({
-        approvalId: a.approvalId,
-        title: a.title || a.command || 'a tool call',
-        requestedAt: a.requestedAt,
-        expiredAt: now,
-        reason,
-      }))].slice(-20);
-      s.pendingApprovals = [];
-      if (!wasTerminal) {
-        s.status = 'disconnected';
-        s.activity = 'Device disconnected';
-        s.endedAt = now;
+    const { expired, changed } = disconnectDeviceSessions(b, deviceId, now, reason);
+    if (changed) {
+      for (const s of b.sessions.values()) {
+        if (s.deviceId === deviceId) this.emit('session', { subject, session: s });
       }
-      s.updatedAt = now;
-      expired += pending.length;
-      changed = true;
-      this.emit('session', { subject, session: s });
     }
     if (changed) this._persist(subject);
     return expired;

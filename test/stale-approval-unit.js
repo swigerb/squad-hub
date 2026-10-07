@@ -220,6 +220,21 @@ const session = (ov) => ov.body.groups.flatMap((g) => g.sessions).find((s) => s.
     await h.svc.close();
   });
 
+  await checkAsync('a session already stale before an upgrade is reconciled from presence', async () => {
+    const h = await hub();
+    const old = Date.now() - h.svc.store.offlineAfterMs - 1000;
+    h.svc.store.registerDevice('u', { deviceId: 'old-aca-job', name: 'old job', platform: 'linux', kind: 'cloud' });
+    h.svc.store.upsertSession('u', 'old-aca-job', { id: 's1', status: 'active', activity: 'Processing...', prompt: 'old review' });
+    h.svc.store._bucket('u').devices.get('old-aca-job').lastSeen = old;
+
+    const ov = h.svc.store.overview('u');
+    const s = ov.groups.flatMap((g) => g.sessions).find((x) => x.id === 's1');
+    assert.strictEqual(s.status, 'disconnected');
+    assert.strictEqual(s.activity, 'Device disconnected');
+    assert.ok(s.endedAt, 'the reconciled session should be retention-eligible');
+    await h.svc.close();
+  });
+
   await checkAsync('a live device is not mistaken for a dead one', async () => {
     const h = await hub({ keepaliveMs: 100, deviceDeadAfterMs: 1000 });
     const link = await deviceWithApproval(h);
