@@ -1188,7 +1188,7 @@ const MUTATIONS = [
   },
   {
     name: 'Refresh now gives no visible timestamp',
-    file: 'web/app.js',
+    file: 'web/js/wiring.js',
     find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
     replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
@@ -2643,6 +2643,13 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/devices.js',
   '/js/detail.js',
   '/js/ws.js',
+  '/js/aca.js',
+  '/js/access.js',
+  '/js/install.js',
+  '/js/connect.js',
+  '/js/filters.js',
+  '/js/wiring.js',
+  '/js/signin.js',
   '/app.js',
   '/app.webmanifest',
   '/favicon.svg',
@@ -2669,6 +2676,20 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     find: `    if (e.status === undefined) return showOffline();`,
     replace: `    // MUTATION: the offline case falls through to "Could not sign in"`,
     mustFail: 'offline, the app says the network failed — not that you are signed out',
+  },
+  {
+    // Same reasoning as the css size-budget entry above: #200's size-budget
+    // test ("no web/js file is anywhere near the old single-file size")
+    // checks fs.statSync(...).size against a constant -- there is no line of
+    // logic to invert that would prove the assertion bites, since nothing in
+    // this repo computes or gates that size at runtime. Left out deliberately
+    // rather than faked with a no-op entry.
+    name: 'web/js files grow past the size budget (not mutation-testable)',
+    file: 'web/sw.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
   },
   {
     // The reassurance is the point, not decoration: the natural fear on seeing

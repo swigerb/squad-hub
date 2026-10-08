@@ -1,18 +1,18 @@
 import { state } from './api.js';
-import { esc, ago } from './util.js';
+import { $, esc, ago } from './util.js';
 import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval } from './notifications.js';
 import { inboxCount } from './inbox.js';
-// Circular by necessity: `render()` below still delegates to the `$` helper
-// and dialog logic that stay in app.js for now (parts 3/4 of #165). Both
-// modules only reach into the other from inside a function body, never at
-// module-evaluation time, so the cycle resolves the same way it would for any
-// two ES modules that call back into each other.
-import {
-  $, openConnect, openNew, renderInboxMenu,
-} from '../app.js';
+import { openConnect, openNew } from './connect.js';
+// Circular by necessity: `render()` below still calls back into `wiring.js`
+// for `renderInboxMenu`, which must run after every refresh so a bell-inbox
+// card updates or disappears the moment its approval is answered. Neither
+// module reaches into the other at module-evaluation time, so the cycle
+// resolves the same way any other two ES modules that call back into each
+// other do.
+import { renderInboxMenu } from './wiring.js';
 
 //
 // Pure, for the same reason the list controls are: ordering and presence

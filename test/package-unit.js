@@ -761,5 +761,24 @@ check('CACHE was actually bumped for the shell-shape change', () => {
     'CACHE is not the expected post-split value -- did it get bumped?');
 });
 
+// ---------------------------------------------------------------------------
+// The split Wiring section -- app.js's wiring code moved into web/js/*.js
+// ---------------------------------------------------------------------------
+
+check('no web/js file is anywhere near the old single-file size', () => {
+  // #200: app.js's Wiring section was split into feature modules for the
+  // same reason the stylesheet was -- one file carried nearly every UI
+  // concern. A future addition that quietly grows one module back past a
+  // sensible size regresses the thing this split was for.
+  const dir = path.join(ROOT, 'web', 'js');
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
+  assert.ok(files.length >= 10, 'found far fewer js modules than expected; the split is gone');
+  const LIMIT = 25600; // ~25KB
+  const tooBig = files
+    .map((f) => ({ f, size: fs.statSync(path.join(dir, f)).size }))
+    .filter(({ size }) => size > LIMIT);
+  assert.deepStrictEqual(tooBig, [], `over the ${LIMIT}-byte budget: ${tooBig.map((x) => `${x.f} (${x.size}b)`).join(', ')}`);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
