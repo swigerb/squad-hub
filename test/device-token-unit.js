@@ -514,6 +514,33 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
       'a same-origin socket did not register its device');
   });
 
+  await checkAsync('a device cannot claim a token label or expiry other than its own credential\'s (#173)', async () => {
+    // tokenLabel/tokenExpiresAt (#173) are shown next to a device in its
+    // expandable detail panel. If a device could set them itself via the
+    // register/heartbeat message, it could claim to be carrying a
+    // differently-labelled or longer-lived credential than the one the hub
+    // actually verified -- a spoofed identity, not a display quirk. They
+    // must come from the verified token (`me`), never from `msg.device`.
+    const labeledToken = auth.mintDeviceToken({ key: originPartition, name: 'labeled-device', label: 'Surface' });
+    const r = await tryDeviceSocket(port, labeledToken, 'labeled-device', 'device', {
+      origin: `http://127.0.0.1:${port}`,
+      sendAfterUpgrade: {
+        type: 'register',
+        device: {
+          name: 'laptop', platform: 'linux',
+          tokenLabel: 'FORGED LABEL', tokenExpiresAt: Date.now() + 999 * 86400000,
+        },
+      },
+    });
+    assert.strictEqual(r.upgraded, true, `the labeled device socket was refused: ${JSON.stringify(r)}`);
+    const devices = await devicesIn(originUser);
+    const rec = devices.find((d) => d.deviceId === 'labeled-device');
+    assert.ok(rec, 'the labeled device never registered');
+    assert.strictEqual(rec.tokenLabel, 'Surface', 'the device-supplied tokenLabel must not override the token\'s own label');
+    assert.notStrictEqual(rec.tokenExpiresAt, Date.now() + 999 * 86400000,
+      'the device-supplied tokenExpiresAt must not override the token\'s own expiry');
+  });
+
   await checkAsync("the hub's own derived origin is accepted off loopback too, not just via the loopback allowance", async () => {
     // Exercised on a Host that is NOT in the loopback allowlist, so this
     // proves selfOrigin()'s own scheme+Host comparison, rather than every

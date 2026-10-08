@@ -26,7 +26,7 @@ const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'squad-hub.js');
 const FAKE = path.join(__dirname, 'fake-agent.js');
 
-const { runDoctor, findOnPath, pingHub, findCopilotLoginEvidence } = require('../src/doctor');
+const { runDoctor, findOnPath, pingHub, findCopilotLoginEvidence, copilotCliVersion } = require('../src/doctor');
 const { HubService } = require('../src/service/hub-service');
 const { Authenticator, MODES } = require('../src/service/auth');
 
@@ -65,6 +65,16 @@ function stubCopilotDir() {
   const name = process.platform === 'win32' ? 'copilot.cmd' : 'copilot';
   const file = path.join(dir, name);
   fs.writeFileSync(file, process.platform === 'win32' ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
+  return { dir, file };
+}
+function stubVersionScript(output) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqdoc-cliversion-'));
+  const name = process.platform === 'win32' ? 'stub-copilot.cmd' : 'stub-copilot.sh';
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, process.platform === 'win32'
+    ? `@echo off\r\necho ${output}\r\n`
+    : `#!/bin/sh\necho "${output}"\n`);
   if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
   return { dir, file };
 }
@@ -626,6 +636,35 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         assert.ok(!rRun.stdout.includes(secretLookingToken) && !rRun.stderr.includes(secretLookingToken), 'a credential-shaped value leaked into `run` output');
       });
     } finally { await stopViaCli(envWithCopilot); cleanup(home, work, copilotDir); }
+  }
+
+  // ---------------------------------------------------------------------------
+  // copilotCliVersion (#173): the Copilot CLI version shown in a device's
+  // expandable detail panel, next to squad-hub's own.
+  // ---------------------------------------------------------------------------
+  {
+    const savedAgent = process.env.SQUAD_HUB_AGENT;
+    const { dir, file } = stubVersionScript('copilot version 1.0.73');
+    process.env.SQUAD_HUB_AGENT = file;
+    try {
+      check('copilotCliVersion extracts a semver from the stub CLI\'s --version output', () => {
+        assert.strictEqual(copilotCliVersion(), '1.0.73');
+      });
+    } finally {
+      if (savedAgent === undefined) delete process.env.SQUAD_HUB_AGENT; else process.env.SQUAD_HUB_AGENT = savedAgent;
+      cleanup(dir);
+    }
+  }
+  {
+    const savedAgent = process.env.SQUAD_HUB_AGENT;
+    process.env.SQUAD_HUB_AGENT = path.join(os.tmpdir(), `sqdoc-no-such-binary-${Date.now()}`);
+    try {
+      check('copilotCliVersion returns null, not an exception, when the CLI cannot be run at all', () => {
+        assert.strictEqual(copilotCliVersion(), null);
+      });
+    } finally {
+      if (savedAgent === undefined) delete process.env.SQUAD_HUB_AGENT; else process.env.SQUAD_HUB_AGENT = savedAgent;
+    }
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

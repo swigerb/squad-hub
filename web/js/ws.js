@@ -76,7 +76,7 @@ export function connect() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'overview') {
-      state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts };
+      state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };
       render();
     } else if (msg.type === 'transcript' && state.currentSession
       && msg.sessionId === state.currentSession.session.id) {

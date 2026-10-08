@@ -245,6 +245,11 @@ rather than by layer:
   browser-specific instructions when the browser offers no native prompt.
 - `web/js/connect.js` — the "Connect a device" and "New session" dialogs:
   device tokens, cwd hints, and the agent/model choice fields.
+- `web/js/device-detail.js` — the per-device expandable detail panel (#173):
+  volumes, the Disk meter's "fullest volume" pick, versions-with-mismatch,
+  file access and the device token's label/expiry. Split out of
+  `devices.js` purely on size, once the Disk meter and this panel pushed it
+  back over the same budget the CSS split enforces.
 - `web/js/filters.js` — the list's filter/sort/group controls.
 - `web/js/wiring.js` — `wire()`, the orchestrator that wires every control on
   the page once at startup, plus the few bits of chrome (the hamburger menu,

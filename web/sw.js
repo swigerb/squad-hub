@@ -32,10 +32,13 @@
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
 //
-// v9 (#178): the New ACA job dialog and "Queued on ACA" pending rows changed
-// web/js/aca.js, devices.js and ws.js's own logic (not just their styling),
-// which a stale cached copy on the aeroplane would otherwise keep serving.
-const CACHE = 'squad-hub-shell-v9';
+// v10: merges two independent v9 bumps -- #178 (the New ACA job dialog and
+// "Queued on ACA" pending rows, which changed web/js/aca.js, devices.js and
+// ws.js's own logic, not just their styling) and #173 (the new
+// /js/device-detail.js split module). Either alone would have been v9; both
+// landing together need a fresh value so an aeroplane device does not keep
+// serving a stale copy of either change.
+const CACHE = 'squad-hub-shell-v10';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -63,6 +66,7 @@ const SHELL = [
   '/js/notifications.js',
   '/js/inbox.js',
   '/js/devices.js',
+  '/js/device-detail.js',
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',
