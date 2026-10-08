@@ -1,7 +1,9 @@
 export const state = {
   token: null,
   me: null,
-  overview: { devices: [], groups: [], counts: {} },
+  overview: {
+    devices: [], groups: [], counts: {}, hubVersion: null,
+  },
   filters: { q: '', status: '', device: '', repo: '', org: '', window: '' },
   // The scope tab above the filter bar (#168): all sessions, or split to
   // local-only / cloud-only. A separate field from `filters` because it is a

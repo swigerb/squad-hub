@@ -1612,14 +1612,27 @@ class HubService {
     conn.sendJson({ type: 'overview', ...this.store.overview(me.key) });
   }
 
+  /**
+   * The device token's own label and expiry (#173), read off the AUTHORITY
+   * that verified this socket -- not off anything `msg.device` claims -- so a
+   * device cannot report a token identity other than the one it actually
+   * authenticated with. `me.label`/`me.expiresAt` are absent for a non-device
+   * credential (dev mode, GitHub, Entra falling through `requireDeviceTokens:
+   * false`), which is the normal case for a device that predates device
+   * tokens entirely, and the device detail panel renders nothing for it.
+   */
+  _tokenFields(me) {
+    return { tokenLabel: me.label || null, tokenExpiresAt: Number.isFinite(me.expiresAt) ? me.expiresAt : null };
+  }
+
   _fromDevice(me, deviceId, msg, conn) {
     switch (msg.type) {
       case 'register':
-        this.store.registerDevice(me.key, { ...msg.device, deviceId });
+        this.store.registerDevice(me.key, { ...msg.device, deviceId, ...this._tokenFields(me) });
         if (msg.sessions) this.store.syncSessions(me.key, deviceId, msg.sessions);
         break;
       case 'heartbeat':
-        this.store.heartbeat(me.key, deviceId, msg.device || {});
+        this.store.heartbeat(me.key, deviceId, { ...(msg.device || {}), ...this._tokenFields(me) });
         if (msg.sessions) this.store.syncSessions(me.key, deviceId, msg.sessions);
         break;
       case 'sessions':
