@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-226-undo-cancel-tests",
+  "sessionId": "fix-pr-226-undo-cancel-tests",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T06:02:35.947Z",
+  "lastHeartbeatAt": "2026-10-08T06:02:35.947Z",
+  "updatedAt": "2026-10-08T06:02:35.947Z",
+  "terminalReason": null,
+  "executionRef": null
+}
