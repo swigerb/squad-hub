@@ -3,6 +3,56 @@ export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => 
 
 export const $ = (id) => document.getElementById(id);
 
+/**
+ * Copy a string to the clipboard, with a fallback for when the clipboard API
+ * is unavailable or refused.
+ *
+ * `navigator.clipboard` needs a secure context and (in some browsers) a
+ * permission prompt the user may never see fire. Falling back to a
+ * `document.execCommand('copy')` on a throwaway, off-screen textarea covers
+ * that gap rather than leaving the button silently do nothing -- the one
+ * thing worse than asking someone to select text by hand is a copy button
+ * that looks like it worked and did not.
+ *
+ * Shared by the Connect-a-device dialog and the device rail's own "start"
+ * command, so there is one place that knows how to copy text, not two that
+ * can drift.
+ *
+ * A browser without clipboard permission granted (every headless-Chromium
+ * test run, and plenty of real sessions) does not always reject
+ * `navigator.clipboard.writeText` -- some builds leave the permission prompt
+ * pending forever and the promise never settles either way. Racing it
+ * against a short timeout is what turns that silent hang into the same
+ * fallback path an outright rejection takes, so the caller's toast always
+ * fires instead of leaving the button looking like it did nothing (#229).
+ */
+export async function copyToClipboard(text) {
+  try {
+    const written = navigator.clipboard.writeText(text);
+    // If the timeout below wins the race, `written` is still out there and
+    // may reject once the browser eventually gives up on its own -- without
+    // this, that is an unhandled rejection logged well after the toast the
+    // user already got.
+    written.catch(() => {});
+    await Promise.race([
+      written,
+      new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('clipboard write timed out')), 300);
+      }),
+    ]);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
 let toastTimer = null;
 export function toast(text) {
   const t = $('toast');
@@ -251,6 +301,33 @@ export function statusBadge(s, device) {
   };
   const label = statusLabel(s, device);
   return `<span class="status ${cls[s.status] || ''}">${esc(label)}</span>`;
+}
+
+/**
+ * The status PILL used on the full-page session detail header.
+ *
+ * Shares its words and its state mapping with `statusBadge` -- one source for
+ * "what is this status called" and "how urgent is it", so the pill on the
+ * header and the badge on the row can never disagree about the same session.
+ * Returns only the class; the element and its leading dot are styled in CSS
+ * (`.dt-pill`), because the dot is decorative and must not be read out by a
+ * screen reader twice.
+ */
+export function statusPillClass(s, device) {
+  // Same ordering as `statusBadge`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';
+  return {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: 'review',
+    done: '',
+    failed: 'failed',
+    stopped: '',
+  }[s.status] || '';
 }
 
 /**

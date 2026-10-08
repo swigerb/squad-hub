@@ -31,11 +31,12 @@ node_modules/
 .copilot/
 
 # Squad: per-machine runtime state, not team configuration.
-# (.squad/casting/registry.json IS team configuration since Squad 0.13: squad health and ACA workers read it.)
+# (.squad/casting/registry.json IS team configuration since Squad 0.13: squad health and ACA workers read it.
+#  Since Squad 1.0, registry.json, history.json and registry-history.commit.json are one transactional
+#  pair and squad health fails if any is missing, so all three are committed.)
 .squad/memory/
 .squad/identity/
 .squad/.first-run
-.squad/casting/history.json
 .squad/rai/audit-trail.md
 .squad/fact-checker/audit-trail.md
 .squad/agents/*/history.md

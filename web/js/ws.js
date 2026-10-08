@@ -1,7 +1,7 @@
 import { state, api } from './api.js';
 import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
-import { renderTranscript } from './detail.js';
+import { renderTranscript } from './transcript.js';
 import { $ } from './util.js';
 import { showSignIn } from './signin.js';
 
@@ -148,20 +148,17 @@ export function setConn(s) {
 }
 
 /**
- * A session named in the URL, from a Teams card's "View live session" link.
+ * A session named in the URL, from a Teams card's "View live session" link,
+ * or from the address bar of the detail page itself (#181).
  *
- * Read once and removed from the address bar, like the token above: leaving it
- * there means a reload re-opens the panel someone just closed, and a bookmark
- * silently becomes "always open this session".
+ * Unlike the token above, this is read WITHOUT being removed: the detail
+ * page is a real URL now, so leaving it there is what makes a reload or a
+ * shared link reopen the same session. The caller normalizes it once the key
+ * is resolved (see `openDetail`'s `replace` navigation).
  */
 export function takeDeepLinkSession() {
   const params = new URLSearchParams(location.search);
-  const wanted = params.get('session');
-  if (!wanted) return null;
-  params.delete('session');
-  const rest = params.toString();
-  history.replaceState({}, '', rest ? `${location.pathname}?${rest}` : location.pathname);
-  return wanted;
+  return params.get('session');
 }
 
 /**

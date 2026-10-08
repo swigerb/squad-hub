@@ -2,12 +2,26 @@
 // dialog, split out of app.js's Wiring section by #200 (part 4/4 of #165).
 // These share a module because the New session dialog is keyed on which
 // devices are connected -- `openNew` falls back to `openConnect` when none
-// are online. Behavior is unchanged byte-for-byte from the original.
+// are online. Extended by #172 to also drive the device rail's new
+// collapsible sections and its copy-command buttons.
 
 import { state, api } from './api.js';
-import { $, esc, toast, undoToast } from './util.js';
+import {
+  $, esc, toast, undoToast, copyToClipboard,
+} from './util.js';
 import { refresh } from './ws.js';
 import { removeDeviceUndoLabel } from './cleanup.js';
+import { openAca } from './aca.js';
+import { toggleDeviceSection } from './devices.js';
+
+/**
+ * Copy one of the device rail's own command snippets -- currently just
+ * `npx squad-hub start`, offered wherever the rail or the empty session list
+ * says a local device is not connected (#172).
+ */
+async function copyCommand(cmd) {
+  toast(await copyToClipboard(cmd) ? 'Command copied' : 'Select and copy the command above');
+}
 
 export function openNew(deviceId) {
   const online = state.overview.devices.filter((d) => d.presence !== 'offline');
@@ -83,7 +97,8 @@ async function removeDevice(deviceId) {
   }, () => toast(`Removal canceled — keeping "${name}"`));
 }
 
-async function createDeviceToken() {  const btn = $('cnCreate');
+async function createDeviceToken() {
+  const btn = $('cnCreate');
   btn.disabled = true;
   btn.textContent = 'Creating…';
   $('cnErr').hidden = true;
@@ -175,24 +190,6 @@ function updateAgentChoices(device) {
   choicesField('nsModelSelect', 'nsModel', device && device.models, "the agent's default");
 }
 
-async function copy(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Clipboard access needs a secure context and permission. Falling back to a
-    // selectable prompt is better than a silent failure.
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch { ok = false; }
-    ta.remove();
-    return ok;
-  }
-}
-
 function showNewErr(m) { $('nsErr').hidden = false; $('nsErr').textContent = m; }
 
 /**
@@ -202,13 +199,57 @@ function showNewErr(m) { $('nsErr').hidden = false; $('nsErr').textContent = m; 
  * `spawnRequest`/`spawnError` are passed in rather than imported directly:
  * they come from composer.js, which this module has no other reason to
  * depend on, and the caller already has them in scope.
+ *
+ * The device rail is rebuilt from scratch on every refresh (#172), so this
+ * one delegated handler on the container -- rather than a handler per row --
+ * is what lets a click on a section header or a "+" still work after the
+ * markup underneath it has been thrown away and replaced.
  */
 export function wireConnect({ spawnRequest, spawnError }) {
+  // `[data-copy-cmd]` buttons aren't confined to the device rail -- the same
+  // "no local device" pitch (`localDevicesEmptyHtml`) is also rendered inside
+  // the main sessions list's own `#empty` state (#172/#229), which sits
+  // outside `#deviceList` entirely. A delegated handler on `document` is what
+  // makes every copy button work, wherever its markup happens to live, past
+  // or future, rather than requiring every container that might embed one to
+  // remember to wire it up itself.
+  document.addEventListener('click', (e) => {
+    const copyBtn = e.target.closest('[data-copy-cmd]');
+    if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
+  });
+
   $('deviceList').onclick = (e) => {
     const rm = e.target.closest('[data-remove-device]');
     if (rm) { removeDevice(rm.dataset.removeDevice); return; }
-    const b = e.target.closest('[data-spawn]');
-    if (b) openNew(b.dataset.spawn);
+    const spawn = e.target.closest('[data-spawn]');
+    if (spawn) { openNew(spawn.dataset.spawn); return; }
+    // "ACA jobs" and a section's own "+" both mean "give me another device of
+    // this kind", and neither can provision one -- ACA opens GitHub, the
+    // other two can only ever be answered by `squad-hub connect`.
+    const action = e.target.closest('[data-action]');
+    if (action) {
+      if (action.dataset.action === 'aca') openAca();
+      else if (action.dataset.action === 'connect-device') openConnect();
+      return;
+    }
+    // Only after every button inside a section header has had first claim on
+    // the click -- its own "+" sits inside the same header and must open the
+    // dialog above, never also collapse the section underneath it.
+    const sec = e.target.closest('[data-sec]');
+    if (sec) toggleDeviceSection(sec.dataset.sec);
+  };
+
+  // The section headers are collapsible like the rail itself, and reachable
+  // the same way: Enter or Space activates whatever has focus, exactly as a
+  // button would, because this control (a `div`, so a "+" can live inside it
+  // without the invalid HTML of a button nested in a button) does not get
+  // that behavior for free.
+  $('deviceList').onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const sec = e.target.closest('[data-sec]');
+    if (!sec) return;
+    e.preventDefault();
+    toggleDeviceSection(sec.dataset.sec);
   };
 
   $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
@@ -224,7 +265,7 @@ export function wireConnect({ spawnRequest, spawnError }) {
   $('cnFiles').onchange = syncFilesAll;
   syncFilesAll();
   $('cnCopy').onclick = async () => {
-    toast(await copy($('cnCmd').textContent) ? 'Command copied' : 'Select and copy the command above');
+    toast(await copyToClipboard($('cnCmd').textContent) ? 'Command copied' : 'Select and copy the command above');
   };
   $('nsCancel').onclick = () => { $('newScrim').hidden = true; };
 

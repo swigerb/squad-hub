@@ -756,10 +756,11 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped again to v7 for #175: /js/push.js joined the shell.
+  // Bumped to v8 merging #175 (/js/push.js) with #181 (/js/transcript.js):
+  // both independently bumped to v7, so the merge needs a fresh value.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v7';/,
-    'CACHE is not the expected post-install-polish value -- did it get bumped?');
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v8';/,
+    'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
 check("the service worker's shell caches the maskable icon and both screenshots", () => {

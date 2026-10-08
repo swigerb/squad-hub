@@ -228,8 +228,19 @@ async function watchCsp(pg) {
     await check('with no device, the page says what to do instead of failing', async () => {
       await page.waitForSelector('#empty:not([hidden])', { timeout: 10000 });
       const txt = await page.textContent('#empty');
-      assert.match(txt, /No devices connected/i, `the empty state said: ${txt.trim().slice(0, 80)}`);
-      assert.ok(await page.$('#emptyConnect'), 'no way to get from "no devices" to connecting one');
+      assert.match(txt, /No sessions yet/i, `the empty state said: ${txt.trim().slice(0, 80)}`);
+      assert.ok(await page.$('#emptyAca'), 'no way to start an ACA job from the empty state');
+      assert.match(txt, /npx squad-hub start/, 'no local-devices pitch when zero local devices are connected');
+    });
+
+    await check('the local-devices pitch copies its start command (#172)', async () => {
+      await page.click('[data-copy-cmd="npx squad-hub start"]');
+      const toastText = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return t || null;
+      }, 'a toast confirming the copy');
+      assert.match(toastText, /[Cc]opied|[Ss]elect and copy/,
+        `clicking Copy command gave no feedback at all: ${toastText}`);
     });
 
     await check('+ New with no device opens the connect dialog, not a broken form', async () => {
@@ -611,7 +622,6 @@ async function watchCsp(pg) {
         return {
           cloud: cloud ? { text: cloud.textContent, disabled: cloud.disabled } : null,
           local: local ? { text: local.textContent, disabled: local.disabled } : null,
-          connect: !!document.getElementById('emptyConnect'),
         };
       });
       // Earlier checks in this file start a real session, so the empty state
@@ -621,7 +631,6 @@ async function watchCsp(pg) {
         assert.ok(true);
         return;
       }
-      if (empty.connect) return; // no devices at all: a different empty state
       assert.ok(empty.cloud, 'no cloud button in the empty state');
       assert.ok(empty.local, 'no local button in the empty state');
       assert.match(empty.cloud.text, /cloud/i);
@@ -1095,6 +1104,39 @@ async function watchCsp(pg) {
       assert.ok(!back, 'the rail would not come back');
     });
 
+    await check('devices group into sections, and the attached device lands under Local machines (#172)', async () => {
+      const sections = await page.evaluate(() => Array.from(document.querySelectorAll('.devsec .sec-label')).map((el) => el.textContent));
+      assert.ok(sections.some((s) => /Squad on ACA executions/.test(s)), `no ACA-executions section: ${sections.join(', ')}`);
+      assert.ok(sections.some((s) => /Cloud devices/.test(s)), `no Cloud-devices section: ${sections.join(', ')}`);
+      assert.ok(sections.some((s) => /Local machines/.test(s)), `no Local-machines section: ${sections.join(', ')}`);
+      const list = await page.textContent('#deviceList');
+      assert.match(list, /E2E Device/, 'the attached device is missing from the grouped rail');
+      assert.match(list, /ACA jobs/, 'the always-visible ACA jobs row is missing');
+    });
+
+    await check('the rail summary line reports how many devices and sessions are live (#172)', async () => {
+      const summary = await page.textContent('#deviceSummary');
+      assert.match(summary, /\d+ online/i, `summary line did not report an online count: ${summary}`);
+      assert.match(summary, /\d+ session/i, `summary line did not report a session count: ${summary}`);
+    });
+
+    await check('a collapsed section stays collapsed across a reload (#172)', async () => {
+      const sec = await page.$('[data-sec="local"]');
+      assert.ok(sec, 'no Local machines section header to collapse');
+      await sec.click();
+      await until(async () => (await page.getAttribute('[data-sec="local"]', 'aria-expanded')) === 'false',
+        'the Local machines section to collapse');
+      await gotoSettled(page, `${origin}/`);
+      await page.waitForSelector('[data-sec="local"]', { timeout: 10000 });
+      const expanded = await page.getAttribute('[data-sec="local"]', 'aria-expanded');
+      assert.strictEqual(expanded, 'false', 'the collapsed section forgot its state across a reload');
+      // Leave it open again so later checks in this file see the device list
+      // they expect.
+      await page.click('[data-sec="local"]');
+      await until(async () => (await page.getAttribute('[data-sec="local"]', 'aria-expanded')) === 'true',
+        'the Local machines section to re-expand');
+    });
+
     await check('the keyword box filters, and clearing it restores', async () => {
       const total = await page.evaluate(() => document.querySelectorAll('#groups .row').length);
       await page.fill('#q', 'zzz-nothing-matches-this');
@@ -1457,6 +1499,140 @@ async function watchCsp(pg) {
         'the result box scrolls independently INSIDE the transcript -- a scrollbar in a scrollbar');
       assert.strictEqual(out.transcriptScrolls, true,
         'precondition: the transcript itself must be the scroller, or this proves nothing');
+    });
+
+    // -------------------------------------------------------------------
+    // The session detail PAGE (#181): a real route at /?session=<key>, not
+    // a modal. These drive the actual browser history -- Back, Forward, a
+    // cold load of a deep link -- because "the URL is right" and "the
+    // Back button actually works" are facts only a real browser's own
+    // session-history stack can prove; a DOM assertion that `history`
+    // methods were CALLED would not catch a popstate handler that forgot
+    // to also show the page again.
+    // -------------------------------------------------------------------
+    let firstSessionKey = null;
+    await check('opening a session is a real navigation: the URL changes and Back restores the list', async () => {
+      await gotoSettled(page, origin);
+      await page.waitForSelector('[data-session]', { timeout: 20000 });
+      firstSessionKey = await page.getAttribute('[data-session]', 'data-session');
+      await page.click('[data-session]');
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      assert.ok(page.url().includes(`session=${encodeURIComponent(firstSessionKey)}`),
+        `the address bar did not pick up the open session: ${page.url()}`);
+      const listHiddenWhileOpen = await page.evaluate(() => document.getElementById('listPage').hidden);
+      assert.strictEqual(listHiddenWhileOpen, true, 'the list page is still showing underneath the detail page');
+
+      await page.goBack();
+      await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+      const backUrl = new URL(page.url());
+      assert.strictEqual(backUrl.search, '', `Back did not clear the session from the address bar: ${page.url()}`);
+      const listVisibleAfterBack = await page.evaluate(() => document.getElementById('listPage').hidden);
+      assert.strictEqual(listVisibleAfterBack, false, 'Back did not bring the list back');
+    });
+
+    await check('Forward re-opens the same session after Back', async () => {
+      await page.goForward();
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 10000 });
+      assert.ok(page.url().includes(`session=${encodeURIComponent(firstSessionKey)}`),
+        `Forward landed on the wrong URL: ${page.url()}`);
+    });
+
+    await check('a cold load of a deep link opens that session directly, with no extra history entry', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const title = (await page.textContent('#dtTitle')).trim();
+      assert.ok(title.length, 'the deep-linked session has no title, so this proves nothing');
+      // "No extra history entry": landing on a deep link and then pressing
+      // Back should go to wherever the browser was before this test's
+      // `goto`, i.e. leave the detail page -- not bounce to another
+      // /?session=... entry this load itself pushed.
+      await page.goBack();
+      await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+    });
+
+    await check('the sidebar lists other sessions, filters by text, and clicking one navigates to it', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const rowCount = await page.evaluate(() => document.querySelectorAll('#detailSidebarList [data-session]').length);
+      assert.ok(rowCount >= 2, `expected at least 2 sessions in the sidebar, found ${rowCount}`);
+
+      const otherKey = await page.evaluate((openKey) => {
+        const rows = [...document.querySelectorAll('#detailSidebarList [data-session]')];
+        const other = rows.find((r) => r.dataset.session !== openKey);
+        return other && other.dataset.session;
+      }, firstSessionKey);
+      assert.ok(otherKey, 'there is no other session to navigate to in the sidebar');
+
+      await page.click(`#detailSidebarList [data-session="${otherKey}"]`);
+      await until(async () => page.url().includes(`session=${encodeURIComponent(otherKey)}`),
+        'the URL to switch to the sidebar selection');
+      const selected = await page.evaluate((key) => {
+        const row = document.querySelector(`#detailSidebarList [data-session="${key}"]`);
+        return row && row.classList.contains('selected');
+      }, otherKey);
+      assert.strictEqual(selected, true, 'the sidebar did not mark the newly-opened session as selected');
+
+      // The filter box narrows the sidebar's own list -- and only that list,
+      // not the main one underneath it.
+      await page.fill('#dtSidebarFilter', 'no session matches this nonsense query xyz');
+      await page.waitForSelector('.dt-side-empty', { timeout: 5000 });
+      await page.fill('#dtSidebarFilter', '');
+    });
+
+    await check('the header star pins the session, and the pin is reflected in the sidebar', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const before = await page.evaluate(() => document.getElementById('dtStar').classList.contains('on'));
+      await page.click('#dtStar');
+      const after = await page.evaluate(() => document.getElementById('dtStar').classList.contains('on'));
+      assert.notStrictEqual(after, before, 'clicking the header star did not change its pinned state');
+      const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('squad-hub-favorites') || '[]'));
+      assert.strictEqual(stored.includes(firstSessionKey), after,
+        'the header star did not agree with the stored favourites');
+      // Leave it as it was found, so later checks are not affected by this one.
+      await page.click('#dtStar');
+    });
+
+    await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      for (const width of [1280, 900, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        // A resize does not fire layout synchronously in every engine; give
+        // it one frame before measuring.
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+        const centers = await page.evaluate((w) => {
+          const ids = w <= 900 ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtStatusPill'] : ['dtStar', 'dtTitle', 'dtStatusPill', 'dtAca'];
+          return ids.map((id) => {
+            const el = document.getElementById(id);
+            if (!el || el.offsetParent === null) return null;
+            const r = el.getBoundingClientRect();
+            return r.top + r.height / 2;
+          }).filter((v) => v !== null);
+        }, width);
+        assert.ok(centers.length >= 2, `at ${width}px, fewer than 2 header items were visible to compare`);
+        const spread = Math.max(...centers) - Math.min(...centers);
+        assert.ok(spread <= 1,
+          `at ${width}px, the header items do not share a line box -- vertical centers span ${spread}px`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    await check('under 900px, the sidebar is hidden and the phone back arrow takes its place', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const layout = await page.evaluate(() => ({
+        sidebarVisible: document.getElementById('detailSidebar').offsetParent !== null,
+        backPhoneVisible: document.getElementById('dtBackPhone').offsetParent !== null,
+      }));
+      assert.strictEqual(layout.sidebarVisible, false, 'the sidebar is still showing on a phone-width viewport');
+      assert.strictEqual(layout.backPhoneVisible, true, 'the phone back arrow is not showing on a phone-width viewport');
+
+      await page.click('#dtBackPhone');
+      await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+      await page.setViewportSize({ width: 1280, height: 900 });
     });
 
     await check('signing out returns to a usable sign-in page', async () => {      await gotoSettled(page, origin);

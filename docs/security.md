@@ -190,7 +190,47 @@ requested option that is not declared there.
 
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
-a repository's issue tracker through this endpoint.
+a repository's issue tracker through this endpoint. `GET /api/aca/repos` and
+`GET /api/aca/dispatches` are rate-limited too (30 requests per minute,
+sharing one budget between the two routes, per signed-in user) — unlimited
+polling of either would let one account exhaust the App's own GitHub API rate
+limit, which every other hub user dispatching through the same App shares.
+
+**The App registration itself must be created as private ("Only on this
+account"), never public.** A public GitHub App can be installed by anyone on
+any repository they administer, and every repository it is installed on
+gains the trust described above — any signed-in hub user, not just that
+repository's own collaborators, would be able to dispatch a job on it.
+Private keeps installation to the account (or organization) that created the
+App, so "Install the App only on repositories where every current and future
+hub user is someone you would trust with that" (above) stays a decision the
+hub operator actually controls. See [aca.md](aca.md) for the setup walkthrough.
+
+**Hardening follow-ups from the #211 review (issue #213):**
+
+- Repository matching when binding a dispatch to its GitHub Actions run
+  compares `owner`/`repo` case-insensitively, matching how GitHub itself
+  treats repository names, so differently-cased requests for the same
+  repository cannot be tracked as if they were two different ones.
+- A dispatch record that never finds a matching run within one hour is
+  reported as errored and stops being searched for, instead of being
+  searched forever and risking a later, unrelated dispatch's real run being
+  mistaken for its own.
+- A dispatch's run binding is re-checked immediately after the (necessarily
+  asynchronous) search for it completes, so two concurrent polls for the same
+  user can never race each other into overwriting a winning bind with a
+  stale one.
+- Every installation token the hub mints to call GitHub on a specific
+  repository's behalf (a dispatch, a run-status check) is scoped with
+  GitHub's own `repositories` parameter to just that one repository, not the
+  installation's full set — a token that leaked would reach only the
+  repository it was minted for. Enumerating every installed repository (to
+  build the allow-list in the first place) is the one call that still needs,
+  and gets, an unscoped token.
+- Listing installations and listing an installation's repositories both
+  page past GitHub's 100-item-per-page default, so an App on more than 100
+  installations, or an installation with more than 100 repositories, no
+  longer silently loses everything past the first page.
 
 ## Which identifiers work
 
