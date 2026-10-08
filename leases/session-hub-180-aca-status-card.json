@@ -7,11 +7,11 @@
   "dispatchSource": "local-cli",
   "route": "aca-job",
   "executionMode": "aca-job",
-  "state": "running",
+  "state": "succeeded",
   "attempts": 1,
   "startedAt": "2026-10-08T19:32:27.579Z",
-  "lastHeartbeatAt": "2026-10-08T20:48:27.188Z",
-  "updatedAt": "2026-10-08T20:48:27.188Z",
+  "lastHeartbeatAt": "2026-10-08T20:51:03.389Z",
+  "updatedAt": "2026-10-08T20:51:03.389Z",
   "terminalReason": null,
   "executionRef": null
 }
