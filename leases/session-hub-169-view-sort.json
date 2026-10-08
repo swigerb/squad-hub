@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-169-view-sort",
+  "sessionId": "hub-169-view-sort",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T17:26:04.115Z",
+  "lastHeartbeatAt": "2026-10-08T17:26:04.115Z",
+  "updatedAt": "2026-10-08T17:26:04.115Z",
+  "terminalReason": null,
+  "executionRef": null
+}
