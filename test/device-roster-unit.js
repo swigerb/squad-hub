@@ -30,11 +30,15 @@ const src = readWebSource();
 const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, deviceRoster, deviceCard, availableCount, platformLabel,
-  presenceLabel, humanBytes, meter, skeletonDevices };`)(mod, mod.exports);
+  presenceLabel, humanBytes, meter, skeletonDevices, deviceDisplayName,
+  deviceExecutionId, groupDevicesByKind, sessionCountsByDevice, deviceSummaryLine,
+  localDevicesEmptyHtml };`)(mod, mod.exports);
 
 const {
   esc, deviceRoster, deviceCard, availableCount, platformLabel,
-  presenceLabel, humanBytes, meter, skeletonDevices,
+  presenceLabel, humanBytes, meter, skeletonDevices, deviceDisplayName,
+  deviceExecutionId, groupDevicesByKind, sessionCountsByDevice, deviceSummaryLine,
+  localDevicesEmptyHtml,
 } = mod.exports;
 
 const { Telemetry, clamp01 } = require('../src/telemetry');
@@ -312,6 +316,95 @@ check('skeletonDevices renders the requested number of placeholder device cards'
 check('skeletonDevices defaults to a handful of cards when called with nothing', () => {
   const html = skeletonDevices();
   assert.ok((html.match(/skeleton-row/g) || []).length > 0, 'no default was offered at all');
+});
+
+// ---------------------------------------------------------------------------
+// Device rail sections (#172): grouping, naming and the rail summary line
+// ---------------------------------------------------------------------------
+
+check('a non-ACA device keeps its own name, unchanged', () => {
+  assert.strictEqual(deviceDisplayName(dev({ kind: 'cloud', name: 'cloud-box' })), 'cloud-box');
+  assert.strictEqual(deviceDisplayName(dev({ kind: 'local', name: 'my-laptop' })), 'my-laptop');
+});
+
+check('an ACA execution is named from its displayName metadata', () => {
+  const d = dev({ kind: 'aca', name: 'aca-abc123', meta: { displayName: '#304 \u00b7 AzureAIDriveThru' } });
+  assert.strictEqual(deviceDisplayName(d), '#304 \u00b7 AzureAIDriveThru');
+});
+
+check('an ACA execution without a displayName is named from its issue and repo', () => {
+  const d = dev({
+    kind: 'aca', name: 'aca-abc123', meta: { repo: 'swigerb/AzureAIDriveThru', issue: '304' },
+  });
+  assert.strictEqual(deviceDisplayName(d), '#304 \u00b7 AzureAIDriveThru');
+});
+
+check('an ACA execution with no usable metadata falls back to its raw name', () => {
+  assert.strictEqual(deviceDisplayName(dev({ kind: 'aca', name: 'aca-abc123' })), 'aca-abc123');
+});
+
+check('the raw execution id is secondary text, and only for ACA executions', () => {
+  assert.strictEqual(deviceExecutionId(dev({ kind: 'aca', deviceId: 'aca-abc123', meta: { executionName: 'exec-7' } })), 'exec-7');
+  assert.strictEqual(deviceExecutionId(dev({ kind: 'cloud', deviceId: 'cloud-1' })), '');
+  assert.strictEqual(deviceExecutionId(dev({ kind: 'local', deviceId: 'laptop-1' })), '');
+});
+
+check('the execution id and session count both surface in the card\'s meta line', () => {
+  const html = deviceCard(
+    dev({ kind: 'aca', name: 'aca-x', deviceId: 'aca-x', meta: { executionName: 'exec-9' } }),
+    { sessionCount: 2 },
+  );
+  assert.match(html, /exec-9/, 'the raw execution id is missing from the card');
+  assert.match(html, /2 sessions/, 'the session count is missing from the card');
+});
+
+check('a device with no sessions does not claim to have any', () => {
+  const html = deviceCard(dev({}), { sessionCount: 0 });
+  assert.ok(!/\bsessions?\b/.test(html.replace(/files:[^&]*/, '')),
+    'a device with zero sessions should not mention a session count at all');
+});
+
+check('devices group into ACA, cloud and local sections', () => {
+  const devices = [
+    dev({ name: 'laptop', kind: 'local' }),
+    dev({ name: 'cloud-1', kind: 'cloud' }),
+    dev({ name: 'aca-1', kind: 'aca' }),
+  ];
+  const { aca, cloud, local } = groupDevicesByKind(devices);
+  assert.deepStrictEqual(names(aca), ['aca-1']);
+  assert.deepStrictEqual(names(cloud), ['cloud-1']);
+  assert.deepStrictEqual(names(local), ['laptop']);
+});
+
+check('within a section, grouping keeps the same online-then-stale-then-offline order', () => {
+  const devices = [
+    dev({ name: 'b-laptop', kind: 'local', presence: 'offline' }),
+    dev({ name: 'a-laptop', kind: 'local', presence: 'online' }),
+  ];
+  const { local } = groupDevicesByKind(devices);
+  assert.deepStrictEqual(names(local), ['a-laptop', 'b-laptop']);
+});
+
+check('session counts are keyed by device id, from the overview groups', () => {
+  const counts = sessionCountsByDevice([
+    { device: { deviceId: 'd1' }, sessions: [1, 2] },
+    { device: { deviceId: 'd2' }, sessions: [] },
+  ]);
+  assert.strictEqual(counts.get('d1'), 2);
+  assert.strictEqual(counts.get('d2'), 0);
+  assert.strictEqual(counts.get('missing'), undefined);
+});
+
+check('the rail summary line reads "N online · N sessions"', () => {
+  assert.strictEqual(deviceSummaryLine({ online: 3, sessions: 1 }), '3 online &middot; 1 session');
+  assert.strictEqual(deviceSummaryLine({ online: 0, sessions: 0 }), '0 online &middot; 0 sessions');
+});
+
+check('the local-devices empty state offers a copyable start command', () => {
+  const html = localDevicesEmptyHtml();
+  assert.match(html, /npx squad-hub start/);
+  assert.match(html, /data-copy-cmd="npx squad-hub start"/);
+  assert.match(html, /data-action="connect-device"/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

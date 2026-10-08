@@ -228,8 +228,19 @@ async function watchCsp(pg) {
     await check('with no device, the page says what to do instead of failing', async () => {
       await page.waitForSelector('#empty:not([hidden])', { timeout: 10000 });
       const txt = await page.textContent('#empty');
-      assert.match(txt, /No devices connected/i, `the empty state said: ${txt.trim().slice(0, 80)}`);
-      assert.ok(await page.$('#emptyConnect'), 'no way to get from "no devices" to connecting one');
+      assert.match(txt, /No sessions yet/i, `the empty state said: ${txt.trim().slice(0, 80)}`);
+      assert.ok(await page.$('#emptyAca'), 'no way to start an ACA job from the empty state');
+      assert.match(txt, /npx squad-hub start/, 'no local-devices pitch when zero local devices are connected');
+    });
+
+    await check('the local-devices pitch copies its start command (#172)', async () => {
+      await page.click('[data-copy-cmd="npx squad-hub start"]');
+      const toastText = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return t || null;
+      }, 'a toast confirming the copy');
+      assert.match(toastText, /[Cc]opied|[Ss]elect and copy/,
+        `clicking Copy command gave no feedback at all: ${toastText}`);
     });
 
     await check('+ New with no device opens the connect dialog, not a broken form', async () => {
@@ -611,7 +622,6 @@ async function watchCsp(pg) {
         return {
           cloud: cloud ? { text: cloud.textContent, disabled: cloud.disabled } : null,
           local: local ? { text: local.textContent, disabled: local.disabled } : null,
-          connect: !!document.getElementById('emptyConnect'),
         };
       });
       // Earlier checks in this file start a real session, so the empty state
@@ -621,7 +631,6 @@ async function watchCsp(pg) {
         assert.ok(true);
         return;
       }
-      if (empty.connect) return; // no devices at all: a different empty state
       assert.ok(empty.cloud, 'no cloud button in the empty state');
       assert.ok(empty.local, 'no local button in the empty state');
       assert.match(empty.cloud.text, /cloud/i);
@@ -1075,6 +1084,39 @@ async function watchCsp(pg) {
       await page.click('#railToggle');
       const back = await page.evaluate(() => document.getElementById('deviceRail').classList.contains('collapsed'));
       assert.ok(!back, 'the rail would not come back');
+    });
+
+    await check('devices group into sections, and the attached device lands under Local machines (#172)', async () => {
+      const sections = await page.evaluate(() => Array.from(document.querySelectorAll('.devsec .sec-label')).map((el) => el.textContent));
+      assert.ok(sections.some((s) => /Squad on ACA executions/.test(s)), `no ACA-executions section: ${sections.join(', ')}`);
+      assert.ok(sections.some((s) => /Cloud devices/.test(s)), `no Cloud-devices section: ${sections.join(', ')}`);
+      assert.ok(sections.some((s) => /Local machines/.test(s)), `no Local-machines section: ${sections.join(', ')}`);
+      const list = await page.textContent('#deviceList');
+      assert.match(list, /E2E Device/, 'the attached device is missing from the grouped rail');
+      assert.match(list, /ACA jobs/, 'the always-visible ACA jobs row is missing');
+    });
+
+    await check('the rail summary line reports how many devices and sessions are live (#172)', async () => {
+      const summary = await page.textContent('#deviceSummary');
+      assert.match(summary, /\d+ online/i, `summary line did not report an online count: ${summary}`);
+      assert.match(summary, /\d+ session/i, `summary line did not report a session count: ${summary}`);
+    });
+
+    await check('a collapsed section stays collapsed across a reload (#172)', async () => {
+      const sec = await page.$('[data-sec="local"]');
+      assert.ok(sec, 'no Local machines section header to collapse');
+      await sec.click();
+      await until(async () => (await page.getAttribute('[data-sec="local"]', 'aria-expanded')) === 'false',
+        'the Local machines section to collapse');
+      await gotoSettled(page, `${origin}/`);
+      await page.waitForSelector('[data-sec="local"]', { timeout: 10000 });
+      const expanded = await page.getAttribute('[data-sec="local"]', 'aria-expanded');
+      assert.strictEqual(expanded, 'false', 'the collapsed section forgot its state across a reload');
+      // Leave it open again so later checks in this file see the device list
+      // they expect.
+      await page.click('[data-sec="local"]');
+      await until(async () => (await page.getAttribute('[data-sec="local"]', 'aria-expanded')) === 'true',
+        'the Local machines section to re-expand');
     });
 
     await check('the keyword box filters, and clearing it restores', async () => {

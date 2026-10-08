@@ -782,20 +782,47 @@ that check and reads the file every time.
 
 ## The device roster
 
+The rail header reads "Connected devices (N)" plus a one-line summary —
+"N online · N sessions" — directly underneath it, so the headline number is
+never the only thing on screen.
+
+Below that, the rail groups devices into sections rather than one flat list
+(#172):
+
+1. **ACA jobs** — always visible, never empty: on-demand compute, not a
+   roster entry. Its `+` opens the same "Run on ACA…" dialog as everywhere
+   else in the app.
+2. **Squad on ACA executions (N)** — devices of kind `aca`, named from their
+   `displayName` metadata when a cloud job supplies one (e.g.
+   `#304 · AzureAIDriveThru`), with the raw execution id shown as secondary
+   text. A dispatching execution that has not reported in yet is drawn with a
+   pulsing dot rather than the plain offline one.
+3. **Cloud devices (N)** — everything else `cloud`-flavored: on-demand and
+   always available, the one place work can always be sent.
+4. **Local machines (N)** — everything else: your laptop, a dev box, a bare
+   container.
+
 | Column | |
 |---|---|
-| Kind | `cloud` devices are listed **first** and stay first. A cloud device is on-demand and always available — it is the one place work can always be sent, whatever laptops happen to be asleep. |
 | Platform | `Windows`, `macOS`, `Linux`. An unrecognised platform is shown as reported rather than discarded. |
 | Presence | `Online`, `Stale · seen 2m ago`, `Offline · seen 3h ago`. Stale means "we have not heard recently"; offline means "we have given up". |
 | Load | CPU and RAM meters, **only for devices that report telemetry**. |
 
-Within a kind, devices sort online → stale → offline, then by name. A roster
-that reorders itself as machines drift between presences is one nobody can
-click accurately.
+Within a section, devices sort online → stale → offline, then by name. A
+roster that reorders itself as machines drift between presences is one nobody
+can click accurately.
 
-Each device carries a `+` to start a session on it, and the rail collapses to
-reclaim width — the header keeps a count of how many devices can currently
-take work.
+Each device carries a `+` to start a session on it, and each section — the
+rail itself, and every collapsible section inside it — remembers whether it
+was left open or closed, in `localStorage`, independently of the others.
+
+With no session anywhere, the main list reads "No sessions yet" with three
+buttons — start an ACA job, use an already-attached cloud device, or start a
+local session — each of the latter two disabled with a reason until a matching
+device is actually online. With no local machine connected at all, it also
+offers a copyable `npx squad-hub start` command, the same "Connect a
+device…" dialog as the account menu, and a link to the README's "Try it"
+section; an empty **Local machines** section repeats exactly the same block.
 
 ### Telemetry
 **Off by default**, like every other thing the daemon could report about the
