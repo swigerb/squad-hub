@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-218-session-detail",
+  "sessionId": "fix-pr-218-session-detail",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T01:57:36.669Z",
+  "lastHeartbeatAt": "2026-10-08T01:57:36.669Z",
+  "updatedAt": "2026-10-08T01:57:36.669Z",
+  "terminalReason": null,
+  "executionRef": null
+}
