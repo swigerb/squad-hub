@@ -1,4 +1,6 @@
-import { esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge } from './util.js';
+import {
+  esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, isStaleSession,
+} from './util.js';
 import { isCloudKind } from './cleanup.js';
 
 // ---------------------------------------------------------------------------
@@ -57,8 +59,14 @@ export function matchesScope(scope, device) {
  * One definition, used by the badge, the row edge, the ordering and the
  * filters alike. Three copies of this predicate is three chances for the badge
  * and the sort to disagree about the same row.
+ *
+ * `device`, when given, excludes a session whose device is unreachable: a
+ * stale ACA job cannot be answered by anyone, however its status reads, so it
+ * must never claim the same "needs you" treatment as a card someone can
+ * actually act on (#225).
  */
-export function needsAttention(s) {
+export function needsAttention(s, device) {
+  if (isStaleSession(s, device)) return false;
   return (s.pendingApprovals || []).length > 0 || s.status === 'waiting_approval';
 }
 
@@ -105,10 +113,10 @@ export function matchesText(value, needle) {
  * yesterday turns a filter into a way to lose work, which is the one thing a
  * dashboard for paused agents must not do.
  */
-export function matchesFilters(s, f = {}, now = Date.now()) {
+export function matchesFilters(s, f = {}, now = Date.now(), device) {
   if (!matchesText(sessionRepo(s), f.repo)) return false;
   if (f.org && sessionOrg(s) !== f.org) return false;
-  if (!needsAttention(s) && !withinWindow(s, f.window, now)) return false;
+  if (!needsAttention(s, device) && !withinWindow(s, f.window, now)) return false;
   return true;
 }
 
@@ -256,14 +264,21 @@ export function buildView({
     for (const s of g.sessions || []) {
       const entry = { session: s, device: g.device };
       if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }
-      if (matchesFilters(s, filters, now)) rest.push(entry);
+      if (matchesFilters(s, filters, now, g.device)) rest.push(entry);
     }
   }
 
   const sortEntries = (entries) => {
-    const sorted = sortSessions(entries.map((e) => e.session), sortBy);
-    const byKey = new Map(entries.map((e) => [sessionKey(e.session), e]));
-    return sorted.map((s) => byKey.get(sessionKey(s))).filter(Boolean);
+    const sort = SORTS[sortBy] || SORTS.started_desc;
+    // Sorted directly over entries, not through sortSessions's bare-session
+    // signature, so the attention check here can see each entry's own device
+    // and never float a stale, unanswerable card to the top of the list.
+    return [...entries].sort((ea, eb) => {
+      const an = needsAttention(ea.session, ea.device);
+      const bn = needsAttention(eb.session, eb.device);
+      if (an !== bn) return an ? -1 : 1;
+      return sort.compare(ea.session, eb.session);
+    });
   };
 
   const counts = { pinned: pinned.length, shown: pinned.length + rest.length, scopes: scopeCounts(groups, filters, favorites, now) };
@@ -293,8 +308,8 @@ export function buildView({
   // inside it. Otherwise the list is sorted by name, which is stable across
   // refreshes -- a list that reshuffles under the cursor is unusable.
   const names = [...buckets.keys()].sort((a, b) => {
-    const an = buckets.get(a).some((e) => needsAttention(e.session));
-    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    const an = buckets.get(a).some((e) => needsAttention(e.session, e.device));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session, e.device));
     if (an !== bn) return an ? -1 : 1;
     return a.localeCompare(b);
   });
@@ -313,7 +328,8 @@ export function buildView({
 }
 
 export function sessionRow(s, deviceName, opts = {}) {
-  const pending = needsAttention(s);
+  const device = opts.device;
+  const pending = needsAttention(s, device);
   const pinned = !!opts.pinned;
   const title = (s.prompt || s.id).slice(0, 70);
   const sq = s.squad;
@@ -383,7 +399,7 @@ export function sessionRow(s, deviceName, opts = {}) {
       <div class="row-main">
         <div class="row-title">
           <b>${esc(title)}</b>
-          <span class="activity">${esc(activityLine(s))}</span>
+          <span class="activity">${esc(activityLine(s, device))}</span>
         </div>
         <div class="row-meta">${meta}</div>
         ${outcome ? (outcome.kind === 'expired'
@@ -391,7 +407,7 @@ export function sessionRow(s, deviceName, opts = {}) {
     : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)} — by ${esc(outcome.answeredBy)}</span></div>`) : ''}
         ${squadBits}
       </div>
-      ${statusBadge(s)}
+      ${statusBadge(s, device)}
     </div>`;
 }
 

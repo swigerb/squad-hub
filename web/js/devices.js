@@ -234,7 +234,7 @@ export function render() {
         <span class="group-meta">${sec.entries.length} session${sec.entries.length === 1 ? '' : 's'}${sec.device ? ` &middot; ${esc(sec.device.platform)}` : ''}</span>
       </div>
       ${sec.entries.length
-    ? `<div class="card">${sec.entries.map((e) => sessionRow(e.session, e.device ? e.device.name : '', { pinned: !!sec.pinned })).join('')}</div>`
+    ? `<div class="card">${sec.entries.map((e) => sessionRow(e.session, e.device ? e.device.name : '', { pinned: !!sec.pinned, device: e.device })).join('')}</div>`
     : ''}
     </div>`).join('');
 

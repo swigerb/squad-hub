@@ -1186,6 +1186,11 @@ class HubService {
           // daemon can never end itself. If the device does come back, it
           // republishes its list and anything genuinely live returns.
           force: !!(body && body.force),
+          // Narrows the sweep to one card (#225's "Forget stale session"),
+          // rather than every session the offline device happens to be
+          // carrying. Omitted, the sweep is device-wide, which is what the
+          // bulk Tidy menu still uses.
+          sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,
         });
         /**
          * Once its last session is gone, the device goes too.
