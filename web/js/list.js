@@ -469,11 +469,15 @@ export function sessionRow(s, deviceName, opts = {}) {
         ${sq.models && !sq.models.uniform ? '<span class="sq-warn" title="Members are not all on the same model">mixed models</span>' : ''}
       </div>` : '';
 
+  // The pill is emitted before `.row-main` -- grid-column in devices.css
+  // still draws it third -- so it, not `.row-main`'s own unrelated
+  // `.expiredline` status, is the first `.status` in source order (#169).
   return `
     <div class="row ${pending ? 'attention' : ''}" data-session="${esc(s.key)}">
       <button class="star ${pinned ? 'on' : ''}" data-star="${esc(sessionKey(s))}"
               title="${pinned ? 'Unpin this session' : 'Pin this session'}"
               aria-label="${pinned ? 'Unpin' : 'Pin'}" aria-pressed="${pinned ? 'true' : 'false'}">${pinned ? '★' : '☆'}</button>
+      ${statusBadge(s, device)}
       <div class="row-main">
         <div class="row-title">
           <b>${esc(title)}</b>
@@ -485,7 +489,6 @@ export function sessionRow(s, deviceName, opts = {}) {
     : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)} — by ${esc(outcome.answeredBy)}</span></div>`) : ''}
         ${squadBits}
       </div>
-      ${statusBadge(s, device)}
     </div>`;
 }
 

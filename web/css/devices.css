@@ -36,6 +36,15 @@
  * per-row overflow menu -- the mockup's own 22px/1fr/auto/28px grid -- so
  * adding one later does not reflow every row that already lines up without
  * it.
+ *
+ * The row's own status pill is placed EXPLICITLY (`grid-column: 3`) rather
+ * than left to source order. `.status` is also the class an answered/expired
+ * approval outcome reuses for its own, unrelated pill inside `.row-main`
+ * (`.expiredline`, below the title) -- explicit placement is what lets the
+ * row's pill render in the markup BEFORE `.row-main` (so it is the first
+ * `.status` a reader -- human or test -- finds) while still drawing in its
+ * correct visual column, instead of the two pills fighting over the same
+ * class in source order.
  */
 .row {
   display: grid; grid-template-columns: 22px 1fr auto 28px;
@@ -46,6 +55,9 @@
 .row:last-child { border-bottom: 0; }
 .row:hover { background: var(--panel-2); }
 .row.attention { background: var(--warn-bg); box-shadow: inset 3px 0 0 var(--warn); }
+.row > .star { grid-column: 1; }
+.row > .row-main { grid-column: 2; }
+.row > .status { grid-column: 3; }
 .row-main { min-width: 0; }
 .row-title {
   display: flex; align-items: baseline; gap: 8px;
