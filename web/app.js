@@ -54,6 +54,7 @@ import {
 import {
   acaRepoName, acaSessionRepo, acaTitle, acaNewIssueLink, acaComment, acaIssueLink, openAca,
 } from './js/aca.js';
+import { refreshAcaStatus } from './js/aca-status.js';
 import { peopleVisible, peopleRows, peopleSummary, openPeople } from './js/access.js';
 import { isInstalled, installSteps, showInstallHelp } from './js/install.js';
 import { openNew, openConnect } from './js/connect.js';
@@ -173,5 +174,14 @@ function runShortcut(id) {
 
   connect();
   setInterval(refresh, 15000);
+
+  // The "Squad on ACA" status card (#180): its own fetch, on its own slower
+  // interval -- independent of the 15s overview poll above, since it spends
+  // the GitHub App's own separately-budgeted read quota (`ACA_READ_RATE_
+  // LIMIT`, `src/service/hub-service.js`), not the hub's own in-memory
+  // store. Started right away rather than waiting a full interval, so the
+  // card never sits on "Checking…" longer than it has to.
+  refreshAcaStatus();
+  setInterval(refreshAcaStatus, 30000);
   return undefined;
 }());

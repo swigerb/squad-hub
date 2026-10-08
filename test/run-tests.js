@@ -913,6 +913,17 @@ async function suiteDeviceRoster() {
 }
 
 /**
+ * #180: the "Squad on ACA" status card -- watcher/Ralph presence wording,
+ * dispatch status labelling, the card's three phases (checking, not
+ * connected, connected), and that untrusted owner/repo/reason text is always
+ * escaped before it reaches the DOM.
+ */
+async function suiteAcaStatusCard() {
+  console.log('\n[ACA STATUS CARD] watcher/Ralph presence, dispatch status, the three phases');
+  runChildSuite(path.join(__dirname, 'aca-status-card-unit.js'), 'aca-status-card');
+}
+
+/**
  * Control verification. The composer stays disabled until the DEVICE confirms
  * it can take input -- the hub knowing about a session proves only that a
  * heartbeat once mentioned it. Same shape as the HTTP-101 handshake race.
@@ -1154,6 +1165,7 @@ async function suiteBellInbox() {
   await suiteSessionActivity();
   await suiteReportPr();
   await suiteDeviceRoster();
+  await suiteAcaStatusCard();
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteForget();

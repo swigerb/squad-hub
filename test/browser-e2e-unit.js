@@ -39,10 +39,68 @@ if (!chromium) {
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { GitHubOAuth } = require('../src/service/github-oauth');
+const { GitHubApp } = require('../src/service/github-app');
 const { Daemon } = require('../src/daemon');
 const config = require('../src/config');
+const crypto = require('crypto');
+const http = require('http');
 
 const FAKE = path.join(__dirname, 'fake-agent.js');
+
+// A real RSA key pair for the ACA status card's own (#180) GitHub-App-backed
+// checks below -- same fixture `GitHubApp` itself is proven against in
+// test/github-app-unit.js, not a special UI-only one.
+const { privateKey: ACA_FAKE_KEY_OBJ } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const ACA_FAKE_PRIVATE_KEY_PEM = ACA_FAKE_KEY_OBJ.export({ type: 'pkcs1', format: 'pem' });
+
+/**
+ * The smallest possible stand-in for api.github.com that `GitHubApp` and the
+ * `/api/aca/*` routes need to answer `GET /api/aca/repos` and
+ * `GET /api/aca/dispatches` for exactly one installed repo with one recent
+ * dispatch run -- same technique (and the same four endpoints) as
+ * `fakeGitHubApp` in test/github-app-unit.js, trimmed to only what the
+ * CARD reads rather than every dispatch/declared-input path that suite
+ * already covers.
+ */
+function acaFakeGitHubServer() {
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => {
+      const json = (status, obj) => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      if (req.url.startsWith('/app/installations') && req.method === 'GET') {
+        return json(200, [{ id: 1, account: { login: 'acme' } }]);
+      }
+      if (/^\/app\/installations\/\d+\/access_tokens$/.test(req.url) && req.method === 'POST') {
+        return json(201, { token: 'ghs_fake_aca_card', expires_at: new Date(Date.now() + 3600000).toISOString() });
+      }
+      if (req.url.startsWith('/installation/repositories')) {
+        return json(200, { repositories: [{ full_name: 'acme/widgets', default_branch: 'main' }] });
+      }
+      if (req.url === '/repos/acme/widgets/contents/.github/workflows/squad-dispatch.yml') {
+        return json(404, { message: 'Not Found' });
+      }
+      if (req.url.startsWith('/repos/acme/widgets/actions/runs')) {
+        return json(200, {
+          workflow_runs: [{
+            id: 777, status: 'in_progress', conclusion: null, head_branch: 'main',
+            created_at: new Date().toISOString(),
+          }],
+        });
+      }
+      return json(404, { message: `unhandled in acaFakeGitHubServer: ${req.method} ${req.url}` });
+    });
+  });
+  return server;
+}
+
+function listen(server) {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+}
+
 
 let pass = 0; let fail = 0;
 async function check(name, fn) {
@@ -1102,6 +1160,30 @@ async function watchCsp(pg) {
       assert.match(summary, /\d+ session/i, `summary line did not report a session count: ${summary}`);
     });
 
+    // ---- "Squad on ACA" status card (#180) --------------------------------
+    // This hub never configures `SQUAD_HUB_GH_APP_ID` / `_PRIVATE_KEY`
+    // anywhere in this file, so `GET /api/aca/repos` answers 501 the same
+    // way it does for any real hub with no GitHub App installed. The
+    // Connected and Checking phases are proven further down, against a
+    // second hub with a real (faked) GitHub App behind it -- see "ACA
+    // STATUS CARD: connected" below.
+    await check('the "Squad on ACA" status card shows Not connected with no GitHub App configured (#180)', async () => {
+      await page.waitForSelector('#acaStatusCard .acacard', { timeout: 10000 });
+      const txt = await until(async () => {
+        const t = await page.textContent('#acaStatusCard');
+        return /Not connected/.test(t) ? t : null;
+      }, 'the status card to settle on Not connected');
+      assert.match(txt, /Squad on ACA/, 'the card lost its own heading');
+      assert.ok(await page.$('#acaStatusCard .acacard-link[href*="docs/aca.md"]'),
+        'no Set up link to the docs for an unconfigured App');
+      // Only the Connected phase has Retry/Issue watcher/Last dispatch rows
+      // -- the Not-connected state is "Set up" only, per the issue (#180).
+      assert.doesNotMatch(txt, /Issue watcher/, 'a watcher row appeared while not connected');
+      assert.doesNotMatch(txt, /Last dispatch/, 'a last-dispatch row appeared while not connected');
+      assert.strictEqual(await page.$('#acaStatusCard [data-action="aca-retry"]'), null,
+        'a Retry link appeared on the Not-connected card, which only ever offers Set up');
+    });
+
     await check('a collapsed section stays collapsed across a reload (#172)', async () => {
       const sec = await page.$('[data-sec="local"]');
       assert.ok(sec, 'no Local machines section header to collapse');
@@ -1716,6 +1798,85 @@ async function watchCsp(pg) {
       } finally {
         await page4.close();
         await svcAuth.close();
+      }
+    });
+
+    // ---- "Squad on ACA" status card: Checking and Connected (#180) --------
+    // A second, independent hub -- its own HubService, its own browser page
+    // -- with a real `GitHubApp` behind it, pointed at a local stand-in for
+    // api.github.com (`acaFakeGitHubServer`, same technique as
+    // test/github-app-unit.js's own `fakeGitHubApp`). The main `svc` above
+    // never configures a GitHub App at all, so this is the only way to
+    // reach the Connected phase from a real browser; the Checking phase is
+    // reached by delaying `GET /api/aca/repos` on the FIRST load, the one
+    // moment the real app actually shows it before a fetch resolves either
+    // way.
+    await check('the status card runs through Checking, then settles on Connected (#180)', async () => {
+      const ghServer = acaFakeGitHubServer();
+      const ghPort = await listen(ghServer);
+      const githubApp = new GitHubApp({
+        appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort}`,
+      });
+      const authAca = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca', deviceSecret: 'e2e-aca-dev' });
+      const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp });
+      const addrAca = await svcAca.listen(0, '127.0.0.1');
+      const originAca = `http://127.0.0.1:${addrAca.port}`;
+      const tokenAca = authAca.mintDevToken('t-aca', 'u-aca', 'aca person');
+      const pageAca = await browser.newPage();
+      const errorsAca = [];
+      pageAca.on('console', (m) => { if (m.type() === 'error') errorsAca.push(m.text()); });
+      pageAca.on('pageerror', (e) => errorsAca.push(`pageerror: ${e.message}`));
+      try {
+        // Delay only the FIRST `GET /api/aca/repos` so the Checking phase
+        // has a real window to be observed in, rather than racing a fetch
+        // that answers before the next animation frame paints anything.
+        let repoCalls = 0;
+        await pageAca.route('**/api/aca/repos', async (route) => {
+          repoCalls += 1;
+          if (repoCalls === 1) await new Promise((r) => { setTimeout(r, 800); });
+          route.continue();
+        });
+
+        await gotoSettled(pageAca, `${originAca}/?token=${tokenAca}`);
+        await pageAca.waitForSelector('#acaStatusCard .acacard', { timeout: 10000 });
+
+        const sawChecking = await until(async () => {
+          const t = await pageAca.$eval('#acaStatusCard .status', (el) => el.textContent).catch(() => null);
+          return t && /Checking/.test(t) ? true : null;
+        }, 'the card to show Checking while the delayed fetch is still in flight', 5000);
+        assert.ok(sawChecking, 'the card never showed Checking at all, even with the fetch delayed 800ms');
+
+        // Scoped to the card's OWN status span (`.status.done`), not the
+        // whole card's text -- the watcher/Ralph rows below legitimately say
+        // "Not connected" too, for the device roster, which must not be
+        // confused with the App-connection phase asserted here.
+        await until(async () => {
+          const t = await pageAca.$eval('#acaStatusCard .status', (el) => el.textContent).catch(() => null);
+          return t && /^Connected$/.test(t.trim()) ? true : null;
+        }, 'the card to settle on Connected once the delayed fetch resolves');
+        const connectedTxt = await pageAca.textContent('#acaStatusCard');
+        assert.match(connectedTxt, /Issue watcher/, 'no Issue watcher row once connected');
+        assert.match(connectedTxt, /Ralph/, 'no Ralph row once connected');
+        assert.match(connectedTxt, /Last dispatch/, 'no Last dispatch row once connected');
+        // No squad-on-aca devices are attached to this hub, so the two
+        // device-backed rows correctly say "Not connected" for THEM, which
+        // is distinct from (and must not be confused with) the card's own
+        // overall Connected phase asserted above.
+        assert.match(connectedTxt, /No dispatches yet/, 'no dispatches were ever made against this fake, so the row should say so');
+
+        const before = repoCalls;
+        const urlBefore = pageAca.url();
+        await pageAca.click('#acaStatusCard [data-action="aca-retry"]');
+        await until(async () => (repoCalls > before ? true : null), 'Retry to issue a fresh GET /api/aca/repos');
+        assert.strictEqual(pageAca.url(), urlBefore, 'Retry navigated the page instead of just re-fetching');
+        await pageAca.waitForSelector('#acaStatusCard .acacard', { timeout: 10000 });
+
+        const broken = errorsAca.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the ACA-connected page reported errors: ${broken.join(' | ')}`);
+      } finally {
+        await pageAca.close();
+        await svcAca.close();
+        ghServer.close();
       }
     });
 

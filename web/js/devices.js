@@ -10,6 +10,7 @@ import { syncDetailHeader } from './detail.js';
 import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
 import { openAca } from './aca.js';
+import { renderAcaStatus } from './aca-status.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
 // card updates or disappears the moment its approval is answered. Neither
@@ -520,6 +521,12 @@ export function render() {
   // from this same overview; keep them in step with every refresh and every
   // WebSocket push, the same as the list above.
   syncDetailHeader();
+
+  // The "Squad on ACA" status card (#180): its own connection fetch runs on
+  // a slower, independent interval (see web/app.js), but its watcher/Ralph
+  // rows read straight off the device roster this render() just painted
+  // from, so they move on every refresh rather than only every few seconds.
+  renderAcaStatus();
 }
 
 /**

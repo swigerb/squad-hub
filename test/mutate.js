@@ -2313,6 +2313,108 @@ const MUTATIONS = [
   },
 
   // -------------------------------------------------------------------------
+  // #180: Squad on ACA status card
+  // -------------------------------------------------------------------------
+  {
+    name: 'findWatcherDevice stops matching the watcher device by name',
+    file: 'web/js/aca-status.js',
+    find: `export function findWatcherDevice(devices = []) {
+  return devices.find((d) => /watcher/i.test(d && d.name)) || null;
+}`,
+    replace: `export function findWatcherDevice(devices = []) {
+  return process.env.MUTANT ? null : devices.find((d) => /watcher/i.test(d && d.name)) || null; // MUTATION
+}`,
+    mustFail: 'findWatcherDevice matches a device named "squad-aca watcher"',
+  },
+  {
+    name: 'findRalphDevice stops matching the Ralph device by name',
+    file: 'web/js/aca-status.js',
+    find: `export function findRalphDevice(devices = []) {
+  return devices.find((d) => /ralph/i.test(d && d.name)) || null;
+}`,
+    replace: `export function findRalphDevice(devices = []) {
+  return process.env.MUTANT ? null : devices.find((d) => /ralph/i.test(d && d.name)) || null; // MUTATION
+}`,
+    mustFail: 'findRalphDevice matches a device named "squad-aca ralph"',
+  },
+  {
+    name: 'the watcher row reports every presence as Online',
+    file: 'web/js/aca-status.js',
+    find: `  const presence = d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline';`,
+    replace: `  const presence = process.env.MUTANT ? 'Online' : d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline'; // MUTATION`,
+    mustFail: 'acaWatcherLine reports an offline watcher as "Offline · watch-only"',
+  },
+  {
+    name: 'Ralph\'s row ignores a missing lastSeen and claims a sweep happened anyway',
+    file: 'web/js/aca-status.js',
+    find: `  if (!d.lastSeen) return 'No sweeps yet';`,
+    replace: `  if (!d.lastSeen && !process.env.MUTANT) return 'No sweeps yet'; // MUTATION`,
+    mustFail: 'acaRalphLine says "No sweeps yet" when Ralph has never reported a heartbeat',
+  },
+  {
+    name: 'a non-success conclusion is reported as plain "completed", hiding the failure',
+    file: 'web/js/aca-status.js',
+    find: `    case 'completed': return s.conclusion && s.conclusion !== 'success' ? \`completed (\${s.conclusion})\` : 'completed';`,
+    replace: `    case 'completed': return (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) ? \`completed (\${s.conclusion})\` : 'completed'; // MUTATION`,
+    mustFail: 'acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"',
+  },
+  {
+    name: 'an error state drops its own reason text',
+    file: 'web/js/aca-status.js',
+    find: `    case 'error': return s.reason ? \`error: \${s.reason}\` : 'error';`,
+    replace: `    case 'error': return (s.reason && !process.env.MUTANT) ? \`error: \${s.reason}\` : 'error'; // MUTATION`,
+    mustFail: 'acaDispatchStatusLabel labels an error state with its reason',
+  },
+  {
+    // Security-sensitive: a dispatch's owner/repo is the same kind of
+    // untrusted metadata device names already are (src/device-meta.js), and
+    // an error's `reason` can carry upstream GitHub API text verbatim.
+    name: 'the last-dispatch line stops escaping owner/repo before rendering them',
+    file: 'web/js/aca-status.js',
+    find: `  return \`\${esc(d.owner)}/\${esc(d.repo)} \\u00b7 \${label}\`;`,
+    replace: `  return process.env.MUTANT ? \`\${d.owner}/\${d.repo} \\u00b7 \${label}\` : \`\${esc(d.owner)}/\${esc(d.repo)} \\u00b7 \${label}\`; // MUTATION`,
+    mustFail: 'acaLastDispatchLine escapes owner/repo, since device and dispatch metadata is untrusted',
+  },
+  {
+    name: 'the last-dispatch line stops escaping the status label (and its untrusted error reason)',
+    file: 'web/js/aca-status.js',
+    find: `  const label = esc(acaDispatchStatusLabel(d.status));`,
+    replace: `  const label = process.env.MUTANT ? acaDispatchStatusLabel(d.status) : esc(acaDispatchStatusLabel(d.status)); // MUTATION`,
+    mustFail: 'acaLastDispatchLine escapes an untrusted error reason carried in the status label',
+  },
+  {
+    name: 'a not-connected phase with no reason given claims the App IS configured',
+    file: 'web/js/aca-status.js',
+    find: `    return { phase: ACA_PHASE.NOT_CONNECTED, reason: reason || 'the GitHub App is not configured' };`,
+    replace: `    return { phase: ACA_PHASE.NOT_CONNECTED, reason: (process.env.MUTANT ? reason : reason || 'the GitHub App is not configured') }; // MUTATION`,
+    mustFail: 'acaStatusModel keeps NOT_CONNECTED and falls back to a default reason',
+  },
+  {
+    name: 'an absent/falsy phase stops defaulting the card to Checking',
+    file: 'web/js/aca-status.js',
+    find: `  if (phase === ACA_PHASE.CHECKING || !phase) return { phase: ACA_PHASE.CHECKING };`,
+    replace: `  if ((phase === ACA_PHASE.CHECKING || !phase) && !process.env.MUTANT) return { phase: ACA_PHASE.CHECKING }; // MUTATION`,
+    mustFail: 'acaStatusModel defaults to CHECKING with no phase given',
+  },
+  {
+    // The Not-connected note renders a reason string that can originate from
+    // `e.body.reason` -- an upstream error message, not UI-authored copy --
+    // so the HTML template itself must not trust it either.
+    name: 'the Not-connected card note stops escaping the reason text',
+    file: 'web/js/aca-status.js',
+    find: `        <p class="acacard-note">\${esc(model.reason)}.</p>`,
+    replace: `        <p class="acacard-note">\${process.env.MUTANT ? model.reason : esc(model.reason)}.</p> <!-- MUTATION -->`,
+    mustFail: 'acaStatusCardHtml escapes an untrusted reason string in the Not-connected note',
+  },
+  {
+    name: 'the Connected card drops its Retry link',
+    file: 'web/js/aca-status.js',
+    find: `        <a class="acacard-link" href="#" data-action="aca-retry">Retry</a> &middot;`,
+    replace: `        <a class="acacard-link" href="#"\${process.env.MUTANT ? '' : ' data-action="aca-retry"'}>Retry</a> &middot; <!-- MUTATION -->`,
+    mustFail: 'acaStatusCardHtml renders Connected with watcher/Ralph/last-dispatch rows and Retry/Learn more',
+  },
+
+  // -------------------------------------------------------------------------
   // S5: control verification
   // -------------------------------------------------------------------------
   {
@@ -2728,6 +2830,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/transcript.js',
   '/js/ws.js',
   '/js/aca.js',
+  '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
@@ -2772,7 +2875,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v7';`,
+    find: `const CACHE = 'squad-hub-shell-v8';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },

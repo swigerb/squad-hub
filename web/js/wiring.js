@@ -26,6 +26,7 @@ import {
   setRailCollapsed, applyTheme, nextTheme, toggleFavorite, saveView, refresh,
 } from './ws.js';
 import { openAca, wireAca } from './aca.js';
+import { wireAcaStatusCard } from './aca-status.js';
 import { openPeople, wireAccess } from './access.js';
 import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
@@ -378,6 +379,7 @@ export function wire() {
   wireInstall();
   wireAccess();
   wireAca();
+  wireAcaStatusCard();
   wireConnect({ spawnRequest, spawnError });
 
   $('dtStop').onclick = async () => {

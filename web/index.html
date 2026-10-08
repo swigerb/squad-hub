@@ -367,6 +367,13 @@
         <span class="availpill" id="deviceAvailable" hidden></span>
       </div>
       <div id="deviceList"></div>
+      <!--
+        The "Squad on ACA" status card (#180): whether this hub's GitHub App
+        is connected (#177), the issue watcher and Ralph devices, and the
+        last dispatch. Its own module (aca-status.js) owns everything inside
+        it; this is only the mount point, same as #deviceList above it.
+      -->
+      <div id="acaStatusCard"></div>
     </aside>
   </div>
 </main>

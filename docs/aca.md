@@ -321,7 +321,7 @@ Both halves are implemented and proven.
 
 | | |
 |---|---|
-| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, and `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy. |
+| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy — and the devices panel's "Squad on ACA" status card (#180), the first UI to read `GET /api/aca/repos` / `GET /api/aca/dispatches`. |
 | **In squad-on-aca** | `worker/lib/squad-hub.sh`, the `hub-argv-json` policy variant, and the `-SquadHubUrl` / `-SquadHubToken` deploy parameters. See its [docs/squad-hub.md][aca-doc]. |
 
 [aca-doc]: https://github.com/swigerb/squad-on-aca/blob/main/docs/squad-hub.md
