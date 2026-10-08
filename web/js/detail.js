@@ -227,24 +227,17 @@ export function syncDetailHeader() {
  */
 export function initDetailRouting() {
   const back = (e) => { e.preventDefault(); closeDetail(); };
-  const dtBack = $('dtBack');
-  if (dtBack) dtBack.onclick = back;
-  const dtBackPhone = $('dtBackPhone');
-  if (dtBackPhone) dtBackPhone.onclick = back;
+  $('dtBack').onclick = back;
+  $('dtBackPhone').onclick = back;
 
-  const filterBox = $('dtSidebarFilter');
-  if (filterBox) filterBox.oninput = () => renderSidebar();
+  $('dtSidebarFilter').oninput = () => renderSidebar();
 
-  const list = $('detailSidebarList');
-  if (list) {
-    list.onclick = (e) => {
-      const row = e.target.closest('[data-session]');
-      if (row) openDetail(row.dataset.session);
-    };
-  }
+  $('detailSidebarList').onclick = (e) => {
+    const row = e.target.closest('[data-session]');
+    if (row) openDetail(row.dataset.session);
+  };
 
-  const star = $('dtStar');
-  if (star) star.onclick = () => toggleCurrentFavorite();
+  $('dtStar').onclick = () => toggleCurrentFavorite();
 
   window.addEventListener('popstate', () => {
     const wanted = urlSessionKey();

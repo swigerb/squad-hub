@@ -1323,7 +1323,7 @@ async function watchCsp(pg) {
       assert.strictEqual(listHiddenWhileOpen, true, 'the list page is still showing underneath the detail page');
 
       await page.goBack();
-      await page.waitForSelector('#detailScrim[hidden]', { timeout: 10000 });
+      await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
       const backUrl = new URL(page.url());
       assert.strictEqual(backUrl.search, '', `Back did not clear the session from the address bar: ${page.url()}`);
       const listVisibleAfterBack = await page.evaluate(() => document.getElementById('listPage').hidden);
@@ -1347,7 +1347,7 @@ async function watchCsp(pg) {
       // `goto`, i.e. leave the detail page -- not bounce to another
       // /?session=... entry this load itself pushed.
       await page.goBack();
-      await page.waitForSelector('#detailScrim[hidden]', { timeout: 10000 });
+      await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
     });
 
     await check('the sidebar lists other sessions, filters by text, and clicking one navigates to it', async () => {
@@ -1431,7 +1431,7 @@ async function watchCsp(pg) {
       assert.strictEqual(layout.backPhoneVisible, true, 'the phone back arrow is not showing on a phone-width viewport');
 
       await page.click('#dtBackPhone');
-      await page.waitForSelector('#detailScrim[hidden]', { timeout: 10000 });
+      await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
