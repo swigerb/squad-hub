@@ -6,6 +6,7 @@ import {
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval, syncAppBadge } from './notifications.js';
+import { syncDetailHeader } from './detail.js';
 import { inboxCount } from './inbox.js';
 import { openConnect, openNew } from './connect.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
@@ -315,6 +316,11 @@ export function render() {
   renderInboxMenu();
 
   maybePromptApproval();
+
+  // The detail page (#181) has its own sidebar and header fields that read
+  // from this same overview; keep them in step with every refresh and every
+  // WebSocket push, the same as the list above.
+  syncDetailHeader();
 }
 
 /**

@@ -254,6 +254,33 @@ export function statusBadge(s, device) {
 }
 
 /**
+ * The status PILL used on the full-page session detail header.
+ *
+ * Shares its words and its state mapping with `statusBadge` -- one source for
+ * "what is this status called" and "how urgent is it", so the pill on the
+ * header and the badge on the row can never disagree about the same session.
+ * Returns only the class; the element and its leading dot are styled in CSS
+ * (`.dt-pill`), because the dot is decorative and must not be read out by a
+ * screen reader twice.
+ */
+export function statusPillClass(s, device) {
+  // Same ordering as `statusBadge`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';
+  return {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: 'review',
+    done: '',
+    failed: 'failed',
+    stopped: '',
+  }[s.status] || '';
+}
+
+/**
  * The live activity line.
  *
  * A blocked session is described as waiting even if the last update it

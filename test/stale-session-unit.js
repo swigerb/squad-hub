@@ -36,12 +36,14 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = {
   isStaleSession, isDeviceUnreachable, cleanupControls, STOP_UNREACHABLE_REASON,
-  statusLabel, statusBadge, activityLine, needsAttention, sessionRow, buildView,
+  statusLabel, statusBadge, statusPillClass, activityLine, needsAttention, sessionRow, buildView,
+  sidebarEntries, sidebarRow,
 };`)(mod, mod.exports);
 
 const {
   isStaleSession, isDeviceUnreachable, cleanupControls, STOP_UNREACHABLE_REASON,
-  statusLabel, statusBadge, activityLine, needsAttention, sessionRow, buildView,
+  statusLabel, statusBadge, statusPillClass, activityLine, needsAttention, sessionRow, buildView,
+  sidebarEntries, sidebarRow,
 } = mod.exports;
 
 const NOW = 1_700_000_000_000;
@@ -197,6 +199,44 @@ check('THE PROPERTY THAT MATTERS: a stale session is never left with only disabl
         `status=${status} presence=${presence}: Stop disabled with no Forget offered strands the user`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// #218 regression: the detail page's own surfaces (header pill/label and the
+// sidebar rows and ordering) must see the same stale treatment as the main
+// list, not call `needsAttention`/`statusBadge`/`statusPillClass`/
+// `statusLabel` with the bare session and no device.
+// ---------------------------------------------------------------------------
+
+function group(sessions, dev) {
+  return { device: dev, sessions };
+}
+
+check('statusPillClass reads "stale", never "attention", for a stale session', () => {
+  const s = sess({ status: 'waiting_approval', pendingApprovals: [{ optionId: 'allow_once' }] });
+  assert.strictEqual(statusPillClass(s, device('offline')), 'stale');
+  // The identical session on a live device still gets the urgent class.
+  assert.strictEqual(statusPillClass(s, device('online')), 'attention');
+});
+
+check('sidebarEntries does not float a stale session to the top of the sidebar', () => {
+  const stale = sess({ status: 'waiting_approval', pendingApprovals: [{ optionId: 'allow_once' }], startedAt: NOW - 2 * HOUR });
+  const ordinary = sess({ status: 'active', startedAt: NOW - HOUR });
+  const groups = [
+    group([stale], device('offline')),
+    group([ordinary], device('online', { name: 'laptop', deviceId: 'laptop' })),
+  ];
+  const entries = sidebarEntries(groups, '');
+  // Plain started_desc order: the stale card does not jump the queue.
+  assert.deepStrictEqual(entries.map((e) => e.session.key), [ordinary.key, stale.key]);
+});
+
+check('sidebarRow never carries the "attention" class for a stale session', () => {
+  const stale = { session: sess({ status: 'idle' }), device: device('offline') };
+  const html = sidebarRow(stale, null);
+  assert.ok(!/\bdt-side-row[^"]*\battention\b/.test(html), html);
+  // The badge inside the row reads "Unreachable", not "Needs approval".
+  assert.ok(/Unreachable/.test(html), html);
 });
 
 setTimeout(() => {

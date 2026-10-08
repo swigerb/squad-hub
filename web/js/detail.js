@@ -1,13 +1,27 @@
 import { state, api } from './api.js';
 import {
-  esc, num, truncateWords, statusLabel, isStaleSession, isDeviceUnreachable, cleanupControls, $,
+  esc, num, truncateWords, statusLabel, statusPillClass,
+  isStaleSession, isDeviceUnreachable, cleanupControls, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
-import { refresh } from './ws.js';
+import { refresh, resolveDeepLink, toggleFavorite } from './ws.js';
+import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
+import { renderTranscript, transcriptSkeleton } from './transcript.js';
 
 // ---------------------------------------------------------------------------
-// Session detail
+// Session detail: a full page at /?session=<key>, not a modal (#181)
+//
+// Three ways in, one history model:
+//   - a row or a sidebar entry is clicked                 -> pushState
+//   - a deep link is opened or the page loads with one    -> replaceState
+//   - the browser's Back/Forward button fires `popstate`  -> no history write
+// `NAV` names the three so a caller cannot forget which one its situation
+// calls for; "I navigated, so update the URL" is the bug this exists to rule
+// out, because `popstate` already IS the URL changing and doing it again
+// would push the same entry twice.
 // ---------------------------------------------------------------------------
+const NAV = { PUSH: 'push', REPLACE: 'replace', NONE: 'none' };
+
 function findSession(key) {
   for (const g of state.overview.groups) {
     for (const s of g.sessions) if (s.key === key) return { device: g.device, session: s };
@@ -15,9 +29,35 @@ function findSession(key) {
   return null;
 }
 
-export async function openDetail(key) {
+function applyNav(nav, key) {
+  if (nav === NAV.NONE) return;
+  const url = key ? `/?session=${encodeURIComponent(key)}` : '/';
+  const entry = { squadHubSession: key || null };
+  if (nav === NAV.REPLACE) history.replaceState(entry, '', url);
+  else history.pushState(entry, '', url);
+}
+
+function showDetailPage() {
+  const list = $('listPage');
+  if (list) list.hidden = true;
+  $('detailScrim').hidden = false;
+}
+
+function hideDetailPage() {
+  $('detailScrim').hidden = true;
+  const list = $('listPage');
+  if (list) list.hidden = false;
+}
+
+/** The session named in the address bar right now, without consuming it. */
+export function urlSessionKey() {
+  return new URLSearchParams(location.search).get('session');
+}
+
+export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const found = findSession(key);
-  if (!found) return;
+  if (!found) return false;
+  applyNav(nav, key);
   state.currentSession = found;
   // Cut at a word boundary. `slice(0, 80)` alone ended titles mid-word --
   // "...as the Squad team, using y" -- which reads as a rendering fault rather
@@ -31,6 +71,17 @@ export async function openDetail(key) {
     found.session.cwd || '',
     statusLabel(found.session, found.device),
   ].filter(Boolean).join(' · ');
+  const pillCls = statusPillClass(found.session, found.device);
+  $('dtStatusPill').className = `dt-pill ${pillCls}`;
+  $('dtStatusPill').textContent = statusLabel(found.session, found.device);
+  const pinned = state.favorites.has(sessionKey(found.session));
+  const star = $('dtStar');
+  star.dataset.star = sessionKey(found.session);
+  star.classList.toggle('on', pinned);
+  star.textContent = pinned ? '★' : '☆';
+  star.title = pinned ? 'Unpin this session' : 'Pin this session';
+  star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
+  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
   renderCleanup(found);
   // Prefilled from the session when it is on GitHub. Shown either way now that
   // the dialog takes a repository: a run does not have to be about the
@@ -53,7 +104,8 @@ export async function openDetail(key) {
   $('dtWarn').hidden = warnings.length === 0;
   renderSquadPanel(found.session.squad);
   $('dtTranscript').innerHTML = transcriptSkeleton();
-  $('detailScrim').hidden = false;
+  showDetailPage();
+  renderSidebar();
 
   // The composer starts DISABLED and stays that way until the device itself
   // says it can take input. The draft is restored rather than reset -- someone
@@ -75,6 +127,128 @@ export async function openDetail(key) {
   // still worth reading, and blocking the transcript on a control check would
   // make an unreachable device hide the very history explaining why.
   verifyControl();
+  return true;
+}
+
+/**
+ * Leave the detail page and show the list again.
+ *
+ * `nav` follows the same rule as `openDetail`: a person clicking the back
+ * link pushes (or rather, writes) a `/` entry so Forward can return them; a
+ * `popstate` handler passes `NAV.NONE` because the browser already wrote the
+ * entry that got it here.
+ */
+export function closeDetail({ nav = NAV.PUSH } = {}) {
+  state.currentSession = null;
+  applyNav(nav, null);
+  hideDetailPage();
+}
+
+/**
+ * Pin or unpin the session currently open, from the header star.
+ *
+ * Delegates to the same `toggleFavorite` the row's own star uses, so the two
+ * can never disagree about which sessions are pinned -- it is the one list,
+ * read from the one place it is stored.
+ */
+export function toggleCurrentFavorite() {
+  const current = state.currentSession;
+  if (!current) return;
+  toggleFavorite(sessionKey(current.session));
+  const pinned = state.favorites.has(sessionKey(current.session));
+  const star = $('dtStar');
+  star.classList.toggle('on', pinned);
+  star.textContent = pinned ? '★' : '☆';
+  star.title = pinned ? 'Unpin this session' : 'Pin this session';
+  star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
+  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  renderSidebar();
+}
+
+/**
+ * The sidebar list: every session the current filter box matches, with the
+ * open one highlighted. Re-run on every refresh so a session that starts,
+ * finishes or gets pinned while this page is open is reflected without
+ * leaving it -- the whole point of a sidebar is to not have to.
+ */
+export function renderSidebar() {
+  const list = $('detailSidebarList');
+  if (!list) return;
+  const filterBox = $('dtSidebarFilter');
+  const filterText = filterBox ? filterBox.value : '';
+  const selectedKey = state.currentSession ? sessionKey(state.currentSession.session) : null;
+  const entries = sidebarEntries((state.overview && state.overview.groups) || [], filterText);
+  list.innerHTML = entries.length
+    ? entries.map((e) => sidebarRow(e, selectedKey)).join('')
+    : '<div class="dt-side-empty">No sessions match this filter</div>';
+}
+
+/**
+ * Keep the open detail header in step with the live feed, without replaying
+ * the whole `openDetail` flow.
+ *
+ * `render()` in devices.js runs on every refresh and every WebSocket push --
+ * every few seconds while the detail page is open, and far more often than
+ * anything in the header actually changes. Re-fetching the transcript and
+ * resetting the composer's draft that often would make the page unusable the
+ * moment someone started typing a follow-up. This updates only the fields
+ * that come from the session record itself (title, status, warnings, pin)
+ * and the sidebar; the transcript keeps streaming through its own update
+ * path, and the composer is left alone entirely.
+ */
+export function syncDetailHeader() {
+  renderSidebar();
+  if (!state.currentSession) return;
+  const key = sessionKey(state.currentSession.session);
+  const found = findSession(key);
+  if (!found) return;
+  state.currentSession = found;
+  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  $('dtMeta').textContent = [
+    found.device.name,
+    found.session.cwd || '',
+    statusLabel(found.session, found.device),
+  ].filter(Boolean).join(' · ');
+  $('dtStatusPill').className = `dt-pill ${statusPillClass(found.session, found.device)}`;
+  $('dtStatusPill').textContent = statusLabel(found.session, found.device);
+  const warnings = [
+    ...(((found.session.applied || {}).warnings) || []),
+    ...(((found.session.agentSelection || {}).warnings) || []),
+  ].filter(Boolean);
+  $('dtWarn').textContent = warnings.join(' · ');
+  $('dtWarn').hidden = warnings.length === 0;
+  const pinned = state.favorites.has(key);
+  const star = $('dtStar');
+  star.classList.toggle('on', pinned);
+  star.textContent = pinned ? '★' : '☆';
+}
+
+/**
+ * Wire the routing-related controls that live only on the detail page: the
+ * two back links, the sidebar's filter box and selection clicks, and the
+ * browser's own Back/Forward button. Called once, from `wire()` in wiring.js.
+ */
+export function initDetailRouting() {
+  const back = (e) => { e.preventDefault(); closeDetail(); };
+  $('dtBack').onclick = back;
+  $('dtBackPhone').onclick = back;
+
+  $('dtSidebarFilter').oninput = () => renderSidebar();
+
+  $('detailSidebarList').onclick = (e) => {
+    const row = e.target.closest('[data-session]');
+    if (row) openDetail(row.dataset.session);
+  };
+
+  $('dtStar').onclick = () => toggleCurrentFavorite();
+
+  window.addEventListener('popstate', () => {
+    const wanted = urlSessionKey();
+    if (!wanted) { closeDetail({ nav: NAV.NONE }); return; }
+    const hit = resolveDeepLink(wanted, (state.overview && state.overview.groups) || []);
+    if (hit.status === 'found') openDetail(hit.key, { nav: NAV.NONE });
+    else closeDetail({ nav: NAV.NONE });
+  });
 }
 
 /**
@@ -387,153 +561,3 @@ export async function openSquadDoc(doc) {
     return `<span class="${cls}">${esc(l)}</span>`;
   }).join('\n')}</pre>`;
 }
-
-/**
- * Pull readable text out of an ACP update, whatever shape it arrived in.
- *
- * `content` is a string on some updates, an object with `.text` on others, and
- * an array of content blocks on tool results. The old reader tried
- * `u.content.text || u.content`, so an ARRAY fell through to the second branch
- * and was printed as raw JSON -- which is why a tool result showed up as
- * `[{"type":"content","content":{"type":"text","text":"Query returned 0 rows."}}]`
- * instead of "Query returned 0 rows."
- */
-function updateText(u) {
-  const fromBlock = (b) => {
-    if (typeof b === 'string') return b;
-    if (!b || typeof b !== 'object') return '';
-    if (typeof b.text === 'string') return b.text;
-    if (b.content) return fromBlock(b.content);
-    return '';
-  };
-  if (Array.isArray(u.content)) return u.content.map(fromBlock).filter(Boolean).join('\n');
-  const direct = fromBlock(u.content);
-  if (direct) return direct;
-  return typeof u.text === 'string' ? u.text : '';
-}
-
-/**
- * Updates that are protocol bookkeeping, not conversation.
- *
- * `usage_update` fires on every token, and `available_commands_update` and
- * `config_option_update` fire whenever the agent reconfigures itself. None of
- * them carry anything a person reads, and rendering them put a row of gray
- * noise between every useful line.
- */
-const TRANSCRIPT_NOISE = new Set([
-  'usage_update', 'available_commands_update', 'config_option_update',
-  'current_mode_update', 'plan', 'agent_thought_chunk',
-]);
-
-/**
- * Group a raw update stream into blocks a person can read.
- *
- * THE STREAM IS TOKENS, NOT LINES. `agent_message_chunk` arrives many times per
- * sentence, and the old renderer gave each one its own row -- which is why a
- * finished answer displayed one word per line down the page. Consecutive
- * chunks from the same speaker belong to one block.
- *
- * Tool results are kept but capped: the point is to see THAT a tool ran and
- * roughly what came back, not to scroll a 96MB directory listing.
- */
-const TOOL_RESULT_CAP = 600;
-
-function transcriptBlocks(entries) {
-  const blocks = [];
-  const push = (kind, text) => {
-    const last = blocks[blocks.length - 1];
-    // Only prose is joined. Two tool results in a row are two results.
-    if (last && last.kind === kind && (kind === 'agent' || kind === 'you')) last.text += text;
-    else blocks.push({ kind, text });
-  };
-
-  for (const e of entries || []) {
-    const u = (e && e.update) || e || {};
-    const kind = u.sessionUpdate;
-    if (TRANSCRIPT_NOISE.has(kind)) continue;
-
-    if (kind === 'tool_call') {
-      const title = u.title || u.kind || 'running a tool';
-      blocks.push({ kind: 'tool', text: title });
-      continue;
-    }
-    if (kind === 'tool_call_update') {
-      const out = updateText(u).trim();
-      if (out) blocks.push({ kind: 'result', text: out });
-      continue;
-    }
-    if (kind === 'error') {
-      blocks.push({ kind: 'error', text: updateText(u) || 'unknown error' });
-      continue;
-    }
-
-    const text = updateText(u);
-    if (!text) continue;
-    if (kind === 'user_message' || kind === 'user_message_chunk') push('you', text);
-    else push('agent', text);
-  }
-  return blocks;
-}
-
-/**
- * How a tool result is shown.
- *
- * Long output is clipped for reading, but the WHOLE text is kept and rendered
- * behind a disclosure. The previous label said "output truncated (N
- * characters)" and offered nothing -- which read as "the rest is gone" when in
- * fact the rest had been sent, received, and thrown away at the last step.
- */
-function resultView(text, cap = TOOL_RESULT_CAP) {
-  const full = String(text == null ? '' : text);
-  if (full.length <= cap) return { full, shown: full, clipped: false };
-  return { full, shown: `${full.slice(0, cap)}…`, clipped: true };
-}
-
-/**
- * Placeholder transcript entries, shown while the real transcript is still in
- * flight.
- *
- * Replaces a single "loading…" line for the same reason the session list and
- * device rail get skeletons rather than text: a shape the size of what is
- * coming says the panel is already working, where one quiet sentence reads as
- * a box that has stalled.
- */
-export function transcriptSkeleton(n = 4) {
-  return Array.from({ length: n }, (_, i) => `
-    <div class="t-msg skeleton-row" aria-hidden="true">
-      <span class="t-who skel skel-who"></span>
-      <div class="t-body">
-        <div class="skel skel-line"></div>
-        ${i % 2 === 0 ? '<div class="skel skel-line short"></div>' : ''}
-      </div>
-    </div>`).join('');
-}
-
-export function renderTranscript(entries) {
-  const blocks = transcriptBlocks(entries);
-  if (!blocks.length) {
-    $('dtTranscript').innerHTML = '<div class="t-entry t-kind">nothing yet</div>';
-    return;
-  }
-  $('dtTranscript').innerHTML = blocks.map((b) => {
-    if (b.kind === 'tool') {
-      return `<div class="t-entry t-toolrow"><span class="t-tool">tool</span> <span class="t-text">${esc(b.text)}</span></div>`;
-    }
-    if (b.kind === 'result') {
-      const v = resultView(b.text);
-      if (!v.clipped) return `<div class="t-entry t-result"><pre>${esc(v.full)}</pre></div>`;
-      return `<div class="t-entry t-result"><pre class="t-clipped">${esc(v.shown)}</pre>`
-        + `<details><summary class="t-more">`
-        + `show all ${v.full.length.toLocaleString()} characters</summary>`
-        + `<pre>${esc(v.full)}</pre></details></div>`;
-    }
-    if (b.kind === 'error') {
-      return `<div class="t-entry t-err"><span class="t-tool">error</span> <span class="t-text">${esc(b.text)}</span></div>`;
-    }
-    const who = b.kind === 'you' ? 'you' : 'agent';
-    return `<div class="t-entry t-msg t-${who}"><span class="t-who">${who}</span><div class="t-body">${esc(b.text.trim())}</div></div>`;
-  }).join('');
-  const el = $('dtTranscript');
-  el.scrollTop = el.scrollHeight;
-}
-

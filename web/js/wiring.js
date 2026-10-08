@@ -20,7 +20,7 @@ import {
 } from './notifications.js';
 import { render } from './devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc, forgetStaleSession,
+  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession,
 } from './detail.js';
 import {
   setRailCollapsed, applyTheme, nextTheme, toggleFavorite, saveView, refresh,
@@ -69,7 +69,9 @@ function toggleMenu(force) {
  * Opening one closes the other. Two menus open at once is a state nobody
  * intends and every stray click produces.
  */
-const POPUP_BUTTON = { newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn' };
+const POPUP_BUTTON = {
+  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn', dtMenu: 'dtMoreBtn',
+};
 
 function togglePopup(menuId, btnId, force) {
   const m = $(menuId);
@@ -309,7 +311,8 @@ export function wire() {
     forgetEnded(b.dataset.forget);
   };
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
-  $('dtClose').onclick = () => { $('detailScrim').hidden = true; state.currentSession = null; };
+  initDetailRouting();
+  $('dtMoreBtn').onclick = (e) => { e.stopPropagation(); togglePopup('dtMenu', 'dtMoreBtn'); };
 
   $('bellBtn').onclick = async (e) => {
     e.stopPropagation();
@@ -364,6 +367,7 @@ export function wire() {
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
     if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
+    if (!$('dtMenu').hidden && !e.target.closest('#dtMoreBtn') && !e.target.closest('#dtMenu')) togglePopup('dtMenu', 'dtMoreBtn', false);
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
     if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
       $('filterbarEnd').classList.remove('open');
@@ -383,7 +387,7 @@ export function wire() {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/stop`, {
         method: 'POST', body: { sessionId: session.id },
       });
-      $('detailScrim').hidden = true;
+      closeDetail();
       refresh();
     } catch (e) { alert(`Could not stop: ${e.message}`); }
   };
@@ -429,15 +433,17 @@ export function wire() {
     $('dtSend').click();
   };
 
-  $('dtSync').onclick = () => syncSession();
+  $('dtSync').onclick = () => { togglePopup('dtMenu', 'dtMoreBtn', false); syncSession(); };
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     toggleMenu(false);
     togglePopup('newMenu', 'newMoreBtn', false);
     togglePopup('tidyMenu', 'tidyBtn', false);
+    togglePopup('dtMenu', 'dtMoreBtn', false);
     $('filterbarEnd').classList.remove('open');
     $('filterToggle').setAttribute('aria-expanded', 'false');
-    for (const id of ['approvalScrim', 'newScrim', 'detailScrim']) $(id).hidden = true;
+    for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;
+    if (!$('detailScrim').hidden) closeDetail();
   });
 }

@@ -1,6 +1,114 @@
-/* ---------- detail ---------- */
-.detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-.detail-actions { display: flex; gap: 8px; }
+/* ---------- detail: a full page, not a modal ----------
+   #181. The scrim/modal pair this replaced popped up over the list and threw
+   its content away on close; a page can be linked to, kept open while the
+   WebSocket feed keeps updating the sidebar behind it, and left and returned
+   to with the browser's own Back button. */
+.detail-page { max-width: 1400px; }
+.detail-layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; align-items: start; }
+
+.detail-sidebar {
+  position: sticky; top: 76px; max-height: calc(100vh - 96px);
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 12px; overflow: hidden;
+}
+.detail-sidebar-head { display: flex; align-items: center; }
+.back-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--dim); text-decoration: none; font-size: 13px; font-weight: 600;
+}
+.back-link:hover { color: var(--text); }
+.back-link .i { width: 14px; height: 14px; }
+.detail-sidebar-filter {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  padding: 7px 10px; border-radius: 8px; font: inherit;
+}
+.detail-sidebar-list { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.dt-side-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; text-align: left; background: transparent; border: 1px solid transparent;
+  border-radius: 8px; padding: 8px 10px; cursor: pointer; font: inherit; color: var(--text);
+}
+.dt-side-row:hover { background: var(--panel-2); }
+.dt-side-row.selected { background: var(--panel-2); border-color: var(--accent); }
+.dt-side-row.attention { box-shadow: inset 3px 0 0 var(--warn); }
+.dt-side-title {
+  font-size: 13px; font-weight: 600; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dt-side-meta {
+  font-size: 11.5px; color: var(--faint); max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dt-side-empty { color: var(--faint); font-size: 12.5px; padding: 8px 4px; }
+
+.detail-main { min-width: 0; }
+
+/* The header is ONE 32px line box: every item in it -- the back arrow, the
+   star, the title, the status pill and the right-hand actions -- shares a
+   single center line rather than each sitting on its own baseline. Checked at
+   1280px, 900px and 390px: the only thing that changes between them is which
+   back control is visible (see .phone-only / .detail-sidebar below), never
+   the vertical alignment. */
+.detail-head-line { display: flex; align-items: center; gap: 10px; height: 32px; }
+.detail-head-line h2 {
+  margin: 0; font-size: 17px; line-height: 32px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.detail-head-line .star {
+  flex: 0 0 auto; width: 32px; height: 32px; display: inline-flex;
+  align-items: center; justify-content: center; background: transparent;
+  border: 0; color: var(--faint); font-size: 17px; cursor: pointer; border-radius: 8px;
+}
+.detail-head-line .star:hover { background: var(--panel-2); color: var(--text); }
+.detail-head-line .star.on { color: var(--warn); }
+.back-btn {
+  flex: 0 0 auto; width: 32px; height: 32px; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 8px;
+  color: var(--dim); text-decoration: none;
+}
+.back-btn:hover { background: var(--panel-2); color: var(--text); }
+.back-btn .i { width: 16px; height: 16px; }
+.phone-only { display: none; }
+.detail-head-line .detail-actions { align-items: center; height: 32px; }
+.detail-head-line .detail-actions button { height: 32px; box-sizing: border-box; }
+
+/* The status pill: fully rounded, 22px tall, a tinted fill and a leading dot
+   rather than a clickable-looking outline -- a status is a fact, not a
+   control. Centered on the header's 32px line by the flex row above, not by
+   its own height matching it. */
+.dt-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px;
+  padding: 0 10px 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  white-space: nowrap; flex: 0 0 auto;
+  background: var(--panel-2); color: var(--dim);
+}
+.dt-pill::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; flex: 0 0 auto;
+}
+.dt-pill.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); }
+.dt-pill.attention { color: #221a00; background: var(--warn); font-weight: 700; }
+.dt-pill.review { color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, var(--panel-2)); }
+.dt-pill.failed { color: var(--bad); background: color-mix(in srgb, var(--bad) 18%, var(--panel-2)); }
+.dt-pill.stale { color: var(--faint); background: var(--panel-2); font-style: italic; font-weight: 600; }
+
+.detail-head { display: flex; flex-direction: column; gap: 4px; }
+/* `position: relative` so `.menu.anchored` (the kebab's dropdown) anchors to
+   THIS row -- its `right: 0` then lines up with the kebab button, which is
+   the last thing in it, instead of drifting to whatever ancestor happens to
+   be positioned. */
+.detail-actions { display: flex; gap: 8px; align-items: center; position: relative; }
+
+/* ---------- phone: full screen, no sidebar, back arrow in the header ----------
+   Matches the existing 900px layout breakpoint for the list page, so the
+   product switches to a single-column reading mode at the same width
+   everywhere rather than at a second, arbitrary number. */
+@media (max-width: 900px) {
+  .detail-layout { grid-template-columns: 1fr; }
+  .detail-sidebar { display: none; }
+  .phone-only { display: inline-flex; }
+}
 /* Grows with what is in it rather than reserving a fixed slab. A 260px
    minimum meant a two-word reply sat at the top of an empty black rectangle
    taller than everything else in the panel. */
