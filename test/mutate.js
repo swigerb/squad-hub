@@ -2092,11 +2092,60 @@ const MUTATIONS = [
   {
     name: 'the shown count includes rows that were filtered away',
     file: 'web/js/list.js',
-    find: `  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
-}`,
-    replace: `  return { sections, counts: { pinned: pinned.length, shown: process.env.MUTANT ? groups.reduce((n, g) => n + (g.sessions || []).length, 0) : pinned.length + rest.length } }; // MUTATION
-}`,
+    find: `  const counts = { pinned: pinned.length, shown: pinned.length + rest.length, scopes: scopeCounts(groups, filters, favorites, now) };`,
+    replace: `  const counts = { pinned: pinned.length, shown: process.env.MUTANT ? groups.reduce((n, g) => n + (g.sessions || []).length, 0) : pinned.length + rest.length, scopes: scopeCounts(groups, filters, favorites, now) }; // MUTATION`,
     mustFail: 'the counts describe what is actually on screen',
+  },
+  {
+    // #168: the scope tab is a hard partition applied BEFORE pin/filter --
+    // this proves a pinned session on the wrong tab stays excluded rather
+    // than slipping through because it is pinned.
+    name: 'a scope tab stops matching device kind, so a cloud session leaks onto Local',
+    file: 'web/js/list.js',
+    find: `  const cloud = isCloudKind(device && device.kind);
+  return scope === 'cloud' ? cloud : !cloud;`,
+    replace: `  const cloud = isCloudKind(device && device.kind) && !process.env.MUTANT; // MUTATION
+  return scope === 'cloud' ? cloud : !cloud;`,
+    mustFail: 'scope tabs: matchesScope partitions by device kind',
+  },
+  {
+    name: 'the scope split stops applying before pin/filter, so a pinned session reappears on the wrong tab',
+    file: 'web/js/list.js',
+    find: `    if (!matchesScope(scope, g.device)) continue;`,
+    replace: `    if (!matchesScope(scope, g.device) && !process.env.MUTANT) continue; // MUTATION`,
+    mustFail: 'scope tabs: buildView excludes a pinned session from a scope it is not on',
+  },
+  {
+    name: 'scopeCounts stops honouring the pin, undercounting a filtered-out favourite',
+    file: 'web/js/list.js',
+    find: `      const included = pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now);`,
+    replace: `      const included = (pinnedKeys.has(sessionKey(s)) && !process.env.MUTANT) || matchesFilters(s, filters, now); // MUTATION`,
+    mustFail: 'scope tabs: scopeCounts counts a pinned session under its own scope, bypassing filters',
+  },
+  {
+    name: 'activeFilterCount starts counting the keyword box as a filter behind the phone button',
+    file: 'web/js/list.js',
+    find: `  return ['status', 'device', 'repo', 'org', 'window'].filter((k) => filters[k]).length;`,
+    replace: `  return [process.env.MUTANT ? 'q' : 'status', 'device', 'repo', 'org', 'window'].filter((k) => filters[k]).length; // MUTATION`,
+    mustFail: 'activeFilterCount counts only the dropdown filters, never the keyword box',
+  },
+  {
+    // A shared link must not silently override settings the next person
+    // already has -- this proves the default-omission actually happens.
+    name: 'viewStateToParams stops omitting the default scope, so every link forces "all"',
+    file: 'web/js/list.js',
+    find: `  if (view.scope && view.scope !== 'all') params.scope = view.scope;`,
+    replace: `  if (view.scope && (view.scope !== 'all' || process.env.MUTANT)) params.scope = view.scope; // MUTATION`,
+    mustFail: 'viewStateToParams omits whatever is already at its default',
+  },
+  {
+    // A hand-edited or stale URL (`?sort=deleted-option`) must be ignored,
+    // never applied as if the option still existed.
+    name: 'paramsToViewState stops validating sort against the real option table',
+    file: 'web/js/list.js',
+    find: `  if (SORTS[params.sort]) out.sortBy = params.sort;`,
+    replace: `  if (SORTS[params.sort] || (params.sort && process.env.MUTANT)) out.sortBy = params.sort; // MUTATION`,
+    mustFail: 'paramsToViewState ignores a stale or hand-edited value rather than applying it',
   },
   {
     name: 'an empty Pinned section is rendered when nothing is pinned',

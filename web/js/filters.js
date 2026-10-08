@@ -15,9 +15,9 @@ import { $ } from './util.js';
  * reasons -- hand them over.
  */
 export function wireFilters({ refresh, render, saveView }) {
-  $('q').oninput = (e) => { state.filters.q = e.target.value; refresh(); };
-  $('statusFilter').onchange = (e) => { state.filters.status = e.target.value; refresh(); };
-  $('deviceFilter').onchange = (e) => { state.filters.device = e.target.value; refresh(); };
+  $('q').oninput = (e) => { state.filters.q = e.target.value; saveView(); refresh(); };
+  $('statusFilter').onchange = (e) => { state.filters.status = e.target.value; saveView(); refresh(); };
+  $('deviceFilter').onchange = (e) => { state.filters.device = e.target.value; saveView(); refresh(); };
 
   // These four are client-side: they reshape what is already loaded, so they
   // re-render immediately rather than waiting on a round trip.
@@ -26,4 +26,28 @@ export function wireFilters({ refresh, render, saveView }) {
   $('windowFilter').onchange = (e) => { state.filters.window = e.target.value; saveView(); render(); };
   $('groupBy').onchange = (e) => { state.groupBy = e.target.value; saveView(); render(); };
   $('sortBy').onchange = (e) => { state.sortBy = e.target.value; saveView(); render(); };
+
+  // The scope tabs (#168): a hard All/Local/Cloud split above the filter bar,
+  // entirely client-side since every session the hub knows about is already
+  // in `state.overview` -- switching tabs never needs a round trip.
+  $('scopeTabs').onclick = (e) => {
+    const tab = e.target.closest('[data-scope]');
+    if (!tab || tab.getAttribute('aria-pressed') === 'true') return;
+    state.scope = tab.dataset.scope;
+    saveView();
+    render();
+  };
+
+  // Phone: the dropdowns collapse behind this button and open as a sheet
+  // (#168). Toggled rather than always-open/always-closed so the same markup
+  // serves desktop (where CSS keeps the sheet inline and this button hidden)
+  // and phone alike.
+  $('filterToggle').onclick = () => {
+    const open = $('filterbarEnd').classList.toggle('open');
+    $('filterToggle').setAttribute('aria-expanded', String(open));
+  };
+  $('filterSheetClose').onclick = () => {
+    $('filterbarEnd').classList.remove('open');
+    $('filterToggle').setAttribute('aria-expanded', 'false');
+  };
 }

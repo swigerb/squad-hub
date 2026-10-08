@@ -1,6 +1,8 @@
 import { state } from './api.js';
 import { $, esc, ago } from './util.js';
-import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.js';
+import {
+  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount,
+} from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval } from './notifications.js';
@@ -149,7 +151,6 @@ export function deviceCard(d) {
 export function render() {
   const { groups, devices, counts } = state.overview;
 
-  $('sessionCount').textContent = `${counts.sessions || 0} session${counts.sessions === 1 ? '' : 's'}`;
   $('deviceCount').textContent = counts.devices || 0;
 
   // The badge counts everything the bell inbox lists -- an approval AND an
@@ -173,7 +174,36 @@ export function render() {
     favorites: [...state.favorites],
     groupBy: state.groupBy,
     sortBy: state.sortBy,
+    scope: state.scope,
   });
+
+  // The count line reflects what the CURRENT scope and filters leave on
+  // screen -- not the raw total the hub reports -- so "3 sessions" beside an
+  // empty-looking Cloud tab never contradicts the two rows actually showing.
+  $('sessionCount').textContent = `${view.counts.shown} session${view.counts.shown === 1 ? '' : 's'}`;
+
+  // The scope tabs (#168): each carries its own count, computed WITH the
+  // current filters but ignoring scope itself, and the active tab is the
+  // only one with `aria-pressed="true"` -- the CSS keys the highlighted
+  // state off that, not off a class, so the two can never drift apart.
+  const scopes = view.counts.scopes || { all: 0, local: 0, cloud: 0 };
+  for (const key of ['all', 'local', 'cloud']) {
+    const tab = document.querySelector(`[data-scope="${key}"]`);
+    if (!tab) continue;
+    const on = (state.scope || 'all') === key;
+    tab.setAttribute('aria-pressed', String(on));
+    const countEl = tab.querySelector('.tab-count');
+    if (countEl) countEl.textContent = scopes[key] || 0;
+  }
+
+  // The phone filter button's badge: how many of the dropdowns behind it are
+  // set to something other than "all" right now (#168).
+  const activeFilters = activeFilterCount(state.filters);
+  const badge = $('filterBadge');
+  if (badge) {
+    badge.hidden = activeFilters === 0;
+    badge.textContent = activeFilters;
+  }
 
   const emptyDevices = groups
     .filter((g) => !g.sessions.length && g.device.presence !== 'offline')

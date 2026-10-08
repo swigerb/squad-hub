@@ -357,6 +357,10 @@ export function wire() {
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
+    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
+      $('filterbarEnd').classList.remove('open');
+      $('filterToggle').setAttribute('aria-expanded', 'false');
+    }
   });
 
   wireInstall();
@@ -422,6 +426,8 @@ export function wire() {
     toggleMenu(false);
     togglePopup('newMenu', 'newMoreBtn', false);
     togglePopup('tidyMenu', 'tidyBtn', false);
+    $('filterbarEnd').classList.remove('open');
+    $('filterToggle').setAttribute('aria-expanded', 'false');
     for (const id of ['approvalScrim', 'newScrim', 'detailScrim']) $(id).hidden = true;
   });
 }

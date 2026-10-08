@@ -550,14 +550,20 @@ async function watchCsp(pg) {
     });
 
     await check('the filter bar and the toolbar are separate rows', async () => {
-      await page.waitForSelector('.toolbar', { timeout: 10000 });
+      // #168 unified the old second "toolbar" row into the scope tabs row --
+      // view/sort live at the end of .scopetabs now, and .toolbar no longer
+      // exists as an element. The RULE this test guards didn't change: the
+      // row that reshapes the list (scope tabs + view/sort) and the row that
+      // filters it (.filterbar) must stay two visually separate rows, never
+      // folded into one.
+      await page.waitForSelector('.scopetabs', { timeout: 10000 });
       const layout = await page.evaluate(() => {
+        const s = document.querySelector('.scopetabs').getBoundingClientRect();
         const f = document.querySelector('.filterbar').getBoundingClientRect();
-        const t = document.querySelector('.toolbar').getBoundingClientRect();
-        return { filterBottom: f.bottom, toolbarTop: t.top };
+        return { scopeBottom: s.bottom, filterTop: f.top };
       });
-      assert.ok(layout.toolbarTop >= layout.filterBottom - 1,
-        'the toolbar is meant to be a SECOND row, not folded into the first');
+      assert.ok(layout.filterTop >= layout.scopeBottom - 1,
+        'the filter bar is meant to be a SECOND row, not folded into the scope tabs row');
     });
 
     await check('every list control is labelled, and none is a bare boxed select', async () => {
@@ -975,7 +981,7 @@ async function watchCsp(pg) {
     await check('no list control is left opening the operating system popup', async () => {
       // The bug this replaced: a native popup is painted by the OS and comes
       // back white on Windows whatever the stylesheet says.
-      const bare = await page.evaluate(() => [...document.querySelectorAll('.toolbar select, .filterbar select')]
+      const bare = await page.evaluate(() => [...document.querySelectorAll('.scopetabs select, .filterbar select')]
         .filter((s) => !s.closest('.selectpill')).map((s) => s.id));
       assert.deepStrictEqual(bare, [], `these selects still open the OS popup: ${bare.join(', ')}`);
     });
