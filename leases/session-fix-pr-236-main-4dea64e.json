@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-236-main-4dea64e",
+  "sessionId": "fix-pr-236-main-4dea64e",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T23:44:42.832Z",
+  "lastHeartbeatAt": "2026-10-08T23:44:42.832Z",
+  "updatedAt": "2026-10-08T23:44:42.832Z",
+  "terminalReason": null,
+  "executionRef": null
+}
