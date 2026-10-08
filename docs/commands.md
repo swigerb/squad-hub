@@ -891,6 +891,25 @@ tool call is a normal thing for an agent to handle — waiting forever is not.
 It is deliberately long. This is a backstop against a question nobody will
 ever answer, not a deadline for someone who stepped away from their desk.
 
+### Desktop notifications
+
+The bell in the header shows how many sessions have a pending approval right
+now — the same count behind `actionNeeded` in the API and MCP server (see
+[the session list](#the-session-list) and [MCP server](#mcp-server)) — and the
+browser tab title gains a `(N)` prefix while any do, so a backgrounded tab
+still says so.
+
+Clicking the bell is also the only moment the browser is asked for
+notification permission. Asking on load would spend the one prompt a browser
+ever shows before anyone had a reason to say yes, and a denial cannot be asked
+for again. Once granted, an approval raises a real desktop notification —
+keyed on the approval's id, so a re-render, a reconnect, or a second poll never
+raises a second one for the same question.
+
+The bell also brings back any approval card you dismissed with **Not now**
+without answering it — dismissing is "stop asking me this second", not "I
+decided".
+
 ## Teams notifications
 
 Set `SQUAD_HUB_TEAMS_WEBHOOK` and the hub posts an Adaptive Card to Teams

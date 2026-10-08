@@ -148,5 +148,25 @@ Deploy with `-AuthMode entra` to require Microsoft Entra ID. Dev mode issues
 bearer tokens from a shared secret — anyone holding a token is you — and it says
 so at startup rather than pretending to be more.
 
+## Dispatching ACA jobs directly (optional)
+
+A hosted hub can also call `workflow_dispatch` itself, as a GitHub App, instead
+of only linking to an issue a person creates — see
+[aca.md](aca.md#the-third-direction-is-different-on-purpose). It needs its own
+two settings, separate from everything above:
+
+```
+SQUAD_HUB_GH_APP_ID            the App's numeric id
+SQUAD_HUB_GH_APP_PRIVATE_KEY   the App's private key (PEM)
+```
+
+Unset, the `/api/aca/repos`, `/api/aca/dispatches` and `/api/aca/dispatch`
+routes answer `501` and every repository still works through the existing
+label/comment/`workflow_dispatch`-by-hand paths. Installing the App widens who
+may start a run — any signed-in hub user, on any repository the App is
+installed on — which is a real trust-boundary change, not a convenience
+setting. Read
+[security.md's "GitHub App path"](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+before setting these.
 
 

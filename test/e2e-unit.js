@@ -37,6 +37,16 @@ function cssHrefs() {
   return [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((m) => m[1]);
 }
 
+// Same reasoning as cssHrefs(): #200 split app.js's Wiring section into
+// web/js/*.js feature modules, so a control's handler can live in any of
+// them. Read the directory rather than hard-coding a list, so a future split
+// does not require touching this test too.
+function jsHrefs() {
+  return fs.readdirSync(path.join(ROOT, 'web', 'js'))
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => `/js/${f}`);
+}
+
 let pass = 0; let fail = 0;
 function check(name, fn) {
   try {
@@ -347,7 +357,10 @@ function api(port, p, token, opts = {}) {
    */
   await checkAsync('every control in the markup is wired to a handler', async () => {
     const html = (await api(port, '/', null)).raw;
-    const js = (await api(port, '/app.js', null)).raw;
+    let js = (await api(port, '/app.js', null)).raw;
+    for (const f of jsHrefs()) {
+      js += (await api(port, f, null)).raw;
+    }
 
     const ids = [...html.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
     assert.ok(ids.length >= 5, `only found ${ids.length} buttons; the scan is not working`);
@@ -358,7 +371,10 @@ function api(port, p, token, opts = {}) {
 
   await checkAsync('every menu entry maps to an action', async () => {
     const html = (await api(port, '/', null)).raw;
-    const js = (await api(port, '/app.js', null)).raw;
+    let js = (await api(port, '/app.js', null)).raw;
+    for (const f of jsHrefs()) {
+      js += (await api(port, f, null)).raw;
+    }
     const actions = [...html.matchAll(/data-menu="([^"]+)"/g)].map((m) => m[1]);
     assert.ok(actions.length >= 4, `only found ${actions.length} menu entries`);
     for (const a of actions) {
