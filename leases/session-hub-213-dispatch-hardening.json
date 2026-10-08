@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-213-dispatch-hardening",
+  "sessionId": "hub-213-dispatch-hardening",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T17:55:57.760Z",
+  "lastHeartbeatAt": "2026-10-08T17:55:57.760Z",
+  "updatedAt": "2026-10-08T17:55:57.760Z",
+  "terminalReason": null,
+  "executionRef": null
+}
