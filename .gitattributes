@@ -5,3 +5,7 @@
 .squad/orchestration-log/** merge=union
 .squad/rai/audit-trail.md merge=union
 .squad/fact-checker/audit-trail.md merge=union
+
+# Squad 1.0: the casting pair is verified byte-for-byte against the SHA-256 in
+# registry-history.commit.json, so a CRLF checkout fails squad health.
+.squad/casting/*.json text eol=lf
