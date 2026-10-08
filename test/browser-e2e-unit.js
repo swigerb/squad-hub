@@ -895,15 +895,16 @@ async function watchCsp(pg) {
       await page.click('[data-forget="7"]');
       await until(async () => (await page.$('#toastUndo')) !== null, 'the Undo button to appear');
       await page.click('#toastUndo');
+      // American English (#167): the toast says "canceled", one L.
       const cancelText = await until(async () => {
         const t = await page.evaluate(() => document.getElementById('toast').textContent);
-        return /cancelled/i.test(t) ? t : null;
+        return /canceled/i.test(t) ? t : null;
       }, 'the cancellation to be reported');
-      assert.match(cancelText, /cancelled/i);
+      assert.match(cancelText, /canceled/i);
       // Wait past the window the sweep would have used, and confirm it never fired.
       await page.waitForTimeout(400);
       assert.ok(daemon.sessions.has(start.id),
-        'a forget sweep ran anyway after Undo was clicked -- the device was told despite being cancelled');
+        'a forget sweep ran anyway after Undo was clicked -- the device was told despite being canceled');
     });
 
     // ---- removing a device also waits out an Undo window -----------------
@@ -949,18 +950,19 @@ async function watchCsp(pg) {
       assert.match(toastText, /^Removing "E2E Temp Device"/, 'the Undo toast did not name the device being removed');
       assert.match(toastText, /Undo$/, 'the device-removal Undo toast did not offer an Undo button');
       await page.click('#toastUndo');
+      // American English (#167): the toast says "canceled", one L.
       const cancelText = await until(async () => {
         const t = await page.evaluate(() => document.getElementById('toast').textContent);
-        return /cancelled/i.test(t) ? t : null;
+        return /canceled/i.test(t) ? t : null;
       }, 'the cancellation to be reported');
-      assert.match(cancelText, /cancelled/i);
+      assert.match(cancelText, /canceled/i);
       // Wait past the window the removal would have used, and confirm the
       // device's token is still live: the hub never heard about this one.
       await page.waitForTimeout(400);
       assert.strictEqual(tempDaemon.link.connected, true,
-        'a device removal ran anyway after Undo was clicked -- its token was revoked despite being cancelled');
+        'a device removal ran anyway after Undo was clicked -- its token was revoked despite being canceled');
       await until(async () => (await page.textContent('#deviceList')).includes('E2E Temp Device'),
-        'the temporary device to still be listed after the removal was cancelled');
+        'the temporary device to still be listed after the removal was canceled');
     });
 
     await check('removing a device offers an Undo toast and waits out the window before revoking its token', async () => {
