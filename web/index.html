@@ -105,6 +105,35 @@
   <div class="menu-sep"></div>
   <div class="inbox-foot">
     <button data-inbox="reprompt">↻ Show approval prompts again</button>
+    <!--
+      Web Push (#175), per the v0.7.0 mockup (E6.2): "🔔 Push to this device
+      On/Off" lives in the bell inbox footer, next to the reprompt action --
+      not the account menu -- because it is a property of THIS DEVICE'S
+      subscription, the same way the bell itself is about this device's
+      alerts.
+
+      The `.hint-btn` lives OUTSIDE the toggle button itself, as a sibling in
+      `.inbox-foot-row`, rather than nested inside it the way a form field's
+      hint sits inside its `<label>` -- a `<button>` cannot validly contain
+      another interactive `<button>`, and a nested one would double-fire the
+      toggle's own click handler.
+
+      Security review (#175, should-fix): when the hub has no VAPID keys
+      configured, this row is no longer HIDDEN -- a hidden control that can
+      never do anything looks like a bug to whoever goes looking for it in
+      devtools, and the issue's acceptance criteria says the UI must SAY SO.
+      `syncPushMenuItem()` in push.js now shows the row `disabled`, with its
+      state text reading "Not configured", instead of hiding it; only an
+      unsupported BROWSER (no Push API at all) still hides it outright, since
+      there is nothing to say about a capability that does not exist here.
+    -->
+    <div class="inbox-foot-row">
+      <button class="foot" data-inbox="push" id="pushMenuItem" hidden>
+        🔔 Push to this device <span id="pushMenuState"></span>
+      </button>
+      <button type="button" class="hint-btn" aria-label="About push notifications" hidden
+        title="Turns on browser push notifications for this device only -- other devices you use keep their own setting, and you can turn it off here any time. &#10;&#10;A push contains only &quot;A session needs you&quot; (or &quot;…waiting for your reply&quot;), the device name, and which session -- never a command, a file path, or anything from the conversation.">i</button>
+    </div>
   </div>
 </nav>
 

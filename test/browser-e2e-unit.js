@@ -1152,6 +1152,34 @@ async function watchCsp(pg) {
         're-asking for a denied permission does nothing, and a browser only ever shows that prompt once');
     });
 
+    // ---- Web Push (#175) --------------------------------------------------
+    // This suite's hub instance is never given SQUAD_HUB_VAPID_PUBLIC_KEY /
+    // _PRIVATE_KEY, which is itself the important, common case: most
+    // deployments will not have them set on day one. The crypto, the API
+    // routes and the full subscribe/unsubscribe round trip already have
+    // dedicated unit coverage (web-push-unit.js, push-store-unit.js,
+    // push-notify-unit.js, push-api-unit.js) with real encryption and real
+    // HTTP, which is a better place to prove those than a slow, flaky
+    // browser-driven PushManager.subscribe() against no real push service.
+    //
+    // Security review (should-fix, #175): an earlier version HID the toggle
+    // in this case, which meant the issue's required "push is not configured
+    // on this hub" message could never actually be shown. It is now shown,
+    // disabled, with that explanation as its state text -- the browser CAN
+    // do push (this is a real Chromium), the HUB just has no keys.
+    await check('with no VAPID keys configured, the bell inbox shows the push toggle disabled, not hidden', async () => {
+      await page.click('#bellBtn');
+      await page.waitForSelector('#inboxMenu:not([hidden])', { timeout: 5000 });
+      const info = await page.evaluate(() => {
+        const item = document.getElementById('pushMenuItem');
+        return { hidden: item.hidden, disabled: item.disabled, label: document.getElementById('pushMenuState').textContent };
+      });
+      assert.strictEqual(info.hidden, false, 'the push toggle was hidden on a hub with no VAPID keys, hiding the required message with it');
+      assert.strictEqual(info.disabled, true, 'the push toggle was clickable on a hub with no VAPID keys configured');
+      assert.match(info.label, /not configured/i, 'the toggle did not say the hub has no push configured');
+      await page.click('#bellBtn');
+    });
+
     await check('the account menu opens and offers sign out', async () => {
       await page.click('#menuBtn');
       const menu = await page.evaluate(() => ({

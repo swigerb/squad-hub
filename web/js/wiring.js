@@ -31,6 +31,7 @@ import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
+import { wirePush, syncPushMenuItem } from './push.js';
 
 /** A persistent warning the user cannot miss and can dismiss once read. */
 export function showBanner(text) {
@@ -104,6 +105,10 @@ export function renderInboxMenu() {
   const count = inboxCount(state.overview);
   $('inboxHead').textContent = count ? `Needs you · ${count}` : 'Needs you';
   $('inboxList').innerHTML = renderInboxList(entries);
+  // Not awaited: the dropdown opens instantly either way, and this row can
+  // only ever flip between On/Off a moment later once the service worker and
+  // its subscription have actually been checked.
+  syncPushMenuItem();
 }
 
 /** Answer a pending approval from inside the inbox, without opening the session. */
@@ -376,6 +381,7 @@ export function wire() {
   });
 
   wireInstall();
+  wirePush();
   wireAccess();
   wireAca();
   wireConnect({ spawnRequest, spawnError });
