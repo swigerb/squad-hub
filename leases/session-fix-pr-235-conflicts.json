@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-235-conflicts",
+  "sessionId": "fix-pr-235-conflicts",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T21:48:19.817Z",
+  "lastHeartbeatAt": "2026-10-08T21:48:19.817Z",
+  "updatedAt": "2026-10-08T21:48:19.817Z",
+  "terminalReason": null,
+  "executionRef": null
+}
