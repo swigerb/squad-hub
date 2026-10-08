@@ -30,6 +30,7 @@ import { openPeople, wireAccess } from './access.js';
 import { showInstallHelp, wireInstall } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
+import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
 
 /** A persistent warning the user cannot miss and can dismiss once read. */
 export function showBanner(text) {
@@ -68,15 +69,61 @@ function toggleMenu(force) {
  * Opening one closes the other. Two menus open at once is a state nobody
  * intends and every stray click produces.
  */
+const POPUP_BUTTON = { newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn' };
+
 function togglePopup(menuId, btnId, force) {
   const m = $(menuId);
   if (!m) return;
   const open = force === undefined ? m.hidden : force;
-  if (open) for (const other of ['newMenu', 'tidyMenu']) if (other !== menuId) togglePopup(other, other === 'newMenu' ? 'newMoreBtn' : 'tidyBtn', false);
+  if (open) {
+    for (const other of Object.keys(POPUP_BUTTON)) {
+      if (other !== menuId) togglePopup(other, POPUP_BUTTON[other], false);
+    }
+  }
   m.hidden = !open;
   const b = $(btnId);
   if (b) b.setAttribute('aria-expanded', String(open));
   if (open && menuId === 'newMenu') renderNewMenu();
+  if (open && menuId === 'inboxMenu') renderInboxMenu();
+}
+
+/**
+ * The bell inbox (#174).
+ *
+ * Rebuilt from `state.overview` on every call, same as the rest of the page --
+ * there is no separate "inbox state" to drift out of sync with it. Called
+ * once at load, again every time `devices.js`'s `render()` refreshes the page
+ * from a new overview (so a card updates or disappears live while the
+ * dropdown is sitting open), and once more when the bell opens it, in case a
+ * push arrived while it was closed.
+ */
+export function renderInboxMenu() {
+  const entries = inboxEntries(state.overview);
+  const count = inboxCount(state.overview);
+  $('inboxHead').textContent = count ? `Needs you · ${count}` : 'Needs you';
+  $('inboxList').innerHTML = renderInboxList(entries);
+}
+
+/** Answer a pending approval from inside the inbox, without opening the session. */
+async function answerFromInbox(btn) {
+  if (!btn || btn.disabled) return;
+  const { device, sessionId, approval, answer } = btn.dataset;
+  const row = btn.closest('.inbox-item-acts');
+  const buttons = row ? [...row.querySelectorAll('[data-answer]')] : [btn];
+  for (const b of buttons) b.disabled = true;
+  try {
+    await api(`/api/devices/${encodeURIComponent(device)}/approve`, {
+      method: 'POST',
+      body: { sessionId, approvalId: approval, optionId: answer },
+    });
+    // The next overview -- pushed immediately by the hub once the device
+    // acts on it, same as everywhere else this api call is made -- drives
+    // `renderInboxMenu()` again and drops the card. Nothing to do here but
+    // wait for it, so a slow network does not leave stale buttons live.
+  } catch (e) {
+    toast(`Could not answer: ${e.message}`);
+    for (const b of buttons) b.disabled = false;
+  }
 }
 
 /**
@@ -257,7 +304,8 @@ export function wire() {
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
   $('dtClose').onclick = () => { $('detailScrim').hidden = true; state.currentSession = null; };
 
-  $('bellBtn').onclick = async () => {
+  $('bellBtn').onclick = async (e) => {
+    e.stopPropagation();
     // The click is what asks for permission. Requesting it on load would spend
     // the one prompt a browser ever shows before anyone had reason to say yes,
     // and a denial cannot be asked for again.
@@ -270,12 +318,33 @@ export function wire() {
     } else if (after === 'unsupported') {
       toast('This browser cannot show notifications');
     }
-    // Whatever the answer, the bell still does what it always did: bring back
-    // the cards that were dismissed without being answered.
-    state.seenApprovals.clear();
-    maybePromptApproval();
+    // The bell itself now opens the inbox rather than immediately re-raising
+    // every dismissed card -- that behaviour still exists, but as the
+    // "Show approval prompts again" row inside it, so clicking the bell to
+    // turn notifications on no longer ALSO drops a stack of modals on screen.
+    togglePopup('inboxMenu', 'bellBtn');
   };
   syncBell();
+  renderInboxMenu();
+
+  $('inboxMenu').onclick = (e) => {
+    const openBtn = e.target.closest('[data-inbox-open]');
+    if (openBtn) {
+      togglePopup('inboxMenu', 'bellBtn', false);
+      openDetail(openBtn.dataset.inboxOpen);
+      return;
+    }
+    const reprompt = e.target.closest('[data-inbox="reprompt"]');
+    if (reprompt) {
+      togglePopup('inboxMenu', 'bellBtn', false);
+      // The pre-#174 behaviour of the bell itself: bring back every approval
+      // card that was dismissed without being answered.
+      state.seenApprovals.clear();
+      maybePromptApproval();
+      return;
+    }
+    answerFromInbox(e.target.closest('[data-answer]'));
+  };
 
   $('menuBtn').onclick = (e) => { e.stopPropagation(); toggleMenu(); };
   $('bannerClose').onclick = () => { $('banner').hidden = true; };  $('menu').onclick = (e) => {
@@ -286,6 +355,7 @@ export function wire() {
     if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
     if (!$('newMenu').hidden && !e.target.closest('#newSplit')) togglePopup('newMenu', 'newMoreBtn', false);
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
+    if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
     if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
       $('filterbarEnd').classList.remove('open');
