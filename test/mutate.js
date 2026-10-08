@@ -2255,6 +2255,20 @@ const MUTATIONS = [
     replace: `      if (o.hidden && !process.env.MUTANT) return; // MUTATION`,
     mustFail: 'a dropdown opens on click and lists exactly the VISIBLE options its select holds',
   },
+  {
+    // #169/#231: explicit `grid-column` alone was not enough -- markup order
+    // is .star, .status, .row-main (columns 1, 3, 2), so without an explicit
+    // `grid-row` too, sparse auto-placement still pushed .row-main onto a
+    // second implicit row once .status claimed column 3 ahead of it. Caught
+    // by the plain-text CSS assertion in list-controls-unit.js, not just the
+    // real-Chromium e2e check, since this is a non-browser-testable
+    // regression (a missing property, not an inverted condition).
+    name: 'devices.css stops pinning .star/.status/.row-main to the same grid row, so the title drifts onto a second implicit row',
+    file: 'web/css/devices.css',
+    find: `.row > .star, .row > .status, .row > .row-main { grid-row: 1; }\n`,
+    replace: '',
+    mustFail: 'devices.css pins .star, .status and .row-main to the same grid row (#169/#231)',
+  },
 
   // -------------------------------------------------------------------------
   // S4: device roster

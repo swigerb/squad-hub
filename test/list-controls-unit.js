@@ -13,6 +13,8 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
@@ -760,6 +762,21 @@ check('viewStateToParams omits whatever is already at its default', () => {
 check('paramsToViewState ignores a stale or hand-edited value rather than applying it', () => {
   const state = paramsToViewState({ scope: 'deleted-tab', sort: 'deleted-sort', view: 'deleted-view', window: 'deleted-window' });
   assert.deepStrictEqual(state, {}, 'an option that no longer exists must never reach the UI as if it were real');
+});
+
+check('devices.css pins .star, .status and .row-main to the same grid row (#169/#231)', () => {
+  // Markup order is .star, .status, .row-main (columns 1, 3, 2 -- see the
+  // comment above `.row` in devices.css). Without an explicit `grid-row`,
+  // sparse auto-placement walks that source order, and once `.status`
+  // claims column 3 the cursor is past column 2, so `.row-main` (column 2)
+  // is pushed onto a second implicit row -- the star/pill and the title
+  // drift 32px apart instead of sharing one 22px line. This is a plain
+  // text assertion, not a layout measurement: it only proves the pinning
+  // rule is still present in the stylesheet, not that a browser renders it
+  // correctly (see the real-Chromium check in browser-e2e-unit.js for that).
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'css', 'devices.css'), 'utf8');
+  const pinned = /\.row\s*>\s*\.star\s*,\s*\.row\s*>\s*\.status\s*,\s*\.row\s*>\s*\.row-main\s*\{\s*grid-row:\s*1;?\s*\}/.test(css);
+  assert.ok(pinned, '.row > .star, .row > .status, .row > .row-main { grid-row: 1; } is missing from devices.css -- the star/pill/title can drift onto separate grid rows again');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
