@@ -4470,6 +4470,21 @@ if ($health.accessStore -ne 'durable') {`,
         return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
     mustFail: 'GET /api/aca/dispatches is rate-limited per signed-in user',
   },
+  {
+    // #233: GET /api/aca/status must always answer 200, with enabled:false
+    // when the App is not configured -- a flipped condition here would
+    // report enabled:true on an unconfigured hub, sending the web UI on to
+    // call GET /api/aca/repos, which would 501.
+    name: 'GET /api/aca/status reports enabled backwards',
+    file: 'src/service/hub-service.js',
+    find: `    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: this.githubApp.enabled, reason: this.githubApp.disabledReason() });
+    }`,
+    replace: `    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: process.env.MUTANT ? !this.githubApp.enabled : this.githubApp.enabled, reason: this.githubApp.disabledReason() }); // MUTATION
+    }`,
+    mustFail: 'GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured',
+  },
 
   {
     name: 'report-pr picks the earliest local session instead of the most recent',

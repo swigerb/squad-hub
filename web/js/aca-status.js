@@ -25,6 +25,16 @@ export const ACA_PHASE = {
 };
 
 /**
+ * How long to wait between polls (startup plus every `wireAcaStatusCard`
+ * caller's own interval, see `web/app.js`). Chosen to stay well inside the
+ * shared `GET /api/aca/repos` / `GET /api/aca/dispatches` read budget of 30
+ * calls/minute (#213): each poll spends at most two of those calls, so even
+ * two browser tabs polling independently never approaches the limit a real
+ * dispatch request also draws from.
+ */
+export const ACA_POLL_MS = 30000;
+
+/**
  * The persistent "squad-aca watcher" device, picked out of the roster by
  * name rather than by kind: it is an ordinary cloud device, the same kind as
  * any other long-lived daemon, with no field anywhere that marks it as THE
@@ -184,30 +194,81 @@ export function acaStatusCardHtml(model) {
  * retry is never anything other than the exact same refresh the poll
  * already does.
  *
+ * Checks `GET /api/aca/status` FIRST (#233, a fix-up from #180's review): a
+ * cheap, always-200 discovery route that spends no GitHub API call and no
+ * rate-limit budget (see `src/service/hub-service.js`). Only when it reports
+ * `enabled: true` does this go on to call `GET /api/aca/repos` and
+ * `GET /api/aca/dispatches` -- on an unconfigured hub (every hub, until
+ * #177's App exists) neither of those two is ever called, and neither of
+ * their 501s is ever logged as a browser console error on a normal page
+ * load. Before this route existed, the card called `GET /api/aca/repos`
+ * unconditionally on every mount, which answered 501 on an unconfigured hub
+ * and broke the real-Chromium e2e suite's "no script or stylesheet failed to
+ * load" check on every page that card appears on, including the OAuth
+ * completion page.
+ *
  * `GET /api/aca/dispatches` failing on its own (a transient GitHub API
  * error, say) does not fall back to "not connected" -- the App IS connected,
  * that one call just did not answer, and the watcher/Ralph rows above the
- * dispatch row are still worth showing. Only `GET /api/aca/repos` decides
- * connected vs. not: it is the same check every other `/api/aca/*` route
- * makes (`githubApp.enabled`), so this card can never disagree with what the
- * rest of the hub would actually do with a dispatch request right now.
+ * dispatch row are still worth showing. Only `GET /api/aca/status` decides
+ * connected vs. not now; `GET /api/aca/repos` failing with anything other
+ * than 429 is still treated the same way (the App stopped answering between
+ * the status check and this call -- a transient condition, not a budget
+ * one), and both read routes answering 429 is reported neither as
+ * "not connected" nor swallowed silently: the card keeps showing whatever it
+ * last knew (or Checking, if this is the very first poll) and tries again
+ * next cycle, which is how `/api/aca/repos` and `/api/aca/dispatches`
+ * sharing one read budget (#213) is meant to be experienced from the UI --
+ * "try later", not an error state.
  */
 export async function refreshAcaStatus() {
+  const previous = state.acaStatus;
   state.acaStatus = { phase: ACA_PHASE.CHECKING };
   renderAcaStatus();
+
+  let discovery;
   try {
-    await api('/api/aca/repos');
+    discovery = await api('/api/aca/status');
   } catch (e) {
     const reason = (e.body && e.body.reason) || e.message;
     state.acaStatus = { phase: ACA_PHASE.NOT_CONNECTED, reason };
     renderAcaStatus();
     return;
   }
-  let dispatches = [];
+
+  if (!discovery || !discovery.enabled) {
+    state.acaStatus = {
+      phase: ACA_PHASE.NOT_CONNECTED,
+      reason: (discovery && discovery.reason) || 'the GitHub App is not configured',
+    };
+    renderAcaStatus();
+    return;
+  }
+
+  try {
+    await api('/api/aca/repos');
+  } catch (e) {
+    if (e.status === 429) {
+      state.acaStatus = previous && previous.phase !== ACA_PHASE.CHECKING
+        ? previous : { phase: ACA_PHASE.CHECKING };
+      renderAcaStatus();
+      return;
+    }
+    const reason = (e.body && e.body.reason) || e.message;
+    state.acaStatus = { phase: ACA_PHASE.NOT_CONNECTED, reason };
+    renderAcaStatus();
+    return;
+  }
+  let dispatches = (previous && previous.dispatches) || [];
   try {
     const res = await api('/api/aca/dispatches');
     dispatches = (res && res.dispatches) || [];
-  } catch { /* the card still shows watcher/Ralph even if this one call failed */ }
+  } catch {
+    // Keep whatever dispatches this card last knew about -- a transient
+    // failure or a 429 off the shared read budget (#213) is "try later",
+    // not "this user never had any dispatches". The watcher/Ralph rows
+    // above this one are unaffected either way.
+  }
   state.acaStatus = { phase: ACA_PHASE.CONNECTED, dispatches };
   renderAcaStatus();
 }

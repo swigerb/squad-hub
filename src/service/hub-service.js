@@ -808,6 +808,23 @@ class HubService {
     // normal state until the real App exists; the web UI's existing
     // "Review on GitHub..." / "Copy command" fallback (docs/security.md)
     // needs no changes to keep working in that case.
+
+    // `GET /api/aca/status` -- a cheap, always-200 discovery route (#233, a
+    // fix-up from #180's review): whether the App is configured at all, with
+    // its `disabledReason` when it is not. It spends no GitHub API call --
+    // `this.githubApp.enabled` is a boolean set once at construction (see
+    // github-app.js) -- so it needs no rate limit of its own and, crucially,
+    // never answers a non-2xx status. A normal page load on a hub with no
+    // GitHub App configured (every hub, until #177's App exists) would
+    // otherwise have the "Squad on ACA" status card call `GET /api/aca/repos`
+    // on mount and log a 501 as a browser console error on every load --
+    // exactly the failure this route exists to avoid. The web UI calls this
+    // FIRST and only calls `GET /api/aca/repos` / `GET /api/aca/dispatches`
+    // when it reports `enabled: true` (`web/js/aca-status.js`).
+    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: this.githubApp.enabled, reason: this.githubApp.disabledReason() });
+    }
+
     if (p === '/api/aca/repos' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
       // Rate-limited per signed-in user (#213): this walks every
