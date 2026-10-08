@@ -8,7 +8,7 @@
 
   INSET FOR MASKABLE. Android and others crop a maskable icon to whatever shape
   the launcher prefers (circle, squircle, teardrop), keeping only the central
-  80%. The mark is scaled to 0.72 about the centre so the outermost dot stays
+  80%. The mark is scaled to 0.72 about the center so the outermost dot stays
   inside that safe circle. Drawn full bleed, it would have its corners bitten
   off on exactly the platforms this icon exists for.
 -->

@@ -99,7 +99,7 @@ class DeviceTokens {
       key: String(key),
       name: name ? String(name) : null,
       label: label ? String(label) : null,
-      // Normalised so a caller cannot accidentally widen the binding with
+      // Normalized so a caller cannot accidentally widen the binding with
       // casing, and so the comparison at registration is a plain prefix test.
       did: didPrefix ? String(didPrefix).toLowerCase() : null,
       jti: crypto.randomBytes(12).toString('base64url'),

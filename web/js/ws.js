@@ -116,7 +116,7 @@ const CONN_LABEL = {
 /**
  * What each state means, in a sentence.
  *
- * The live dot has no text, so without this it would be a coloured mark with
+ * The live dot has no text, so without this it would be a colored mark with
  * no explanation anywhere -- and the failures deserve to say that the DEVICES
  * are fine even when this page cannot hear them, because the obvious fear on
  * seeing a red badge is that the work has stopped.
@@ -141,7 +141,7 @@ export function setConn(s) {
   //
   // The failures keep their words, because "reconnecting" and "hub
   // unreachable" are different situations that need different reactions, and
-  // a coloured dot cannot say which is which.
+  // a colored dot cannot say which is which.
   el.textContent = s === 'live' ? '' : (CONN_LABEL[s] || s);
   el.title = CONN_TITLE[s] || '';
   el.setAttribute('aria-label', `Live feed: ${CONN_LABEL[s] || s}`);
@@ -414,7 +414,7 @@ export function applyTheme(theme) {
     btn.title = `${label} (click to change)`;
     btn.setAttribute('aria-label', label);
     // SVG, not emoji. An emoji glyph is drawn by whatever font the platform
-    // picks -- often in colour, at its own weight, and differently on every
+    // picks -- often in color, at its own weight, and differently on every
     // machine -- so the one control next to the account menu never matched the
     // icons around it. These are the same Fluent set as everywhere else and
     // inherit `currentColor`.

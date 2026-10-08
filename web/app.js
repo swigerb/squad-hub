@@ -79,7 +79,7 @@ function runShortcut(id) {
   // through the UI -- for that test harness to read and call directly.
   //
   // `setUndoDelayForTest` shortens the Undo window below (real deployments
-  // keep the full 5 seconds). It changes no behaviour a person could not
+  // keep the full 5 seconds). It changes no behavior a person could not
   // already see -- the window is always "however long the toast says" -- it
   // only makes that window short enough for a test suite to wait out without
   // every click costing five real seconds.
@@ -167,7 +167,7 @@ function runShortcut(id) {
 
   // Launched from a manifest shortcut (long-press the pinned icon): New
   // session, Needs you, or Start ACA job. Each hands off to the SAME control
-  // the shortcut is named after, rather than duplicating its behaviour --
+  // the shortcut is named after, rather than duplicating its behavior --
   // "Needs you" is exactly what the bell already does.
   runShortcut(takeShortcut());
 

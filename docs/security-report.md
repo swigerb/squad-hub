@@ -53,7 +53,7 @@ page -- is refused rather than treated as absent. Everything else is closed
 with **1008** and a reason, in the same shape as the other socket refusals
 above it.
 
-**The hub's own origin** is `SQUAD_HUB_PUBLIC_URL`, normalised to
+**The hub's own origin** is `SQUAD_HUB_PUBLIC_URL`, normalized to
 scheme+host+port with any path and trailing slash stripped, when that setting
 is configured -- the same setting `deploy-appservice.ps1` already writes and
 `github-oauth.js redirectUri()` already reads, rather than a second one kept
@@ -65,7 +65,7 @@ setting existed -- the origin falls back to the forwarded scheme plus `Host`
 of the request itself, derived the same way `github-oauth.js redirectUri()`
 falls back. A value that is set but does not parse as an absolute `http`/
 `https` URL is refused at startup rather than silently falling back to that
-request-derived behaviour, which would let a typo look configured while
+request-derived behavior, which would let a typo look configured while
 actually granting the weaker of the two.
 
 ### Isolation between people
@@ -83,7 +83,7 @@ sessions.
 
 ## Administering access
 
-| Control | Behaviour |
+| Control | Behavior |
 |---|---|
 | `/api/access` | Owner-only on **every** method, including read |
 | Owner entries | Cannot be removed through the API |
@@ -103,7 +103,7 @@ A device token authorises a machine to **be a device** and nothing else. It
 exists so that a credential shipped into a container is not a credential that
 can drive a laptop.
 
-| Control | Behaviour |
+| Control | Behavior |
 |---|---|
 | Signature | HMAC, verified before any claim is read |
 | Comparison | Constant-time, with a length check first |
@@ -122,7 +122,7 @@ all of the above.
 
 ## The approval boundary
 
-| Control | Behaviour |
+| Control | Behavior |
 |---|---|
 | Tool policy | A supervised session drops `--allow-all-tools`; the deny list is unchanged |
 | Denied tools | Raise no approval at all — refused before a person is asked |
@@ -137,7 +137,7 @@ code arriving in a pull request cannot decide how much its reader is asked.
 
 ## Running work on a machine
 
-| Control | Behaviour |
+| Control | Behavior |
 |---|---|
 | File access | **Off by default.** No directory is accepted until a device opts in |
 | Confinement | The root is enforced on the device and never leaves it |
@@ -166,7 +166,7 @@ Squad documents are displayed as text, never as markup.
 
 ## Response headers
 
-| Control | Behaviour |
+| Control | Behavior |
 |---|---|
 | `X-Frame-Options: DENY` | Sent on every response; the hub refuses to be rendered inside a frame |
 | `X-Content-Type-Options: nosniff` | Sent on every response; a browser is never left to guess a response's type |

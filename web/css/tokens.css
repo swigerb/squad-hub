@@ -5,13 +5,13 @@
  * that costs anything to miss is the one waiting on a human -- everything else
  * can be read at leisure.
  *
- * TWO THEMES, ONE SET OF TOKENS. Every colour below is a variable, and the
+ * TWO THEMES, ONE SET OF TOKENS. Every color below is a variable, and the
  * light theme redefines the same names rather than adding a parallel set of
  * rules. A second stylesheet keyed on a class is how one theme silently drifts
  * from the other; a second set of VALUES cannot.
  *
  * Dark is the default because this is watched next to a terminal, but the
- * choice honours `prefers-color-scheme` until someone states a preference,
+ * choice honors `prefers-color-scheme` until someone states a preference,
  * and then remembers what they said.
  */
 
@@ -41,7 +41,7 @@
 
   /* Code surfaces: transcripts, tool output, Squad documents. A token rather
      than a literal, so the light theme can flip them -- they used to be
-     hardcoded near-black, which put dim grey text on black in light mode. */
+     hardcoded near-black, which put dim gray text on black in light mode. */
   --code-bg: #0a0c11;
   --code-line: var(--line);
 
@@ -76,7 +76,7 @@
   --bad: #c93c3c;
   --bad-solid: #b8332f;
   /* Code surfaces have to flip too. They were hardcoded to a near-black, so in
-     the light theme a transcript and a Squad document rendered dim grey text on
+     the light theme a transcript and a Squad document rendered dim gray text on
      black -- technically visible, practically unreadable. */
   --code-bg: #f2f4f8;
   --code-line: #dfe4ec;

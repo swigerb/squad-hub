@@ -78,7 +78,7 @@ function safePreview(s, max = 60) {
  * unrelated Squad-framework configuration (e.g. `~/.squad/`, `~/.github/`)
  * would otherwise be falsely detected as belonging to that unrelated
  * project. If the caller's `startDir` genuinely IS the home directory, it is
- * still checked directly (matching plain single-directory behaviour), but
+ * still checked directly (matching plain single-directory behavior), but
  * the walk never continues past it either way.
  *
  * If neither boundary is ever reached (e.g. `startDir` is not under the
@@ -136,7 +136,7 @@ function hasProjectConfigFile(dir) {
 }
 
 /**
- * `.squad-hub.json` project config. Only `agent` and `model` are recognised --
+ * `.squad-hub.json` project config. Only `agent` and `model` are recognized --
  * anything else is ignored rather than trusted, since this file ships with the
  * repository and a stranger's pull request can edit it.
  *
@@ -220,7 +220,7 @@ function selectAgent({
   // constructs argv from external input (e.g. a hub relaying a start
   // request) rather than a human typing it directly -- validated the same
   // way as project config, with the same warn-and-fall-back-a-rung
-  // behaviour rather than a hard error.
+  // behavior rather than a hard error.
   let agent = explicitAgent || null;
   if (agent && !isValidName(agent)) {
     warnings.push(`--agent "${safePreview(agent)}" is not a valid name (letters, digits, '.', '_', '-' only, starting with a letter or digit, up to 64 characters); ignored, falling back to the next source`);

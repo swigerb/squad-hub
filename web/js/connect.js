@@ -80,7 +80,7 @@ async function removeDevice(deviceId) {
       toast(`Could not remove ${name}: ${e.message}`);
     }
     await refresh();
-  }, () => toast(`Removal cancelled — keeping "${name}"`));
+  }, () => toast(`Removal canceled — keeping "${name}"`));
 }
 
 async function createDeviceToken() {  const btn = $('cnCreate');

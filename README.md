@@ -403,7 +403,7 @@ More in [`docs/`](docs/).
 
 Built on public specifications: the
 [Agent Client Protocol](https://agentclientprotocol.com) and GitHub Copilot
-CLI's published flags. Every protocol behaviour it depends on is proven by a
+CLI's published flags. Every protocol behavior it depends on is proven by a
 script in [`spike/`](spike/), with the captured wire payloads committed
 alongside.
 

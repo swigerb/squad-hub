@@ -49,7 +49,7 @@ export function undoToast(text, commit, undo) {
 
 /**
  * Shortens the Undo window below for tests (real deployments keep the full 5
- * seconds). It changes no behaviour a person could not already see -- the
+ * seconds). It changes no behavior a person could not already see -- the
  * window is always "however long the toast says" -- it only makes that
  * window short enough for a test suite to wait out without every click
  * costing five real seconds.
@@ -310,7 +310,7 @@ export function activityLine(s, device) {
  * `.map is not a function` -- inside render(), which stopped the entire UI from
  * drawing and left the connection indicator stuck on "connecting".
  *
- * The store normalises this on ingest now. This stays anyway: a viewer that
+ * The store normalizes this on ingest now. This stays anyway: a viewer that
  * cannot survive one odd field from one device is a viewer that any device can
  * take down.
  */

@@ -100,7 +100,7 @@ leading `./` back into `package.json`.
 4. **Checks the tarball against the code**, independently of the suite: every
    file under `web/` and every `bin` target must actually be in the package,
    the tarball's own `package.json` must declare a command the installing npm
-   will honour, and every `bin` target must start with a **shebang** — without
+   will honor, and every `bin` target must start with a **shebang** — without
    one npm's Windows shim hands the `.js` to the file association rather than
    running node, which can exit 0 having done nothing at all.
 5. **Installs the tarball and runs it.** Offline, into a throwaway prefix,
@@ -224,7 +224,7 @@ fixed version:
 npm deprecate squad-hub@<version> "broken packaging: installs no command, use <newer> or later"
 ```
 
-Deprecate only on evidence. Confirm the published artefact is genuinely
+Deprecate only on evidence. Confirm the published artifact is genuinely
 broken first — see below — because a deprecation notice is public and warns
 every person who installs that version.
 
@@ -238,7 +238,7 @@ git worktree add /tmp/vX.Y.Z vX.Y.Z --detach
 ```
 
 Then run the failing path against that worktree and watch it fail. Run the same
-probe against the neighbouring version too: a fault that reproduces on one and
+probe against the neighboring version too: a fault that reproduces on one and
 not the other is isolated, and a fault that reproduces on both means you have
 misdiagnosed which change caused it.
 
@@ -351,7 +351,7 @@ evidence alone the flag should have been cleared.
 > So the warning on those versions is correct and load-bearing. Clearing it
 > would remove a public warning from a version with a device-token-to-account
 > escalation path, on the strength of a packaging question that was settled
-> separately and in their favour.
+> separately and in their favor.
 >
 > The lesson is narrower than "check before deprecating": a deprecation can be
 > **re-justified by a later finding**, so "the reason this was deprecated turned
@@ -396,7 +396,7 @@ being clear which one a change needs.
 
 The trap is assuming a hub deploy covers a device-side fix. It cannot: a device
 runs the version installed on that machine, upgraded on its owner's schedule.
-The hub can *normalise* what an old device sends — rename a field, coerce a
+The hub can *normalize* what an old device sends — rename a field, coerce a
 count to a list — but it cannot invent data the device never sent. A card that
 arrives without the command is missing it for good.
 

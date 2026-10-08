@@ -145,7 +145,7 @@ class FileBacking {
      * refuse to write -- overwriting a file we could not parse would
      * silently discard whatever was recoverable in it. Reads still work: a
      * failed load simply starts the hub from an empty map, which is the
-     * `Store` behaviour before this backing existed at all.
+     * `Store` behavior before this backing existed at all.
      */
     this.ok = true;
     this.error = null;

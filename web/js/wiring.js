@@ -198,7 +198,7 @@ async function forgetEnded(scope) {
     }
     toast(forgetSummary({ removed, failed, skipped: 0 }));
     await refresh();
-  }, () => toast('Removal cancelled — nothing was removed'));
+  }, () => toast('Removal canceled — nothing was removed'));
 }
 
 async function onMenu(action) {
@@ -329,7 +329,7 @@ export function wire() {
       toast('This browser cannot show notifications');
     }
     // The bell itself now opens the inbox rather than immediately re-raising
-    // every dismissed card -- that behaviour still exists, but as the
+    // every dismissed card -- that behavior still exists, but as the
     // "Show approval prompts again" row inside it, so clicking the bell to
     // turn notifications on no longer ALSO drops a stack of modals on screen.
     togglePopup('inboxMenu', 'bellBtn');
@@ -347,7 +347,7 @@ export function wire() {
     const reprompt = e.target.closest('[data-inbox="reprompt"]');
     if (reprompt) {
       togglePopup('inboxMenu', 'bellBtn', false);
-      // The pre-#174 behaviour of the bell itself: bring back every approval
+      // The pre-#174 behavior of the bell itself: bring back every approval
       // card that was dismissed without being answered.
       state.seenApprovals.clear();
       maybePromptApproval();
