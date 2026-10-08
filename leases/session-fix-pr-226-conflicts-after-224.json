@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-226-conflicts-after-224",
+  "sessionId": "fix-pr-226-conflicts-after-224",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T05:04:04.536Z",
+  "lastHeartbeatAt": "2026-10-08T05:04:04.536Z",
+  "updatedAt": "2026-10-08T05:04:04.536Z",
+  "terminalReason": null,
+  "executionRef": null
+}
