@@ -27,7 +27,7 @@ import {
 } from './ws.js';
 import { openAca, wireAca } from './aca.js';
 import { openPeople, wireAccess } from './access.js';
-import { showInstallHelp, wireInstall } from './install.js';
+import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
@@ -355,6 +355,7 @@ export function wire() {
     if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
     if (!$('newMenu').hidden && !e.target.closest('#newSplit')) togglePopup('newMenu', 'newMoreBtn', false);
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
+    if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
     if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {

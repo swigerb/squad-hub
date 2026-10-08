@@ -43,6 +43,52 @@
 }
 .who { color: var(--dim); font-size: 13px; }
 
+/* ---------- install icon + card (header) ---------- */
+/* `position: relative` here, not on the header: the card anchors to THIS
+   button specifically, so it lands under the icon that opened it rather than
+   drifting to the corner of the bar the way the account menu does. */
+.install-wrap { position: relative; display: inline-flex; }
+.install-card {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
+  width: min(360px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  padding: 18px 20px;
+}
+.install-card[hidden] { display: none; }
+.install-card-close {
+  position: absolute; right: 10px; top: 8px; background: none; border: 0;
+  color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; padding: 4px;
+}
+.install-card-close:hover { color: var(--text); }
+.install-card-title {
+  margin: 0; font-size: 17px; display: flex; align-items: center; gap: 10px;
+}
+.install-card-title .mark { width: 26px; height: 26px; }
+.install-card-pub { color: var(--faint); font-size: 12px; margin: 2px 0 10px 36px; }
+.install-card p { margin: 0 0 0 36px; font-size: 13px; color: var(--dim); }
+.install-card-list {
+  margin: 6px 0 14px 36px; padding-left: 16px; font-size: 13px; color: var(--text);
+}
+.install-card-list li { margin-bottom: 4px; }
+.install-card-steps {
+  margin: 0 0 14px 36px; padding-left: 16px; font-size: 12px; color: var(--dim);
+}
+.install-card-steps:empty { display: none; margin: 0; }
+.install-card-steps li { margin-bottom: 4px; }
+.install-card-actions { display: flex; gap: 10px; }
+.install-card-actions button { flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+.install-card-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* The kebab's "Install as an app" row, once installed: the item stays, it
+   just stops being a button that does anything. A green checkmark rather
+   than disappearing entirely -- see syncInstallMenuItem() in
+   web/js/install.js. No id on the button -- see index.html -- so this
+   matches the same `data-menu` attribute selector the script finds it by. */
+[data-menu="install"] .install-done { margin-left: auto; color: var(--ok); font-weight: 600; }
+[data-menu="install"][disabled] { opacity: .75; cursor: default; }
+[data-menu="install"][disabled]:hover { background: transparent; }
+
 /* Present for screen readers, gone from the layout. The name still has to be
    announced by the account button -- "button" alone says nothing about whose
    account it is -- it simply does not need to be painted. */

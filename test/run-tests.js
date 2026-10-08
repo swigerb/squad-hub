@@ -772,6 +772,15 @@ async function suiteInstallPrompt() {
 }
 
 /**
+ * Home-screen app badge (#171): a live "needs you" count without opening the
+ * app, and never a thrown error on a browser that does not support it.
+ */
+async function suiteAppBadge() {
+  console.log('\n[APP BADGE] navigator.setAppBadge is called right, and never breaks when absent');
+  runChildSuite(path.join(__dirname, 'app-badge-unit.js'), 'app-badge');
+}
+
+/**
  * Modes: applied over the protocol, and reported honestly when they are not.
  */
 async function suiteModes() {
@@ -1109,6 +1118,7 @@ async function suiteBellInbox() {
   await suitePackage();
   await suiteWebXss();
   await suiteInstallPrompt();
+  await suiteAppBadge();
   await suiteModes();
   await suiteAccess();
   await suitePrefs();
