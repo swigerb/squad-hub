@@ -46,7 +46,7 @@ import {
 } from './js/detail.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
-  connect, setAvatar, setConn, takeDeepLinkSession, resolveDeepLink, showOffline,
+  connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
   registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
   applyTheme, nextTheme, setRailCollapsed,
 } from './js/ws.js';
@@ -61,6 +61,13 @@ import { wire, showBanner } from './js/wiring.js';
 import { showSignIn } from './js/signin.js';
 
 'use strict';
+
+/** Run whatever a manifest shortcut asked for. Unknown or absent ids do nothing -- NOT every load has one. */
+function runShortcut(id) {
+  if (id === 'new-session') { openNew(); return; }
+  if (id === 'needs-you') { $('bellBtn').click(); return; }
+  if (id === 'aca-job') { openAca(); return; }
+}
 
 (async function main() {
   // Test hook (documented, no secrets, no new capability): now that app.js is
@@ -144,6 +151,12 @@ import { showSignIn } from './js/signin.js';
     else if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
     else toast(`That session is no longer here — it may have finished, or its device is offline`);
   }
+
+  // Launched from a manifest shortcut (long-press the pinned icon): New
+  // session, Needs you, or Start ACA job. Each hands off to the SAME control
+  // the shortcut is named after, rather than duplicating its behaviour --
+  // "Needs you" is exactly what the bell already does.
+  runShortcut(takeShortcut());
 
   connect();
   setInterval(refresh, 15000);

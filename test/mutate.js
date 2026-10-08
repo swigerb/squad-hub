@@ -2094,11 +2094,60 @@ const MUTATIONS = [
   {
     name: 'the shown count includes rows that were filtered away',
     file: 'web/js/list.js',
-    find: `  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
-}`,
-    replace: `  return { sections, counts: { pinned: pinned.length, shown: process.env.MUTANT ? groups.reduce((n, g) => n + (g.sessions || []).length, 0) : pinned.length + rest.length } }; // MUTATION
-}`,
+    find: `  const counts = { pinned: pinned.length, shown: pinned.length + rest.length, scopes: scopeCounts(groups, filters, favorites, now) };`,
+    replace: `  const counts = { pinned: pinned.length, shown: process.env.MUTANT ? groups.reduce((n, g) => n + (g.sessions || []).length, 0) : pinned.length + rest.length, scopes: scopeCounts(groups, filters, favorites, now) }; // MUTATION`,
     mustFail: 'the counts describe what is actually on screen',
+  },
+  {
+    // #168: the scope tab is a hard partition applied BEFORE pin/filter --
+    // this proves a pinned session on the wrong tab stays excluded rather
+    // than slipping through because it is pinned.
+    name: 'a scope tab stops matching device kind, so a cloud session leaks onto Local',
+    file: 'web/js/list.js',
+    find: `  const cloud = isCloudKind(device && device.kind);
+  return scope === 'cloud' ? cloud : !cloud;`,
+    replace: `  const cloud = isCloudKind(device && device.kind) && !process.env.MUTANT; // MUTATION
+  return scope === 'cloud' ? cloud : !cloud;`,
+    mustFail: 'scope tabs: matchesScope partitions by device kind',
+  },
+  {
+    name: 'the scope split stops applying before pin/filter, so a pinned session reappears on the wrong tab',
+    file: 'web/js/list.js',
+    find: `    if (!matchesScope(scope, g.device)) continue;`,
+    replace: `    if (!matchesScope(scope, g.device) && !process.env.MUTANT) continue; // MUTATION`,
+    mustFail: 'scope tabs: buildView excludes a pinned session from a scope it is not on',
+  },
+  {
+    name: 'scopeCounts stops honouring the pin, undercounting a filtered-out favourite',
+    file: 'web/js/list.js',
+    find: `      const included = pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now);`,
+    replace: `      const included = (pinnedKeys.has(sessionKey(s)) && !process.env.MUTANT) || matchesFilters(s, filters, now); // MUTATION`,
+    mustFail: 'scope tabs: scopeCounts counts a pinned session under its own scope, bypassing filters',
+  },
+  {
+    name: 'activeFilterCount starts counting the keyword box as a filter behind the phone button',
+    file: 'web/js/list.js',
+    find: `  return ['status', 'device', 'repo', 'org', 'window'].filter((k) => filters[k]).length;`,
+    replace: `  return [process.env.MUTANT ? 'q' : 'status', 'device', 'repo', 'org', 'window'].filter((k) => filters[k]).length; // MUTATION`,
+    mustFail: 'activeFilterCount counts only the dropdown filters, never the keyword box',
+  },
+  {
+    // A shared link must not silently override settings the next person
+    // already has -- this proves the default-omission actually happens.
+    name: 'viewStateToParams stops omitting the default scope, so every link forces "all"',
+    file: 'web/js/list.js',
+    find: `  if (view.scope && view.scope !== 'all') params.scope = view.scope;`,
+    replace: `  if (view.scope && (view.scope !== 'all' || process.env.MUTANT)) params.scope = view.scope; // MUTATION`,
+    mustFail: 'viewStateToParams omits whatever is already at its default',
+  },
+  {
+    // A hand-edited or stale URL (`?sort=deleted-option`) must be ignored,
+    // never applied as if the option still existed.
+    name: 'paramsToViewState stops validating sort against the real option table',
+    file: 'web/js/list.js',
+    find: `  if (SORTS[params.sort]) out.sortBy = params.sort;`,
+    replace: `  if (SORTS[params.sort] || (params.sort && process.env.MUTANT)) out.sortBy = params.sort; // MUTATION`,
+    mustFail: 'paramsToViewState ignores a stale or hand-edited value rather than applying it',
   },
   {
     name: 'an empty Pinned section is rendered when nothing is pinned',
@@ -2657,9 +2706,31 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/favicon.svg',
   '/icon.svg',
   '/logo.jpg',
+  // The install flow (header button, "Add to Home Screen", app switcher) reads
+  // these from the manifest rather than the page, so the pages network-first
+  // fetches never touch them -- without a shell entry they would 404 the
+  // moment the install prompt or the app switcher asks for them offline.
+  '/icon-mask-512.png',
+  '/screenshot-wide.png',
+  '/screenshot-narrow.png',
 ];`,
     replace: `const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg']; // MUTATION`,
     mustFail: "the service worker's shell lists the split css, not the old single file",
+  },
+  {
+    // #171: the maskable icon and both install-prompt screenshots are read
+    // from the manifest, not the page, so nothing else exercises them --
+    // dropping them from SHELL only breaks the install/app-switcher path
+    // while OFFLINE, which is exactly the one state this suite cannot
+    // otherwise observe without caching them deliberately.
+    name: 'SHELL drops the maskable icon and screenshots the install prompt reads from the manifest',
+    file: 'web/sw.js',
+    find: `  '/icon-mask-512.png',
+  '/screenshot-wide.png',
+  '/screenshot-narrow.png',
+];`,
+    replace: `];  // MUTATION: maskable icon and screenshots dropped from SHELL`,
+    mustFail: "the service worker's shell caches the maskable icon and both screenshots",
   },
   {
     // The shell's cached FILE SET changed shape (one stylesheet became
@@ -4617,6 +4688,220 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => { if (!process.env.MUTANT) finish(undo); }; // MUTATION`,
     mustFail: 'clicking Undo on a forget sweep cancels it -- the device is never told',
+  },
+  {
+    // A browser that fired `beforeinstallprompt` has a real native installer
+    // RIGHT NOW; treating that the same as a UA guess would offer the manual
+    // card to a browser that could have shown its own install dialog instead.
+    name: 'installAvailability ignores a captured beforeinstallprompt and falls through to UA sniffing',
+    file: 'web/js/install.js',
+    find: `function installAvailability({ hasDeferredPrompt, ua = (typeof navigator === 'undefined' ? '' : navigator.userAgent) || '' } = {}) {
+  if (hasDeferredPrompt) return 'native';`,
+    replace: `function installAvailability({ hasDeferredPrompt, ua = (typeof navigator === 'undefined' ? '' : navigator.userAgent) || '' } = {}) {
+  if (hasDeferredPrompt && !process.env.MUTANT) return 'native'; // MUTATION`,
+    mustFail: 'a Chromium browser that fired beforeinstallprompt gets the native path',
+  },
+  {
+    // Chrome and Edge both contain the literal substring "Safari" in their UA
+    // for legacy compatibility. Without the Chrome/Edg/OPR/Android exclusion,
+    // a Chromium browser that has not fired `beforeinstallprompt` YET would be
+    // offered the manual iOS/Firefox card instead of simply waiting.
+    name: 'the Safari UA check stops excluding Chrome and Edge, offering them the wrong card',
+    file: 'web/js/install.js',
+    find: `  const safari = /Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR|Android/.test(ua);`,
+    replace: `  const safari = /Safari/.test(ua) && (process.env.MUTANT || !/Chrome|Chromium|Edg|OPR|Android/.test(ua)); // MUTATION`,
+    mustFail: 'Chrome and Edge without a captured prompt yet are "none", not "manual"',
+  },
+  {
+    // iOS, Firefox and Safari each have a REAL route to installing the app --
+    // just not one this page can trigger -- so they must get the manual card,
+    // not "none". Getting this wrong hides the only install path those
+    // browsers have.
+    name: 'iOS/Firefox/Safari detection is disabled, hiding the manual install card entirely',
+    file: 'web/js/install.js',
+    find: `  if (ios || firefox || safari) return 'manual';
+  return 'none';`,
+    replace: `  if ((ios || firefox || safari) && !process.env.MUTANT) return 'manual'; // MUTATION
+  return 'none';`,
+    mustFail: 'iOS, Firefox and desktop Safari get the manual card, never "native"',
+  },
+  {
+    name: 'the install button shows again for an app that is already installed',
+    file: 'web/js/install.js',
+    find: `  if (installed) return 'hidden';
+  if (availability === 'none') return 'hidden';`,
+    replace: `  if (installed && !process.env.MUTANT) return 'hidden'; // MUTATION
+  if (availability === 'none') return 'hidden';`,
+    mustFail: 'already installed hides the button regardless of availability',
+  },
+  {
+    // "Not now" is a 30-day deferral, not a one-time toast: without this gate
+    // the icon would reappear on the very next render, making the button
+    // impossible to actually dismiss.
+    name: 'the 30-day "Not now" dismissal is ignored, so the button never stays hidden',
+    file: 'web/js/install.js',
+    find: `  if (dismissedUntil && now < dismissedUntil) return 'hidden';
+  return availability;`,
+    replace: `  if (dismissedUntil && now < dismissedUntil && !process.env.MUTANT) return 'hidden'; // MUTATION
+  return availability;`,
+    mustFail: '"Not now" hides the button until the 30-day dismissal expires, then it returns',
+  },
+  {
+    // A storage that throws (private browsing, quota) must never propagate --
+    // a thrown read here would crash the header render, not just the icon.
+    name: 'installDismissedUntil no longer swallows a throwing storage',
+    file: 'web/js/install.js',
+    find: `function installDismissedUntil(storage = safeLocalStorage()) {
+  if (!storage) return 0;
+  try { return Number(storage.getItem(INSTALL_DISMISS_KEY)) || 0; } catch { return 0; }
+}`,
+    replace: `function installDismissedUntil(storage = safeLocalStorage()) {
+  if (!storage) return 0;
+  if (process.env.MUTANT) return Number(storage.getItem(INSTALL_DISMISS_KEY)) || 0; // MUTATION
+  try { return Number(storage.getItem(INSTALL_DISMISS_KEY)) || 0; } catch { return 0; }
+}`,
+    mustFail: 'a storage that throws (private mode, quota) cannot crash dismissal',
+  },
+  {
+    // The whole point of storing a FUTURE timestamp rather than a boolean:
+    // dismissal expires on its own. A dismiss that does not write the 30-day
+    // offset would either never hide the button or hide it forever.
+    name: 'dismissInstallButton stops writing the 30-day expiry',
+    file: 'web/js/install.js',
+    find: `function dismissInstallButton(storage = safeLocalStorage(), now = Date.now()) {
+  if (!storage) return;
+  try { storage.setItem(INSTALL_DISMISS_KEY, String(now + INSTALL_DISMISS_MS)); } catch { /* quota, private mode */ }
+}`,
+    replace: `function dismissInstallButton(storage = safeLocalStorage(), now = Date.now()) {
+  if (!storage) return;
+  const value = process.env.MUTANT ? String(now) : String(now + INSTALL_DISMISS_MS); // MUTATION
+  try { storage.setItem(INSTALL_DISMISS_KEY, value); } catch { /* quota, private mode */ }
+}`,
+    mustFail: 'dismissing writes a 30-day expiry that installDismissedUntil reads back',
+  },
+  {
+    // #171's manifest `shortcuts` promise three ids by naming convention
+    // alone (see the manifest-side test); if app.js stops recognising one,
+    // the pinned shortcut still opens the hub and silently does nothing.
+    name: 'app.js stops wiring up the "needs-you" shortcut',
+    file: 'web/app.js',
+    find: `  if (id === 'needs-you') { $('bellBtn').click(); return; }`,
+    replace: `  if (id === 'needs-you-renamed') { $('bellBtn').click(); return; } // MUTATION`,
+    mustFail: 'app.js knows what to do with every shortcut id the manifest promises',
+  },
+  {
+    // #171: without `id`, Chrome identifies an install by `start_url` alone,
+    // so a future change there (a redirect, a tracking query param) can mint
+    // a second, duplicate home-screen icon for the same app.
+    name: 'the manifest loses its explicit id',
+    file: 'web/app.webmanifest',
+    find: `  "id": "/",
+`,
+    replace: `  // MUTATION: id removed
+`,
+    mustFail: 'the manifest has an id, so reinstalling never creates a second icon',
+  },
+  {
+    name: 'orientation reverts to locked portrait',
+    file: 'web/app.webmanifest',
+    find: `  "orientation": "any",`,
+    replace: `  "orientation": "portrait-primary",`,
+    mustFail: 'orientation is "any", not locked to portrait',
+  },
+  {
+    // The ORIGINAL bug: reusing the square 512 "any" icon as "maskable" gets
+    // the brand mark cropped by Android's circular/squircle mask, because
+    // nothing in that file was drawn inside the safe zone.
+    name: 'the maskable icon reverts to reusing the square "any" icon file',
+    file: 'web/app.webmanifest',
+    find: `    { "src": "/icon-mask-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },`,
+    replace: `    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },`,
+    mustFail: 'the manifest has a dedicated maskable icon distinct from the "any" icon',
+  },
+  {
+    name: 'the "Start ACA job" shortcut is dropped from the manifest',
+    file: 'web/app.webmanifest',
+    find: `    {
+      "name": "Start ACA job",
+      "short_name": "ACA job",
+      "description": "Run a Squad session in its own Azure Container Apps job",
+      "url": "/?shortcut=aca-job",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],`,
+    replace: `  ],  // MUTATION: Start ACA job shortcut removed`,
+    mustFail: 'the shortcuts array names New session, Needs you and Start ACA job',
+  },
+  {
+    name: 'the wide screenshot is dropped from the manifest',
+    file: 'web/app.webmanifest',
+    find: `    {
+      "src": "/screenshot-wide.png",
+      "sizes": "1280x800",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "All sessions, grouped by device, with the install card open"
+    },
+`,
+    replace: `    // MUTATION: wide screenshot removed
+`,
+    mustFail: 'the manifest offers a wide and a narrow screenshot, both shipped',
+  },
+  {
+    // #171, E2.4: the badge is the whole point of having a Badging API at
+    // all -- a count that sets the wrong number, or never clears, is worse
+    // than no badge, since it is an icon decoration nobody can act on or
+    // trust.
+    name: 'syncAppBadge sets the badge even at a count of zero, instead of clearing it',
+    file: 'web/js/notifications.js',
+    find: `    if (count > 0) navigator.setAppBadge(count);
+    else if ('clearAppBadge' in navigator) navigator.clearAppBadge();`,
+    replace: `    if (count >= 0) navigator.setAppBadge(count); // MUTATION
+    else if ('clearAppBadge' in navigator) navigator.clearAppBadge();`,
+    mustFail: 'a count of zero clears the badge, rather than setting it to "0"',
+  },
+  {
+    // Some browsers reject Badging API calls outright while the page is
+    // backgrounded; without the try/catch that is a thrown error inside the
+    // same render loop that keeps the whole session list alive.
+    name: 'syncAppBadge no longer catches a browser that rejects the call',
+    file: 'web/js/notifications.js',
+    find: `    if (count > 0) navigator.setAppBadge(count);
+    else if ('clearAppBadge' in navigator) navigator.clearAppBadge();
+  } catch { /* some browsers reject this while the page is backgrounded */ }`,
+    replace: `    if (count > 0) navigator.setAppBadge(count);
+    else if ('clearAppBadge' in navigator) navigator.clearAppBadge();
+  } catch { if (process.env.MUTANT) throw new Error('rejected'); } // MUTATION`,
+    mustFail: 'a browser that rejects the call (backgrounded page) cannot break the render loop',
+  },
+  {
+    // The try/catch already swallows a missing-method TypeError the same way
+    // it swallows a browser that outright rejects the call, so removing this
+    // feature-detect alone is unobservable to this test -- the method call
+    // would throw and be caught either way. Left in, skipped, rather than
+    // faked with a mustFail the catch already protects against; see the
+    // skipped #190 size-budget entry above for the same shape of rationale.
+    name: 'syncAppBadge calls setAppBadge even when the Badging API is absent (caught either way)',
+    file: 'web/js/notifications.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
+  },
+  {
+    // devices.js is where the bell count is actually known; a badge that is
+    // computed but never wired into the render loop never updates. No unit
+    // test reads devices.js's render() output for the badge call -- doing so
+    // would need a DOM + fetch harness this suite does not build for
+    // devices.js today (see package-unit.js's own disabled entries for the
+    // same reasoning). Left in, skipped, rather than faked with a mustFail no
+    // test can satisfy.
+    name: 'devices.js stops syncing the app badge on every render (not unit-testable today)',
+    file: 'web/js/devices.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
   },
   {
     // #174's whole point: an approval blocks something and MUST outrank a

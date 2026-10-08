@@ -162,14 +162,13 @@
 
 /* The rail collapses to reclaim width, and remembers that it did.
 
-   Its header is dropped to sit level with the toolbar pills across the way,
-   rather than with the top of the column. Aligning it to nothing in
-   particular is what made the rail read as floating slightly higher than
-   everything else on the page. */
+   Its header shares the same 40px band as the scope tabs row across the way
+   (see .scopetabs in css/list.css), so the two columns' headers read as one
+   line rather than as two unrelated rows that happen to be close in height. */
 .railhead {
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--sp-2); margin-bottom: 10px;
-  min-height: 34px;
+  height: 40px;
 }
 /* ...and the card below it starts level with the sessions box, so the two
    columns read as one row rather than as two lists at slightly different
