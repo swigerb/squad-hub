@@ -144,5 +144,15 @@
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
   padding: 10px 16px; border-radius: 999px; z-index: 60;
   box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: 13px;
+  display: flex; align-items: center; gap: 10px;
 }
 .toast[hidden] { display: none; }
+.toast-text { white-space: nowrap; }
+/* Shown only on the Undo variant (see undoToast in app.js); a plain toast's
+   `textContent` assignment leaves no button behind to style. */
+.toast-undo {
+  background: transparent; border: 1px solid var(--line); color: var(--accent);
+  border-radius: 999px; padding: 3px 12px; font: inherit; font-weight: 600;
+  cursor: pointer; flex: 0 0 auto;
+}
+.toast-undo:hover { background: var(--panel-2); border-color: var(--accent); }

@@ -550,14 +550,20 @@ async function watchCsp(pg) {
     });
 
     await check('the filter bar and the toolbar are separate rows', async () => {
-      await page.waitForSelector('.toolbar', { timeout: 10000 });
+      // #168 unified the old second "toolbar" row into the scope tabs row --
+      // view/sort live at the end of .scopetabs now, and .toolbar no longer
+      // exists as an element. The RULE this test guards didn't change: the
+      // row that reshapes the list (scope tabs + view/sort) and the row that
+      // filters it (.filterbar) must stay two visually separate rows, never
+      // folded into one.
+      await page.waitForSelector('.scopetabs', { timeout: 10000 });
       const layout = await page.evaluate(() => {
+        const s = document.querySelector('.scopetabs').getBoundingClientRect();
         const f = document.querySelector('.filterbar').getBoundingClientRect();
-        const t = document.querySelector('.toolbar').getBoundingClientRect();
-        return { filterBottom: f.bottom, toolbarTop: t.top };
+        return { scopeBottom: s.bottom, filterTop: f.top };
       });
-      assert.ok(layout.toolbarTop >= layout.filterBottom - 1,
-        'the toolbar is meant to be a SECOND row, not folded into the first');
+      assert.ok(layout.filterTop >= layout.scopeBottom - 1,
+        'the filter bar is meant to be a SECOND row, not folded into the scope tabs row');
     });
 
     await check('every list control is labelled, and none is a bare boxed select', async () => {
@@ -831,7 +837,10 @@ async function watchCsp(pg) {
     await check('REMOVING ENDED SESSIONS REACHES THE DEVICE AND LEAVES LIVE WORK ALONE', async () => {
       // The behaviour the whole feature exists for, asserted end to end: a
       // click in the browser reaches the daemon, and nothing still running is
-      // removed by it.
+      // removed by it. The Undo window is shortened here (not disabled) so
+      // this still proves the real commit path, just without a five-second
+      // wait built into every test run.
+      await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(80));
       const liveBefore = [...daemon.sessions.values()]
         .filter((s) => !['done', 'failed', 'stopped'].includes(s.status)).map((s) => s.id);
       page.once('dialog', (d) => d.accept());
@@ -849,6 +858,135 @@ async function watchCsp(pg) {
         const terminal = ['done', 'failed', 'stopped'].includes(s.status);
         assert.ok(!terminal || !s.endedAt || (s.pid && require('../src/daemon').alive(s.pid)),
           'an ended session survived a sweep that reported success');
+      }
+    });
+
+    await check('a forget sweep offers an Undo toast and waits out the window before telling the device anything', async () => {
+      // A fresh ended session, so this does not depend on leftovers from the
+      // check above. Scope '7' (not 'all') skips the confirm dialog entirely,
+      // which is itself part of what is being proven: confirming scope "all"
+      // is unrelated to -- and does not replace -- the Undo window.
+      const start = await daemon.handle({ op: 'start-session', prompt: 'ended for undo test', cwd: process.cwd() });
+      await daemon.handle({ op: 'stop-session', sessionId: start.id });
+      await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(250));
+      await page.click('#tidyBtn');
+      await page.click('[data-forget="7"]');
+      const toastText = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return /will be removed in a few seconds/.test(t) ? t : null;
+      }, 'the Undo toast to appear');
+      assert.match(toastText, /Undo$/, 'the Undo toast did not offer an Undo button');
+      assert.ok(await page.$('#toastUndo'), 'no #toastUndo button was rendered');
+      // Well inside the (shortened) window: nothing has reached the device yet.
+      await page.waitForTimeout(60);
+      assert.ok(daemon.sessions.has(start.id), 'the sweep reached the device before the Undo window expired');
+      // Past the window: the sweep has now actually run.
+      await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return /^Removed|^Nothing to remove/.test(t) || null;
+      }, 'the sweep to report what it did after the Undo window');
+    });
+
+    await check('clicking Undo on a forget sweep cancels it -- the device is never told', async () => {
+      const start = await daemon.handle({ op: 'start-session', prompt: 'ended for undo-cancel test', cwd: process.cwd() });
+      await daemon.handle({ op: 'stop-session', sessionId: start.id });
+      await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(300));
+      await page.click('#tidyBtn');
+      await page.click('[data-forget="7"]');
+      await until(async () => (await page.$('#toastUndo')) !== null, 'the Undo button to appear');
+      await page.click('#toastUndo');
+      const cancelText = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return /cancelled/i.test(t) ? t : null;
+      }, 'the cancellation to be reported');
+      assert.match(cancelText, /cancelled/i);
+      // Wait past the window the sweep would have used, and confirm it never fired.
+      await page.waitForTimeout(400);
+      assert.ok(daemon.sessions.has(start.id),
+        'a forget sweep ran anyway after Undo was clicked -- the device was told despite being cancelled');
+    });
+
+    // ---- removing a device also waits out an Undo window -----------------
+    //
+    // A SEPARATE, throwaway device, minted and attached just for these two
+    // checks. The suite's one real device (`e2e-device`) is relied on by
+    // nearly every check before and after this point, so revoking IT here
+    // would break the rest of the file; a device nobody else refers to can
+    // safely be removed, cancelled, and removed again without risk.
+    let tempDaemon = null;
+    await check('a second, disposable device can be minted and attached for the removal checks below', async () => {
+      await page.click('#menuBtn');
+      await page.click('[data-menu="connect"]');
+      await page.fill('#cnLabel', 'e2e temp device');
+      await page.click('#cnCreate');
+      await page.waitForSelector('#cnResult:not([hidden])', { timeout: 10000 });
+      const cmd = await page.textContent('#cnCmd');
+      const tempToken = cmd.split('--token ')[1].trim();
+      await page.click('#cnCancel');
+
+      tempDaemon = new Daemon();
+      tempDaemon.deviceName = 'E2E Temp Device';
+      // Deliberately NOT calling `.listen()`: that binds the same per-home IPC
+      // socket the suite's real daemon is already listening on, and would
+      // unlink and steal it out from under it. This device only needs to be
+      // attached to the hub, never driven as a local CLI target, so skipping
+      // `.listen()` is both safe and sufficient.
+      await tempDaemon.attachHub({
+        url: `${origin.replace('http', 'ws')}/ws`, token: tempToken, deviceId: 'e2e-temp-device',
+      });
+      await until(async () => (await page.textContent('#deviceList')).includes('E2E Temp Device'),
+        'the temporary device to appear in the UI');
+    });
+
+    await check('clicking Undo on a device removal cancels it -- the device keeps its token', async () => {
+      page.once('dialog', (d) => d.accept());
+      await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(300));
+      await page.click('[data-remove-device="e2e-temp-device"]');
+      const toastText = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return /^Removing ".*" in a few seconds/.test(t) ? t : null;
+      }, 'the device-removal Undo toast to appear');
+      assert.match(toastText, /^Removing "E2E Temp Device"/, 'the Undo toast did not name the device being removed');
+      assert.match(toastText, /Undo$/, 'the device-removal Undo toast did not offer an Undo button');
+      await page.click('#toastUndo');
+      const cancelText = await until(async () => {
+        const t = await page.evaluate(() => document.getElementById('toast').textContent);
+        return /cancelled/i.test(t) ? t : null;
+      }, 'the cancellation to be reported');
+      assert.match(cancelText, /cancelled/i);
+      // Wait past the window the removal would have used, and confirm the
+      // device's token is still live: the hub never heard about this one.
+      await page.waitForTimeout(400);
+      assert.strictEqual(tempDaemon.link.connected, true,
+        'a device removal ran anyway after Undo was clicked -- its token was revoked despite being cancelled');
+      await until(async () => (await page.textContent('#deviceList')).includes('E2E Temp Device'),
+        'the temporary device to still be listed after the removal was cancelled');
+    });
+
+    await check('removing a device offers an Undo toast and waits out the window before revoking its token', async () => {
+      try {
+        page.once('dialog', (d) => d.accept());
+        await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(250));
+        await page.click('[data-remove-device="e2e-temp-device"]');
+        const toastText = await until(async () => {
+          const t = await page.evaluate(() => document.getElementById('toast').textContent);
+          return /^Removing ".*" in a few seconds/.test(t) ? t : null;
+        }, 'the device-removal Undo toast to appear');
+        assert.match(toastText, /^Removing "E2E Temp Device"/,
+          'the Undo toast did not name the device being removed');
+        // Well inside the (shortened) window: the device has not been told yet.
+        await page.waitForTimeout(60);
+        assert.strictEqual(tempDaemon.link.connected, true,
+          'the removal reached the device before the Undo window expired');
+        // Past the window: the hub has now actually revoked it, and the
+        // socket the device is holding gets closed from the hub side.
+        await until(() => tempDaemon.link.connected === false,
+          'the device to be disconnected once the Undo window elapsed');
+        await until(async () => !(await page.textContent('#deviceList')).includes('E2E Temp Device'),
+          'the removed device to disappear from the UI');
+      } finally {
+        try { tempDaemon.link.stop(); } catch { /* already stopped */ }
+        try { tempDaemon.shutdown(null); } catch { /* best effort */ }
       }
     });
 
@@ -975,7 +1113,7 @@ async function watchCsp(pg) {
     await check('no list control is left opening the operating system popup', async () => {
       // The bug this replaced: a native popup is painted by the OS and comes
       // back white on Windows whatever the stylesheet says.
-      const bare = await page.evaluate(() => [...document.querySelectorAll('.toolbar select, .filterbar select')]
+      const bare = await page.evaluate(() => [...document.querySelectorAll('.scopetabs select, .filterbar select')]
         .filter((s) => !s.closest('.selectpill')).map((s) => s.id));
       assert.deepStrictEqual(bare, [], `these selects still open the OS popup: ${bare.join(', ')}`);
     });

@@ -93,6 +93,23 @@ export function newMenuState(devices) {
   };
 }
 
+/**
+ * What the Undo toast says while a removal is pending.
+ *
+ * One function, so the toast text, the browser test and any future caller
+ * agree on the exact words. Three copies of this string is three places a
+ * wording change could drift out of step with what the button actually does.
+ */
+export function forgetUndoLabel(scope) {
+  const what = scope === 'all' ? 'All ended sessions' : `Sessions older than ${scope} days`;
+  return `${what} will be removed in a few seconds`;
+}
+
+/** Same idea, for removing a device. */
+export function removeDeviceUndoLabel(name) {
+  return `Removing "${name}" in a few seconds`;
+}
+
 export const APPROVAL_LABEL = {
   allow_once: 'Allow once',
   allow_always: 'Always allow',

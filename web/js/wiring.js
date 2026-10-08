@@ -7,10 +7,10 @@
 // share. Behavior is unchanged byte-for-byte from the original.
 
 import { state, api } from './api.js';
-import { $, esc, toast } from './util.js';
+import { $, esc, toast, undoToast } from './util.js';
 import { enhanceAllSelects, closeAllSelectPills } from './dropdowns.js';
 import {
-  forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
+  forgetWindowMs, forgetTargets, forgetSummary, forgetUndoLabel, newMenuState,
 } from './cleanup.js';
 import {
   spawnRequest, spawnError, controlsEnabled, composerReduce,
@@ -27,7 +27,7 @@ import {
 } from './ws.js';
 import { openAca, wireAca } from './aca.js';
 import { openPeople, wireAccess } from './access.js';
-import { showInstallHelp, wireInstall } from './install.js';
+import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
@@ -154,6 +154,11 @@ function renderNewMenu() {
  * Sent to every reachable device, because the device is the source of truth
  * and a hub-side removal would be undone by the next heartbeat. The result is
  * assembled from what each device actually reported.
+ *
+ * The confirm dialog (for "all") still asks once, up front. What is new is
+ * the few seconds AFTER that: nothing is sent to any device until the Undo
+ * toast expires, so a mis-click on a button right beside the one you meant is
+ * recoverable for as long as the toast is on screen.
  */
 async function forgetEnded(scope) {
   const olderThanMs = forgetWindowMs(scope);
@@ -173,23 +178,25 @@ async function forgetEnded(scope) {
     + 'This clears the record of finished work. '
     + 'Sessions that are still running are not affected.')) return;
 
-  let removed = 0;
-  let failed = 0;
-  for (const d of targets) {
-    try {
-      const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
-        method: 'POST',
-        body: { olderThanMs },
-      });
-      removed += (r && r.count) || 0;
-    } catch {
-      // Counted, never swallowed: a device that refused must not be
-      // indistinguishable from one that had nothing to remove.
-      failed += 1;
+  undoToast(forgetUndoLabel(scope), async () => {
+    let removed = 0;
+    let failed = 0;
+    for (const d of targets) {
+      try {
+        const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
+          method: 'POST',
+          body: { olderThanMs },
+        });
+        removed += (r && r.count) || 0;
+      } catch {
+        // Counted, never swallowed: a device that refused must not be
+        // indistinguishable from one that had nothing to remove.
+        failed += 1;
+      }
     }
-  }
-  toast(forgetSummary({ removed, failed, skipped: 0 }));
-  await refresh();
+    toast(forgetSummary({ removed, failed, skipped: 0 }));
+    await refresh();
+  }, () => toast('Removal canceled — nothing was removed'));
 }
 
 async function onMenu(action) {
@@ -355,8 +362,13 @@ export function wire() {
     if (!$('menu').hidden && !e.target.closest('#menu') && !e.target.closest('#menuBtn')) toggleMenu(false);
     if (!$('newMenu').hidden && !e.target.closest('#newSplit')) togglePopup('newMenu', 'newMoreBtn', false);
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
+    if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
+    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
+      $('filterbarEnd').classList.remove('open');
+      $('filterToggle').setAttribute('aria-expanded', 'false');
+    }
   });
 
   wireInstall();
@@ -422,6 +434,8 @@ export function wire() {
     toggleMenu(false);
     togglePopup('newMenu', 'newMoreBtn', false);
     togglePopup('tidyMenu', 'tidyBtn', false);
+    $('filterbarEnd').classList.remove('open');
+    $('filterToggle').setAttribute('aria-expanded', 'false');
     for (const id of ['approvalScrim', 'newScrim', 'detailScrim']) $(id).hidden = true;
   });
 }

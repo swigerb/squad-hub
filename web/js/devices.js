@@ -1,9 +1,11 @@
 import { state } from './api.js';
 import { $, esc, ago } from './util.js';
-import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.js';
+import {
+  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount,
+} from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
-import { maybePromptApproval } from './notifications.js';
+import { maybePromptApproval, syncAppBadge } from './notifications.js';
 import { inboxCount } from './inbox.js';
 import { openConnect, openNew } from './connect.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
@@ -134,7 +136,7 @@ export function deviceCard(d) {
     <div class="device ${isCloudKind(d.kind) ? 'cloud' : ''}">
       <span class="dot ${esc(d.presence)}"></span>
       <div class="device-main">
-        <div class="device-name">${esc(d.name)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-name" title="${esc(d.name)}">${esc(d.name)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
         <div class="device-meta">
           ${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}
         </div>
@@ -146,10 +148,25 @@ export function deviceCard(d) {
     </div>`;
 }
 
+/**
+ * Placeholder device rows, shown for the same reason `skeletonRows` is: a
+ * shape the size of a real device row says "still loading", where empty space
+ * says nothing at all.
+ */
+export function skeletonDevices(n = 2) {
+  return Array.from({ length: n }, () => `
+    <div class="device skeleton-row" aria-hidden="true">
+      <span class="skel skel-dot"></span>
+      <div class="device-main">
+        <div class="skel skel-line skel-title"></div>
+        <div class="skel skel-line skel-meta"></div>
+      </div>
+    </div>`).join('');
+}
+
 export function render() {
   const { groups, devices, counts } = state.overview;
 
-  $('sessionCount').textContent = `${counts.sessions || 0} session${counts.sessions === 1 ? '' : 's'}`;
   $('deviceCount').textContent = counts.devices || 0;
 
   // The badge counts everything the bell inbox lists -- an approval AND an
@@ -162,6 +179,7 @@ export function render() {
   $('bellCount').hidden = bell === 0;
   $('bellCount').textContent = bell;
   document.title = bell ? `(${bell}) Squad Hub` : 'Squad Hub';
+  syncAppBadge(bell);
 
   // Every ordering, grouping and filtering decision is made by buildView, a
   // pure function proven in Node. This function only turns its answer into
@@ -173,7 +191,36 @@ export function render() {
     favorites: [...state.favorites],
     groupBy: state.groupBy,
     sortBy: state.sortBy,
+    scope: state.scope,
   });
+
+  // The count line reflects what the CURRENT scope and filters leave on
+  // screen -- not the raw total the hub reports -- so "3 sessions" beside an
+  // empty-looking Cloud tab never contradicts the two rows actually showing.
+  $('sessionCount').textContent = `${view.counts.shown} session${view.counts.shown === 1 ? '' : 's'}`;
+
+  // The scope tabs (#168): each carries its own count, computed WITH the
+  // current filters but ignoring scope itself, and the active tab is the
+  // only one with `aria-pressed="true"` -- the CSS keys the highlighted
+  // state off that, not off a class, so the two can never drift apart.
+  const scopes = view.counts.scopes || { all: 0, local: 0, cloud: 0 };
+  for (const key of ['all', 'local', 'cloud']) {
+    const tab = document.querySelector(`[data-scope="${key}"]`);
+    if (!tab) continue;
+    const on = (state.scope || 'all') === key;
+    tab.setAttribute('aria-pressed', String(on));
+    const countEl = tab.querySelector('.tab-count');
+    if (countEl) countEl.textContent = scopes[key] || 0;
+  }
+
+  // The phone filter button's badge: how many of the dropdowns behind it are
+  // set to something other than "all" right now (#168).
+  const activeFilters = activeFilterCount(state.filters);
+  const badge = $('filterBadge');
+  if (badge) {
+    badge.hidden = activeFilters === 0;
+    badge.textContent = activeFilters;
+  }
 
   const emptyDevices = groups
     .filter((g) => !g.sessions.length && g.device.presence !== 'offline')

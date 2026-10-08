@@ -51,7 +51,7 @@ export async function openDetail(key) {
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
   renderSquadPanel(found.session.squad);
-  $('dtTranscript').innerHTML = '<div class="t-entry t-kind">loading…</div>';
+  $('dtTranscript').innerHTML = transcriptSkeleton();
   $('detailScrim').hidden = false;
 
   // The composer starts DISABLED and stays that way until the device itself
@@ -416,6 +416,26 @@ function resultView(text, cap = TOOL_RESULT_CAP) {
   const full = String(text == null ? '' : text);
   if (full.length <= cap) return { full, shown: full, clipped: false };
   return { full, shown: `${full.slice(0, cap)}…`, clipped: true };
+}
+
+/**
+ * Placeholder transcript entries, shown while the real transcript is still in
+ * flight.
+ *
+ * Replaces a single "loading…" line for the same reason the session list and
+ * device rail get skeletons rather than text: a shape the size of what is
+ * coming says the panel is already working, where one quiet sentence reads as
+ * a box that has stalled.
+ */
+export function transcriptSkeleton(n = 4) {
+  return Array.from({ length: n }, (_, i) => `
+    <div class="t-msg skeleton-row" aria-hidden="true">
+      <span class="t-who skel skel-who"></span>
+      <div class="t-body">
+        <div class="skel skel-line"></div>
+        ${i % 2 === 0 ? '<div class="skel skel-line short"></div>' : ''}
+      </div>
+    </div>`).join('');
 }
 
 export function renderTranscript(entries) {
