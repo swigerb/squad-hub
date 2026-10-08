@@ -54,7 +54,13 @@ export function enhanceSelect(select) {
 
   function build() {
     list.innerHTML = '';
+    // A `hidden` option (#169: "Queued on ACA" and "Ready for review", kept
+    // out of the status filter until a session actually has one) is skipped
+    // here too -- the native list already respects `hidden`, and this popup
+    // replaces it, so showing an option here that the real `<select>` would
+    // never offer is the one way this could drift from what it stands in for.
     [...select.options].forEach((o, i) => {
+      if (o.hidden) return;
       const row = document.createElement('div');
       row.className = 'sp-opt';
       row.setAttribute('role', 'option');

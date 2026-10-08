@@ -1,6 +1,6 @@
 import { state, api } from './api.js';
 import {
-  esc, num, truncateWords, statusLabel, isStaleSession, isDeviceUnreachable, cleanupControls, $,
+  esc, num, truncateWords, statusBadge, isStaleSession, isDeviceUnreachable, cleanupControls, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
 import { refresh } from './ws.js';
@@ -23,13 +23,14 @@ export async function openDetail(key) {
   // "...as the Squad team, using y" -- which reads as a rendering fault rather
   // than as a long prompt.
   $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
-  // The status is shown as its LABEL, never as its internal name. A raw `idle`
-  // or `waiting_approval` in the meta line is the same leak the badge already
-  // guards against.
+  // The status pill (#169) replaces what used to be plain text at the end of
+  // the meta line with the same pill the row shows -- one source
+  // (`statusBadge`), so the detail header and the row it was opened from can
+  // never read two different things for the same session.
+  $('dtStatus').innerHTML = statusBadge(found.session, found.device);
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
-    statusLabel(found.session, found.device),
   ].filter(Boolean).join(' · ');
   renderCleanup(found);
   // Prefilled from the session when it is on GitHub. Shown either way now that

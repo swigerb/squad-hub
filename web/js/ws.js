@@ -258,7 +258,12 @@ export function registerServiceWorker() {
 export async function refresh() {
   const params = new URLSearchParams();
   if (state.filters.q) params.set('q', state.filters.q);
-  if (state.filters.status) params.set('status', state.filters.status);
+  // "Action needed" (#169) aggregates two session statuses the store cannot
+  // match with one equality check (needs approval OR awaiting reply), so it
+  // is applied client-side in `matchesFilters`/`isActionNeeded` instead --
+  // sending it as `status=action` would ask the store for a status no
+  // session ever literally has, and get an empty list back every time.
+  if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);
   if (state.filters.device) params.set('device', state.filters.device);
   state.overview = await api(`/api/overview?${params}`);
   render();

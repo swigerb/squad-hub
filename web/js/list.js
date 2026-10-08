@@ -1,5 +1,6 @@
 import {
-  esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, isStaleSession,
+  esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, statusLabel,
+  isStaleSession,
 } from './util.js';
 import { isCloudKind } from './cleanup.js';
 
@@ -20,9 +21,32 @@ export const TIME_WINDOWS = {
   '30d': { label: 'Last 30 days', ms: 30 * 24 * 60 * 60 * 1000 },
 };
 
+/**
+ * Last activity, falling back to when the session started.
+ *
+ * `lastActivityAt` (#166/#191) moves on every status change or tool call, not
+ * only at the start of a session -- it is what "Latest/First updated" sorts
+ * by. A session recorded before the field existed, or built by a test that
+ * never set it, still has a `startedAt`, and falling back to that is what
+ * keeps such a session from sorting as if it had no activity at all (which
+ * would read as "the beginning of time" under either sort direction).
+ */
+export function sessionActivityAt(s) {
+  return (s && (s.lastActivityAt || s.startedAt)) || 0;
+}
+
+/** What a session is named, for the Name A-Z / Z-A sorts: the full prompt, or the id when there is none. */
+export function sessionName(s) {
+  return (s && (s.prompt || s.id)) || '';
+}
+
 export const SORTS = {
-  started_desc: { label: 'Started ↓', compare: (a, b) => (b.startedAt || 0) - (a.startedAt || 0) },
-  started_asc: { label: 'Started ↑', compare: (a, b) => (a.startedAt || 0) - (b.startedAt || 0) },
+  updated_desc: { label: 'Latest updated', compare: (a, b) => sessionActivityAt(b) - sessionActivityAt(a) },
+  updated_asc: { label: 'First updated', compare: (a, b) => sessionActivityAt(a) - sessionActivityAt(b) },
+  started_desc: { label: 'Latest started', compare: (a, b) => (b.startedAt || 0) - (a.startedAt || 0) },
+  started_asc: { label: 'First started', compare: (a, b) => (a.startedAt || 0) - (b.startedAt || 0) },
+  name_asc: { label: 'Name A–Z', compare: (a, b) => sessionName(a).localeCompare(sessionName(b)) },
+  name_desc: { label: 'Name Z–A', compare: (a, b) => sessionName(b).localeCompare(sessionName(a)) },
   tools_desc: { label: 'Most tool calls', compare: (a, b) => (b.toolCallCount || 0) - (a.toolCallCount || 0) },
   repository: {
     label: 'Repository',
@@ -30,7 +54,20 @@ export const SORTS = {
   },
 };
 
-export const GROUPINGS = { device: 'Device', repository: 'Repository', none: 'No grouping' };
+/**
+ * The View dropdown (#169, formerly "Group by"): `none` is the flat, ungrouped
+ * list -- shown as "Default" rather than "No grouping" because this is the
+ * FIRST option in the list now, and a first option that announces what it is
+ * NOT reads as an afterthought. `status` and `squad` are new: bucketed by the
+ * same status label the badge already shows, and by the Squad project a
+ * session belongs to.
+ */
+export const GROUPINGS = {
+  none: 'Default', device: 'Device', repository: 'Repository', status: 'Status', squad: 'Squad',
+};
+
+/** A session with no Squad project of its own, for the Squad view's bucket of everything else. */
+export const NO_SQUAD_PROJECT = 'Not a Squad session';
 
 /**
  * The scope tabs above the filter bar: All, Local, Cloud (#168).
@@ -68,6 +105,33 @@ export function matchesScope(scope, device) {
 export function needsAttention(s, device) {
   if (isStaleSession(s, device)) return false;
   return (s.pendingApprovals || []).length > 0 || s.status === 'waiting_approval';
+}
+
+/**
+ * The "Action needed" status filter (#169): every session `needsAttention`
+ * catches, PLUS one waiting on a reply rather than an approval.
+ *
+ * Deliberately NOT the same thing as `counts.actionNeeded` in the API and MCP
+ * server, which stays pending-approvals-only -- that count is asserted by
+ * name in test/stale-approval-unit.js and read by the MCP tools, so its
+ * meaning cannot change here. This is a second, broader idea that only the
+ * status filter uses, named differently in code for exactly that reason.
+ */
+export function isActionNeeded(s, device) {
+  if (isStaleSession(s, device)) return false;
+  return needsAttention(s, device) || s.status === 'idle';
+}
+
+/** Every distinct `status` actually present across every session, for hiding a filter option with no data behind it yet (#169). */
+export function presentStatuses(groups = []) {
+  const set = new Set();
+  for (const g of groups) for (const s of g.sessions || []) if (s && s.status) set.add(s.status);
+  return set;
+}
+
+/** The Squad project a session belongs to, or the Squad view's catch-all bucket for one that has none. */
+export function squadProject(s) {
+  return (s && s.squad && s.squad.project) || NO_SQUAD_PROJECT;
 }
 
 /** What a session is working ON, preferring the repository over a local path. */
@@ -112,10 +176,20 @@ export function matchesText(value, needle) {
  * Someone is waiting on an answer; hiding that row because the session started
  * yesterday turns a filter into a way to lose work, which is the one thing a
  * dashboard for paused agents must not do.
+ *
+ * `f.status === 'action'` is the one status value this checks client-side
+ * (see `isActionNeeded`): it names two different session statuses at once, so
+ * the server round trip (`ws.js`'s `refresh`) asks for every session rather
+ * than one it cannot match, and this is what narrows the list back down.
+ * Every other status value is already applied by the store before the
+ * overview ever reaches here, so re-checking it would only risk disagreeing
+ * with the server about a status this file does not otherwise know the
+ * meaning of (`queued`, `review`).
  */
 export function matchesFilters(s, f = {}, now = Date.now(), device) {
   if (!matchesText(sessionRepo(s), f.repo)) return false;
   if (f.org && sessionOrg(s) !== f.org) return false;
+  if (f.status === 'action' && !isActionNeeded(s, device)) return false;
   if (!needsAttention(s, device) && !withinWindow(s, f.window, now)) return false;
   return true;
 }
@@ -295,7 +369,11 @@ export function buildView({
 
   const keyOf = groupBy === 'repository'
     ? (e) => sessionRepo(e.session) || 'No repository'
-    : (e) => (e.device && e.device.name) || 'Unknown device';
+    : groupBy === 'status'
+      ? (e) => statusLabel(e.session, e.device)
+      : groupBy === 'squad'
+        ? (e) => squadProject(e.session)
+        : (e) => (e.device && e.device.name) || 'Unknown device';
 
   const buckets = new Map();
   for (const e of rest) {

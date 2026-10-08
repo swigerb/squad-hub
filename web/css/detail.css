@@ -1,6 +1,10 @@
 /* ---------- detail ---------- */
 .detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .detail-actions { display: flex; gap: 8px; }
+/* The title and its status pill (#169) on one line, same rule as the row:
+   the pill is a tinted, rounded fact about the session, never a button. */
+.dt-titlerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dt-titlerow h2 { margin: 0; }
 /* Grows with what is in it rather than reserving a fixed slab. A 260px
    minimum meant a two-word reply sat at the top of an empty black rectangle
    taller than everything else in the panel. */
