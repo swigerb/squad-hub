@@ -33,13 +33,15 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, sessionKey, needsAttention, organizationsIn, repositoriesIn,
-  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow,
+  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows, SCOPES, matchesScope, scopeCounts,
+  activeFilterCount, viewStateToParams, paramsToViewState,
   matchesSidebarText, sidebarEntries, sidebarRow };`)(mod, mod.exports);
 
 const {
   esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
   sessionOrg, needsAttention, organizationsIn, repositoriesIn,
-  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow,
+  TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows, SCOPES, matchesScope, scopeCounts,
+  activeFilterCount, viewStateToParams, paramsToViewState,
   matchesSidebarText, sidebarEntries, sidebarRow,
 } = mod.exports;
 
@@ -473,6 +475,162 @@ check('a malicious session key cannot break out of the sidebar row markup', () =
   const entry = { session: sess({ key: '"><img src=x onerror=alert(1)>' }), device: { name: 'Dev Box' } };
   assert.ok(!sidebarRow(entry, null).includes('<img'),
     'the session key escaped its attribute and became live markup in the sidebar');
+});
+
+// ---------------------------------------------------------------------------
+// Truncated metadata gets a title tooltip (#186)
+// ---------------------------------------------------------------------------
+
+check('the device, repository and branch each carry a title with their full value', () => {
+  const html = sessionRow(sess({
+    key: 'k', git: { repository: 'a-very-long-organisation-name/a-very-long-repository-name', branch: 'feature/a-rather-long-branch-name' },
+  }), 'A device with an extremely long and descriptive name', {});
+  assert.match(html, /<span class="meta-field" title="A device with an extremely long and descriptive name">/,
+    'the device name has no title, so a truncated one cannot be read in full');
+  assert.match(html, /<span class="meta-field" title="a-very-long-organisation-name\/a-very-long-repository-name">/,
+    'the repository has no title');
+  assert.match(html, /<span class="branch" title="feature\/a-rather-long-branch-name">/,
+    'the branch has no title');
+});
+
+check('a malicious device name or repository cannot break out of its title attribute', () => {
+  const html = sessionRow(
+    sess({ key: 'k', git: { repository: '"><img src=x onerror=alert(1)>', branch: '"><img src=x onerror=alert(2)>' } }),
+    '"><img src=x onerror=alert(3)>',
+    {},
+  );
+  assert.ok(!html.includes('<img'), 'an attacker-controlled field escaped its attribute and became live markup');
+});
+
+check('a session with no device, repository or branch renders no empty title spans', () => {
+  const html = sessionRow(sess({ key: 'k', cwd: '', git: undefined }), '', {});
+  assert.ok(!/title=""/.test(html), 'an empty field should not be rendered with an empty title at all');
+});
+
+// ---------------------------------------------------------------------------
+// Loading skeletons (#186)
+// ---------------------------------------------------------------------------
+
+check('skeletonRows renders the requested number of placeholder rows', () => {
+  const html = skeletonRows(3);
+  assert.strictEqual((html.match(/class="row skeleton-row"/g) || []).length, 3);
+});
+
+check('skeletonRows defaults to a handful of rows when called with nothing', () => {
+  const html = skeletonRows();
+  assert.ok((html.match(/skeleton-row/g) || []).length > 0, 'no default was offered at all');
+});
+
+check('a skeleton row is marked aria-hidden, so nothing is announced for a row with no label', () => {
+  const html = skeletonRows(1);
+  assert.match(html, /class="row skeleton-row" aria-hidden="true"/);
+});
+
+// ---------------------------------------------------------------------------
+// Scope tabs (#168): All / Local / Cloud
+// ---------------------------------------------------------------------------
+
+check('scope tabs: matchesScope partitions by device kind', () => {
+  const local = { name: 'alpha' };
+  const cloud = { name: 'beta', kind: 'cloud' };
+  const aca = { name: 'gamma', kind: 'aca' };
+  assert.strictEqual(matchesScope('all', local), true);
+  assert.strictEqual(matchesScope('all', cloud), true);
+  assert.strictEqual(matchesScope('local', local), true);
+  assert.strictEqual(matchesScope('local', cloud), false);
+  assert.strictEqual(matchesScope('cloud', local), false);
+  assert.strictEqual(matchesScope('cloud', cloud), true, 'kind "cloud" belongs on the Cloud tab');
+  assert.strictEqual(matchesScope('cloud', aca), true, 'kind "aca" (#166) also belongs on the Cloud tab');
+});
+
+check('scope tabs: an unknown scope key matches everything, like "all"', () => {
+  assert.strictEqual(matchesScope('nonsense', { kind: 'cloud' }), true);
+  assert.strictEqual(matchesScope(undefined, { kind: 'cloud' }), true);
+});
+
+check('scope tabs: a device with no kind at all is Local, not dropped', () => {
+  assert.strictEqual(matchesScope('local', {}), true);
+  assert.strictEqual(matchesScope('local', undefined), true);
+  assert.strictEqual(matchesScope('cloud', undefined), false);
+});
+
+check('scope tabs: buildView excludes a pinned session from a scope it is not on', () => {
+  const groups = [
+    group('alpha', [sess({ key: 'local-1' })]),
+    group('beta', [sess({ key: 'cloud-1' })], { kind: 'cloud' }),
+  ];
+  const localView = buildView({ groups, favorites: ['cloud-1'], scope: 'local', now: NOW });
+  assert.deepStrictEqual(keysOf(localView), [{ label: 'alpha', keys: ['local-1'] }],
+    'a star does not teleport a cloud session onto the Local tab');
+
+  const cloudView = buildView({ groups, favorites: ['cloud-1'], scope: 'cloud', now: NOW });
+  assert.deepStrictEqual(keysOf(cloudView), [{ label: 'Pinned', keys: ['cloud-1'] }]);
+});
+
+check('scope tabs: scope and filters compose -- a session must satisfy both', () => {
+  const groups = [
+    group('alpha', [
+      sess({ key: 'match', git: { repository: 'acme/api' } }),
+      sess({ key: 'wrong-repo', git: { repository: 'other/thing' } }),
+    ], { kind: 'cloud' }),
+    group('beta', [sess({ key: 'wrong-scope', git: { repository: 'acme/api' } })]),
+  ];
+  const view = buildView({ groups, scope: 'cloud', filters: { org: 'acme' }, now: NOW });
+  assert.deepStrictEqual(keysOf(view), [{ label: 'alpha', keys: ['match'] }]);
+});
+
+check('scope tabs: scopeCounts reflects the current filters but ignores scope itself', () => {
+  const groups = [
+    group('alpha', [
+      sess({ key: 'local-shown', startedAt: NOW }),
+      sess({ key: 'local-old', startedAt: NOW - 99 * DAY }),
+    ]),
+    group('beta', [
+      sess({ key: 'cloud-shown', startedAt: NOW }),
+    ], { kind: 'cloud' }),
+  ];
+  const counts = scopeCounts(groups, { window: '24h' }, [], NOW);
+  assert.deepStrictEqual(counts, { all: 2, local: 1, cloud: 1 });
+});
+
+check('scope tabs: scopeCounts counts a pinned session under its own scope, bypassing filters', () => {
+  const groups = [
+    group('alpha', [sess({ key: 'pinned-old', startedAt: NOW - 99 * DAY })]),
+  ];
+  const counts = scopeCounts(groups, { window: '24h' }, ['pinned-old'], NOW);
+  assert.deepStrictEqual(counts, { all: 1, local: 1, cloud: 0 });
+});
+
+check('activeFilterCount counts only the dropdown filters, never the keyword box', () => {
+  assert.strictEqual(activeFilterCount({}), 0);
+  assert.strictEqual(activeFilterCount({ q: 'something' }), 0, 'the keyword box has its own always-visible input; it is not behind the phone filter button');
+  assert.strictEqual(activeFilterCount({ status: 'active', window: '24h' }), 2);
+  assert.strictEqual(activeFilterCount({ status: 'active', device: 'x', repo: 'y', org: 'z', window: '24h' }), 5);
+});
+
+check('viewStateToParams / paramsToViewState round-trip a non-default view', () => {
+  const view = {
+    scope: 'cloud',
+    filters: { q: 'flaky', status: 'active', device: 'alpha', repo: 'acme/api', org: 'acme', window: '7d' },
+    groupBy: 'repository',
+    sortBy: 'tools_desc',
+  };
+  const params = viewStateToParams(view);
+  assert.deepStrictEqual(params, {
+    scope: 'cloud', q: 'flaky', status: 'active', device: 'alpha', repo: 'acme/api',
+    org: 'acme', window: '7d', view: 'repository', sort: 'tools_desc',
+  });
+  assert.deepStrictEqual(paramsToViewState(params), view);
+});
+
+check('viewStateToParams omits whatever is already at its default', () => {
+  const params = viewStateToParams({ scope: 'all', groupBy: 'device', sortBy: 'started_desc', filters: {} });
+  assert.deepStrictEqual(params, {}, 'a link to the default view should not override someone else\'s own settings');
+});
+
+check('paramsToViewState ignores a stale or hand-edited value rather than applying it', () => {
+  const state = paramsToViewState({ scope: 'deleted-tab', sort: 'deleted-sort', view: 'deleted-view', window: 'deleted-window' });
+  assert.deepStrictEqual(state, {}, 'an option that no longer exists must never reach the UI as if it were real');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

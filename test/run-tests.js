@@ -772,6 +772,15 @@ async function suiteInstallPrompt() {
 }
 
 /**
+ * Home-screen app badge (#171): a live "needs you" count without opening the
+ * app, and never a thrown error on a browser that does not support it.
+ */
+async function suiteAppBadge() {
+  console.log('\n[APP BADGE] navigator.setAppBadge is called right, and never breaks when absent');
+  runChildSuite(path.join(__dirname, 'app-badge-unit.js'), 'app-badge');
+}
+
+/**
  * Modes: applied over the protocol, and reported honestly when they are not.
  */
 async function suiteModes() {
@@ -942,6 +951,18 @@ async function suiteForget() {
 }
 
 /**
+ * #225: an offline/stale ACA session must never read as actionable. Pure,
+ * DOM-free checks on the status label/badge/activity line, the list's
+ * attention/sort logic, and the detail view's Stop/Forget control state --
+ * including the property that matters most: a stale session is never left
+ * with only disabled controls and no way out.
+ */
+async function suiteStaleSession() {
+  console.log('\n[STALE SESSION] an unreachable device never reads as "awaiting your reply"');
+  runChildSuite(path.join(__dirname, 'stale-session-unit.js'), 'stale-session');
+}
+
+/**
  * The parity checklist, checked against the code. Catches a capability being
  * removed or renamed while its tests go with it -- the one way a green suite
  * can coexist with a lost feature.
@@ -1109,6 +1130,7 @@ async function suiteBellInbox() {
   await suitePackage();
   await suiteWebXss();
   await suiteInstallPrompt();
+  await suiteAppBadge();
   await suiteModes();
   await suiteAccess();
   await suitePrefs();
@@ -1124,6 +1146,7 @@ async function suiteBellInbox() {
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteForget();
+  await suiteStaleSession();
   await suiteSquadDocs();
   await suiteAgentArgs();
   await suiteParityAudit();

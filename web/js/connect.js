@@ -5,8 +5,9 @@
 // are online. Behavior is unchanged byte-for-byte from the original.
 
 import { state, api } from './api.js';
-import { $, esc, toast } from './util.js';
+import { $, esc, toast, undoToast } from './util.js';
 import { refresh } from './ws.js';
+import { removeDeviceUndoLabel } from './cleanup.js';
 
 export function openNew(deviceId) {
   const online = state.overview.devices.filter((d) => d.presence !== 'offline');
@@ -56,7 +57,8 @@ export function openConnect() {
  *
  * That is the point: it exists for the laptop you cannot reach, the colleague
  * who has left, the container that will not stop. But it is also why a
- * mis-click here costs a trip to the machine, so it asks.
+ * mis-click here costs a trip to the machine, so it asks -- and now also
+ * waits a few seconds after asking, in case the click itself was the mistake.
  */
 async function removeDevice(deviceId) {
   const d = (state.overview.devices || []).find((x) => x.deviceId === deviceId);
@@ -68,15 +70,17 @@ async function removeDevice(deviceId) {
     + 'machine with a new token.',
   )) return;
 
-  try {
-    const r = await api(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, { method: 'POST' });
-    // Reported from the ANSWER, never from the request. A device that could not
-    // be revoked must not be announced as removed.
-    toast(r && r.removed ? `Removed ${name}` : `${name} was disconnected, but its record is still here`);
-  } catch (e) {
-    toast(`Could not remove ${name}: ${e.message}`);
-  }
-  refresh();
+  undoToast(removeDeviceUndoLabel(name), async () => {
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, { method: 'POST' });
+      // Reported from the ANSWER, never from the request. A device that could not
+      // be revoked must not be announced as removed.
+      toast(r && r.removed ? `Removed ${name}` : `${name} was disconnected, but its record is still here`);
+    } catch (e) {
+      toast(`Could not remove ${name}: ${e.message}`);
+    }
+    await refresh();
+  }, () => toast(`Removal cancelled — keeping "${name}"`));
 }
 
 async function createDeviceToken() {  const btn = $('cnCreate');

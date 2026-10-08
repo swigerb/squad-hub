@@ -1,11 +1,12 @@
 import { state, api } from './api.js';
 import {
-  esc, num, truncateWords, statusLabel, statusPillClass, $,
+  esc, num, truncateWords, statusLabel, statusPillClass,
+  isStaleSession, isDeviceUnreachable, cleanupControls, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
 import { refresh, resolveDeepLink, toggleFavorite } from './ws.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
-import { renderTranscript } from './transcript.js';
+import { renderTranscript, transcriptSkeleton } from './transcript.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -68,7 +69,7 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
-    statusLabel(found.session),
+    statusLabel(found.session, found.device),
   ].filter(Boolean).join(' · ');
   const pillCls = statusPillClass(found.session);
   $('dtStatusPill').className = `dt-pill ${pillCls}`;
@@ -81,6 +82,7 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   star.title = pinned ? 'Unpin this session' : 'Pin this session';
   star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
   star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  renderCleanup(found);
   // Prefilled from the session when it is on GitHub. Shown either way now that
   // the dialog takes a repository: a run does not have to be about the
   // repository you happen to be looking at.
@@ -101,7 +103,7 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
   renderSquadPanel(found.session.squad);
-  $('dtTranscript').innerHTML = '<div class="t-entry t-kind">loading…</div>';
+  $('dtTranscript').innerHTML = transcriptSkeleton();
   showDetailPage();
   renderSidebar();
 
@@ -249,6 +251,67 @@ export function initDetailRouting() {
   });
 }
 
+/**
+ * The Stop/Forget pair in the detail header, driven by device reachability
+ * rather than by the (slower, async) control-check.
+ *
+ * `Stop` asks the device to end its own agent process. There is nowhere for
+ * that command to arrive once the socket is gone -- the 409 "device is
+ * offline" from #225's report -- so it is disabled up front, with the reason
+ * written where the person who reaches for it will see it, rather than left
+ * live to fail after a click.
+ *
+ * `Forget stale session` is the alternative offered in its place, and ONLY
+ * when there is something here actually worth forgetting: the session has to
+ * be both on a device the hub cannot reach AND still in a non-terminal status
+ * (`isStaleSession`). A session that already finished has nothing stuck about
+ * it, and the existing Tidy menu already clears those.
+ */
+function renderCleanup(found) {
+  const c = cleanupControls(found.session, found.device);
+  const stop = $('dtStop');
+  if (stop) {
+    stop.disabled = c.stopDisabled;
+    stop.title = c.stopReason;
+  }
+  const forget = $('dtForget');
+  if (forget) {
+    forget.hidden = !c.forgetVisible;
+    forget.disabled = false;
+    forget.textContent = 'Forget stale session';
+  }
+}
+
+/**
+ * Clear one stuck session from an unreachable device.
+ *
+ * Calls the same offline `forget` path the bulk Tidy menu uses, narrowed to
+ * this one session (`sessionId`) and forced (`force: true`) because the
+ * session is, by definition of `isStaleSession`, still in a non-terminal
+ * status -- the whole reason it is stuck. The hub only ever honours `force`
+ * when the device has no live socket (see hub-service.js), so this can never
+ * reach into a session a live device still owns; and because the device
+ * remains the source of truth, a device that comes back online republishes
+ * its real session list on its next heartbeat regardless of what the hub
+ * forgot in the meantime (#225).
+ */
+export async function forgetStaleSession() {
+  const current = state.currentSession;
+  if (!current || !isStaleSession(current.session, current.device)) return;
+  const btn = $('dtForget');
+  if (btn) { btn.disabled = true; btn.textContent = 'Forgetting…'; }
+  try {
+    await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/forget`, {
+      method: 'POST', body: { sessionId: current.session.id, force: true },
+    });
+    $('detailScrim').hidden = true;
+    await refresh();
+  } catch (e) {
+    alert(`Could not forget: ${e.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Forget stale session'; }
+  }
+}
 
 /** How long to wait for the device to answer before saying so. */
 const CONTROL_TIMEOUT_MS = 8000;
@@ -324,7 +387,15 @@ export function renderControl() {
   // that message, because "queued" and "delivered" are different promises and
   // the person who pressed send is entitled to know which one they got.
   $('dtControlWhy').textContent = b.reason || state.composer.outcomeNote || '';
-  $('dtSync').hidden = !b.canSync;
+  // `Sync session` restarts the engine on the device's OWN machine, which is
+  // exactly as unreachable as `Stop` when the device itself has no live
+  // socket -- offering it here would be the same dead end with a different
+  // label. `Forget stale session` (see renderCleanup) is the real next step
+  // for an unreachable device; Sync stays for the case it was built for, a
+  // reachable device whose session the hub has lost track of.
+  const current = state.currentSession;
+  const deviceUnreachable = !!(current && isDeviceUnreachable(current.device));
+  $('dtSync').hidden = !b.canSync || deviceUnreachable;
   $('dtInput').disabled = !b.enabled;
   $('dtSend').disabled = !b.enabled;
   $('dtInput').placeholder = b.enabled

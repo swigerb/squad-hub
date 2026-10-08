@@ -761,6 +761,103 @@ check('CACHE was actually bumped for the shell-shape change', () => {
     'CACHE is not the expected post-split value -- did it get bumped?');
 });
 
+check("the service worker's shell caches the maskable icon and both screenshots", () => {
+  // These are read from the manifest, not the page, so nothing else in this
+  // file's reference scan would ever catch a missing shell entry for them --
+  // the install prompt or app switcher asking for them offline would just
+  // 404 silently.
+  const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
+  const match = sw.match(/const SHELL = \[([^\]]*)\];/);
+  assert.ok(match, 'could not find the SHELL array in web/sw.js');
+  const shell = [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  for (const want of ['/icon-mask-512.png', '/screenshot-wide.png', '/screenshot-narrow.png']) {
+    assert.ok(shell.includes(want), `SHELL is missing ${want}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Manifest polish (#171) -- shortcuts, screenshots, maskable icon, id
+// ---------------------------------------------------------------------------
+
+check('the manifest has an id, so reinstalling never creates a second icon', () => {
+  // Without `id`, Chrome falls back to `start_url` for identity; the two are
+  // usually the same value anyway, but pinning `id` explicitly means a future
+  // change to `start_url` (a redirect, a query param) can never silently
+  // mint a second, duplicate install.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  assert.ok(mf.id, 'manifest has no id');
+});
+
+check('orientation is "any", not locked to portrait', () => {
+  // A hub that only shows one session at a time can be read in portrait, but
+  // a tablet or a laptop opened as an installed app has no reason to be
+  // spun to fit a phone's assumption.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  assert.strictEqual(mf.orientation, 'any');
+});
+
+check('the manifest has a dedicated maskable icon distinct from the "any" icon', () => {
+  // Reusing the square `any` icon as `maskable` is how the ORIGINAL bug
+  // shipped: Android's circular/squircle mask crops a full-bleed square icon
+  // down to its corners. A real maskable icon needs its own file with the
+  // mark redrawn inside the 80% safe zone.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  const maskable = (mf.icons || []).filter((i) => String(i.purpose || '').includes('maskable'));
+  assert.ok(maskable.length, 'no maskable icon');
+  const any512 = (mf.icons || []).find((i) => i.sizes === '512x512' && i.purpose === 'any');
+  assert.ok(any512, 'no 512x512 "any" icon to compare against');
+  for (const icon of maskable) {
+    assert.notStrictEqual(icon.src, any512.src, 'maskable icon reuses the square "any" icon file -- it will be cropped');
+  }
+});
+
+check('the shortcuts array names New session, Needs you and Start ACA job', () => {
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  assert.ok(Array.isArray(mf.shortcuts) && mf.shortcuts.length >= 3, 'manifest has fewer than 3 shortcuts');
+  for (const want of ['New session', 'Needs you', 'Start ACA job']) {
+    assert.ok(mf.shortcuts.some((s) => s.name === want), `no shortcut named "${want}"`);
+  }
+});
+
+check('every shortcut url is same-origin and under scope, and its icon (if any) is shipped', () => {
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  for (const s of mf.shortcuts || []) {
+    assert.ok(s.url && s.url.startsWith('/'), `shortcut "${s.name}" url "${s.url}" is not an app-relative path`);
+    for (const icon of s.icons || []) {
+      const f = `web/${String(icon.src).replace(/^\//, '')}`;
+      assert.ok(fs.existsSync(path.join(ROOT, f)) && inPackage(f), `shortcut "${s.name}" icon ${icon.src} missing or unshipped`);
+    }
+  }
+});
+
+check('app.js knows what to do with every shortcut id the manifest promises', () => {
+  // The manifest and app.js agree on these ids by naming convention alone --
+  // nothing enforces it at the language level. A shortcut whose id is not
+  // wired to a control still pins to the home screen; it just opens the hub
+  // and silently does nothing, which is worse than not offering it.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  const appjs = fs.readFileSync(path.join(ROOT, 'web/app.js'), 'utf8');
+  const ids = (mf.shortcuts || []).map((s) => (s.url.match(/shortcut=([\w-]+)/) || [])[1]);
+  assert.ok(ids.length >= 3 && ids.every(Boolean), 'could not read shortcut ids back out of their urls');
+  for (const id of ids) {
+    assert.ok(appjs.includes(`'${id}'`), `app.js has no handling for shortcut id "${id}"`);
+  }
+});
+
+check('the manifest offers a wide and a narrow screenshot, both shipped', () => {
+  // `screenshots` is what lets Chrome and Edge show a preview in the install
+  // dialog instead of a bare name and icon; without both form factors, a
+  // phone installing it sees nothing, or a cropped desktop capture.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  assert.ok(Array.isArray(mf.screenshots) && mf.screenshots.length >= 2, 'fewer than 2 screenshots in the manifest');
+  for (const want of ['wide', 'narrow']) {
+    const shot = mf.screenshots.find((s) => s.form_factor === want);
+    assert.ok(shot, `no ${want} screenshot in the manifest`);
+    const f = `web/${String(shot.src).replace(/^\//, '')}`;
+    assert.ok(fs.existsSync(path.join(ROOT, f)) && inPackage(f), `${want} screenshot ${shot.src} missing or unshipped`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The split Wiring section -- app.js's wiring code moved into web/js/*.js
 // ---------------------------------------------------------------------------

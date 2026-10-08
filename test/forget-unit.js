@@ -311,6 +311,59 @@ check('a device with nothing left behind it is removable, and one with a live se
     'the running session should still be there, which is what keeps the device listed');
 });
 
+// ---------------------------------------------------------------------------
+// #225: "Forget stale session" -- one card, not the whole device
+// ---------------------------------------------------------------------------
+//
+// The detail view's cleanup action targets the ONE session someone is
+// looking at, on a device that may be carrying others. `sessionId` narrows
+// the sweep to that one row; omitted, the behaviour is exactly what it was
+// before (the bulk Tidy menu's device-wide sweep), so this is additive, not
+// a change to the existing contract.
+
+check('sessionId narrows a forced sweep to one session, leaving its sibling alone', () => {
+  const st = storeWith([
+    { id: 'stuck', status: 'idle' },
+    { id: 'also-stuck', status: 'waiting_approval' },
+  ]);
+  const r = st.forgetDeviceSessions('subj', 'aca-job-1', { force: true, sessionId: 'stuck' });
+  assert.strictEqual(r.removed, 1);
+  const left = st.listSessions('subj', { deviceId: 'aca-job-1' });
+  assert.strictEqual(left.length, 1, 'only the named session should be gone');
+  assert.strictEqual(left[0].id, 'also-stuck');
+});
+
+check('sessionId still requires force for a non-terminal session, same as the bulk sweep', () => {
+  const st = storeWith([{ id: 'stuck', status: 'idle' }]);
+  const r = st.forgetDeviceSessions('subj', 'aca-job-1', { sessionId: 'stuck' });
+  assert.strictEqual(r.removed, 0, 'force is what makes removing a non-terminal session safe; it must still be asked for');
+  assert.strictEqual(st.listSessions('subj', { deviceId: 'aca-job-1' }).length, 1);
+});
+
+check('an unknown sessionId forgets nothing, rather than falling back to the whole device', () => {
+  const st = storeWith([{ id: 's1', status: 'idle' }]);
+  const r = st.forgetDeviceSessions('subj', 'aca-job-1', { force: true, sessionId: 'does-not-exist' });
+  assert.strictEqual(r.removed, 0);
+  assert.strictEqual(st.listSessions('subj', { deviceId: 'aca-job-1' }).length, 1);
+});
+
+check('the hub-service offline-forget route threads a caller-supplied sessionId through', () => {
+  // A static check, in the spirit of "the hub-facing op list still refuses
+  // everything it always refused" above: this proves the wiring exists
+  // without standing up a whole hub+socket for one line of plumbing.
+  //
+  // Scoped to start after the control-ops comment, not the device-REVOKE
+  // path above it -- that one also calls `forgetDeviceSessions(me.key,
+  // deviceId, { force: true })` (to clear a revoked device's sessions) but
+  // has no `sessionId` to thread, and is not what #225's detail-view action
+  // calls.
+  const svc = fs.readFileSync(path.join(ROOT, 'src', 'service', 'hub-service.js'), 'utf8');
+  const controlOps = svc.slice(svc.indexOf('Control operations, all routed to a device'));
+  assert.ok(/forgetDeviceSessions\(me\.key, deviceId, \{[\s\S]{0,900}sessionId:/.test(controlOps),
+    'the offline /forget route must pass body.sessionId into forgetDeviceSessions for #225\'s '
+    + 'single-session "Forget stale session" action to be narrowable at all');
+});
+
 setTimeout(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -1,5 +1,5 @@
 import { state, api } from './api.js';
-import { TIME_WINDOWS, SORTS, GROUPINGS } from './list.js';
+import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
 import { renderTranscript } from './transcript.js';
 import { $ } from './util.js';
@@ -162,6 +162,22 @@ export function takeDeepLinkSession() {
 }
 
 /**
+ * Which manifest `shortcut` launched this load, if any -- "New session",
+ * "Needs you" or "Start ACA job" (see web/app.webmanifest). Read once and
+ * stripped from the URL for the same reason the session deep link is: a
+ * reload or a bookmark must not keep replaying the shortcut that opened it.
+ */
+export function takeShortcut() {
+  const params = new URLSearchParams(location.search);
+  const wanted = params.get('shortcut');
+  if (!wanted) return null;
+  params.delete('shortcut');
+  const rest = params.toString();
+  history.replaceState({}, '', rest ? `${location.pathname}?${rest}` : location.pathname);
+  return wanted;
+}
+
+/**
  * Resolve what a deep link asked for.
  *
  * Matches the hub's `deviceId:sessionId` key first. A bare session id is
@@ -248,40 +264,81 @@ export async function refresh() {
 const VIEW_KEY = 'squad-hub-view';
 const FAVORITES_KEY = 'squad-hub-favorites';
 
+/** The view, as the shape both the URL and localStorage agree on (#168). */
+function currentViewParams() {
+  return viewStateToParams({
+    scope: state.scope, filters: state.filters, groupBy: state.groupBy, sortBy: state.sortBy,
+  });
+}
+
+/** Every key `viewStateToParams` can ever produce, for a clean rewrite. */
+const VIEW_PARAM_KEYS = ['scope', 'q', 'status', 'device', 'repo', 'org', 'window', 'view', 'sort'];
+
 /**
- * List controls and pins survive a reload.
+ * Keep the address bar in step with the view (#168): scope, every filter,
+ * the grouping and the sort all become query-string keys, so reloading the
+ * page -- or sending the link to someone else -- lands on the same view,
+ * not the default one.
  *
- * Kept in localStorage rather than on the hub deliberately: this is how ONE
+ * `replaceState`, never `pushState`: choosing a dropdown is not a navigation,
+ * and a Back-button entry for every keystroke in the keyword box would make
+ * Back useless for its actual job of leaving the page.
+ *
+ * Any OTHER query-string key already on the URL (a `token` or `session` deep
+ * link not yet claimed) is left exactly alone -- this only ever touches the
+ * keys it is itself responsible for.
+ */
+export function syncUrlFromState() {
+  try {
+    const params = new URLSearchParams(location.search);
+    for (const k of VIEW_PARAM_KEYS) params.delete(k);
+    for (const [k, v] of Object.entries(currentViewParams())) params.set(k, v);
+    const qs = params.toString();
+    history.replaceState({}, '', qs ? `${location.pathname}?${qs}` : location.pathname);
+  } catch { /* a view that cannot reach the address bar still works on screen */ }
+}
+
+/**
+ * List controls, scope and pins survive a reload (#165, extended by #168).
+ *
+ * The URL wins when it carries any view state at all -- that is what makes a
+ * link shareable: a teammate opening `?scope=cloud&status=action` must see
+ * cloud sessions needing attention, not their OWN last-saved view overriding
+ * the one the link asked for. localStorage is the FALLBACK, for the case the
+ * URL came with nothing: a bookmark of the bare hub, or the first visit after
+ * a view was last saved.
+ *
+ * Kept per-browser rather than on the hub deliberately: this is how ONE
  * person likes to look at the list, not a property of the sessions. Syncing it
  * would mean a preference set on a laptop silently rearranging a phone.
  */
 export function loadView() {
   try {
-    const saved = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}');
-    if (saved.repo) state.filters.repo = saved.repo;
-    if (saved.org) state.filters.org = saved.org;
-    if (TIME_WINDOWS[saved.window]) state.filters.window = saved.window;
-    if (GROUPINGS[saved.groupBy]) state.groupBy = saved.groupBy;
-    if (SORTS[saved.sortBy]) state.sortBy = saved.sortBy;
-  } catch { /* a corrupt preference is not worth a broken page */ }
+    const fromUrl = paramsToViewState(Object.fromEntries(new URLSearchParams(location.search)));
+    const view = Object.keys(fromUrl).length
+      ? fromUrl
+      : paramsToViewState(JSON.parse(localStorage.getItem(VIEW_KEY) || '{}'));
+    if (view.scope) state.scope = view.scope;
+    if (view.filters) Object.assign(state.filters, view.filters);
+    if (view.groupBy) state.groupBy = view.groupBy;
+    if (view.sortBy) state.sortBy = view.sortBy;
+  } catch { /* a corrupt preference or URL is not worth a broken page */ }
   try {
     const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]');
     if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
   } catch { /* same */ }
   try { state.railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch { /* same */ }
   state.theme = loadTheme();
+  // Whatever was just restored -- from the URL or from localStorage -- is
+  // written straight back to the address bar, so the two can never disagree
+  // about what is currently on screen.
+  syncUrlFromState();
 }
 
 export function saveView() {
-  try {
-    localStorage.setItem(VIEW_KEY, JSON.stringify({
-      repo: state.filters.repo,
-      org: state.filters.org,
-      window: state.filters.window,
-      groupBy: state.groupBy,
-      sortBy: state.sortBy,
-    }));
-  } catch { /* private browsing, quota, whatever -- never fatal */ }
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(currentViewParams())); }
+  catch { /* private browsing, quota, whatever -- never fatal */ }
+  syncUrlFromState();
 }
 
 function saveFavorites() {
@@ -300,6 +357,9 @@ export function toggleFavorite(key) {
 /** Fill the controls from the restored state, so the UI matches what it does. */
 export function syncControls() {
   const set = (id, value) => { const el = $(id); if (el) el.value = value; };
+  set('q', state.filters.q);
+  set('statusFilter', state.filters.status);
+  set('deviceFilter', state.filters.device);
   set('windowFilter', state.filters.window);
   set('groupBy', state.groupBy);
   set('sortBy', state.sortBy);

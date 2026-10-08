@@ -108,6 +108,26 @@ function resultView(text, cap = TOOL_RESULT_CAP) {
   return { full, shown: `${full.slice(0, cap)}…`, clipped: true };
 }
 
+/**
+ * Placeholder transcript entries, shown while the real transcript is still in
+ * flight.
+ *
+ * Replaces a single "loading…" line for the same reason the session list and
+ * device rail get skeletons rather than text: a shape the size of what is
+ * coming says the panel is already working, where one quiet sentence reads as
+ * a box that has stalled.
+ */
+export function transcriptSkeleton(n = 4) {
+  return Array.from({ length: n }, (_, i) => `
+    <div class="t-msg skeleton-row" aria-hidden="true">
+      <span class="t-who skel skel-who"></span>
+      <div class="t-body">
+        <div class="skel skel-line"></div>
+        ${i % 2 === 0 ? '<div class="skel skel-line short"></div>' : ''}
+      </div>
+    </div>`).join('');
+}
+
 export function renderTranscript(entries) {
   const blocks = transcriptBlocks(entries);
   if (!blocks.length) {

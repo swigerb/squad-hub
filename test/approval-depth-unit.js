@@ -34,11 +34,12 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell,
-  updateText, transcriptBlocks, resultView };`)(mod, mod.exports);
+  updateText, transcriptBlocks, resultView, forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
   exact, timeCell, updateText, transcriptBlocks, resultView,
+  forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -774,6 +775,27 @@ check('a document written on Windows is not double-spaced', () => {
   const app = web;
   assert.match(app, /String\(r\.text \|\| ''\)\.split\(\/\\r\?\\n\/\)/,
     'the document renderer must split on CRLF as well as LF');
+});
+
+// ---------------------------------------------------------------------------
+// Undo-toast wording (#186)
+// ---------------------------------------------------------------------------
+
+check('forgetting all ended sessions says so, by name, in the undo label', () => {
+  assert.match(forgetUndoLabel('all'), /^All ended sessions will be removed/);
+});
+
+check('forgetting an aged scope names the cutoff in days, in the undo label', () => {
+  assert.match(forgetUndoLabel(30), /older than 30 days/);
+});
+
+check('removing a device names the device in the undo label', () => {
+  assert.strictEqual(removeDeviceUndoLabel('bernies-mbp'), 'Removing "bernies-mbp" in a few seconds');
+});
+
+check('transcriptSkeleton renders the requested number of placeholder entries', () => {
+  const html = transcriptSkeleton(5);
+  assert.strictEqual((html.match(/class="t-msg skeleton-row"/g) || []).length, 5);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
