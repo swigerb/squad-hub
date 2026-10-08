@@ -938,7 +938,7 @@ async function watchCsp(pg) {
       await page.click('[data-remove-device="e2e-temp-device"]');
       const toastText = await until(async () => {
         const t = await page.evaluate(() => document.getElementById('toast').textContent);
-        return /will be removed in a few seconds/.test(t) ? t : null;
+        return /^Removing ".*" in a few seconds/.test(t) ? t : null;
       }, 'the device-removal Undo toast to appear');
       assert.match(toastText, /^Removing "E2E Temp Device"/, 'the Undo toast did not name the device being removed');
       assert.match(toastText, /Undo$/, 'the device-removal Undo toast did not offer an Undo button');
@@ -964,7 +964,7 @@ async function watchCsp(pg) {
         await page.click('[data-remove-device="e2e-temp-device"]');
         const toastText = await until(async () => {
           const t = await page.evaluate(() => document.getElementById('toast').textContent);
-          return /will be removed in a few seconds/.test(t) ? t : null;
+          return /^Removing ".*" in a few seconds/.test(t) ? t : null;
         }, 'the device-removal Undo toast to appear');
         assert.match(toastText, /^Removing "E2E Temp Device"/,
           'the Undo toast did not name the device being removed');

@@ -4559,7 +4559,7 @@ if ($health.accessStore -ne 'durable') {`,
     // out the window, there is no undo -- just a toast that lies about there
     // being one.
     name: 'undoToast commits immediately instead of waiting out the window',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => finish(undo);
   undoTimer = setTimeout(() => finish(commit), undoDelayMs);`,
@@ -4572,7 +4572,7 @@ if ($health.accessStore -ne 'durable') {`,
     // The Undo button doing nothing is worse than no button: it LOOKS
     // cancellable and is not.
     name: 'the Undo button no longer cancels the pending action',
-    file: 'web/app.js',
+    file: 'web/js/util.js',
     find: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => finish(undo);`,
     replace: `  const btn = $('toastUndo');
