@@ -1896,6 +1896,38 @@ const MUTATIONS = [
     mustFail: 'the two states that want a person are told apart by name',
   },
   {
+    // #229: the local-devices "Copy command" button is rendered in two
+    // places -- the device rail AND the main sessions list's own `#empty`
+    // state -- but used to only be wired up from a delegated listener on
+    // `#deviceList`, so a click on the copy of the button that lives outside
+    // the rail did nothing at all. Removing the document-level listener
+    // reintroduces exactly that regression.
+    name: 'the copy-command button only works inside the device rail',
+    file: 'web/js/connect.js',
+    find: `  document.addEventListener('click', (e) => {
+    const copyBtn = e.target.closest('[data-copy-cmd]');
+    if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
+  });`,
+    replace: `  if (!process.env.MUTANT) document.addEventListener('click', (e) => { // MUTATION
+    const copyBtn = e.target.closest('[data-copy-cmd]');
+    if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
+  });`,
+    mustFail: 'the local-devices pitch copies its start command (#172)',
+  },
+  {
+    // #229: headless/permission-less Chromium can leave
+    // `navigator.clipboard.writeText` pending forever -- neither resolved
+    // nor rejected -- so `copyToClipboard` races it against a short timeout
+    // and falls back to the execCommand textarea if the clipboard never
+    // answers. Blowing the timeout out to something effectively unbounded
+    // reintroduces the hang: the caller's toast never fires in time.
+    name: 'copyToClipboard waits far too long on a clipboard write that never settles',
+    file: 'web/js/util.js',
+    find: `        setTimeout(() => reject(new Error('clipboard write timed out')), 300);`,
+    replace: `        setTimeout(() => reject(new Error('clipboard write timed out')), process.env.MUTANT ? 6000 : 300); // MUTATION`,
+    mustFail: 'a clipboard write that never settles still resolves via the execCommand fallback (#229)',
+  },
+  {
     // A worktree gets BOTH halves wrong under a naive reader: `.git` is a file,
     // and `config` lives in the common directory.
     name: 'a linked worktree is not recognised as a checkout at all',

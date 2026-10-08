@@ -206,13 +206,23 @@ function showNewErr(m) { $('nsErr').hidden = false; $('nsErr').textContent = m; 
  * markup underneath it has been thrown away and replaced.
  */
 export function wireConnect({ spawnRequest, spawnError }) {
+  // `[data-copy-cmd]` buttons aren't confined to the device rail -- the same
+  // "no local device" pitch (`localDevicesEmptyHtml`) is also rendered inside
+  // the main sessions list's own `#empty` state (#172/#229), which sits
+  // outside `#deviceList` entirely. A delegated handler on `document` is what
+  // makes every copy button work, wherever its markup happens to live, past
+  // or future, rather than requiring every container that might embed one to
+  // remember to wire it up itself.
+  document.addEventListener('click', (e) => {
+    const copyBtn = e.target.closest('[data-copy-cmd]');
+    if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
+  });
+
   $('deviceList').onclick = (e) => {
     const rm = e.target.closest('[data-remove-device]');
     if (rm) { removeDevice(rm.dataset.removeDevice); return; }
     const spawn = e.target.closest('[data-spawn]');
     if (spawn) { openNew(spawn.dataset.spawn); return; }
-    const copyBtn = e.target.closest('[data-copy-cmd]');
-    if (copyBtn) { copyCommand(copyBtn.dataset.copyCmd); return; }
     // "ACA jobs" and a section's own "+" both mean "give me another device of
     // this kind", and neither can provision one -- ACA opens GitHub, the
     // other two can only ever be answered by `squad-hub connect`.

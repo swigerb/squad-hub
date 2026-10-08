@@ -781,6 +781,16 @@ async function suiteAppBadge() {
 }
 
 /**
+ * `copyToClipboard` (#172/#229): a headless or permission-less browser must
+ * never leave the caller's toast waiting on a clipboard write that neither
+ * resolves nor rejects.
+ */
+async function suiteCopyClipboard() {
+  console.log('\n[COPY] copyToClipboard always settles, with the execCommand fallback when the clipboard will not');
+  runChildSuite(path.join(__dirname, 'copy-clipboard-unit.js'), 'copy-clipboard');
+}
+
+/**
  * Modes: applied over the protocol, and reported honestly when they are not.
  */
 async function suiteModes() {
@@ -1131,6 +1141,7 @@ async function suiteBellInbox() {
   await suiteWebXss();
   await suiteInstallPrompt();
   await suiteAppBadge();
+  await suiteCopyClipboard();
   await suiteModes();
   await suiteAccess();
   await suitePrefs();
