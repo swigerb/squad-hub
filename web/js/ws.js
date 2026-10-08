@@ -2,12 +2,8 @@ import { state, api } from './api.js';
 import { TIME_WINDOWS, SORTS, GROUPINGS } from './list.js';
 import { render } from './devices.js';
 import { renderTranscript } from './detail.js';
-// Circular by necessity: the live connection code still calls the DOM
-// helper and sign-in flow that stay in app.js for part 4 of #165. Both
-// modules only reach into the other from inside a function body, never at
-// module-evaluation time, so the cycle resolves the same way it would for
-// any two ES modules that call back into each other.
-import { $, showSignIn } from '../app.js';
+import { $ } from './util.js';
+import { showSignIn } from './signin.js';
 
 // ---------------------------------------------------------------------------
 // Live connection
