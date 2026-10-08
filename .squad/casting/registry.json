@@ -1,74 +1,109 @@
 {
+  "schema": "squad-agent-provenance/v1",
+  "schema_version": 1,
+  "revision": 1,
+  "generated_at": "2026-10-04T16:42:18.688Z",
   "agents": {
     "advisor": {
+      "display_name": "advisor",
       "persistent_name": "advisor",
+      "role": "advisor",
       "universe": "custom",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.566Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.566Z",
+      "legacy_named": false
     },
     "docs": {
+      "display_name": "docs",
       "persistent_name": "docs",
+      "role": "docs",
       "universe": "custom",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.566Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.566Z",
+      "legacy_named": false
     },
     "engineer": {
+      "display_name": "engineer",
       "persistent_name": "engineer",
+      "role": "engineer",
       "universe": "custom",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.566Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.566Z",
+      "legacy_named": false
     },
     "fact-checker": {
+      "display_name": "Fact Checker",
       "persistent_name": "Fact Checker",
+      "role": "fact-checker",
       "universe": "builtin",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.566Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.566Z",
+      "legacy_named": false
     },
     "lead": {
+      "display_name": "lead",
       "persistent_name": "lead",
+      "role": "lead",
       "universe": "custom",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.566Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.566Z",
+      "legacy_named": false
     },
     "rai": {
+      "display_name": "Rai",
       "persistent_name": "Rai",
+      "role": "rai",
       "universe": "builtin",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.688Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.688Z",
+      "legacy_named": false
     },
     "ralph": {
+      "display_name": "Ralph",
       "persistent_name": "Ralph",
+      "role": "ralph",
       "universe": "builtin",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.688Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.688Z",
+      "legacy_named": false
     },
     "reviewer": {
+      "display_name": "reviewer",
       "persistent_name": "reviewer",
+      "role": "reviewer",
       "universe": "custom",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.688Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.688Z",
+      "legacy_named": false
     },
     "scribe": {
+      "display_name": "Scribe",
       "persistent_name": "Scribe",
+      "role": "scribe",
       "universe": "builtin",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.688Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.688Z",
+      "legacy_named": false
     },
     "security": {
+      "display_name": "security",
       "persistent_name": "security",
+      "role": "security",
       "universe": "custom",
+      "status": "active",
       "created_at": "2026-10-04T16:42:18.688Z",
-      "legacy_named": false,
-      "status": "active"
+      "updated_at": "2026-10-04T16:42:18.688Z",
+      "legacy_named": false
     }
-  }
+  },
+  "transaction_id": "375cd492-9368-4609-81b0-943bf97764e1"
 }
