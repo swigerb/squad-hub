@@ -2192,6 +2192,117 @@ const MUTATIONS = [
   },
 
   // -------------------------------------------------------------------------
+  // #169: view/sort options, Action needed filter, status pill restyle
+  // -------------------------------------------------------------------------
+  {
+    name: 'the updated sorts stop falling back to startedAt',
+    file: 'web/js/list.js',
+    find: `  return (s && (s.lastActivityAt || s.startedAt)) || 0;`,
+    replace: `  return (s && (s.lastActivityAt || (process.env.MUTANT ? 0 : s.startedAt))) || 0; // MUTATION`,
+    mustFail: 'the updated sorts fall back to startedAt when lastActivityAt is missing',
+  },
+  {
+    name: 'Name A-Z stops sorting by the actual prompt text',
+    file: 'web/js/list.js',
+    find: `  name_asc: { label: 'Name A–Z', compare: (a, b) => sessionName(a).localeCompare(sessionName(b)) },`,
+    replace: `  name_asc: { label: 'Name A–Z', compare: (a, b) => (process.env.MUTANT ? 0 : sessionName(a).localeCompare(sessionName(b))) }, // MUTATION`,
+    mustFail: 'Name A-Z and Name Z-A sort by prompt, case-insensitively via localeCompare',
+  },
+  {
+    name: 'sessionName stops falling back to the session id',
+    file: 'web/js/list.js',
+    find: `  return (s && (s.prompt || s.id)) || '';`,
+    replace: `  return (s && (s.prompt || (process.env.MUTANT ? '' : s.id))) || ''; // MUTATION`,
+    mustFail: 'a session with no prompt sorts by its id instead',
+  },
+  {
+    name: 'grouping by status stops using the badge\'s own label',
+    file: 'web/js/list.js',
+    find: `      ? (e) => statusLabel(e.session, e.device)`,
+    replace: `      ? (e) => (process.env.MUTANT ? e.session.status : statusLabel(e.session, e.device)) // MUTATION`,
+    mustFail: 'grouping by status buckets sessions by the same label the badge shows',
+  },
+  {
+    name: 'a status/squad section wrongly claims a single device, like a device section',
+    file: 'web/js/list.js',
+    find: `      device: groupBy === 'device' ? (entries[0] && entries[0].device) || null : null,`,
+    replace: `      device: (groupBy === 'device' || process.env.MUTANT) ? (entries[0] && entries[0].device) || null : null, // MUTATION`,
+    mustFail: 'a status section has no device, unlike a device section',
+  },
+  {
+    name: 'grouping by squad stops using squadProject, so an unassigned session is dropped from the catch-all bucket',
+    file: 'web/js/list.js',
+    find: `        ? (e) => squadProject(e.session)`,
+    replace: `        ? (e) => (process.env.MUTANT ? (e.session.squad && e.session.squad.project) : squadProject(e.session)) // MUTATION`,
+    mustFail: 'grouping by squad buckets sessions by their squad project',
+  },
+  {
+    name: 'isActionNeeded stops counting a session merely awaiting a reply',
+    file: 'web/js/list.js',
+    find: `  return needsAttention(s, device) || s.status === 'idle';`,
+    replace: `  return needsAttention(s, device) || (s.status === 'idle' && !process.env.MUTANT); // MUTATION`,
+    mustFail: 'Action needed catches a session waiting on a reply, not only an approval',
+  },
+  {
+    name: 'isActionNeeded stops excluding a stale, unreachable session',
+    file: 'web/js/list.js',
+    find: `export function isActionNeeded(s, device) {
+  if (isStaleSession(s, device)) return false;`,
+    replace: `export function isActionNeeded(s, device) {
+  if (isStaleSession(s, device) && !process.env.MUTANT) return false; // MUTATION`,
+    mustFail: 'Action needed excludes a stale session nobody can actually answer',
+  },
+  {
+    name: 'the "action" status filter stops filtering at all, so every status passes',
+    file: 'web/js/list.js',
+    find: `  if (f.status === 'action' && !isActionNeeded(s, device)) return false;`,
+    replace: `  if (f.status === 'action' && !process.env.MUTANT && !isActionNeeded(s, device)) return false; // MUTATION`,
+    mustFail: 'the "action" status filter keeps only sessions Action needed catches',
+  },
+  {
+    name: 'presentStatuses stops skipping a session with no status at all',
+    file: 'web/js/list.js',
+    find: `  for (const g of groups) for (const s of g.sessions || []) if (s && s.status) set.add(s.status);`,
+    replace: `  for (const g of groups) for (const s of g.sessions || []) if (process.env.MUTANT ? s : (s && s.status)) set.add(s.status); // MUTATION`,
+    mustFail: 'presentStatuses reports only the statuses actually on screen',
+  },
+  {
+    name: 'squadProject stops falling back to the "not a Squad session" bucket',
+    file: 'web/js/list.js',
+    find: `  return (s && s.squad && s.squad.project) || NO_SQUAD_PROJECT;`,
+    replace: `  return (s && s.squad && s.squad.project) || (process.env.MUTANT ? '' : NO_SQUAD_PROJECT); // MUTATION`,
+    mustFail: 'grouping by squad buckets sessions by their squad project',
+  },
+  {
+    name: 'devices.js stops withholding the "action" status from the server, so Action needed asks the store for a status that never matches',
+    file: 'web/js/ws.js',
+    find: `  if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);`,
+    replace: `  if (state.filters.status && (state.filters.status !== 'action' || process.env.MUTANT)) params.set('status', state.filters.status); // MUTATION`,
+    mustFail: '"Action needed" (#169) narrows to blocked and awaiting-reply sessions, without a server round trip for a status no session has',
+  },
+  {
+    name: 'the custom dropdown popup stops skipping a hidden <option>, so "Queued on ACA" / "Ready for review" appear with no data behind them',
+    file: 'web/js/dropdowns.js',
+    find: `      if (o.hidden) return;`,
+    replace: `      if (o.hidden && !process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'a dropdown opens on click and lists exactly the VISIBLE options its select holds',
+  },
+  {
+    // #169/#231: explicit `grid-column` alone was not enough -- markup order
+    // is .star, .status, .row-main (columns 1, 3, 2), so without an explicit
+    // `grid-row` too, sparse auto-placement still pushed .row-main onto a
+    // second implicit row once .status claimed column 3 ahead of it. Caught
+    // by the plain-text CSS assertion in list-controls-unit.js, not just the
+    // real-Chromium e2e check, since this is a non-browser-testable
+    // regression (a missing property, not an inverted condition).
+    name: 'devices.css stops pinning .star/.status/.row-main to the same grid row, so the title drifts onto a second implicit row',
+    file: 'web/css/devices.css',
+    find: `.row > .star, .row > .status, .row > .row-main { grid-row: 1; }\n`,
+    replace: '',
+    mustFail: 'devices.css pins .star, .status and .row-main to the same grid row (#169/#231)',
+  },
+
+  // -------------------------------------------------------------------------
   // S4: device roster
   // -------------------------------------------------------------------------
   {
