@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-219-install-pwa",
+  "sessionId": "fix-pr-219-install-pwa",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T01:58:04.218Z",
+  "lastHeartbeatAt": "2026-10-08T01:58:04.218Z",
+  "updatedAt": "2026-10-08T01:58:04.218Z",
+  "terminalReason": null,
+  "executionRef": null
+}
