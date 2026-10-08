@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-222-bell-inbox",
+  "sessionId": "fix-pr-222-bell-inbox",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T01:58:29.352Z",
+  "lastHeartbeatAt": "2026-10-08T01:58:29.352Z",
+  "updatedAt": "2026-10-08T01:58:29.352Z",
+  "terminalReason": null,
+  "executionRef": null
+}
