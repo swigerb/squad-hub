@@ -82,10 +82,12 @@
 
 /* The kebab's "Install as an app" row, once installed: the item stays, it
    just stops being a button that does anything. A green checkmark rather
-   than disappearing entirely -- see syncInstallMenuItem() in app.js. */
-#installMenuItem .install-done { margin-left: auto; color: var(--ok); font-weight: 600; }
-#installMenuItem[disabled] { opacity: .75; cursor: default; }
-#installMenuItem[disabled]:hover { background: transparent; }
+   than disappearing entirely -- see syncInstallMenuItem() in
+   web/js/install.js. No id on the button -- see index.html -- so this
+   matches the same `data-menu` attribute selector the script finds it by. */
+[data-menu="install"] .install-done { margin-left: auto; color: var(--ok); font-weight: 600; }
+[data-menu="install"][disabled] { opacity: .75; cursor: default; }
+[data-menu="install"][disabled]:hover { background: transparent; }
 
 /* Present for screen readers, gone from the layout. The name still has to be
    announced by the account button -- "button" alone says nothing about whose

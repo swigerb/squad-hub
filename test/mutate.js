@@ -1151,7 +1151,7 @@ const MUTATIONS = [
   },
   {
     name: 'Refresh now gives no visible timestamp',
-    file: 'web/app.js',
+    file: 'web/js/wiring.js',
     find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
     replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
@@ -2604,6 +2604,13 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/devices.js',
   '/js/detail.js',
   '/js/ws.js',
+  '/js/aca.js',
+  '/js/access.js',
+  '/js/install.js',
+  '/js/connect.js',
+  '/js/filters.js',
+  '/js/wiring.js',
+  '/js/signin.js',
   '/app.js',
   '/app.webmanifest',
   '/favicon.svg',
@@ -2652,6 +2659,20 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     find: `    if (e.status === undefined) return showOffline();`,
     replace: `    // MUTATION: the offline case falls through to "Could not sign in"`,
     mustFail: 'offline, the app says the network failed — not that you are signed out',
+  },
+  {
+    // Same reasoning as the css size-budget entry above: #200's size-budget
+    // test ("no web/js file is anywhere near the old single-file size")
+    // checks fs.statSync(...).size against a constant -- there is no line of
+    // logic to invert that would prove the assertion bites, since nothing in
+    // this repo computes or gates that size at runtime. Left out deliberately
+    // rather than faked with a no-op entry.
+    name: 'web/js files grow past the size budget (not mutation-testable)',
+    file: 'web/sw.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
   },
   {
     // The reassurance is the point, not decoration: the natural fear on seeing
@@ -4485,7 +4506,7 @@ if ($health.accessStore -ne 'durable') {`,
     // RIGHT NOW; treating that the same as a UA guess would offer the manual
     // card to a browser that could have shown its own install dialog instead.
     name: 'installAvailability ignores a captured beforeinstallprompt and falls through to UA sniffing',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `function installAvailability({ hasDeferredPrompt, ua = (typeof navigator === 'undefined' ? '' : navigator.userAgent) || '' } = {}) {
   if (hasDeferredPrompt) return 'native';`,
     replace: `function installAvailability({ hasDeferredPrompt, ua = (typeof navigator === 'undefined' ? '' : navigator.userAgent) || '' } = {}) {
@@ -4498,7 +4519,7 @@ if ($health.accessStore -ne 'durable') {`,
     // a Chromium browser that has not fired `beforeinstallprompt` YET would be
     // offered the manual iOS/Firefox card instead of simply waiting.
     name: 'the Safari UA check stops excluding Chrome and Edge, offering them the wrong card',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `  const safari = /Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR|Android/.test(ua);`,
     replace: `  const safari = /Safari/.test(ua) && (process.env.MUTANT || !/Chrome|Chromium|Edg|OPR|Android/.test(ua)); // MUTATION`,
     mustFail: 'Chrome and Edge without a captured prompt yet are "none", not "manual"',
@@ -4509,7 +4530,7 @@ if ($health.accessStore -ne 'durable') {`,
     // not "none". Getting this wrong hides the only install path those
     // browsers have.
     name: 'iOS/Firefox/Safari detection is disabled, hiding the manual install card entirely',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `  if (ios || firefox || safari) return 'manual';
   return 'none';`,
     replace: `  if ((ios || firefox || safari) && !process.env.MUTANT) return 'manual'; // MUTATION
@@ -4518,7 +4539,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'the install button shows again for an app that is already installed',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `  if (installed) return 'hidden';
   if (availability === 'none') return 'hidden';`,
     replace: `  if (installed && !process.env.MUTANT) return 'hidden'; // MUTATION
@@ -4530,7 +4551,7 @@ if ($health.accessStore -ne 'durable') {`,
     // the icon would reappear on the very next render, making the button
     // impossible to actually dismiss.
     name: 'the 30-day "Not now" dismissal is ignored, so the button never stays hidden',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `  if (dismissedUntil && now < dismissedUntil) return 'hidden';
   return availability;`,
     replace: `  if (dismissedUntil && now < dismissedUntil && !process.env.MUTANT) return 'hidden'; // MUTATION
@@ -4541,7 +4562,7 @@ if ($health.accessStore -ne 'durable') {`,
     // A storage that throws (private browsing, quota) must never propagate --
     // a thrown read here would crash the header render, not just the icon.
     name: 'installDismissedUntil no longer swallows a throwing storage',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `function installDismissedUntil(storage = safeLocalStorage()) {
   if (!storage) return 0;
   try { return Number(storage.getItem(INSTALL_DISMISS_KEY)) || 0; } catch { return 0; }
@@ -4558,7 +4579,7 @@ if ($health.accessStore -ne 'durable') {`,
     // dismissal expires on its own. A dismiss that does not write the 30-day
     // offset would either never hide the button or hide it forever.
     name: 'dismissInstallButton stops writing the 30-day expiry',
-    file: 'web/app.js',
+    file: 'web/js/install.js',
     find: `function dismissInstallButton(storage = safeLocalStorage(), now = Date.now()) {
   if (!storage) return;
   try { storage.setItem(INSTALL_DISMISS_KEY, String(now + INSTALL_DISMISS_MS)); } catch { /* quota, private mode */ }

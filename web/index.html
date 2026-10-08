@@ -104,11 +104,14 @@
   <!--
     `.install-label` carries the text so it can be swapped for "Installed ✓"
     without touching the rest of the button -- see syncInstallMenuItem() in
-    app.js. The item itself STAYS when installed, rather than disappearing:
-    an item that vanishes the moment its job is done looks like a bug to
-    anyone who goes looking for it a second time.
+    web/js/install.js. The item itself STAYS when installed, rather than
+    disappearing: an item that vanishes the moment its job is done looks like
+    a bug to anyone who goes looking for it a second time.
+    No id: like `people` above, it is wired through data-menu and found by
+    syncInstallMenuItem() via the same attribute selector -- an id here would
+    claim a handler of its own that it does not have.
   -->
-  <button data-menu="install" id="installMenuItem"><span class="install-label">Install as an app</span></button>
+  <button data-menu="install"><span class="install-label">Install as an app</span></button>
   <div class="menu-sep"></div>
   <button data-menu="signout" class="danger">Sign out</button>
 </nav>
