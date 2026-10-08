@@ -4615,11 +4615,11 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'the sidebar no longer puts a blocked session first',
     file: 'web/js/list.js',
-    find: `    const an = needsAttention(a.session);
-    const bn = needsAttention(b.session);
+    find: `    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);
     if (an !== bn) return an ? -1 : 1;`,
-    replace: `    const an = needsAttention(a.session);
-    const bn = needsAttention(b.session);
+    replace: `    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);
     if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION`,
     mustFail: 'sidebarEntries puts a session that needs attention first, regardless of start time',
   },
@@ -4633,6 +4633,18 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'within the same attention state, sidebarEntries orders most-recently-started first',
   },
   {
+    // #218: the sidebar's attention sort stopped threading the entry's device
+    // through, which is exactly the #225 regression -- a stale ACA session
+    // read as actionable again, this time in the sidebar's own ordering.
+    name: 'the sidebar attention sort forgets the entry\'s device, reviving the #225 bug',
+    file: 'web/js/list.js',
+    find: `    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);`,
+    replace: `    const an = needsAttention(a.session, process.env.MUTANT ? undefined : a.device); // MUTATION
+    const bn = needsAttention(b.session, process.env.MUTANT ? undefined : b.device); // MUTATION`,
+    mustFail: 'sidebarEntries does not float a stale session to the top of the sidebar',
+  },
+  {
     name: 'the sidebar no longer highlights the open session',
     file: 'web/js/list.js',
     find: `  const selected = key === selectedKey;`,
@@ -4642,16 +4654,35 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'the sidebar no longer flags a session that needs attention',
     file: 'web/js/list.js',
-    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s) ? 'attention' : ''}"`,
-    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${(!process.env.MUTANT && needsAttention(s)) ? 'attention' : ''}"`, // MUTATION
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${(!process.env.MUTANT && needsAttention(s, device)) ? 'attention' : ''}"`, // MUTATION
     mustFail: 'sidebarRow flags a session that needs attention, so it can be styled apart from the rest',
+  },
+  {
+    // #218: the sidebar row stopped threading the device through to
+    // `needsAttention`/`statusBadge`, so a stale ACA session read as
+    // actionable in the sidebar even though the main list correctly showed
+    // it as unreachable.
+    name: 'the sidebar row forgets the device, reviving the #225 bug',
+    file: 'web/js/list.js',
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"
+            data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">
+      <span class="dt-side-title">\${esc(title)}</span>
+      <span class="dt-side-meta">\${esc(meta)}</span>
+      \${statusBadge(s, device)}`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, process.env.MUTANT ? undefined : device) ? 'attention' : ''}"
+            data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">
+      <span class="dt-side-title">\${esc(title)}</span>
+      <span class="dt-side-meta">\${esc(meta)}</span>
+      \${statusBadge(s, process.env.MUTANT ? undefined : device)}`, // MUTATION
+    mustFail: 'sidebarRow never carries the "attention" class for a stale session',
   },
   {
     name: 'a hostile session key breaks out of the sidebar row markup',
     file: 'web/js/list.js',
-    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s) ? 'attention' : ''}"
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"
             data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">`,
-    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s) ? 'attention' : ''}"
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"
             data-session="\${process.env.MUTANT ? key : esc(key)}" aria-current="\${selected ? 'true' : 'false'}">`, // MUTATION
     mustFail: 'a malicious session key cannot break out of the sidebar row markup',
   },
@@ -4661,7 +4692,10 @@ if ($health.accessStore -ne 'durable') {`,
     // just the pill's half of it.
     name: 'the detail header pill disagrees with the row badge about "idle"',
     file: 'web/js/util.js',
-    find: `export function statusPillClass(s) {
+    find: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
   return {
@@ -4669,7 +4703,10 @@ if ($health.accessStore -ne 'durable') {`,
     starting: 'active',
     waiting_approval: 'attention',
     idle: 'review',`,
-    replace: `export function statusPillClass(s) {
+    replace: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
   return {
@@ -4682,13 +4719,35 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a pending approval no longer outranks the status on the detail pill',
     file: 'web/js/util.js',
-    find: `export function statusPillClass(s) {
+    find: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';`,
-    replace: `export function statusPillClass(s) {
+    replace: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending && !process.env.MUTANT) return 'attention'; // MUTATION`,
     mustFail: 'a pending approval gives the pill the "attention" class, outranking the status',
+  },
+  {
+    // #218: the detail header's pill/label stopped threading the device
+    // through to `statusPillClass`/`statusLabel`, exactly the #225 bug
+    // resurfacing on the full-page header this time.
+    name: 'statusPillClass forgets the device, reviving the #225 bug',
+    file: 'web/js/util.js',
+    find: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';`,
+    replace: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, process.env.MUTANT ? undefined : device)) return 'stale'; // MUTATION`,
+    mustFail: 'statusPillClass reads "stale", never "attention", for a stale session',
   },
   // ---------------------------------------------------------------------
   // #186: Undo toast, loading skeletons, truncated-metadata tooltips

@@ -71,9 +71,9 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
     found.session.cwd || '',
     statusLabel(found.session, found.device),
   ].filter(Boolean).join(' · ');
-  const pillCls = statusPillClass(found.session);
+  const pillCls = statusPillClass(found.session, found.device);
   $('dtStatusPill').className = `dt-pill ${pillCls}`;
-  $('dtStatusPill').textContent = statusLabel(found.session);
+  $('dtStatusPill').textContent = statusLabel(found.session, found.device);
   const pinned = state.favorites.has(sessionKey(found.session));
   const star = $('dtStar');
   star.dataset.star = sessionKey(found.session);
@@ -207,10 +207,10 @@ export function syncDetailHeader() {
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
-    statusLabel(found.session),
+    statusLabel(found.session, found.device),
   ].filter(Boolean).join(' · ');
-  $('dtStatusPill').className = `dt-pill ${statusPillClass(found.session)}`;
-  $('dtStatusPill').textContent = statusLabel(found.session);
+  $('dtStatusPill').className = `dt-pill ${statusPillClass(found.session, found.device)}`;
+  $('dtStatusPill').textContent = statusLabel(found.session, found.device);
   const warnings = [
     ...(((found.session.applied || {}).warnings) || []),
     ...(((found.session.agentSelection || {}).warnings) || []),

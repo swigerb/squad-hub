@@ -441,8 +441,8 @@ export function sidebarEntries(groups = [], filterText = '') {
   for (const g of groups) for (const s of g.sessions || []) all.push({ session: s, device: g.device });
   const filtered = all.filter((e) => matchesSidebarText(e, filterText));
   return filtered.sort((a, b) => {
-    const an = needsAttention(a.session);
-    const bn = needsAttention(b.session);
+    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);
     if (an !== bn) return an ? -1 : 1;
     return (b.session.startedAt || 0) - (a.session.startedAt || 0);
   });
@@ -456,11 +456,11 @@ export function sidebarRow(entry, selectedKey) {
   const title = truncateWords(s.prompt || s.id, 60);
   const meta = [device && device.name, sessionRepo(s)].filter(Boolean).join(' · ');
   return `
-    <button type="button" class="dt-side-row ${selected ? 'selected' : ''} ${needsAttention(s) ? 'attention' : ''}"
+    <button type="button" class="dt-side-row ${selected ? 'selected' : ''} ${needsAttention(s, device) ? 'attention' : ''}"
             data-session="${esc(key)}" aria-current="${selected ? 'true' : 'false'}">
       <span class="dt-side-title">${esc(title)}</span>
       <span class="dt-side-meta">${esc(meta)}</span>
-      ${statusBadge(s)}
+      ${statusBadge(s, device)}
     </button>`;
 }
 

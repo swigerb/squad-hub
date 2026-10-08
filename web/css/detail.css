@@ -91,6 +91,7 @@
 .dt-pill.attention { color: #221a00; background: var(--warn); font-weight: 700; }
 .dt-pill.review { color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, var(--panel-2)); }
 .dt-pill.failed { color: var(--bad); background: color-mix(in srgb, var(--bad) 18%, var(--panel-2)); }
+.dt-pill.stale { color: var(--faint); background: var(--panel-2); font-style: italic; font-weight: 600; }
 
 .detail-head { display: flex; flex-direction: column; gap: 4px; }
 /* `position: relative` so `.menu.anchored` (the kebab's dropdown) anchors to

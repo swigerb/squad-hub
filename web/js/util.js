@@ -263,7 +263,10 @@ export function statusBadge(s, device) {
  * (`.dt-pill`), because the dot is decorative and must not be read out by a
  * screen reader twice.
  */
-export function statusPillClass(s) {
+export function statusPillClass(s, device) {
+  // Same ordering as `statusBadge`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
   return {

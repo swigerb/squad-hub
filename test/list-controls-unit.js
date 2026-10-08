@@ -394,7 +394,7 @@ check('an empty overview produces no sections and does not throw', () => {
 // ---------------------------------------------------------------------------
 
 check('the sidebar filter matches the prompt, the session id, the device name and the repository', () => {
-  const entry = { session: sess({ id: 'find-me-id', prompt: 'a prompt about widgets', git: { repository: 'acme/widgets' } }), device: { name: 'Dev Box' } };
+  const entry = { session: sess({ id: 'find-me-id', prompt: 'a prompt about widgets', git: { repository: 'acme/widgets' } }), device: { name: 'Dev Box', presence: 'online' } };
   assert.strictEqual(matchesSidebarText(entry, 'widgets'), true);
   assert.strictEqual(matchesSidebarText(entry, 'FIND-ME-ID'), true, 'the filter should be case-insensitive');
   assert.strictEqual(matchesSidebarText(entry, 'Dev Box'), true);
@@ -403,7 +403,7 @@ check('the sidebar filter matches the prompt, the session id, the device name an
 });
 
 check('an empty filter matches everything', () => {
-  const entry = { session: sess({}), device: { name: 'Dev Box' } };
+  const entry = { session: sess({}), device: { name: 'Dev Box', presence: 'online' } };
   assert.strictEqual(matchesSidebarText(entry, ''), true);
   assert.strictEqual(matchesSidebarText(entry, undefined), true);
 });
@@ -450,7 +450,7 @@ check('sidebarEntries on no groups at all is an empty list, not a throw', () => 
 });
 
 check('sidebarRow marks the open session as selected, and no other', () => {
-  const entry = { session: sess({ key: 'open-me' }), device: { name: 'Dev Box' } };
+  const entry = { session: sess({ key: 'open-me' }), device: { name: 'Dev Box', presence: 'online' } };
   const open = sidebarRow(entry, 'open-me');
   const closed = sidebarRow(entry, 'something-else');
   assert.match(open, /class="dt-side-row selected/);
@@ -460,19 +460,19 @@ check('sidebarRow marks the open session as selected, and no other', () => {
 });
 
 check('sidebarRow flags a session that needs attention, so it can be styled apart from the rest', () => {
-  const blocked = { session: sess({ key: 'x', pendingApprovals: [{ approvalId: 'a' }] }), device: { name: 'Dev Box' } };
-  const idle = { session: sess({ key: 'y' }), device: { name: 'Dev Box' } };
+  const blocked = { session: sess({ key: 'x', pendingApprovals: [{ approvalId: 'a' }] }), device: { name: 'Dev Box', presence: 'online' } };
+  const idle = { session: sess({ key: 'y' }), device: { name: 'Dev Box', presence: 'online' } };
   assert.match(sidebarRow(blocked, null), /\bdt-side-row[^"]*\battention\b/);
   assert.ok(!/\battention\b/.test(sidebarRow(idle, null)));
 });
 
 check('sidebarRow carries the session key as the click target, so a click knows what to open', () => {
-  const entry = { session: sess({ key: 'the-key' }), device: { name: 'Dev Box' } };
+  const entry = { session: sess({ key: 'the-key' }), device: { name: 'Dev Box', presence: 'online' } };
   assert.match(sidebarRow(entry, null), /data-session="the-key"/);
 });
 
 check('a malicious session key cannot break out of the sidebar row markup', () => {
-  const entry = { session: sess({ key: '"><img src=x onerror=alert(1)>' }), device: { name: 'Dev Box' } };
+  const entry = { session: sess({ key: '"><img src=x onerror=alert(1)>' }), device: { name: 'Dev Box', presence: 'online' } };
   assert.ok(!sidebarRow(entry, null).includes('<img'),
     'the session key escaped its attribute and became live markup in the sidebar');
 });
