@@ -1065,6 +1065,19 @@ async function suiteSessionsOpen() {
   runChildSuite(path.join(__dirname, 'sessions-open-unit.js'), 'sessions-open');
 }
 
+/**
+ * The bell inbox (#174): every pending approval and every awaiting-reply
+ * session, in one dropdown, against the same pure, DOM-free extraction used
+ * by web-xss-unit.js -- no jsdom, per the zero-runtime-dependency
+ * constraint. Also the #162 regression guard: a stale approval left behind
+ * by a disconnected device must show as Expired and offer no answer
+ * controls, never resurrect as an answerable card.
+ */
+async function suiteBellInbox() {
+  console.log('\n[BELL INBOX] approvals + awaiting-reply in one list, sorted, counted, and the #162 stale-approval guard');
+  runChildSuite(path.join(__dirname, 'bell-inbox-unit.js'), 'bell-inbox');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1133,6 +1146,7 @@ async function suiteSessionsOpen() {
   await suiteStaleApprovals();
   await suiteMcp();
   await suiteSessionsOpen();
+  await suiteBellInbox();
 
   console.log('');
   console.log('='.repeat(60));

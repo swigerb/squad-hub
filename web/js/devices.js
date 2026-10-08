@@ -1,11 +1,18 @@
 import { state } from './api.js';
-import { esc, ago } from './util.js';
+import { $, esc, ago } from './util.js';
 import { buildView, sessionRow, repositoriesIn, organizationsIn } from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval, syncAppBadge } from './notifications.js';
-import { $ } from './util.js';
+import { inboxCount } from './inbox.js';
 import { openConnect, openNew } from './connect.js';
+// Circular by necessity: `render()` below still calls back into `wiring.js`
+// for `renderInboxMenu`, which must run after every refresh so a bell-inbox
+// card updates or disappears the moment its approval is answered. Neither
+// module reaches into the other at module-evaluation time, so the cycle
+// resolves the same way any other two ES modules that call back into each
+// other do.
+import { renderInboxMenu } from './wiring.js';
 
 //
 // Pure, for the same reason the list controls are: ordering and presence
@@ -145,7 +152,13 @@ export function render() {
   $('sessionCount').textContent = `${counts.sessions || 0} session${counts.sessions === 1 ? '' : 's'}`;
   $('deviceCount').textContent = counts.devices || 0;
 
-  const bell = counts.actionNeeded || 0;
+  // The badge counts everything the bell inbox lists -- an approval AND an
+  // awaiting-reply session both "need you", even though only the approval
+  // blocks anything. `counts.actionNeeded` stays a session-level count of
+  // pending approvals alone: it is read by the MCP tools and asserted
+  // explicitly by test/stale-approval-unit.js, so its meaning cannot change
+  // here without breaking both.
+  const bell = inboxCount(state.overview);
   $('bellCount').hidden = bell === 0;
   $('bellCount').textContent = bell;
   document.title = bell ? `(${bell}) Squad Hub` : 'Squad Hub';
@@ -249,6 +262,11 @@ export function render() {
   // Rebuilding a select's options does NOT fire `change`, so the visible label
   // beside it would go on showing a device that has since gone away.
   syncSelectPills();
+
+  // Kept live, not just rebuilt when it opens: a card in the bell inbox must
+  // update or disappear the moment its approval is answered or its device
+  // goes away, the same as the row it mirrors in the main list below.
+  renderInboxMenu();
 
   maybePromptApproval();
 }
