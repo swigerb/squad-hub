@@ -636,7 +636,14 @@ class Store extends EventEmitter {
    * is really gone, it stays gone. The caller only has to be right about intent,
    * not about the state of a machine they cannot see.
    */
-  forgetDeviceSessions(subject, deviceId, { olderThanMs, force = false } = {}) {
+  /**
+   * `sessionId`, when given, narrows the sweep to that one session rather
+   * than every session on the device. This is what the detail view's
+   * "Forget stale session" action uses (#225): a person looking at one stuck
+   * card should be able to clear that card without also discarding every
+   * other session an offline device happens to be carrying.
+   */
+  forgetDeviceSessions(subject, deviceId, { olderThanMs, force = false, sessionId } = {}) {
     const b = this._bucket(subject);
     const now = Date.now();
     let removed = 0;
@@ -644,6 +651,7 @@ class Store extends EventEmitter {
     let stuck = 0;
     for (const [key, s] of b.sessions) {
       if (s.deviceId !== deviceId) continue;
+      if (sessionId && s.id !== sessionId) continue;
       if (!TERMINAL.has(s.status)) {
         if (!force) { kept += 1; stuck += 1; continue; }
         // Counted as well as removed, so the answer can say what it did rather

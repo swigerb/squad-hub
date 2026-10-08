@@ -96,12 +96,79 @@ export function truncateWords(text, max) {
 }
 
 /**
+ * Statuses in which a session is still, as far as the hub knows, going
+ * somewhere -- as opposed to `done`/`failed`/`stopped`/`disconnected`, which
+ * already say the session is over.
+ *
+ * This is the set #225 cares about: a NON-TERMINAL session is the one that
+ * can be mistaken for an actionable "Awaiting your reply" card when it is
+ * really just a stale record of a device nobody can reach any more.
+ */
+export const NON_TERMINAL_STATUSES = new Set(['active', 'starting', 'waiting_approval', 'idle']);
+
+/** A device the hub cannot currently reach -- `stale` counts the same as `offline`. */
+export function isDeviceUnreachable(device) {
+  return !!device && device.presence !== 'online';
+}
+
+/**
+ * A session that LOOKS like it needs a person, but whose device cannot be
+ * asked anything -- not "is this done", not "can you take input", nothing.
+ *
+ * Both halves matter. A non-terminal status alone is normal (plenty of
+ * sessions are legitimately active on an online device); an unreachable
+ * device alone is normal too (it may just have finished and gone quiet).
+ * Together, the card is unanswerable: the transcript cannot load, the
+ * composer cannot be verified, and `Stop` would 409. That is the state this
+ * build names explicitly, rather than leaving it to read as a slow reply.
+ */
+export function isStaleSession(s, device) {
+  if (!isDeviceUnreachable(device)) return false;
+  return NON_TERMINAL_STATUSES.has(s.status) || (s.pendingApprovals || []).length > 0;
+}
+
+/** Why `Stop` cannot be used on this device right now, or '' when it can be. */
+export const STOP_UNREACHABLE_REASON = 'Stop requires a live device. This device is unreachable'
+  + ' — use "Forget stale session" to clear it instead.';
+
+/**
+ * What the detail header's Stop/Forget controls should look like, as a plain
+ * value rather than a DOM write -- so the decision (#225's "Stop should not
+ * strand the user") can be proven without a browser, the same way the list's
+ * own rules are.
+ *
+ * `stopDisabled` fires on ANY unreachable device, not only a stale one: `Stop`
+ * asks a device to end its own process, and there is nowhere for that
+ * command to arrive once the socket is gone, whatever the session's status
+ * says.
+ *
+ * `forgetVisible` is narrower on purpose. It only ever offers the cleanup
+ * action for a session that is actually STUCK (`isStaleSession`) -- a
+ * finished session on an offline device has nothing here to forget, and the
+ * existing Tidy menu already covers that case.
+ *
+ * The one property that matters most: a stale session is NEVER left with
+ * `stopDisabled: true` and `forgetVisible: false` at the same time. That
+ * combination is exactly "only disabled controls", the dead end #225 reports.
+ */
+export function cleanupControls(s, device) {
+  const unreachable = isDeviceUnreachable(device);
+  const stale = isStaleSession(s, device);
+  return {
+    stopDisabled: unreachable,
+    stopReason: unreachable ? STOP_UNREACHABLE_REASON : '',
+    forgetVisible: stale,
+  };
+}
+
+/**
  * What a session's state is CALLED.
  *
  * One source for the words, so a surface cannot invent its own name for a
  * state or fall back to printing the internal one.
  */
-export function statusLabel(s) {
+export function statusLabel(s, device) {
+  if (isStaleSession(s, device)) return 'Unreachable — device offline';
   if ((s.pendingApprovals || []).length) return 'Needs approval';
   return {
     active: 'Working',
@@ -118,7 +185,11 @@ export function statusLabel(s) {
   }[s.status] || String(s.status == null ? '' : s.status);
 }
 
-export function statusBadge(s) {
+export function statusBadge(s, device) {
+  // Outranks even "Needs approval": a card nobody can answer must never be
+  // confused for one that is merely waiting on a person, which is the exact
+  // bug #225 reports -- a stale ACA job read as a live, actionable prompt.
+  if (isStaleSession(s, device)) return '<span class="status stale">Unreachable</span>';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return '<span class="status attention">Needs approval</span>';
   // Named for the ACTION each one wants, because both of these used to read as
@@ -134,7 +205,7 @@ export function statusBadge(s) {
     failed: 'failed',
     stopped: '',
   };
-  const label = statusLabel(s);
+  const label = statusLabel(s, device);
   return `<span class="status ${cls[s.status] || ''}">${esc(label)}</span>`;
 }
 
@@ -145,7 +216,12 @@ export function statusBadge(s) {
  * received said otherwise, because the row must never look busy while nothing
  * is happening. Everything else is the agent's own reported activity.
  */
-export function activityLine(s) {
+export function activityLine(s, device) {
+  // Checked first: a session read as "waiting for input" when the device that
+  // would deliver that input cannot be reached is the exact shape of #225 --
+  // it tells the reader someone is needed, when nobody can do anything here
+  // until the device itself comes back.
+  if (isStaleSession(s, device)) return 'Device unreachable — nothing to answer here';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending || s.status === 'waiting_approval') return 'Waiting for input';
   return s.activity || '';

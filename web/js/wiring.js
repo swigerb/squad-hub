@@ -20,7 +20,7 @@ import {
 } from './notifications.js';
 import { render } from './devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc,
+  openDetail, syncSession, renderControl, openSquadDoc, forgetStaleSession,
 } from './detail.js';
 import {
   setRailCollapsed, applyTheme, nextTheme, toggleFavorite, saveView, refresh,
@@ -305,6 +305,8 @@ export function wire() {
       refresh();
     } catch (e) { alert(`Could not stop: ${e.message}`); }
   };
+
+  $('dtForget').onclick = () => forgetStaleSession();
 
   $('dtSend').onclick = async () => {
     if (!state.currentSession) return;

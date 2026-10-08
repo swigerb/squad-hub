@@ -942,6 +942,18 @@ async function suiteForget() {
 }
 
 /**
+ * #225: an offline/stale ACA session must never read as actionable. Pure,
+ * DOM-free checks on the status label/badge/activity line, the list's
+ * attention/sort logic, and the detail view's Stop/Forget control state --
+ * including the property that matters most: a stale session is never left
+ * with only disabled controls and no way out.
+ */
+async function suiteStaleSession() {
+  console.log('\n[STALE SESSION] an unreachable device never reads as "awaiting your reply"');
+  runChildSuite(path.join(__dirname, 'stale-session-unit.js'), 'stale-session');
+}
+
+/**
  * The parity checklist, checked against the code. Catches a capability being
  * removed or renamed while its tests go with it -- the one way a green suite
  * can coexist with a lost feature.
@@ -1111,6 +1123,7 @@ async function suiteSessionsOpen() {
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteForget();
+  await suiteStaleSession();
   await suiteSquadDocs();
   await suiteAgentArgs();
   await suiteParityAudit();

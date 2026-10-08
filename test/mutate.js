@@ -1798,8 +1798,8 @@ const MUTATIONS = [
   {
     name: 'the activity line is interpolated into the row without escaping',
     file: 'web/js/list.js',
-    find: `          <span class="activity">\${esc(activityLine(s))}</span>`,
-    replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s) : esc(activityLine(s))}</span>`,
+    find: `          <span class="activity">\${esc(activityLine(s, device))}</span>`,
+    replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s, device) : esc(activityLine(s, device))}</span>`,
     mustFail: 'a malicious ACTIVITY line renders as inert escaped text',
   },
   {
@@ -1941,8 +1941,8 @@ const MUTATIONS = [
     // work: someone is waiting on an answer and the row is hidden for being old.
     name: 'the time window hides a session that is blocked on a person',
     file: 'web/js/list.js',
-    find: `  if (!needsAttention(s) && !withinWindow(s, f.window, now)) return false;`,
-    replace: `  if ((process.env.MUTANT || !needsAttention(s)) && !withinWindow(s, f.window, now)) return false; // MUTATION`,
+    find: `  if (!needsAttention(s, device) && !withinWindow(s, f.window, now)) return false;`,
+    replace: `  if ((process.env.MUTANT || !needsAttention(s, device)) && !withinWindow(s, f.window, now)) return false; // MUTATION`,
     mustFail: 'a BLOCKED session survives the time window',
   },
   {
@@ -2015,11 +2015,11 @@ const MUTATIONS = [
   {
     name: 'a group holding a blocked session is left in alphabetical order',
     file: 'web/js/list.js',
-    find: `    const an = buckets.get(a).some((e) => needsAttention(e.session));
-    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    find: `    const an = buckets.get(a).some((e) => needsAttention(e.session, e.device));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session, e.device));
     if (an !== bn) return an ? -1 : 1;`,
-    replace: `    const an = buckets.get(a).some((e) => needsAttention(e.session));
-    const bn = buckets.get(b).some((e) => needsAttention(e.session));
+    replace: `    const an = buckets.get(a).some((e) => needsAttention(e.session, e.device));
+    const bn = buckets.get(b).some((e) => needsAttention(e.session, e.device));
     if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION`,
     mustFail: 'a group holding a blocked session floats to the top',
   },

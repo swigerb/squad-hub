@@ -237,6 +237,26 @@ device rather than to the hub because the hub replaces a device's session list
 from whatever that device reports — anything removed only at the hub would
 return on the next heartbeat.
 
+**`force` and `sessionId` — the offline exception.** The rule above assumes
+the device can be asked. When it cannot (`409`, offline), `force: true` lets
+the hub drop a session that still shows as running anyway, and `sessionId`
+narrows the sweep to that one session instead of every ended one the device
+is carrying. This is what the web app's **Forget stale session** button in
+the detail view calls:
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/forget" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"...","force":true}'
+```
+
+`force` is honoured **only while the device has no live connection** — a
+reachable device ignores it and the route behaves exactly as above, because a
+device that can answer is the one source of truth for whether its own session
+is still running. If the device reconnects later, it republishes its real
+session list regardless of what the hub forgot, so this can never be used to
+hide a session a live device still owns.
+
 `forgottenBy` is attached by the hub from the verified caller and is ignored if
 supplied in the body, so no request can write a name of its choosing into
 somebody's device log.
