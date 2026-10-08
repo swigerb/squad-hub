@@ -26,8 +26,9 @@ import {
   ANSWER_VERB,
   $,
   toast,
+  setUndoDelayForTest,
 } from './js/util.js';
-import { TIME_WINDOWS, SORTS, GROUPINGS } from './js/list.js';
+import { TIME_WINDOWS, SORTS, GROUPINGS, skeletonRows } from './js/list.js';
 import { approvalRows } from './js/approvals.js';
 import { enhanceAllSelects, closeAllSelectPills } from './js/dropdowns.js';
 import {
@@ -39,7 +40,7 @@ import {
 import {
   notifyState, requestNotifyPermission, syncBell, maybePromptApproval,
 } from './js/notifications.js';
-import { render } from './js/devices.js';
+import { render, skeletonDevices } from './js/devices.js';
 import {
   openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
 } from './js/detail.js';
@@ -75,7 +76,15 @@ function runShortcut(id) {
   // calls can no longer reach `state`, `setConn` or `renderTranscript` by
   // name. This exposes exactly those three bindings -- already reachable
   // through the UI -- for that test harness to read and call directly.
-  window.__squadHubTest = { state, setConn, renderTranscript };
+  //
+  // `setUndoDelayForTest` shortens the Undo window below (real deployments
+  // keep the full 5 seconds). It changes no behaviour a person could not
+  // already see -- the window is always "however long the toast says" -- it
+  // only makes that window short enough for a test suite to wait out without
+  // every click costing five real seconds.
+  window.__squadHubTest = {
+    state, setConn, renderTranscript, setUndoDelayForTest,
+  };
 
   // Before the sign-in gate: the shell is public, and someone installing the
   // app or opening it on a train should get a readable page either way.
@@ -85,6 +94,11 @@ function runShortcut(id) {
   loadView();
   wire();
   syncControls();
+  // Rows and device cards the shape of what is about to arrive, rather than a
+  // blank box or a lone "loading…" sentence -- replaced the instant the first
+  // overview below actually resolves.
+  $('groups').innerHTML = `<div class="card">${skeletonRows()}</div>`;
+  $('deviceList').innerHTML = `<div class="card">${skeletonDevices()}</div>`;
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';

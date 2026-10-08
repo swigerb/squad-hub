@@ -136,7 +136,7 @@ export function deviceCard(d) {
     <div class="device ${isCloudKind(d.kind) ? 'cloud' : ''}">
       <span class="dot ${esc(d.presence)}"></span>
       <div class="device-main">
-        <div class="device-name">${esc(d.name)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-name" title="${esc(d.name)}">${esc(d.name)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
         <div class="device-meta">
           ${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}
         </div>
@@ -146,6 +146,22 @@ export function deviceCard(d) {
       <button class="add danger" data-remove-device="${esc(d.deviceId)}"
               title="Remove this device: revoke its token and disconnect it">&times;</button>
     </div>`;
+}
+
+/**
+ * Placeholder device rows, shown for the same reason `skeletonRows` is: a
+ * shape the size of a real device row says "still loading", where empty space
+ * says nothing at all.
+ */
+export function skeletonDevices(n = 2) {
+  return Array.from({ length: n }, () => `
+    <div class="device skeleton-row" aria-hidden="true">
+      <span class="skel skel-dot"></span>
+      <div class="device-main">
+        <div class="skel skel-line skel-title"></div>
+        <div class="skel skel-line skel-meta"></div>
+      </div>
+    </div>`).join('');
 }
 
 export function render() {

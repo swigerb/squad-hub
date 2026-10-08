@@ -6,11 +6,55 @@ export const $ = (id) => document.getElementById(id);
 let toastTimer = null;
 export function toast(text) {
   const t = $('toast');
+  clearTimeout(toastTimer);
+  clearTimeout(undoTimer);
   t.textContent = text;
   t.hidden = false;
-  clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
 }
+
+/** How long an Undo toast waits before committing. Shortened only by the test hook below. */
+let undoDelayMs = 5000;
+let undoTimer = null;
+
+/**
+ * A toast that offers to cancel what it announces, instead of merely
+ * reporting it after the fact.
+ *
+ * `commit` runs once the window passes untouched; `undo`, if given, runs
+ * instead when the button is pressed. Neither the server nor anything
+ * irreversible happens until exactly one of the two fires -- the confirm
+ * dialog that got someone here already asked once, so the few seconds that
+ * follow are the forgiving kind of second chance: silent unless you need it,
+ * gone the moment you do not.
+ */
+export function undoToast(text, commit, undo) {
+  const t = $('toast');
+  clearTimeout(toastTimer);
+  clearTimeout(undoTimer);
+  let settled = false;
+  t.innerHTML = `<span class="toast-text">${esc(text)}</span>`
+    + '<button type="button" class="toast-undo" id="toastUndo">Undo</button>';
+  t.hidden = false;
+  const finish = async (fn) => {
+    if (settled) return;
+    settled = true;
+    t.hidden = true;
+    if (fn) await fn();
+  };
+  const btn = $('toastUndo');
+  if (btn) btn.onclick = () => finish(undo);
+  undoTimer = setTimeout(() => finish(commit), undoDelayMs);
+}
+
+/**
+ * Shortens the Undo window below for tests (real deployments keep the full 5
+ * seconds). It changes no behaviour a person could not already see -- the
+ * window is always "however long the toast says" -- it only makes that
+ * window short enough for a test suite to wait out without every click
+ * costing five real seconds.
+ */
+export function setUndoDelayForTest(ms) { undoDelayMs = ms; }
 
 /**
  * A count, rendered as a count.
