@@ -199,7 +199,11 @@ node /path/to/squad-hub/bin/squad-hub.js squad "add a health endpoint and a test
 
 When the agent asks to run something, the approval card appears in the browser —
 on your desktop, or your phone — **and** in the interactive terminal if you
-have one open on that session.
+have one open on that session. The bell in the top bar lists everything across
+every session that needs you right now — a pending approval you can Allow or
+Deny inline, or a session that finished a turn and is waiting on your reply —
+so you never have to scroll a device-grouped list hunting for the one row
+that's stuck.
 
 Everything works from the CLI too:
 

@@ -26,8 +26,9 @@ import {
   ANSWER_VERB,
   $,
   toast,
+  setUndoDelayForTest,
 } from './js/util.js';
-import { TIME_WINDOWS, SORTS, GROUPINGS } from './js/list.js';
+import { TIME_WINDOWS, SORTS, GROUPINGS, skeletonRows } from './js/list.js';
 import { approvalRows } from './js/approvals.js';
 import { enhanceAllSelects, closeAllSelectPills } from './js/dropdowns.js';
 import {
@@ -39,12 +40,13 @@ import {
 import {
   notifyState, requestNotifyPermission, syncBell, maybePromptApproval,
 } from './js/notifications.js';
-import { render } from './js/devices.js';
+import { render, skeletonDevices } from './js/devices.js';
 import {
   openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
 } from './js/detail.js';
+import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
-  connect, setAvatar, setConn, takeDeepLinkSession, resolveDeepLink, showOffline,
+  connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
   registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
   applyTheme, nextTheme, setRailCollapsed,
 } from './js/ws.js';
@@ -60,6 +62,13 @@ import { showSignIn } from './js/signin.js';
 
 'use strict';
 
+/** Run whatever a manifest shortcut asked for. Unknown or absent ids do nothing -- NOT every load has one. */
+function runShortcut(id) {
+  if (id === 'new-session') { openNew(); return; }
+  if (id === 'needs-you') { $('bellBtn').click(); return; }
+  if (id === 'aca-job') { openAca(); return; }
+}
+
 (async function main() {
   // Test hook (documented, no secrets, no new capability): now that app.js is
   // an ES module, its top-level `const`/`function` bindings are module-scoped
@@ -67,7 +76,15 @@ import { showSignIn } from './js/signin.js';
   // calls can no longer reach `state`, `setConn` or `renderTranscript` by
   // name. This exposes exactly those three bindings -- already reachable
   // through the UI -- for that test harness to read and call directly.
-  window.__squadHubTest = { state, setConn, renderTranscript };
+  //
+  // `setUndoDelayForTest` shortens the Undo window below (real deployments
+  // keep the full 5 seconds). It changes no behaviour a person could not
+  // already see -- the window is always "however long the toast says" -- it
+  // only makes that window short enough for a test suite to wait out without
+  // every click costing five real seconds.
+  window.__squadHubTest = {
+    state, setConn, renderTranscript, setUndoDelayForTest,
+  };
 
   // Before the sign-in gate: the shell is public, and someone installing the
   // app or opening it on a train should get a readable page either way.
@@ -77,6 +94,11 @@ import { showSignIn } from './js/signin.js';
   loadView();
   wire();
   syncControls();
+  // Rows and device cards the shape of what is about to arrive, rather than a
+  // blank box or a lone "loading…" sentence -- replaced the instant the first
+  // overview below actually resolves.
+  $('groups').innerHTML = `<div class="card">${skeletonRows()}</div>`;
+  $('deviceList').innerHTML = `<div class="card">${skeletonDevices()}</div>`;
   try {
     state.me = await api('/api/me');
     $('who').textContent = state.me.name || 'signed in';
@@ -129,6 +151,12 @@ import { showSignIn } from './js/signin.js';
     else if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
     else toast(`That session is no longer here — it may have finished, or its device is offline`);
   }
+
+  // Launched from a manifest shortcut (long-press the pinned icon): New
+  // session, Needs you, or Start ACA job. Each hands off to the SAME control
+  // the shortcut is named after, rather than duplicating its behaviour --
+  // "Needs you" is exactly what the bell already does.
+  runShortcut(takeShortcut());
 
   connect();
   setInterval(refresh, 15000);

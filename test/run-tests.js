@@ -772,6 +772,15 @@ async function suiteInstallPrompt() {
 }
 
 /**
+ * Home-screen app badge (#171): a live "needs you" count without opening the
+ * app, and never a thrown error on a browser that does not support it.
+ */
+async function suiteAppBadge() {
+  console.log('\n[APP BADGE] navigator.setAppBadge is called right, and never breaks when absent');
+  runChildSuite(path.join(__dirname, 'app-badge-unit.js'), 'app-badge');
+}
+
+/**
  * Modes: applied over the protocol, and reported honestly when they are not.
  */
 async function suiteModes() {
@@ -1068,6 +1077,19 @@ async function suiteSessionsOpen() {
   runChildSuite(path.join(__dirname, 'sessions-open-unit.js'), 'sessions-open');
 }
 
+/**
+ * The bell inbox (#174): every pending approval and every awaiting-reply
+ * session, in one dropdown, against the same pure, DOM-free extraction used
+ * by web-xss-unit.js -- no jsdom, per the zero-runtime-dependency
+ * constraint. Also the #162 regression guard: a stale approval left behind
+ * by a disconnected device must show as Expired and offer no answer
+ * controls, never resurrect as an answerable card.
+ */
+async function suiteBellInbox() {
+  console.log('\n[BELL INBOX] approvals + awaiting-reply in one list, sorted, counted, and the #162 stale-approval guard');
+  runChildSuite(path.join(__dirname, 'bell-inbox-unit.js'), 'bell-inbox');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1108,6 +1130,7 @@ async function suiteSessionsOpen() {
   await suitePackage();
   await suiteWebXss();
   await suiteInstallPrompt();
+  await suiteAppBadge();
   await suiteModes();
   await suiteAccess();
   await suitePrefs();
@@ -1136,6 +1159,7 @@ async function suiteSessionsOpen() {
   await suiteStaleApprovals();
   await suiteMcp();
   await suiteSessionsOpen();
+  await suiteBellInbox();
 
   console.log('');
   console.log('='.repeat(60));

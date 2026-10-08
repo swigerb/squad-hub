@@ -48,6 +48,7 @@ const SHELL = [
   '/css/modals.css',
   '/css/detail.css',
   '/css/squad.css',
+  '/css/inbox.css',
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
@@ -56,6 +57,7 @@ const SHELL = [
   '/js/cleanup.js',
   '/js/composer.js',
   '/js/notifications.js',
+  '/js/inbox.js',
   '/js/devices.js',
   '/js/detail.js',
   '/js/ws.js',
@@ -71,6 +73,13 @@ const SHELL = [
   '/favicon.svg',
   '/icon.svg',
   '/logo.jpg',
+  // The install flow (header button, "Add to Home Screen", app switcher) reads
+  // these from the manifest rather than the page, so the pages network-first
+  // fetches never touch them -- without a shell entry they would 404 the
+  // moment the install prompt or the app switcher asks for them offline.
+  '/icon-mask-512.png',
+  '/screenshot-wide.png',
+  '/screenshot-narrow.png',
 ];
 
 self.addEventListener('install', (event) => {

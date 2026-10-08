@@ -161,5 +161,119 @@ check('a browser without matchMedia does not throw, it just says "not installed"
   assert.strictEqual(isInstalled(null), false);
 });
 
+// ---------------------------------------------------------------------------
+// Header install button: availability, visibility, and 30-day dismissal
+// ---------------------------------------------------------------------------
+
+/**
+ * `installAvailability` and `installButtonState` are read with a fake
+ * `navigator` the same way `installSteps` is above -- see the file banner.
+ */
+function helpers(ua = '', maxTouchPoints = 0) {
+  const mod = { exports: {} };
+  const fn = new Function(
+    'module', 'navigator',
+    `${src}\nmodule.exports = {
+      installAvailability, installButtonState, installDismissedUntil, dismissInstallButton,
+    };`,
+  );
+  fn(mod, { userAgent: ua, maxTouchPoints });
+  return mod.exports;
+}
+
+check('a Chromium browser that fired beforeinstallprompt gets the native path', () => {
+  const { installAvailability } = helpers(UA.windows);
+  assert.strictEqual(installAvailability({ hasDeferredPrompt: true, ua: UA.windows }), 'native');
+});
+
+check('iOS, Firefox and desktop Safari get the manual card, never "native"', () => {
+  assert.strictEqual(
+    helpers(UA.iphoneSafari).installAvailability({ hasDeferredPrompt: false, ua: UA.iphoneSafari }),
+    'manual',
+  );
+  assert.strictEqual(
+    helpers(UA.ipadOS, 5).installAvailability({ hasDeferredPrompt: false, ua: UA.ipadOS }),
+    'manual',
+    'iPadOS claims to be a Mac, and is only told apart by its touch points',
+  );
+  const firefoxUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
+  assert.strictEqual(helpers(firefoxUA).installAvailability({ hasDeferredPrompt: false, ua: firefoxUA }), 'manual');
+  const safariUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15';
+  assert.strictEqual(helpers(safariUA).installAvailability({ hasDeferredPrompt: false, ua: safariUA }), 'manual');
+});
+
+check('Chrome and Edge without a captured prompt yet are "none", not "manual"', () => {
+  // Both UAs contain the literal substring "Safari" for legacy reasons; the
+  // manual card must not be offered to a browser that actually has a native
+  // installer, just because `beforeinstallprompt` has not fired YET.
+  const { installAvailability } = helpers();
+  assert.strictEqual(installAvailability({ hasDeferredPrompt: false, ua: UA.windows }), 'none');
+  const edgeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Edg/126.0';
+  assert.strictEqual(installAvailability({ hasDeferredPrompt: false, ua: edgeUA }), 'none');
+});
+
+check('already installed hides the button regardless of availability', () => {
+  const { installButtonState } = helpers();
+  assert.strictEqual(installButtonState({ installed: true, availability: 'native' }), 'hidden');
+  assert.strictEqual(installButtonState({ installed: true, availability: 'manual' }), 'hidden');
+});
+
+check('no install path on this browser hides the button', () => {
+  const { installButtonState } = helpers();
+  assert.strictEqual(installButtonState({ installed: false, availability: 'none' }), 'hidden');
+});
+
+check('"Not now" hides the button until the 30-day dismissal expires, then it returns', () => {
+  const { installButtonState } = helpers();
+  const now = Date.UTC(2026, 0, 1);
+  const dismissedUntil = now + 10 * 24 * 60 * 60 * 1000;
+  assert.strictEqual(installButtonState({
+    installed: false, availability: 'manual', dismissedUntil, now,
+  }), 'hidden', 'still within the 30 days');
+  assert.strictEqual(installButtonState({
+    installed: false, availability: 'manual', dismissedUntil, now: dismissedUntil + 1,
+  }), 'manual', 'dismissal window has passed');
+});
+
+check('with nothing hiding it, the button shows in whichever mode is available', () => {
+  const { installButtonState } = helpers();
+  assert.strictEqual(installButtonState({ installed: false, availability: 'native' }), 'native');
+  assert.strictEqual(installButtonState({ installed: false, availability: 'manual' }), 'manual');
+});
+
+/** A fake localStorage: object-backed, and able to simulate a browser that blocks storage entirely. */
+function fakeStorage(initial = {}) {
+  const data = { ...initial };
+  return {
+    getItem: (k) => (k in data ? data[k] : null),
+    setItem: (k, v) => { data[k] = String(v); },
+  };
+}
+
+check('dismissing writes a 30-day expiry that installDismissedUntil reads back', () => {
+  const { installDismissedUntil, dismissInstallButton } = helpers();
+  const storage = fakeStorage();
+  const now = Date.UTC(2026, 0, 1);
+  dismissInstallButton(storage, now);
+  const until = installDismissedUntil(storage);
+  assert.strictEqual(until, now + 30 * 24 * 60 * 60 * 1000);
+});
+
+check('no prior dismissal reads back as 0, not NaN or a thrown error', () => {
+  const { installDismissedUntil } = helpers();
+  assert.strictEqual(installDismissedUntil(fakeStorage()), 0);
+  assert.strictEqual(installDismissedUntil(null), 0);
+});
+
+check('a storage that throws (private mode, quota) cannot crash dismissal', () => {
+  const { installDismissedUntil, dismissInstallButton } = helpers();
+  const angry = {
+    getItem() { throw new Error('blocked'); },
+    setItem() { throw new Error('blocked'); },
+  };
+  assert.strictEqual(installDismissedUntil(angry), 0);
+  dismissInstallButton(angry, Date.now()); // must not throw
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

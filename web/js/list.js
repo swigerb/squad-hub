@@ -1,6 +1,7 @@
 import {
   esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, isStaleSession,
 } from './util.js';
+import { isCloudKind } from './cleanup.js';
 
 // ---------------------------------------------------------------------------
 // List controls.
@@ -30,6 +31,27 @@ export const SORTS = {
 };
 
 export const GROUPINGS = { device: 'Device', repository: 'Repository', none: 'No grouping' };
+
+/**
+ * The scope tabs above the filter bar: All, Local, Cloud (#168).
+ *
+ * "Cloud" covers both device kinds `cloud` and `aca` (#166) -- a tab that only
+ * matched one of them would quietly hide ACA jobs from the one tab that
+ * promises to show every cloud session.
+ */
+export const SCOPES = { all: 'All', local: 'Local', cloud: 'Cloud' };
+
+/**
+ * Does a device belong to this scope?
+ *
+ * `all` matches everything, including a session whose device is unknown --
+ * a scope tab must never be the reason a session disappears entirely.
+ */
+export function matchesScope(scope, device) {
+  if (!scope || !SCOPES[scope] || scope === 'all') return true;
+  const cloud = isCloudKind(device && device.kind);
+  return scope === 'cloud' ? cloud : !cloud;
+}
 
 /**
  * Is this session blocked on a person?
@@ -141,6 +163,84 @@ export function repositoriesIn(groups = []) {
 }
 
 /**
+ * How many sessions each scope tab would show, with the CURRENT filters but
+ * ignoring scope itself -- that is what lets a tab say "Cloud 3" while "All"
+ * is showing Local, instead of freezing at whatever was on screen when the
+ * tab was last visited.
+ *
+ * A pinned session counts under its own scope exactly like `buildView` would
+ * show it: outranking the filters, never outranking the scope split itself.
+ */
+export function scopeCounts(groups = [], filters = {}, favorites = [], now = Date.now()) {
+  const pinnedKeys = new Set(favorites);
+  let local = 0;
+  let cloud = 0;
+  for (const g of groups) {
+    const cloudDevice = isCloudKind(g.device && g.device.kind);
+    for (const s of g.sessions || []) {
+      const included = pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now);
+      if (!included) continue;
+      if (cloudDevice) cloud += 1; else local += 1;
+    }
+  }
+  return { all: local + cloud, local, cloud };
+}
+
+/**
+ * How many of the dropdown filters are set to something other than "all".
+ *
+ * Used only for the phone filter button's badge -- the keyword box is always
+ * visible there, so it is not one of the things the badge counts; the badge
+ * exists to answer "are any of the filters BEHIND this button doing anything
+ * right now", which a person cannot otherwise tell once the sheet is closed.
+ */
+export function activeFilterCount(filters = {}) {
+  return ['status', 'device', 'repo', 'org', 'window'].filter((k) => filters[k]).length;
+}
+
+/**
+ * The view state as a plain map of query-string keys, omitting anything at
+ * its default -- so a link shared with nobody's own window or sort setting
+ * does not override whatever the next person already has.
+ */
+export function viewStateToParams(view = {}) {
+  const params = {};
+  const f = view.filters || {};
+  if (view.scope && view.scope !== 'all') params.scope = view.scope;
+  if (f.q) params.q = f.q;
+  if (f.status) params.status = f.status;
+  if (f.device) params.device = f.device;
+  if (f.repo) params.repo = f.repo;
+  if (f.org) params.org = f.org;
+  if (f.window) params.window = f.window;
+  if (view.groupBy && view.groupBy !== 'device') params.view = view.groupBy;
+  if (view.sortBy && view.sortBy !== 'started_desc') params.sort = view.sortBy;
+  return params;
+}
+
+/**
+ * The reverse of `viewStateToParams`: a query string's values, back into view
+ * state -- validated against the same option tables the dropdowns are built
+ * from, so a hand-edited or stale URL (`?sort=deleted_option`) is IGNORED
+ * rather than applied, and can never produce a view the UI cannot represent.
+ */
+export function paramsToViewState(params = {}) {
+  const out = {};
+  if (SCOPES[params.scope]) out.scope = params.scope;
+  const filters = {};
+  if (params.q) filters.q = params.q;
+  if (params.status) filters.status = params.status;
+  if (params.device) filters.device = params.device;
+  if (params.repo) filters.repo = params.repo;
+  if (params.org) filters.org = params.org;
+  if (TIME_WINDOWS[params.window]) filters.window = params.window;
+  if (Object.keys(filters).length) out.filters = filters;
+  if (GROUPINGS[params.view]) out.groupBy = params.view;
+  if (SORTS[params.sort]) out.sortBy = params.sort;
+  return out;
+}
+
+/**
  * The whole list, as sections ready to render.
  *
  * Pinned sessions are lifted into their own section and do NOT appear again
@@ -148,12 +248,19 @@ export function repositoriesIn(groups = []) {
  * Pinning also outranks the time window: a person pinned it, so it stays until
  * they unpin it.
  */
-export function buildView({ groups = [], filters = {}, favorites = [], groupBy = 'device', sortBy = 'started_desc', now = Date.now() } = {}) {
+export function buildView({
+  groups = [], filters = {}, favorites = [], groupBy = 'device', sortBy = 'started_desc', scope = 'all', now = Date.now(),
+} = {}) {
   const pinnedKeys = new Set(favorites);
   const pinned = [];
   const rest = [];
 
+  // The scope tab is a hard partition applied BEFORE anything else: a
+  // session on the wrong side of All/Local/Cloud is not "filtered", it is on
+  // a different tab, and that must hold even for a pinned session -- a star
+  // does not teleport a local session onto the Cloud tab.
   for (const g of groups) {
+    if (!matchesScope(scope, g.device)) continue;
     for (const s of g.sessions || []) {
       const entry = { session: s, device: g.device };
       if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }
@@ -174,6 +281,8 @@ export function buildView({ groups = [], filters = {}, favorites = [], groupBy =
     });
   };
 
+  const counts = { pinned: pinned.length, shown: pinned.length + rest.length, scopes: scopeCounts(groups, filters, favorites, now) };
+
   const sections = [];
   if (pinned.length) {
     sections.push({ key: '__pinned', label: 'Pinned', pinned: true, entries: sortEntries(pinned) });
@@ -181,7 +290,7 @@ export function buildView({ groups = [], filters = {}, favorites = [], groupBy =
 
   if (groupBy === 'none') {
     if (rest.length) sections.push({ key: '__all', label: 'All sessions', entries: sortEntries(rest) });
-    return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+    return { sections, counts };
   }
 
   const keyOf = groupBy === 'repository'
@@ -215,7 +324,7 @@ export function buildView({ groups = [], filters = {}, favorites = [], groupBy =
     });
   }
 
-  return { sections, counts: { pinned: pinned.length, shown: pinned.length + rest.length } };
+  return { sections, counts };
 }
 
 export function sessionRow(s, deviceName, opts = {}) {
@@ -237,10 +346,18 @@ export function sessionRow(s, deviceName, opts = {}) {
   // `esc()`'d -- a stored payload (e.g. an `agent` of `<img src=x onerror=...>`,
   // or a branch literally named `<img src=x onerror=...>`, which git permits)
   // must render as inert text, never live markup, however it got here.
+  const deviceText = esc(deviceName);
+  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
+  const repoText = esc(repoRaw);
+  // Device, repository and branch each carry a `title` with their own full
+  // value. The meta line as a whole is clipped with an ellipsis by CSS once
+  // it runs out of room, and a clipped field with nothing to hover is a fact
+  // the row knows and simply does not tell you -- the title is what makes
+  // the full value one hover away instead of a trip to the detail panel.
   const meta = [
-    esc(deviceName),
-    git && git.repository ? esc(git.repository) : esc(sq ? sq.project : s.cwd),
-    git && git.branch ? `<span class="branch">${esc(git.branch)}</span>` : '',
+    deviceText ? `<span class="meta-field" title="${deviceText}">${deviceText}</span>` : '',
+    repoText ? `<span class="meta-field" title="${repoText}">${repoText}</span>` : '',
+    git && git.branch ? `<span class="branch" title="${esc(git.branch)}">${esc(git.branch)}</span>` : '',
     sel ? `<span class="${agentInfo.mismatch ? 'agent-mismatch' : ''}">${esc(agentInfo.text)}</span>` : esc(s.agent || 'Copilot CLI'),
     s.startedAt ? timeCell(s.startedAt) : '',
     s.toolCallCount ? `${num(s.toolCallCount)} tools` : '',
@@ -292,5 +409,27 @@ export function sessionRow(s, deviceName, opts = {}) {
       </div>
       ${statusBadge(s, device)}
     </div>`;
+}
+
+/**
+ * Placeholder rows shown before the first overview has arrived.
+ *
+ * Not the word "loading…" sitting alone in an otherwise-empty box: a lone
+ * sentence reads as a near-blank page for the second it takes real rows to
+ * arrive, while shapes the size of the rows about to appear read as "the page
+ * is already here, just not filled in yet". `aria-hidden` because there is
+ * nothing here worth a screen reader announcing -- the real rows that replace
+ * this carry their own labels, and this is gone by the time anything could act
+ * on it.
+ */
+export function skeletonRows(n = 4) {
+  return Array.from({ length: n }, () => `
+    <div class="row skeleton-row" aria-hidden="true">
+      <span class="skel skel-star"></span>
+      <div class="row-main">
+        <div class="skel skel-line skel-title"></div>
+        <div class="skel skel-line skel-meta"></div>
+      </div>
+    </div>`).join('');
 }
 
