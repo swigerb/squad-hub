@@ -236,11 +236,11 @@ function selfOrigin(req) {
 }
 
 /**
- * Normalise `SQUAD_HUB_PUBLIC_URL` (or an injected override) to the origin
+ * Normalize `SQUAD_HUB_PUBLIC_URL` (or an injected override) to the origin
  * the WebSocket check compares against: scheme + host + effective port, any
  * path and trailing slash stripped.
  *
- * `URL#origin` already does exactly this normalisation -- it is the same
+ * `URL#origin` already does exactly this normalization -- it is the same
  * constructor `github-oauth.js` uses, per the issue's own instruction to
  * strip "trailing slash and any path... as that constructor already does" --
  * so `https://hub.example/`, `https://hub.example` and
@@ -250,11 +250,11 @@ function selfOrigin(req) {
  * carries.
  *
  * A value that is SET but does not parse as an absolute `http`/`https` URL
- * throws rather than falling back to the WS-1 request-derived behaviour --
+ * throws rather than falling back to the WS-1 request-derived behavior --
  * a typo in this setting (`SQUAD_HUB_PUBLIC_URL=hub.example`, missing the
  * scheme, say) must fail loudly at startup. Silently falling back to trusting
  * whatever `Host` a request carries would be the exact silent-permissive
- * behaviour this setting exists to remove: a misconfigured value would look
+ * behavior this setting exists to remove: a misconfigured value would look
  * configured while actually granting the OLD, weaker, request-derived trust.
  */
 function publicOriginFromEnv(raw) {
@@ -273,7 +273,7 @@ function publicOriginFromEnv(raw) {
  * Should this WebSocket upgrade be allowed to proceed, going only by its
  * `Origin` header?
  *
- * `configuredOrigin` is `HubService#publicOrigin` -- the normalised
+ * `configuredOrigin` is `HubService#publicOrigin` -- the normalized
  * `SQUAD_HUB_PUBLIC_URL`, or `null` when it is unset. Three shapes are
  * accepted, matching the three the issue names:
  *
@@ -635,7 +635,7 @@ class HubService {
       const detail = {
         // Which process answered. In-memory state is per instance, so when a
         // device seems to vanish intermittently this is the first thing worth
-        // knowing -- and guessing at it from behaviour wastes an afternoon.
+        // knowing -- and guessing at it from behavior wastes an afternoon.
         instance: (process.env.WEBSITE_INSTANCE_ID || process.env.HOSTNAME || 'local').slice(0, 12),
         instances,
         /**
@@ -1231,7 +1231,7 @@ class HubService {
         // first to prove that: `{ text: "...", op: "approve", ... }` must not
         // become an approve on the wire. Bounded length/type checks live here
         // too, at the API boundary, in addition to the device's own checks --
-        // defence in depth is one line, and a hub that only ever trusted the
+        // defense in depth is one line, and a hub that only ever trusted the
         // device's validation is one refactor away from trusting neither.
         if (op === 'steer') {
           const sessionId = body && body.sessionId;
@@ -1321,7 +1321,7 @@ class HubService {
     // /..%5c are handled only here. Removing this is a path traversal.
     rel = path.normalize(rel).replace(/^([/\\])+/, '');
     const file = path.join(WEB_ROOT, rel);
-    // Defence in depth, and reachable the moment the line above stops
+    // Defense in depth, and reachable the moment the line above stops
     // collapsing `..` -- which is exactly what the mutation harness proves by
     // removing it and requiring this to return 403 rather than the file.
     if (!file.startsWith(WEB_ROOT + path.sep) && file !== WEB_ROOT) {
@@ -1346,7 +1346,7 @@ class HubService {
    */
   _syncAllowedUsers() {
     if (!this.auth) return;
-    // Normalised the same way the Authenticator's constructor does. Assigning
+    // Normalized the same way the Authenticator's constructor does. Assigning
     // the field directly bypasses that, and sign-in compares lower-cased
     // candidates -- so an entry that reached this list with any capital in it
     // could never match, and the person would be refused while appearing in
@@ -1392,7 +1392,7 @@ class HubService {
     // stream -- the same credential-then-role order the kind checks already
     // follow, just one gate earlier. See originIsAllowed() above for exactly
     // what is accepted and why. `this.publicOrigin` is `SQUAD_HUB_PUBLIC_URL`,
-    // normalised, or null -- passing it (rather than letting the check derive
+    // normalized, or null -- passing it (rather than letting the check derive
     // one from this request) is what makes a configured domain authoritative.
     if (!originIsAllowed(req, this.publicOrigin)) {
       conn.close(1008, 'this origin is not allowed to open a socket on this hub');

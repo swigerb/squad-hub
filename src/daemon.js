@@ -120,7 +120,7 @@ class Daemon extends EventEmitter {
     this.agentCommand = opts.agentCommand || process.env.SQUAD_HUB_AGENT || 'copilot';
     this.agentArgs = opts.agentArgs || resolveAgentArgs();
     this.heartbeatMs = (opts.heartbeatSeconds || this.cfg.heartbeatSeconds) * 1000;
-    // How long an unanswered approval waits before it is cancelled. Long by
+    // How long an unanswered approval waits before it is canceled. Long by
     // design: a backstop against a question nobody will ever answer, not a
     // deadline for someone who stepped away. Overridable so a test does not
     // have to wait half an hour to prove it.
@@ -256,7 +256,7 @@ class Daemon extends EventEmitter {
    * Publish daemon state to disk.
    *
    * The CLI reads this file rather than polling over IPC. That is not a
-   * micro-optimisation: polling `hub-status` every 100ms starved the daemon's
+   * micro-optimization: polling `hub-status` every 100ms starved the daemon's
    * own outbound connection, turning a 114ms connect into 6 seconds -- so the
    * check reported "not connected" about a connection its own impatience had
    * delayed. An observer that changes what it observes is worse than no
@@ -329,7 +329,7 @@ class Daemon extends EventEmitter {
    * An approval gate with no approver is a hang: the agent is blocked on a
    * question, the person it was asked of has gone home, and the session sits
    * there consuming a process and a slot in everyone's list for as long as it
-   * is left. Cancelling the request lets the agent decide what to do about a
+   * is left. Canceling the request lets the agent decide what to do about a
    * refused tool, which is a normal thing for it to handle -- unlike waiting
    * forever, which is not.
    *
@@ -572,7 +572,7 @@ class Daemon extends EventEmitter {
 
   /**
    * Answer a `transcript` request either as a plain tail (`limit`, the
-   * original behaviour -- used by the hub, which always wants "the last N")
+   * original behavior -- used by the hub, which always wants "the last N")
    * or as a cursor read (`since`): every entry with a `seq` greater than the
    * one the caller has already seen.
    *
@@ -1291,14 +1291,14 @@ class Daemon extends EventEmitter {
  * session type was added to a collection whose contract it did not quite meet,
  * and the collection did not notice. A button that lies is worse than an absent
  * one, and this made every button lie for exactly the sessions that cannot
- * honour them.
+ * honor them.
  *
- * Normalised in one place so a third session type cannot reintroduce it by
+ * Normalized in one place so a third session type cannot reintroduce it by
  * picking either shape.
  */
 function normaliseControl(result) {
   if (result && typeof result === 'object') {
-    // Spread first, then force `ok`/`reason` to the normalised shape: a
+    // Spread first, then force `ok`/`reason` to the normalized shape: a
     // steer's `queued`/`position` ride along so callers can tell an
     // acceptance from an actual send, without every OTHER control result
     // needing to know those keys exist.

@@ -177,7 +177,7 @@ async function runInteractive({
   // is assigned once and never reused, so this keeps working no matter how
   // many times the window slides underneath it. `undefined` here means
   // "never polled yet", which the daemon treats as "give me the current
-  // tail" -- the same first-poll behaviour this terminal always had.
+  // tail" -- the same first-poll behavior this terminal always had.
   let lastSeq;
   let warnedGap = false;
   const shownApprovals = new Set();

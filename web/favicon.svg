@@ -8,7 +8,7 @@
   So: three filled dots, and nothing else. A squad is a team, and three nodes is
   the smallest shape that reads as "several, together" rather than "one thing".
   No connecting lines and no strokes at all, because a 2px stroke becomes a
-  sixteenth of a pixel at tab size and turns the whole mark grey.
+  sixteenth of a pixel at tab size and turns the whole mark gray.
 
   Laid out on a 32 grid so every edge lands on a whole pixel when halved to 16.
   Transparent background, because the mark has to sit on both a light and a dark

@@ -4904,6 +4904,17 @@ if ($health.accessStore -ne 'durable') {`,
     skip: true,
   },
   {
+    // #167's guard is a content check, not a logic check -- there is no
+    // runtime branch to gate behind `process.env.MUTANT`, so the mutation is
+    // the British spelling itself. If this ever stops failing, the guard has
+    // stopped reading the file it claims to cover.
+    name: 'a British spelling creeps back into a web/ UI string',
+    file: 'web/index.html',
+    find: 'aria-label="Organization"><option value="">All organizations</option>',
+    replace: 'aria-label="Organisation"><option value="">All organisations</option>',
+    mustFail: 'web/ UI strings and docs/ use American English spelling',
+  },
+  {
     // #174's whole point: an approval blocks something and MUST outrank a
     // reply that is merely waiting. Losing this ordering would bury the
     // thing that is actively stuck beneath a card nobody needs to act on.

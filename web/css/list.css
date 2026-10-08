@@ -17,7 +17,7 @@ button.ghost:hover { background: var(--panel-2); }
 button.ghost.danger { color: var(--bad); border-color: #47262b; }
 button.link { background: none; border: 0; color: var(--dim); cursor: pointer; text-decoration: underline; }
 
-/* ---------- the split New button and its neighbours ---------- */
+/* ---------- the split New button and its neighbors ---------- */
 /* Positioned relative so the menus below can anchor to the control that opens
    them. A fixed-position menu would drift away from its button the moment the
    page scrolled, which on a phone is immediately. */
@@ -71,17 +71,17 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .menu button .i { width: 16px; height: 16px; color: var(--dim); }
 .menu button.danger .i { color: var(--bad); }
 
-/* The accent on hover, not a grey wash. This is a menu of THINGS TO DO, and
+/* The accent on hover, not a gray wash. This is a menu of THINGS TO DO, and
    the highlight should look like a selection rather than like the row merely
    noticing the pointer. The icon and label go white together, because a label
-   that lights up while its icon stays grey reads as a half-finished state. */
+   that lights up while its icon stays gray reads as a half-finished state. */
 .menu.anchored button:hover:not([disabled]),
 .menu.anchored button:focus-visible:not([disabled]) {
   background: var(--accent); color: #fff; outline: none;
 }
 .menu.anchored button:hover:not([disabled]) .i,
 .menu.anchored button:focus-visible:not([disabled]) .i { color: #fff; }
-/* The destructive row keeps its own colour on the accent, which would be
+/* The destructive row keeps its own color on the accent, which would be
    unreadable, so it takes a red highlight instead of the blue one. */
 .menu.anchored button.danger:hover:not([disabled]),
 .menu.anchored button.danger:focus-visible:not([disabled]) {
@@ -254,7 +254,7 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 .selectpill select:focus-visible { outline: none; }
 
 /* THE OPEN LIST IS THE HALF OF A SELECT THIS STYLESHEET NEVER SEES. The popup
-   is painted by the operating system, and an `option` rule is honoured by some
+   is painted by the operating system, and an `option` rule is honored by some
    engines and quietly ignored by others -- on Windows it comes back white
    whatever the page asks for. That is why the toolbar selects are wrapped in
    `.selectpill` and their popup is replaced outright (see enhanceSelect).

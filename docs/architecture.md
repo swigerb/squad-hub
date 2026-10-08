@@ -3,7 +3,7 @@
 ## The hub is a cache. The device is the record.
 
 This is the single idea worth understanding, because it explains almost every
-operational behaviour below.
+operational behavior below.
 
 The **device daemon** owns everything real: the agent process, the session, and
 any pending approval. The agent's request for permission is an open RPC to the

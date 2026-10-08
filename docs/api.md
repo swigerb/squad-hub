@@ -250,7 +250,7 @@ curl -X POST "$HUB/api/devices/$DEVICE/forget" \
   -d '{"sessionId":"...","force":true}'
 ```
 
-`force` is honoured **only while the device has no live connection** — a
+`force` is honored **only while the device has no live connection** — a
 reachable device ignores it and the route behaves exactly as above, because a
 device that can answer is the one source of truth for whether its own session
 is still running. If the device reconnects later, it republishes its real

@@ -2,7 +2,7 @@
 // Readable dropdowns
 //
 // A native <select>'s OPEN LIST is drawn by the operating system, not by this
-// stylesheet. `option { background }` is honoured by some engines, ignored by
+// stylesheet. `option { background }` is honored by some engines, ignored by
 // others, and on Windows the popup comes back white with white separators
 // whatever the page asks for -- which is why the dark theme's dropdowns were
 // unreadable no matter how the options were styled.

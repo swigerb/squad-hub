@@ -274,7 +274,7 @@ A locked hub reports **0 open, 0 leaks**.
 | | Needs | Good for |
 |---|---|---|
 | `github` | **nothing** — a GitHub token | Anyone. The simplest real sign-in. |
-| `entra` | An Entra app registration | Organisations that can get one. |
+| `entra` | An Entra app registration | Organizations that can get one. |
 | `dev` | A shared secret | A laptop, or a single trusted machine. |
 
 ### GitHub — no app registration required
@@ -292,7 +292,7 @@ The bearer token is an ordinary GitHub token; `gh auth token` produces one. The
 hub asks GitHub who it belongs to and checks the answer against your owner list.
 Nothing is registered anywhere, and revoking the token revokes the access.
 
-Behaviour worth knowing:
+Behavior worth knowing:
 
 - **The partition follows the numeric GitHub id**, not the login, so a renamed
   account keeps its devices.

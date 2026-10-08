@@ -230,6 +230,9 @@ function serve({ hub, token, input, output, log = () => {} }) {
     if (msg.id === undefined) {
       // A notification (e.g. `notifications/initialized`, `notifications/cancelled`).
       // Never answered: the spec is explicit that a server MUST NOT reply to one.
+      // (`cancelled` is the MCP spec's own method name, British spelling and all --
+      // it is a wire-protocol literal, not prose, so it is not part of the American
+      // English sweep.)
       return;
     }
     const pending = onRequest(msg).catch((e) => replyError(msg.id, JSONRPC_INTERNAL_ERROR, e.message));

@@ -114,7 +114,7 @@ function renderCleanup(found) {
  * Calls the same offline `forget` path the bulk Tidy menu uses, narrowed to
  * this one session (`sessionId`) and forced (`force: true`) because the
  * session is, by definition of `isStaleSession`, still in a non-terminal
- * status -- the whole reason it is stuck. The hub only ever honours `force`
+ * status -- the whole reason it is stuck. The hub only ever honors `force`
  * when the device has no live socket (see hub-service.js), so this can never
  * reach into a session a live device still owns; and because the device
  * remains the source of truth, a device that comes back online republishes
@@ -417,7 +417,7 @@ function updateText(u) {
  *
  * `usage_update` fires on every token, and `available_commands_update` and
  * `config_option_update` fire whenever the agent reconfigures itself. None of
- * them carry anything a person reads, and rendering them put a row of grey
+ * them carry anything a person reads, and rendering them put a row of gray
  * noise between every useful line.
  */
 const TRANSCRIPT_NOISE = new Set([

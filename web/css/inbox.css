@@ -56,6 +56,6 @@
   color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 /* A card that expired because its device vanished (#162): told apart from a
-   live card by colour alone would be missed by anyone scanning quickly, so it
+   live card by color alone would be missed by anyone scanning quickly, so it
    drops the tint and the weight that say "this wants you" instead. */
 .inbox-status.off { color: var(--faint); background: transparent; border: 1px solid var(--line); }

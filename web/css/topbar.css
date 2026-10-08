@@ -30,7 +30,7 @@
    down both sides. Matched by eye rather than by number -- equal geometry that
    looks unequal is the wrong kind of correct. */
 .bell .i { width: 20px; height: 20px; }
-/* A bell that is switched on says so, quietly: brighter, not coloured. An
+/* A bell that is switched on says so, quietly: brighter, not colored. An
    accent-blue bell reads as an alert in its own right, in a bar whose whole
    job is to stay out of the way. Blocked stays neutral rather than alarming --
    it is a setting, not a fault. */

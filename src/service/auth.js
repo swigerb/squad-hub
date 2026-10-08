@@ -319,7 +319,7 @@ class Authenticator {
     }
 
     const name = claims.name || claims.preferred_username || claims.upn || claims.email || null;
-    // Any of the identifiers a person would recognise. Checked case-
+    // Any of the identifiers a person would recognize. Checked case-
     // insensitively, because a UPN typed by hand will not match the casing
     // Entra returns.
     const candidates = [claims.oid, claims.sub, name, claims.preferred_username, claims.upn, claims.email]

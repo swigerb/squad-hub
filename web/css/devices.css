@@ -58,7 +58,7 @@
 .status.answered { color: var(--ok); border-color: #1d4636; }
 /* An unanswerable card: the device behind it cannot be reached, so this must
    never read like the amber "blocked on you" badge it used to be mistaken
-   for (#225) -- the point of the colour is "nothing to do here", not "do
+   for (#225) -- the point of the color is "nothing to do here", not "do
    something". */
 .status.stale { color: var(--faint); border-color: var(--line); font-style: italic; }
 .expiredline { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; }
