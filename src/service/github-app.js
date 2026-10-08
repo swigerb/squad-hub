@@ -69,6 +69,20 @@ const JWT_TTL_SEC = 540; // 9 minutes from the backdated `iat`.
  * milliseconds before expiry must not fail with the previous token. */
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 
+/** `GET /app/installations` and `GET /installation/repositories` page size,
+ * and the hard cap on how many pages `_listInstallations` /
+ * `_listInstallationRepos` will ever follow (#213, a follow-up from #211's
+ * review: before this, both called GitHub with `per_page=100` and stopped,
+ * so an App installed on, or granted, more than 100 at once silently lost
+ * everything past the first page -- "fails safe" in that a repo missing from
+ * the list can never be dispatched against, but quietly, with no error
+ * anywhere). `MAX_LIST_PAGES` exists only as a hard backstop against an
+ * unbounded loop if GitHub's own pagination ever misbehaves; at
+ * `LIST_PAGE_SIZE` per page it is far beyond any installation or repository
+ * count a real App is expected to ever reach. */
+const LIST_PAGE_SIZE = 100;
+const MAX_LIST_PAGES = 50;
+
 /** `resolveRunStatus` floors the recorded dispatch timestamp to whole
  * seconds (GitHub's own `created_at` has no sub-second precision, so
  * comparing millisecond-precise would reject a run GitHub reports as created
@@ -272,12 +286,23 @@ class GitHubApp {
     return `${signingInput}.${signature.toString('base64url')}`;
   }
 
-  /** Every installation this App is on: `[{id, login}]`. */
+  /** Every installation this App is on: `[{id, login}]`. Paged past
+   * `LIST_PAGE_SIZE` per page, up to `MAX_LIST_PAGES` (#213) -- an App on
+   * more installations than one page would otherwise silently lose every
+   * installation past the first. */
   async _listInstallations() {
     const jwt = this._appJwt();
-    const res = await this._request({ method: 'GET', path: '/app/installations?per_page=100', token: jwt });
-    if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not list GitHub App installations (GitHub returned ${res.status})`);
-    return (res.json || []).map((i) => ({ id: i.id, login: i.account && i.account.login }));
+    const out = [];
+    for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
+      const res = await this._request({
+        method: 'GET', path: `/app/installations?per_page=${LIST_PAGE_SIZE}&page=${page}`, token: jwt,
+      });
+      if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not list GitHub App installations (GitHub returned ${res.status})`);
+      const items = res.json || [];
+      out.push(...items.map((i) => ({ id: i.id, login: i.account && i.account.login })));
+      if (items.length < LIST_PAGE_SIZE) break;
+    }
+    return out;
   }
 
   /**
@@ -285,37 +310,77 @@ class GitHubApp {
    * missing or close to expiry -- `TOKEN_REFRESH_BUFFER_MS` early, never
    * late. Reused across calls in between, which is the whole reason a cache
    * exists here rather than minting one per request.
+   *
+   * Scoped to `repo` alone whenever a caller supplies one (#213, a follow-up
+   * from #211's review): GitHub's access-token endpoint accepts an optional
+   * `repositories` list that narrows the minted token's own permissions to
+   * exactly those repositories, for the lifetime of that token, regardless
+   * of how many others the installation itself can see. Every caller here
+   * that already knows which single repository it is about to call GitHub
+   * for passes it, so a token that leaked -- a log line, a crash dump, a bug
+   * in some other part of this process -- could reach only that one
+   * repository, not every repository the operator has installed the App on.
+   * The one caller that must see the WHOLE installation --
+   * `listInstalledRepos`, enumerating `GET /installation/repositories` to
+   * build the allow-list in the first place -- omits `repo` on purpose and
+   * gets the installation's full, unscoped token instead. A scoped and an
+   * unscoped token for the same installation are cached separately (the
+   * cache key includes `repo`), because they are not interchangeable: using
+   * the repo-scoped one for the enumeration call would see only that one
+   * repository, not the whole installation.
    */
-  async _installationToken(installationId) {
+  async _installationToken(installationId, repo) {
+    const cacheKey = repo ? `${installationId}:${repo}` : `${installationId}`;
     const now = this._now();
-    const cached = this._tokenCache.get(installationId);
+    const cached = this._tokenCache.get(cacheKey);
     if (cached && cached.expiresAtMs - TOKEN_REFRESH_BUFFER_MS > now) {
       return cached.token;
     }
     const jwt = this._appJwt();
     const res = await this._request({
-      method: 'POST', path: `/app/installations/${installationId}/access_tokens`, token: jwt,
+      method: 'POST',
+      path: `/app/installations/${installationId}/access_tokens`,
+      token: jwt,
+      body: repo ? { repositories: [repo] } : undefined,
     });
     if (res.status !== 201) {
       throw this._err(upstreamStatus(res.status), `could not mint an installation token for installation ${installationId} (GitHub returned ${res.status})`);
     }
     const token = res.json.token;
     const expiresAtMs = new Date(res.json.expires_at).getTime();
-    this._tokenCache.set(installationId, { token, expiresAtMs });
-    this.log(`github-app: refreshed the installation token for installation ${installationId}`);
+    this._tokenCache.set(cacheKey, { token, expiresAtMs });
+    this.log(`github-app: refreshed the installation token for installation ${installationId}${repo ? ` (scoped to ${repo})` : ''}`);
     return token;
   }
 
+  /** Every repository this installation's token can see. Paged past
+   * `LIST_PAGE_SIZE` per page, up to `MAX_LIST_PAGES` (#213) -- an
+   * installation granted more repositories than one page would otherwise
+   * silently lose every repository past the first, exactly like
+   * `_listInstallations` above. */
   async _listInstallationRepos(token) {
-    const res = await this._request({ method: 'GET', path: '/installation/repositories?per_page=100', token });
-    if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not list repositories for this installation (GitHub returned ${res.status})`);
-    return (res.json.repositories || []).map((r) => r.full_name);
+    const out = [];
+    for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
+      const res = await this._request({
+        method: 'GET', path: `/installation/repositories?per_page=${LIST_PAGE_SIZE}&page=${page}`, token,
+      });
+      if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not list repositories for this installation (GitHub returned ${res.status})`);
+      const items = (res.json && res.json.repositories) || [];
+      out.push(...items.map((r) => r.full_name));
+      if (items.length < LIST_PAGE_SIZE) break;
+    }
+    return out;
   }
 
   /**
    * Every repository the App's installations can see -- the allow-list a
    * dispatch is checked against, and what `GET /api/aca/repos` reports.
    * `[{installationId, owner, repo, fullName}]`.
+   *
+   * Mints an UNSCOPED installation token for this one call (see
+   * `_installationToken`'s own comment) -- enumerating every repository an
+   * installation can see is the one thing here that genuinely needs to see
+   * all of them, not one.
    */
   async listInstalledRepos() {
     const installations = await this._listInstallations();
@@ -405,7 +470,7 @@ class GitHubApp {
     const repos = await this.listInstalledRepos();
     const out = [];
     for (const r of repos) {
-      const token = await this._installationToken(r.installationId);
+      const token = await this._installationToken(r.installationId, r.repo);
       const hasDispatchWorkflow = await this._hasDispatchWorkflow(r.owner, r.repo, token);
       out.push({ fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow });
     }
@@ -431,7 +496,7 @@ class GitHubApp {
   async dispatch({
     owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly,
   }) {
-    const token = await this._installationToken(installationId);
+    const token = await this._installationToken(installationId, repo);
 
     const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {
@@ -501,7 +566,7 @@ class GitHubApp {
    * one -- see `DispatchTracker.listWithStatus`, which must never re-run the
    * matching search (and so never risk re-binding) once a run is known. */
   async _getRun(owner, repo, installationId, runId) {
-    const token = await this._installationToken(installationId);
+    const token = await this._installationToken(installationId, repo);
     const res = await this._request({ method: 'GET', path: `/repos/${owner}/${repo}/actions/runs/${runId}`, token });
     if (res.status !== 200) {
       throw this._err(upstreamStatus(res.status), `could not read Actions run ${runId} for ${owner}/${repo} (GitHub returned ${res.status})`);
@@ -532,7 +597,7 @@ class GitHubApp {
   async resolveRunStatus({
     owner, repo, installationId, dispatchedAt, ref, excludeRunIds,
   }) {
-    const token = await this._installationToken(installationId);
+    const token = await this._installationToken(installationId, repo);
     const res = await this._request({
       method: 'GET',
       path: `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=20`,

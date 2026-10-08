@@ -22,6 +22,22 @@ const crypto = require('crypto');
  * list forever, and nobody needs more than this many rows of "recent". */
 const MAX_PER_USER = 50;
 
+/**
+ * How old an unmatched record may get before `listWithStatus` stops trying
+ * to match it against live Actions runs at all (#213, a follow-up from
+ * #211's review). A real `workflow_dispatch` run normally appears within
+ * seconds to a couple of minutes; a record still unmatched an hour later
+ * means the run was deleted, the dispatch failed upstream after this record
+ * was already written, or something else has gone wrong -- not that GitHub
+ * is merely slow. Without this cap, that stuck record sits at the front of
+ * `_resolveOrder`'s oldest-first queue forever and `resolveRunStatus`'s own
+ * "earliest run at or after this timestamp" search keeps considering it a
+ * candidate match for every run that appears afterward, including a much
+ * newer dispatch's own run -- stealing it for good, since a bound run is
+ * never released. Past this age, `listWithStatus` reports the record as
+ * errored instead of searching for it, so it can never bind anything again. */
+const MAX_UNMATCHED_RECORD_AGE_MS = 60 * 60 * 1000;
+
 class DispatchTracker {
   constructor({ now } = {}) {
     this._now = now || (() => Date.now());
@@ -91,7 +107,23 @@ class DispatchTracker {
    * `_resolveOrder`), because `resolveRunStatus` picks the earliest run in a
    * window that, for close dispatches, also covers the other dispatch's run.
    * Resolving the newest first would let it take the older dispatch's run
-   * and swap the two bindings for good.
+   * and swap the two bindings for good. A record older than
+   * `MAX_UNMATCHED_RECORD_AGE_MS` is skipped entirely rather than searched,
+   * for the same reason: a stale unmatched record must never be given the
+   * chance to claim a newer dispatch's run.
+   *
+   * `boundRunId` is re-checked immediately after the `await` on
+   * `resolveRunStatus`, before this record is bound -- two concurrent polls
+   * of this same tracker (two browser tabs, or a poll overlapping a
+   * refresh) can both start this record still unbound, and the first to
+   * finish its own `await` must win. Without the re-check, the second call
+   * to finish would blindly overwrite an already-bound `boundRunId` with
+   * whatever ITS OWN (possibly different, since the two calls raced with
+   * different `boundElsewhere` snapshots) search turned up, silently
+   * flipping which run this record is bound to. Re-checking means the
+   * second call instead defers to the binding that already won, by
+   * refreshing that exact run the same way an already-bound record always
+   * does.
    */
   async listWithStatus(userKey, githubApp) {
     const recs = this.list(userKey);
@@ -103,9 +135,16 @@ class DispatchTracker {
       try {
         if (r.boundRunId != null) {
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {
+          status = { state: 'error', reason: 'no matching Actions run appeared within an hour of this dispatch' };
         } else {
           status = await githubApp.resolveRunStatus({ ...r, excludeRunIds: boundElsewhere });
-          if (status && status.runId != null) {
+          if (r.boundRunId != null) {
+            // Another concurrent call already bound this record while this
+            // one was awaiting GitHub -- defer to that binding rather than
+            // risk overwriting it with a possibly different run.
+            status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+          } else if (status && status.runId != null) {
             r.boundRunId = status.runId;
             boundElsewhere.add(status.runId);
           }
@@ -125,11 +164,22 @@ class DispatchTracker {
    * unmatched records. Binding those first means the earliest dispatch on a
    * repository always claims the earliest run, whichever user polls first.
    * Only the binding is shared; another user's status is never returned.
+   *
+   * `owner`/`repo` are compared case-insensitively (#213, a follow-up from
+   * #211's review): GitHub treats `Acme/Widgets` and `acme/widgets` as the
+   * same repository, and `findInstallation` already allow-lists a dispatch
+   * target that way (see `github-app.js`). Comparing this binding
+   * case-sensitively would let two differently-cased spellings of the same
+   * repository each think they have no other dispatch to coordinate with,
+   * and independently resolve against -- and potentially double-claim -- the
+   * same run.
    */
   _resolveOrder(recs) {
     const ids = new Set(recs.map((r) => r.id));
     const mineUnbound = recs.filter((r) => r.boundRunId == null);
-    const sameTarget = (a, b) => a.owner === b.owner && a.repo === b.repo && (a.ref || null) === (b.ref || null);
+    const sameTarget = (a, b) => a.owner.toLowerCase() === b.owner.toLowerCase()
+      && a.repo.toLowerCase() === b.repo.toLowerCase()
+      && (a.ref || null) === (b.ref || null);
     const others = [];
     for (const list of this._byUser.values()) {
       for (const o of list) {
@@ -141,4 +191,4 @@ class DispatchTracker {
   }
 }
 
-module.exports = { DispatchTracker, MAX_PER_USER };
+module.exports = { DispatchTracker, MAX_PER_USER, MAX_UNMATCHED_RECORD_AGE_MS };

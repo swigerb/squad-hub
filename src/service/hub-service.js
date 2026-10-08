@@ -339,6 +339,26 @@ const ACA_DISPATCH_RATE_LIMIT = 5;
 const ACA_DISPATCH_RATE_WINDOW_MS = 5 * 60 * 1000;
 
 /**
+ * How many `GET /api/aca/repos` or `GET /api/aca/dispatches` calls one
+ * signed-in user may make before being refused with 429 (#213, a follow-up
+ * from #211's review). Unlike the dispatch route above, these two never
+ * start a job -- but each one still spends the App's own, shared GitHub API
+ * quota: `GET /api/aca/repos` walks every installation and every repository
+ * on each (`listInstalledRepos`, now paginated past 100 -- see
+ * `github-app.js` -- so a single call can be several GitHub requests), and
+ * `GET /api/aca/dispatches` resolves every tracked dispatch against Actions.
+ * A UI stuck polling either in a tight loop must not be able to burn through
+ * that quota on this hub's single App credential, starving every other user
+ * and every real dispatch of it. Thirty in one minute is generous for a
+ * page legitimately polling for live status and tight for a loop or a
+ * scripted scrape -- a wider window than the dispatch limiter's five-in-
+ * five-minutes because these are cheap, read-only calls a dashboard is
+ * expected to make often, not an action with a side effect.
+ */
+const ACA_READ_RATE_LIMIT = 30;
+const ACA_READ_RATE_WINDOW_MS = 60 * 1000;
+
+/**
  * Am I one of several instances?
  *
  * This matters because state is in memory. A device attaches to ONE instance;
@@ -496,6 +516,12 @@ class HubService {
     // near MAX_DEVICE_TOKEN_HOURS, so both are easy to find and tune together.
     this.acaRateLimiter = opts.acaRateLimiter || new RateLimiter({
       limit: ACA_DISPATCH_RATE_LIMIT, windowMs: ACA_DISPATCH_RATE_WINDOW_MS,
+    });
+    // Separate limiter, separate (wider, read-only-sized) budget -- shared
+    // between GET /api/aca/repos and GET /api/aca/dispatches, since both
+    // spend the same App credential's GitHub API quota (#213).
+    this.acaReadRateLimiter = opts.acaReadRateLimiter || new RateLimiter({
+      limit: ACA_READ_RATE_LIMIT, windowMs: ACA_READ_RATE_WINDOW_MS,
     });
 
     /** subject -> deviceId -> WsConnection */
@@ -784,6 +810,16 @@ class HubService {
     // needs no changes to keep working in that case.
     if (p === '/api/aca/repos' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      // Rate-limited per signed-in user (#213): this walks every
+      // installation and every repository on each, spending the App's own
+      // shared GitHub API quota -- see ACA_READ_RATE_LIMIT above.
+      const limited = this.acaReadRateLimiter.check(me.key);
+      if (!limited.allowed) {
+        return send(429, {
+          error: `too many requests; try again in ${Math.ceil(limited.retryAfterMs / 1000)}s`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
       try {
         return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });
       } catch (e) {
@@ -793,6 +829,16 @@ class HubService {
 
     if (p === '/api/aca/dispatches' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      // Rate-limited per signed-in user (#213): resolving every tracked
+      // dispatch spends the App's own shared GitHub API quota, same as
+      // GET /api/aca/repos above -- the two share one limiter/budget.
+      const limited = this.acaReadRateLimiter.check(me.key);
+      if (!limited.allowed) {
+        return send(429, {
+          error: `too many requests; try again in ${Math.ceil(limited.retryAfterMs / 1000)}s`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
       try {
         return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });
       } catch (e) {

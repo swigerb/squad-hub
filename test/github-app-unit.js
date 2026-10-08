@@ -24,7 +24,7 @@ const http = require('http');
 
 const { GitHubApp, parseDeclaredWorkflowInputs, upstreamStatus } = require('../src/service/github-app');
 const { RateLimiter } = require('../src/service/rate-limiter');
-const { DispatchTracker } = require('../src/service/dispatch-tracker');
+const { DispatchTracker, MAX_UNMATCHED_RECORD_AGE_MS } = require('../src/service/dispatch-tracker');
 const { sanitizeDispatchRequest, buildWorkflowInputs } = require('../src/aca-dispatch');
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
@@ -119,7 +119,7 @@ function fakeGitHubApp({
 } = {}) {
   const calls = { total: 0, byPath: {} };
   const seenAuthHeaders = [];
-  const state = { tokenMints: 0, dispatches: [], createdIssues: [] };
+  const state = { tokenMints: 0, dispatches: [], createdIssues: [], tokenMintBodies: [] };
   const defaultRuns = () => [{
     id: 555, status: 'in_progress', conclusion: null, head_branch: defaultBranch, created_at: new Date().toISOString(),
   }];
@@ -140,12 +140,22 @@ function fakeGitHubApp({
 
       if (req.url.startsWith('/app/installations') && req.method === 'GET') {
         if (installationsStatus !== 200) return json(installationsStatus, { message: 'upstream refused in fake' });
-        return json(200, installations.map((i) => ({ id: i.id, account: { login: i.login } })));
+        // Paginated by `page`/`per_page`, same contract as the real API --
+        // a page past the end of `installations` answers an empty array, the
+        // signal `_listInstallations` stops on (#213).
+        const q = new URL(req.url, 'http://x').searchParams;
+        const perPage = Number(q.get('per_page')) || installations.length || 1;
+        const page = Number(q.get('page')) || 1;
+        const slice = installations.slice((page - 1) * perPage, page * perPage);
+        return json(200, slice.map((i) => ({ id: i.id, account: { login: i.login } })));
       }
 
       const tokenMatch = req.url.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
       if (tokenMatch && req.method === 'POST') {
         state.tokenMints += 1;
+        let parsedBody = {};
+        try { parsedBody = body ? JSON.parse(body) : {}; } catch { /* no body sent */ }
+        state.tokenMintBodies.push({ installationId: Number(tokenMatch[1]), body: parsedBody });
         return json(201, {
           token: `ghs_fake_${state.tokenMints}`,
           expires_at: new Date(now() + 60 * 60 * 1000).toISOString(),
@@ -157,9 +167,14 @@ function fakeGitHubApp({
         // which installation it belongs to is not recoverable from the
         // token string alone in this simplified fake, so it returns the
         // union -- tests that care about per-installation scoping configure
-        // a single installation.
+        // a single installation. Paginated the same way as installations
+        // above (#213).
         const all = Object.values(reposByInstallation).flat();
-        return json(200, { repositories: all.map((full_name) => ({ full_name })) });
+        const q = new URL(req.url, 'http://x').searchParams;
+        const perPage = Number(q.get('per_page')) || all.length || 1;
+        const page = Number(q.get('page')) || 1;
+        const slice = all.slice((page - 1) * perPage, page * perPage);
+        return json(200, { repositories: slice.map((full_name) => ({ full_name })) });
       }
 
       if (req.url.includes('/contents/.github/workflows/squad-dispatch.yml')) {
@@ -1180,6 +1195,224 @@ function apiRequest(port, path, token, opts = {}) {
       'a bound dispatch re-ran the matching search instead of refreshing its own run',
     );
     assert.ok(calls.byPath['GET /repos/acme/widgets/actions/runs/950'] >= 1, 'the bound run was never refreshed by id');
+  });
+
+  // =========================================================================
+  // Issue #213: GitHub App dispatch hardening follow-ups from #211's review
+  // =========================================================================
+
+  await checkAsync('cross-user binding matches owner/repo case-insensitively', async () => {
+    const now = Date.now();
+    const runs = [
+      { id: 920, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(now).toISOString() },
+      { id: 921, status: 'queued', conclusion: null, head_branch: 'main', created_at: new Date(now + 200).toISOString() },
+    ];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const tracker = new DispatchTracker();
+    // Bob dispatched with a differently-cased spelling of the same
+    // repository GitHub itself treats as identical to Alice's.
+    tracker.record('bob', {
+      owner: 'Acme', repo: 'Widgets', installationId: 1, ref: 'main', dispatchedAt: now - 1000,
+    });
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', dispatchedAt: now - 900,
+    });
+    const aliceList = await tracker.listWithStatus('alice', app);
+    server.close();
+    assert.strictEqual(aliceList.length, 1, 'alice sees only her own dispatch');
+    assert.strictEqual(aliceList[0].status.runId, 921, 'the later dispatch must not take the earlier, differently-cased dispatch\'s run');
+    assert.strictEqual(tracker.list('bob')[0].boundRunId, 920, 'the earlier, differently-cased dispatch keeps the earlier run');
+  });
+
+  await checkAsync('an unmatched record older than the cap is reported as errored, never searched again', async () => {
+    const { server, calls } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', dispatchedAt: Date.now() - (MAX_UNMATCHED_RECORD_AGE_MS + 60000),
+    });
+    const list = await tracker.listWithStatus('alice', app);
+    server.close();
+    assert.strictEqual(list[0].status.state, 'error');
+    assert.strictEqual(
+      calls.byPath['GET /repos/acme/widgets/actions/workflows/squad-dispatch.yml/runs'] || 0,
+      0,
+      'a record past the age cap must never be searched for a matching run',
+    );
+  });
+
+  await checkAsync('an old unmatched record past the cap never steals a newer dispatch\'s run', async () => {
+    const now = Date.now();
+    // The one real run in this fake -- it belongs to the NEWER dispatch
+    // below, not the stuck old one (whose own run was deleted or never
+    // started, which is exactly why it is still unmatched this long after).
+    const runs = [{ id: 970, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(now).toISOString() }];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', dispatchedAt: now - (MAX_UNMATCHED_RECORD_AGE_MS + 60000),
+    });
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', dispatchedAt: now - 1000,
+    });
+    const list = await tracker.listWithStatus('alice', app);
+    server.close();
+    const newer = list.find((r) => r.dispatchedAt === now - 1000);
+    const older = list.find((r) => r.dispatchedAt !== now - 1000);
+    assert.strictEqual(newer.status.runId, 970, 'the newer dispatch must claim its own run, not be starved by the stuck old record');
+    assert.strictEqual(older.status.state, 'error', 'the stuck old record is reported as errored, not left holding another dispatch\'s run');
+  });
+
+  await checkAsync('a concurrent poll that already bound a record is never overwritten by a slower, stale search result', async () => {
+    const tracker = new DispatchTracker();
+    tracker.record('alice', { owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', dispatchedAt: Date.now() - 1000 });
+    // The live record object stored inside the tracker -- `list()` copies
+    // the array but not its elements, so mutating this is exactly what a
+    // second, concurrent `listWithStatus` call binding the SAME record
+    // would do while this call's own `resolveRunStatus` is still pending.
+    const liveRecord = tracker.list('alice')[0];
+    const CONCURRENTLY_BOUND_RUN_ID = 4242;
+    const STALE_RUN_ID = 9999;
+    const fakeApp = {
+      resolveRunStatus: async () => {
+        // Simulate another concurrent call finishing first and binding this
+        // record to a DIFFERENT run while this call awaits GitHub.
+        liveRecord.boundRunId = CONCURRENTLY_BOUND_RUN_ID;
+        return { state: 'queued', runId: STALE_RUN_ID, htmlUrl: 'https://example.invalid/stale' };
+      },
+      _getRun: async (owner, repo, installationId, runId) => {
+        assert.strictEqual(runId, CONCURRENTLY_BOUND_RUN_ID, 'must defer to the concurrently-bound run, not its own stale search result');
+        return { state: 'in_progress', runId, htmlUrl: 'https://example.invalid/real' };
+      },
+    };
+    const list = await tracker.listWithStatus('alice', fakeApp);
+    assert.strictEqual(list[0].status.runId, CONCURRENTLY_BOUND_RUN_ID);
+    assert.strictEqual(liveRecord.boundRunId, CONCURRENTLY_BOUND_RUN_ID, 'the winning bind must not be overwritten by a slower, stale answer');
+  });
+
+  await checkAsync('a minted installation token for a dispatch is scoped to just the target repository', async () => {
+    const { server, state } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets', 'acme/other'] } });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    await app.dispatch({
+      owner: 'acme', repo: 'widgets', installationId: 1, issue: 1, prompt: 'go',
+    });
+    server.close();
+    const scopedMint = state.tokenMintBodies.find((m) => m.body && Array.isArray(m.body.repositories));
+    assert.ok(scopedMint, 'a dispatch must mint a token scoped with `repositories`');
+    assert.deepStrictEqual(scopedMint.body.repositories, ['widgets'], 'the token must be scoped to only the dispatched repository, by name');
+  });
+
+  await checkAsync('listing installed repos mints an unscoped installation token, not repo-scoped', async () => {
+    const { server, state } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    await app.listInstalledRepos();
+    server.close();
+    assert.ok(state.tokenMintBodies.length >= 1, 'listInstalledRepos must mint at least one installation token');
+    assert.ok(
+      state.tokenMintBodies.every((m) => !m.body || !m.body.repositories),
+      'enumerating every installed repository needs the whole installation\'s token, not one scoped to a single repository',
+    );
+  });
+
+  await checkAsync('listInstalledRepos pages past 100 installations and 100 repositories', async () => {
+    const manyInstallations = Array.from({ length: 120 }, (_, i) => ({ id: i + 1, login: `org${i + 1}` }));
+    const manyRepos = Array.from({ length: 150 }, (_, i) => `acme/repo-${i + 1}`);
+    const { server } = fakeGitHubApp({
+      installations: manyInstallations,
+      // Only installation 1 actually gets repos in this fake (it unions
+      // across every key) -- enough to prove `_listInstallationRepos`
+      // itself pages correctly, alongside `_listInstallations` above.
+      reposByInstallation: { 1: manyRepos },
+    });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const installations = await app._listInstallations();
+    server.close();
+    assert.strictEqual(installations.length, 120, 'every installation past the first 100 must still be listed');
+  });
+
+  await checkAsync('_listInstallationRepos pages past 100 repositories on one installation', async () => {
+    const manyRepos = Array.from({ length: 150 }, (_, i) => `acme/repo-${i + 1}`);
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: manyRepos } });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const repos = await app._listInstallationRepos('ghs_fake_token');
+    server.close();
+    assert.strictEqual(repos.length, 150, 'every repository past the first 100 must still be listed');
+    assert.ok(repos.includes('acme/repo-150'), 'the very last repository must not be dropped');
+  });
+
+  await checkAsync('GET /api/aca/repos is rate-limited per signed-in user', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp,
+      acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r1 = await apiRequest(addr.port, '/api/aca/repos', token);
+    const r2 = await apiRequest(addr.port, '/api/aca/repos', token);
+    const r3 = await apiRequest(addr.port, '/api/aca/repos', token);
+    await svc.close();
+    server.close();
+    assert.strictEqual(r1.status, 200, JSON.stringify(r1));
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2));
+    assert.strictEqual(r3.status, 429, JSON.stringify(r3));
+  });
+
+  await checkAsync('GET /api/aca/dispatches is rate-limited per signed-in user', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp,
+      acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r1 = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    const r2 = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    const r3 = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    await svc.close();
+    server.close();
+    assert.strictEqual(r1.status, 200, JSON.stringify(r1));
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2));
+    assert.strictEqual(r3.status, 429, JSON.stringify(r3));
+  });
+
+  await checkAsync('GET /api/aca/repos and GET /api/aca/dispatches share one read rate-limit budget', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp,
+      acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r1 = await apiRequest(addr.port, '/api/aca/repos', token);
+    const r2 = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    const r3 = await apiRequest(addr.port, '/api/aca/repos', token);
+    await svc.close();
+    server.close();
+    assert.strictEqual(r1.status, 200, JSON.stringify(r1));
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2));
+    assert.strictEqual(r3.status, 429, JSON.stringify(r3));
   });
 
   // =========================================================================
