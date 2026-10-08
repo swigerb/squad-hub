@@ -419,7 +419,7 @@ export function sessionRow(s, deviceName, opts = {}) {
 // pills, just the filter box the detail page's own sidebar offers. It reuses
 // `needsAttention` and `sessionKey` so a session blocked on a person floats to
 // the top there exactly as it does in the main list, and so pinning a session
-// in one place is recognised in the other.
+// in one place is recognized in the other.
 // ---------------------------------------------------------------------------
 
 /** Every `{session, device}` entry across all groups, matched against a plain substring filter. */

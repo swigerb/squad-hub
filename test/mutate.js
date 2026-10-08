@@ -4735,7 +4735,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'transcriptSkeleton renders nothing',
-    file: 'web/js/detail.js',
+    file: 'web/js/transcript.js',
     find: `export function transcriptSkeleton(n = 4) {`,
     replace: `export function transcriptSkeleton(n = 4) {
   if (process.env.MUTANT) return ''; // MUTATION`,
