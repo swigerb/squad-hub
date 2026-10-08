@@ -806,7 +806,36 @@ Below that, the rail groups devices into sections rather than one flat list
 |---|---|
 | Platform | `Windows`, `macOS`, `Linux`. An unrecognised platform is shown as reported rather than discarded. |
 | Presence | `Online`, `Stale · seen 2m ago`, `Offline · seen 3h ago`. Stale means "we have not heard recently"; offline means "we have given up". |
-| Load | CPU and RAM meters, **only for devices that report telemetry**. |
+| Load | CPU, RAM and (#173) Disk meters, **only for devices that report telemetry**. The Disk meter shows the fullest reported volume, not the first or the workspace one specifically — it answers "is storage the problem right now". |
+
+A device with anything worth a closer look — any reported disk volume, cores
+and RAM, a package version, file access details, or a device token's
+label/expiry — gets a disclosure chevron (▸) beside its name (#173).
+Expanding it shows:
+
+- Every reported volume, free of total, with the workspace volume marked.
+- Cores and total RAM.
+- The device's own installed package version, with a warning when it differs
+  from the hub's (`overview().hubVersion`) — a drifted daemon is the first
+  thing to check when "it works on my machine" doesn't.
+- The Copilot CLI version the daemon found on its `PATH`, or nothing if it
+  could not be detected.
+- File access (`off` / `scoped` / `all`) and whether track-all is on.
+- The device token's label and "expires in N days" / "expired N days ago",
+  read from the verified auth principal on the hub side — never from
+  anything the device itself claims, so a compromised device cannot spoof
+  its own token's age.
+
+Each device remembers whether its panel was left open or closed the same way
+the rail's own sections do, in `localStorage`, independently of every other
+device.
+
+Disk telemetry is gated the same way CPU/RAM telemetry is — only reported at
+all when the device has telemetry reporting enabled — and additionally by
+file access: `off` reports no volumes, `scoped` reports only the volume
+containing the workspace, `all` reports every volume the daemon can
+enumerate. The hub caps what it accepts from a device (at most 16 volumes,
+labels truncated/validated) before ever persisting or serving it back.
 
 Within a section, devices sort online → stale → offline, then by name. A
 roster that reorders itself as machines drift between presences is one nobody
