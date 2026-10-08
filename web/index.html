@@ -105,6 +105,18 @@
   <div class="menu-sep"></div>
   <div class="inbox-foot">
     <button data-inbox="reprompt">↻ Show approval prompts again</button>
+    <!--
+      Web Push (#175), per the v0.7.0 mockup (E6.2): "🔔 Push to this device
+      On/Off" lives in the bell inbox footer, next to the reprompt action --
+      not the account menu -- because it is a property of THIS DEVICE'S
+      subscription, the same way the bell itself is about this device's
+      alerts. Hidden by default; syncPushMenuItem() in push.js reveals it only
+      when this browser can receive push AND the hub has VAPID keys
+      configured, same reasoning as the account-menu items above.
+    -->
+    <button class="foot" data-inbox="push" id="pushMenuItem" hidden>
+      🔔 Push to this device <span id="pushMenuState"></span>
+    </button>
   </div>
 </nav>
 

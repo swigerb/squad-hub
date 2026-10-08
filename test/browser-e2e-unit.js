@@ -1049,6 +1049,24 @@ async function watchCsp(pg) {
         're-asking for a denied permission does nothing, and a browser only ever shows that prompt once');
     });
 
+    // ---- Web Push (#175) --------------------------------------------------
+    // This suite's hub instance is never given SQUAD_HUB_VAPID_PUBLIC_KEY /
+    // _PRIVATE_KEY, which is itself the important, common case: most
+    // deployments will not have them set on day one, and the bell inbox must
+    // not offer a toggle that can never do anything. The crypto, the API
+    // routes and the full subscribe/unsubscribe round trip already have
+    // dedicated unit coverage (web-push-unit.js, push-store-unit.js,
+    // push-notify-unit.js, push-api-unit.js) with real encryption and real
+    // HTTP, which is a better place to prove those than a slow, flaky
+    // browser-driven PushManager.subscribe() against no real push service.
+    await check('with no VAPID keys configured, the bell inbox never offers a push toggle', async () => {
+      await page.click('#bellBtn');
+      await page.waitForSelector('#inboxMenu:not([hidden])', { timeout: 5000 });
+      const hidden = await page.evaluate(() => document.getElementById('pushMenuItem').hidden);
+      assert.strictEqual(hidden, true, 'a push toggle was offered on a hub with no VAPID keys configured');
+      await page.click('#bellBtn');
+    });
+
     await check('the account menu opens and offers sign out', async () => {
       await page.click('#menuBtn');
       const menu = await page.evaluate(() => ({

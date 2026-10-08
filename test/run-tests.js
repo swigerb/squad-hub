@@ -1090,6 +1090,21 @@ async function suiteBellInbox() {
   runChildSuite(path.join(__dirname, 'bell-inbox-unit.js'), 'bell-inbox');
 }
 
+/**
+ * Web Push (#175): VAPID + aes128gcm crypto proven by round-trip, per-user
+ * subscription storage, the dedupe/prune notifier, and the HTTP API that
+ * wires them together -- "a session needs you" while the installed PWA is
+ * closed.
+ */
+async function suitePush() {
+  console.log('\n[WEB PUSH] VAPID + aes128gcm crypto, per-user subscriptions, dedupe/prune, and the redacted payload');
+  runChildSuite(path.join(__dirname, 'web-push-unit.js'), 'web-push');
+  runChildSuite(path.join(__dirname, 'push-store-unit.js'), 'push-store');
+  runChildSuite(path.join(__dirname, 'push-notify-unit.js'), 'push-notify');
+  runChildSuite(path.join(__dirname, 'push-api-unit.js'), 'push-api');
+  runChildSuite(path.join(__dirname, 'push-frontend-unit.js'), 'push-frontend');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1160,6 +1175,7 @@ async function suiteBellInbox() {
   await suiteMcp();
   await suiteSessionsOpen();
   await suiteBellInbox();
+  await suitePush();
 
   console.log('');
   console.log('='.repeat(60));

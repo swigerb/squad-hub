@@ -434,6 +434,106 @@ there is no body shape that reads or overwrites another user's preferences.
 None of it is a credential — a pin list is worth nothing to a stranger — the
 property being protected is partitioning, not secrecy.
 
+Web Push subscriptions (`GET`/`POST /api/push/subscriptions`,
+`DELETE /api/push/subscriptions/{id}` — see
+[api.md](api.md#web-push-subscriptions-175)) follow the same rule: a
+subscription is stored and listed under the verified caller's own partition
+key, never one the request supplies, so one person can never list, add to,
+or remove another person's registered browsers. Reaching any of these three
+routes with a device token — the credential a cloud job or a daemon carries,
+never a person — is refused with **403**, the same gate every other
+`/api/*` route in this file already sits behind; registering or revoking a
+push subscription stays a thing only a signed-in person does.
+
+## Web Push (#175)
+
+An installed PWA can receive an OS-level notification — "a session needs
+you" — while it is closed, the same way a native app would, using the
+[Web Push protocol](https://www.rfc-editor.org/rfc/rfc8030) (VAPID,
+[RFC 8292](https://www.rfc-editor.org/rfc/rfc8292), for the hub to identify
+itself to the push service; `aes128gcm` payload encryption,
+[RFC 8291](https://www.rfc-editor.org/rfc/rfc8291)/[RFC 8188](https://www.rfc-editor.org/rfc/rfc8188),
+so the push service itself never sees a readable payload).
+
+This is implemented from scratch in `src/service/web-push.js` against
+Node's built-in `crypto` only — no `web-push` npm dependency — the same
+zero-runtime-dependency rule every other module in this hub follows. The
+implementation is proven by round-trip: the test suite decrypts what it
+encrypted and verifies what it signed, standing in for a real browser and a
+real push service, rather than only asserting that the code runs without
+throwing.
+
+### Configuration
+
+| Variable | Purpose |
+|---|---|
+| `SQUAD_HUB_VAPID_PUBLIC_KEY` | The hub's VAPID public key (base64url, uncompressed P-256 point). Handed to the browser's `PushManager.subscribe()` as the `applicationServerKey`; not a secret. |
+| `SQUAD_HUB_VAPID_PRIVATE_KEY` | The hub's VAPID private key (base64url, raw P-256 scalar). Signs the JWT that proves sends come from this hub. Treat it the same as any other server secret. |
+
+Both must be set together, or push stays disabled. One without the other is
+treated as a misconfiguration, not a smaller feature set, and is reported
+distinctly so a typo in deployment config does not silently degrade into
+"push never fires". Neither is ever generated at runtime — unlike a device
+token's signing secret, a VAPID key pair is meant to be stable across
+restarts (a browser's subscription is bound to the public key it was handed;
+rotating the pair silently would orphan every existing subscription). Mint a
+pair once, out of band, and set both variables before deploying.
+
+`/api/me`'s `push.enabled` field, and `/healthz`'s authenticated
+`pushStore` field, report this state plainly so the installed app can say
+"push is not configured on this hub" instead of offering a toggle that can
+never do anything.
+
+### What the payload does and does not contain
+
+A push payload typically leaves the hub's custody for a while — queued by a
+push service such as FCM or Mozilla's autopush, and often delivered straight
+to an OS notification tray that other apps or a lock screen can read. For
+that reason the payload is a **fixed shape**, built by one function
+(`needsYouPayload` in `src/notify/push.js`) with no code path that could
+widen it: a title, the device's name, and the session key needed to open it
+— never a command, a file path, or anything else from the session. This is
+deliberately stricter than the existing Teams integration, whose card is
+posted to a channel the hub's own users already have access to; a push
+notification is not.
+
+### Pruning
+
+If a push service reports a subscription as gone (HTTP 404 or 410 — the
+browser was uninstalled, the profile was cleared), the hub removes that
+subscription from storage the next time it would have been notified. Not a
+background sweep: the fact is only ever learned at send time, so that is
+also the only place it is acted on.
+
+### Why a subscription endpoint is validated, not just trusted
+
+The hub's own process — not the browser — later makes an outbound HTTPS
+request to whatever `endpoint` a `POST /api/push/subscriptions` body
+contains (`web-push.js`'s `postBinary`). That makes it server-side-request-forgery
+input, not ordinary subscription data, so `push-store.js`'s `validate()`
+enforces two things beyond "is this a URL":
+
+- **`https:` only**, with no unconditional carve-out. A real push service
+  (FCM, Mozilla's autopush, Apple's, Windows') is never reached over plain
+  `http:`. The one exception — a loopback endpoint for a test standing in for
+  a fake push service — requires a caller to opt in explicitly
+  (`new PushStore({ allowInsecureLoopback: true })`); production wiring
+  (`hub-service.js`) never sets it, so a deployed hub cannot be made to POST
+  back to its own loopback interface via subscription data.
+- **No private, loopback, or link-local IP literal**, even over `https:`.
+  Every real push service is reached by a public DNS name, never a bare IP —
+  so refusing `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `127.0.0.0/8`,
+  and `169.254.0.0/16` (which includes the common cloud-metadata address,
+  `169.254.169.254`) literals costs no legitimate subscription anything,
+  while closing off the most direct route to internal-network services an
+  attacker's browser could not otherwise reach.
+
+This is a narrowing, not a complete defense: a public hostname that later
+resolves to a private address (DNS rebinding) is not caught here, since the
+hub does not pin or re-validate the resolved IP at send time. Treat this the
+same as any other SSRF-adjacent surface reachable by an authenticated
+account — bounded impact, not zero risk.
+
 ## Two tokens, deliberately separate
 
 | | |

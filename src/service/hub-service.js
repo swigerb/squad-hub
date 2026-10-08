@@ -26,6 +26,9 @@ const { DeviceTokenStore } = require('./device-token-store');
 const { AccessStore } = require('./access-store');
 const { AccessAudit } = require('./access-audit');
 const { PrefsStore } = require('./prefs-store');
+const { PushStore } = require('./push-store');
+const { WebPushSender } = require('./web-push');
+const { PushNotifier } = require('../notify/push');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
 const { GitHubApp } = require('./github-app');
@@ -482,6 +485,21 @@ class HubService {
     });
 
     /**
+     * Web Push (#175): which browsers get a push when a session needs a
+     * human, and the VAPID sender that reaches them.
+     *
+     * `this.webPush.enabled` is false whenever `SQUAD_HUB_VAPID_PUBLIC_KEY` /
+     * `_PRIVATE_KEY` are unset -- see web-push.js's class doc for why the hub
+     * never mints a pair itself. `/api/me` reports that flag plainly so the
+     * web app can say "push is not configured here" instead of a control
+     * that silently never fires.
+     */
+    this.pushStore = opts.pushStore
+      || new PushStore({ dir: opts.pushDir || paths.home(), persist: opts.persistPush !== false });
+    this.webPush = opts.webPush || new WebPushSender({});
+    this.pushNotifier = opts.pushNotifier || new PushNotifier({ sender: this.webPush, store: this.pushStore });
+
+    /**
      * Issue #177: the hub's own GitHub App identity, for `/api/aca/*`.
      * Disabled by default -- `SQUAD_HUB_GH_APP_ID` / `_PRIVATE_KEY` are not
      * set in any environment until the real app exists (see the issue) -- in
@@ -662,6 +680,11 @@ class HubService {
         // Whether a saved pin, rename or view (/api/prefs) survives a
         // restart. Same rule, same reason, as `sessionStore` above.
         prefsStore: this.prefsStore.persist ? 'durable' : 'memory',
+        // Whether a browser's push subscription (/api/push/subscriptions)
+        // survives a restart. Same rule, same reason: without this a
+        // deployment can look like push is configured and working right up
+        // until the next redeploy silently un-subscribes every browser.
+        pushStore: this.pushStore.persist ? 'durable' : 'memory',
         // Named rather than implied, so it appears in the UI and in any log
         // scrape without the reader having to know the rule.
         //
@@ -749,6 +772,17 @@ class HubService {
             + 'Devices will appear and disappear, and commands will fail intermittently. '
             + 'Scale the App Service plan to a single instance.'
           : null,
+        // Whether this hub can send Web Push at all (#175). The footer in
+        // the bell inbox reads this to say "Push is not configured on this
+        // hub" rather than offering a toggle that can never do anything --
+        // `enabled` is false whenever `SQUAD_HUB_VAPID_PUBLIC_KEY` /
+        // `_PRIVATE_KEY` are unset or malformed, and the public key alone is
+        // never secret, so there is nothing wrong with handing it back here
+        // for `PushManager.subscribe()`'s `applicationServerKey`.
+        push: {
+          enabled: this.webPush.enabled,
+          publicKey: this.webPush.enabled ? this.webPush.publicKey : null,
+        },
       });
     }
 
@@ -874,6 +908,54 @@ class HubService {
       const r = this.prefsStore.set(me.key, body);
       if (!r.ok) return send(400, { error: r.reason });
       return send(200, r.prefs);
+    }
+
+    // -- Web Push subscriptions (#175) ----------------------------------------
+    //
+    // Reached only by a verified `KIND_USER` principal, same as every route in
+    // this file -- "watcher-token only" per the issue is this gate, which
+    // already exists above `_api` and needs no route-local repeat of it. A
+    // device token (a cloud job, a daemon) can never register a browser's
+    // push subscription or revoke somebody else's, for the same reason it can
+    // never read `/api/prefs`.
+    //
+    // Partitioned on `me.key`, never on anything the request supplies -- the
+    // same rule `/api/prefs` and `/api/access` already follow.
+    if (p === '/api/push/subscriptions' && req.method === 'GET') {
+      return send(200, {
+        subscriptions: this.pushStore.list(me.key).map((s) => (
+          { id: s.id, label: s.label, createdAt: s.createdAt }
+        )),
+        enabled: this.webPush.enabled,
+      });
+    }
+
+    if (p === '/api/push/subscriptions' && req.method === 'POST') {
+      const body = await readJson(req);
+      const r = this.pushStore.add(me.key, body);
+      if (!r.ok) return send(400, { error: r.reason });
+      // Never echo back `keys` -- the hub just stored it, so no caller needs
+      // it read back, and a response body is one more place it could leak
+      // into a log.
+      return send(201, {
+        id: r.subscription.id, label: r.subscription.label, createdAt: r.subscription.createdAt,
+      });
+    }
+
+    // The id in the PATH, not the endpoint in a body: a DELETE carrying a
+    // body is not reliably delivered (the same lesson `/api/access`'s removal
+    // route already draws -- Node answers 400 to its own client for a
+    // chunked DELETE), and the id is what `POST /api/push/subscriptions`
+    // already handed back, so there is nothing a client has to derive.
+    const pushMatch = p.match(/^\/api\/push\/subscriptions\/([^/]+)$/);
+    if (pushMatch && req.method === 'DELETE') {
+      const id = decodeURIComponent(pushMatch[1]);
+      const done = this.pushStore.remove(me.key, id);
+      // Not 403: as with device-tokens, the difference between "not yours"
+      // and "does not exist" is itself a disclosure, and either way there is
+      // nothing left to revoke.
+      if (!done) return send(404, { error: 'no such push subscription' });
+      return send(204, '');
     }
 
     // -- who may use this hub -------------------------------------------------
@@ -1616,6 +1698,45 @@ class HubService {
       for (const a of s.expiredApprovals || []) {
         this.teams.notifyResolution({
           session: s, device, approval: a, outcome: 'expired',
+        }).catch(() => {});
+      }
+    }
+    this._notifyPush(subject, deviceId);
+  }
+
+  /**
+   * Web Push (#175): the same "newly waiting on a human" sweep as
+   * `_notifyPending` above, sent to every browser this subject has
+   * subscribed, instead of a Teams channel.
+   *
+   * Deliberately separate from `_notifyPending` rather than folded into its
+   * loop: Teams and push are two independent notifiers with two independent
+   * enabled checks, and a hub can have either, both, or neither configured.
+   * Failures are swallowed inside `PushNotifier.notifyNeedsYou` itself for
+   * the same reason `teams.notifyApproval` swallows its own -- a bad push
+   * subscription must not take the control plane with it.
+   */
+  _notifyPush(subject, deviceId) {
+    if (!this.pushNotifier || !this.pushNotifier.enabled) return;
+    const device = this.store.getDevice(subject, deviceId);
+    if (!device) return;
+    for (const s of this.store.listSessions(subject, { deviceId })) {
+      for (const a of s.pendingApprovals || []) {
+        this.pushNotifier.notifyNeedsYou({
+          subject, device, session: s, title: 'A session needs you', dedupeKey: `approval:${a.approvalId}`,
+        }).catch(() => {});
+      }
+      // The same status this codebase already uses for "turn ended, waiting
+      // on a reply" -- bell-inbox's `inboxEntries` reads it the same way.
+      // Deduped on the session's own `updatedAt` so a NEW question re-notifies
+      // but the same stale one does not, every few seconds, forever.
+      if (s.status === 'idle') {
+        this.pushNotifier.notifyNeedsYou({
+          subject,
+          device,
+          session: s,
+          title: 'A session is waiting for your reply',
+          dedupeKey: `reply:${s.key}:${s.updatedAt || 0}`,
         }).catch(() => {});
       }
     }

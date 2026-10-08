@@ -40,6 +40,13 @@
   padding: 9px 8px; border-radius: 7px; cursor: pointer; font: inherit;
 }
 .inbox-foot button:hover { background: var(--panel-2); }
+/*
+ * The push toggle (#175) reads "🔔 Push to this device   On/Off" -- label on
+ * the left, live state pinned to the right, per the v0.7.0 mockup (E6.2).
+ * The reprompt action above it needs no such split since it carries no state
+ * of its own to report.
+ */
+.inbox-foot button.foot { justify-content: space-between; }
 
 /* Status pills: fully rounded, tinted fill, a leading dot. Never a button --
    these describe what a card IS, and nothing happens when one is clicked. */
