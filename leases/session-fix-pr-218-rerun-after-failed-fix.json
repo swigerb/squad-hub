@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-218-rerun-after-failed-fix",
+  "sessionId": "fix-pr-218-rerun-after-failed-fix",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T03:07:16.014Z",
+  "lastHeartbeatAt": "2026-10-08T03:07:16.014Z",
+  "updatedAt": "2026-10-08T03:07:16.014Z",
+  "terminalReason": null,
+  "executionRef": null
+}
