@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-178-aca-job-dialog",
+  "sessionId": "hub-178-aca-job-dialog",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T21:48:45.882Z",
+  "lastHeartbeatAt": "2026-10-08T21:48:45.882Z",
+  "updatedAt": "2026-10-08T21:48:45.882Z",
+  "terminalReason": null,
+  "executionRef": null
+}
