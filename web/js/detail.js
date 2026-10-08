@@ -63,13 +63,13 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   // "...as the Squad team, using y" -- which reads as a rendering fault rather
   // than as a long prompt.
   $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
-  // The status is shown as its LABEL, never as its internal name. A raw `idle`
-  // or `waiting_approval` in the meta line is the same leak the badge already
-  // guards against.
+  // The status pill (#169) shares its words and state mapping with the row's
+  // `statusBadge` via `statusLabel`/`statusPillClass` (one source), so the
+  // detail header and the row it was opened from can never read two
+  // different things for the same session.
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
-    statusLabel(found.session, found.device),
   ].filter(Boolean).join(' · ');
   const pillCls = statusPillClass(found.session, found.device);
   $('dtStatusPill').className = `dt-pill ${pillCls}`;

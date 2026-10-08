@@ -31,7 +31,7 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v8';
+const CACHE = 'squad-hub-shell-v9';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -68,6 +68,7 @@ const SHELL = [
   '/js/install.js',
   '/js/connect.js',
   '/js/filters.js',
+  '/js/push.js',
   '/js/wiring.js',
   '/js/signin.js',
   '/app.js',
@@ -158,6 +159,67 @@ self.addEventListener('fetch', (event) => {
       }
       throw new Error('offline and not cached');
     }
+  })());
+});
+
+// ---------------------------------------------------------------------------
+// Web Push (#175)
+//
+// This is the entire reason the service worker gets involved in push at all:
+// `push` and `notificationclick` only ever fire here, never in a page, because
+// the whole point is a session that needs you while nothing is open to hear
+// about it.
+//
+// The payload is deliberately small and pre-redacted by the hub (see
+// src/notify/push.js and docs/security.md's Web Push section) -- there is no
+// command, prompt or cwd in it to leak, so this handler does not need to do
+// any redaction of its own. It only has to render what it was sent.
+// ---------------------------------------------------------------------------
+
+self.addEventListener('push', (event) => {
+  // A push with no payload (a keepalive, or a malformed send) must still show
+  // SOMETHING -- Chrome enforces "one push, one notification" and silently
+  // swallowing an empty one risks the browser showing its own generic "this
+  // site was updated" notification instead, which names nobody and helps no
+  // one.
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { /* non-JSON payload */ }
+  const title = data.title || 'Squad Hub';
+  const body = data.device ? `${data.device} needs you` : 'A session needs you';
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    icon: '/icon.svg',
+    badge: '/icon.svg',
+    tag: data.sessionKey ? `push-${data.sessionKey}` : undefined,
+    // A second push for the same session while the first is still showing
+    // should replace it, not stack a duplicate -- `renotify` is what makes a
+    // same-tag `showNotification` actually alert again rather than being a
+    // silent no-op update.
+    renotify: !!data.sessionKey,
+    data: { sessionKey: data.sessionKey || null },
+  }));
+});
+
+/**
+ * Clicking the notification should bring a person to the hub, focused on the
+ * session that needs them -- not just "the app happened to open". An already
+ * open tab is focused rather than duplicated, since a second tab of the same
+ * hub answers nothing a focus could not.
+ */
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const sessionKey = event.notification.data && event.notification.data.sessionKey;
+  const url = sessionKey ? `/?session=${encodeURIComponent(sessionKey)}` : '/';
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of all) {
+      if ('focus' in client) {
+        await client.focus();
+        if ('navigate' in client) { try { await client.navigate(url); } catch { /* cross-origin or closed mid-flight */ } }
+        return;
+      }
+    }
+    await self.clients.openWindow(url);
   })());
 });
 

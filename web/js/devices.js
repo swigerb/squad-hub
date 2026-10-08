@@ -1,7 +1,7 @@
 import { state } from './api.js';
 import { $, esc, ago } from './util.js';
 import {
-  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount,
+  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses,
 } from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
@@ -505,6 +505,20 @@ export function render() {
   // on screen, so they can never offer a scope that filters everything away.
   fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
   fillSelect($('orgFilter'), 'All organizations', organizationsIn(groups), state.filters.org);
+
+  // "Queued on ACA" and "Ready for review" (#169) are statuses that nothing
+  // can report yet -- the daemons that set them ship in #178/#179. Offering
+  // them as choices before any session can ever have one would be a filter
+  // that always empties the list, so each option stays hidden until a session
+  // with that exact status actually exists. `enhanceSelect`'s own popup skips
+  // a hidden <option> the same way the native one does, so this is the one
+  // place that needs to know.
+  const statuses = presentStatuses(groups);
+  const statusSel = $('statusFilter');
+  for (const value of ['queued', 'review']) {
+    const opt = statusSel && statusSel.querySelector(`option[value="${value}"]`);
+    if (opt) opt.hidden = !statuses.has(value);
+  }
 
   // Rebuilding a select's options does NOT fire `change`, so the visible label
   // beside it would go on showing a device that has since gone away.

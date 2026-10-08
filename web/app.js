@@ -57,6 +57,7 @@ import {
 import { refreshAcaStatus, ACA_POLL_MS } from './js/aca-status.js';
 import { peopleVisible, peopleRows, peopleSummary, openPeople } from './js/access.js';
 import { isInstalled, installSteps, showInstallHelp } from './js/install.js';
+import { urlBase64ToUint8Array, pushSupported } from './js/push.js';
 import { openNew, openConnect } from './js/connect.js';
 import { wireFilters } from './js/filters.js';
 import { wire, showBanner } from './js/wiring.js';

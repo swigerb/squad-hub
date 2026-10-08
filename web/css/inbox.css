@@ -40,6 +40,36 @@
   padding: 9px 8px; border-radius: 7px; cursor: pointer; font: inherit;
 }
 .inbox-foot button:hover { background: var(--panel-2); }
+/*
+ * The push toggle (#175) reads "🔔 Push to this device   On/Off" -- label on
+ * the left, live state pinned to the right, per the v0.7.0 mockup (E6.2).
+ * The reprompt action above it needs no such split since it carries no state
+ * of its own to report.
+ */
+.inbox-foot button.foot { justify-content: space-between; }
+
+/*
+ * The hint button for the push toggle lives OUTSIDE `button.foot` (see
+ * index.html's comment on why it cannot nest inside it) in its own row, so it
+ * needs to both escape `.inbox-foot button`'s generic full-width button
+ * styling above and sit on the same center line as the toggle -- the same
+ * "fixed line box, shared center line" rule the v0.7.0 mockup applies
+ * everywhere else.
+ */
+.inbox-foot-row { display: flex; align-items: center; gap: 2px; }
+.inbox-foot-row .foot { flex: 1 1 auto; min-width: 0; }
+.inbox-foot .inbox-foot-row .hint-btn {
+  width: 15px; height: 15px; margin: 0 6px 0 0; padding: 0; flex: none;
+  display: inline-flex; background: transparent;
+}
+/*
+ * Security review (#175, should-fix): a hub with no VAPID keys configured
+ * shows this row DISABLED with its state text explaining why, rather than
+ * hiding it outright -- `[disabled]` styling already exists globally for
+ * `.menu button` (list.css), this only adds the state-text color so "Not
+ * configured" reads as informational, not as an error.
+ */
+.inbox-foot button.foot[disabled] #pushMenuState { color: var(--faint); font-weight: 400; }
 
 /* Status pills: fully rounded, tinted fill, a leading dot. Never a button --
    these describe what a card IS, and nothing happens when one is clicked. */

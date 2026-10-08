@@ -23,44 +23,120 @@
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); overflow: hidden;
 }
+/*
+ * The first line of a row -- star, title (with its pill) and the reserved
+ * menu column -- all sit in the same 22px line box (#169). `align-items:
+ * start` is what makes that possible: a CENTERED grid would average in
+ * whatever the meta line, the squad line or an expired-approval line below
+ * the title add to the row's total height, which is exactly how the star and
+ * the pill used to drift below the title's actual center on any row with
+ * more than one line under it.
+ *
+ * A fourth, unoccupied 28px column is reserved on the right for a future
+ * per-row overflow menu -- the mockup's own 22px/1fr/auto/28px grid -- so
+ * adding one later does not reflow every row that already lines up without
+ * it.
+ *
+ * The row's own status pill is placed EXPLICITLY (`grid-column: 3`) rather
+ * than left to source order. `.status` is also the class an answered/expired
+ * approval outcome reuses for its own, unrelated pill inside `.row-main`
+ * (`.expiredline`, below the title) -- explicit placement is what lets the
+ * row's pill render in the markup BEFORE `.row-main` (so it is the first
+ * `.status` a reader -- human or test -- finds) while still drawing in its
+ * correct visual column, instead of the two pills fighting over the same
+ * class in source order.
+ *
+ * `grid-row: 1` is just as load-bearing as the explicit `grid-column`
+ * above, and for the same reason: in markup order `.star` then `.status`
+ * then `.row-main` are columns 1, 3, 2. Sparse auto-placement walks the
+ * grid in source order and only ever moves its cursor forward, so after
+ * `.status` claims column 3 the cursor is past column 2 and `.row-main`
+ * (column 2) gets pushed onto a second implicit row -- 22px + the 10px
+ * `gap` = 32px below the star and the pill, which is exactly the title
+ * drift this comment block exists to prevent (#169/#231). Pinning all
+ * three to row 1 explicitly is what keeps them sharing one 22px line
+ * regardless of source order.
+ */
 .row {
-  display: flex; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: 22px 1fr auto 28px;
+  align-items: start; gap: 10px;
   padding: 12px 14px; border-bottom: 1px solid var(--line);
   cursor: pointer;
 }
 .row:last-child { border-bottom: 0; }
 .row:hover { background: var(--panel-2); }
 .row.attention { background: var(--warn-bg); box-shadow: inset 3px 0 0 var(--warn); }
-.row-main { flex: 1; min-width: 0; }
-.row-title { display: flex; align-items: baseline; gap: 8px; }
-.row-title b { font-weight: 600; }
-.activity { color: var(--dim); font-style: italic; font-size: 13px; }
+.row > .star, .row > .status, .row > .row-main { grid-row: 1; }
+.row > .star { grid-column: 1; }
+.row > .row-main { grid-column: 2; }
+.row > .status { grid-column: 3; }
+.row-main { min-width: 0; }
+.row-title {
+  display: flex; align-items: baseline; gap: 8px;
+  height: 22px; line-height: 22px;
+}
+/* The title truncates with an ellipsis rather than wrapping to a second
+   line -- not only for tidiness, but because a wrapped title would grow
+   past the 22px line box every other first-line item is held to, and pull
+   itself out of alignment with the star and the pill beside it. */
+.row-title b {
+  font-weight: 600; line-height: 22px;
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.activity { color: var(--dim); font-style: italic; font-size: 13px; line-height: 22px; flex: 0 0 auto; }
 .row-meta {
   color: var(--faint); font-size: 12px; margin-top: 3px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* STATUS PILLS (#169): fully rounded, 22px tall, a tinted fill and a leading
+   dot -- never a solid block, never a button shape, and never clickable on
+   their own (no role, no cursor: pointer). One shape everywhere a status
+   shows: the row, the session detail header, the bell inbox (.inbox-status,
+   css/inbox.css) and the phone layout, which reuses this same markup rather
+   than a layout of its own. */
 .status {
-  font-size: 12px; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
-  border: 1px solid var(--line); color: var(--dim);
+  display: inline-flex; align-items: center; gap: 6px; height: 22px;
+  padding: 0 10px 0 8px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  line-height: 1; white-space: nowrap; cursor: default; flex: none;
+  color: var(--dim); background: transparent; border: 1px solid var(--line);
 }
-.status.active { color: var(--accent); border-color: #1e3563; }
-.status.attention { background: var(--warn); color: #221a00; border-color: var(--warn); font-weight: 700; }
-.status.done { color: var(--ok); border-color: #1d4636; }
+.status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.status.active {
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.status.attention {
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent); font-weight: 600;
+}
+.status.done {
+  color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
 /* Finished work is waiting to be looked at, not filed away -- readable enough
    to notice in a list, quieter than the amber that means "blocked on you". */
-.status.review { color: var(--ok); border-color: #1d4636; }
-.status.failed { color: var(--bad); border-color: #47262b; }
+.status.review {
+  color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.status.failed {
+  color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent);
+  border-color: color-mix(in srgb, var(--bad) 35%, transparent);
+}
 /* An approval nobody answered. Not a failure -- the session carried on -- but
    the person who saw the card is owed an answer to "what happened to that?". */
-.status.expired { color: var(--faint); border-color: var(--line); }
+.status.expired { color: var(--faint); background: transparent; border-color: var(--line); }
 /* Answered, and by whom. On a hub two people can watch, "resolved" without
    "by whom" answers a different question than the one being asked. */
-.status.answered { color: var(--ok); border-color: #1d4636; }
+.status.answered {
+  color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
 /* An unanswerable card: the device behind it cannot be reached, so this must
    never read like the amber "blocked on you" badge it used to be mistaken
    for (#225) -- the point of the color is "nothing to do here", not "do
    something". */
-.status.stale { color: var(--faint); border-color: var(--line); font-style: italic; }
+.status.stale { color: var(--faint); background: transparent; border-color: var(--line); font-style: italic; }
 .expiredline { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; }
 /* A session running a different agent to the one named on it. Worth marking:
    the request and the result used to be assumed identical, and were not. */
@@ -115,10 +191,13 @@
 .row.skeleton-row:hover, .device.skeleton-row:hover { background: transparent; }
 
 /* ---------- pinning ---------- */
+/* The row's first grid column is 22px; the star fills it edge-to-edge and
+   centers its glyph inside, so its visual middle lands exactly where the
+   title's and the pill's first-line middles do (#169). */
 .star {
-  background: none; border: 0; cursor: pointer; padding: 0 2px;
+  background: none; border: 0; cursor: pointer; padding: 0;
+  width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
   font-size: 15px; line-height: 1; color: var(--faint);
-  align-self: center; flex: 0 0 auto;
 }
 .star:hover { color: var(--dim); }
 .star.on { color: var(--warn); }

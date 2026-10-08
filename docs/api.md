@@ -54,6 +54,14 @@ Who you are, as this hub sees you.
 what you see — for example more than one instance, where devices appear and
 disappear.
 
+`push` reports whether this hub can send Web Push at all (#175) —
+`{ "enabled": false, "publicKey": null }` when `SQUAD_HUB_VAPID_PUBLIC_KEY` /
+`SQUAD_HUB_VAPID_PRIVATE_KEY` are unset or malformed, otherwise
+`{ "enabled": true, "publicKey": "<base64url>" }`. `publicKey` is what the
+browser hands `PushManager.subscribe()` as the `applicationServerKey`; it is
+not a secret, unlike the paired private key the hub keeps to itself. See
+[security.md](security.md#web-push-175).
+
 ### `GET /api/overview`
 
 Everything the main view needs in one call: devices, sessions grouped by device,
@@ -167,6 +175,77 @@ that duplicate entries within `pins` are de-duplicated rather than rejected.
 
 A device token gets **403** here exactly as it does everywhere else under
 `/api/`: see "Which token" above.
+
+### Web Push subscriptions (#175)
+
+`GET /api/push/subscriptions`, `POST /api/push/subscriptions`,
+`DELETE /api/push/subscriptions/{id}`
+
+Which browsers get a push notification — "a session needs you" — while the
+installed PWA is closed, and the hub's registered subscriptions for the
+signed-in caller. Partitioned on the verified caller, the same rule
+`/api/prefs` follows: there is no request shape that reaches another user's
+subscriptions. A device token gets **403** on all three routes, exactly as
+it does everywhere else under `/api/` — registering or revoking a browser's
+push subscription stays a thing only a signed-in person does. See
+[security.md](security.md#web-push-175).
+
+`GET` lists the caller's own subscriptions, never their raw keys:
+
+```json
+{
+  "subscriptions": [
+    { "id": "ab12cd34ef56gh78", "label": "Chrome on this phone", "createdAt": 1700000000000 }
+  ],
+  "enabled": true
+}
+```
+
+`enabled` mirrors `/api/me`'s `push.enabled` — whether this hub can send Web
+Push at all.
+
+`POST` registers (or refreshes) a browser's subscription, in the shape the
+[Push API](https://developer.mozilla.org/en-US/docs/Web/API/Push_API) hands
+back from `PushManager.subscribe()`:
+
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/...",
+  "keys": { "p256dh": "...", "auth": "..." },
+  "label": "Chrome on this phone"
+}
+```
+
+`endpoint` must be `https://` (loopback excepted, for local development and
+tests); `keys.p256dh` must decode (base64url) to a 65-byte uncompressed
+P-256 point and `keys.auth` to a 16-byte secret — the same shapes a real
+`PushManager.subscribe()` always hands back, so this only ever rejects
+something that could never have been sent to anyway; `label` is optional
+and capped at 120 characters. A malformed body is refused with `400` and a
+reason — nothing is silently dropped. The response never echoes `keys` back:
+
+```json
+{ "id": "ab12cd34ef56gh78", "label": "Chrome on this phone", "createdAt": 1700000000000 }
+```
+
+Re-registering the same `endpoint` updates the existing record in place
+(the id is derived from the endpoint) rather than creating a duplicate, so a
+renewed subscription or a retried request never piles up extra entries. A
+single account may hold at most 25 subscriptions; registering a 26th
+distinct endpoint is refused with `400`.
+
+`DELETE /api/push/subscriptions/{id}` removes one subscription by the `id`
+`POST` returned — **not** by endpoint in the body. This departs from the
+bare `DELETE /api/push/subscriptions` some clients might expect, for the
+same reason `/api/access`'s removal route already takes its target in the
+path: a `DELETE` carrying a JSON body is not reliably delivered by Node's
+own HTTP client, so the identifier travels in the URL instead. Returns
+`204` on success. An unknown id, or an id that belongs to a different
+account, both answer `404` — the difference between "not yours" and "does
+not exist" is itself a disclosure, and either way there is nothing left to
+revoke. A malformed percent-escape in `{id}` (one `decodeURIComponent`
+cannot parse) answers `400`, not a `500` — the same treatment every other
+path-encoded identifier under `/api/` gets.
 
 ### `GET|POST /api/access`, `DELETE /api/access/{login}`
 
