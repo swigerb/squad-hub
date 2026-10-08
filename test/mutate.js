@@ -2884,7 +2884,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v8';`,
+    find: `const CACHE = 'squad-hub-shell-v9';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -5860,6 +5860,147 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  if (authBuf.length !== AUTH_SECRET_LEN) {`,
     replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
     mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
+  },
+  // ---------------------------------------------------------------------
+  // #178: New ACA job dialog / "Queued on ACA" pending rows
+  // ---------------------------------------------------------------------
+  {
+    name: 'acaBuildDispatchBody stops refusing a blank repository',
+    file: 'web/js/aca.js',
+    find: `  const repo = acaRepoName(form.repo);
+  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+    replace: `  const repo = process.env.MUTANT ? (form.repo || 'x/x') : acaRepoName(form.repo); // MUTATION
+  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+    mustFail: 'a blank repository is refused before any request is made',
+  },
+  {
+    name: 'acaBuildDispatchBody stops requiring a positive integer for an existing issue',
+    file: 'web/js/aca.js',
+    find: `    const n = Number(form.issueNumber);
+    if (!Number.isInteger(n) || n <= 0) {`,
+    replace: `    const n = Number(form.issueNumber);
+    if (process.env.MUTANT ? false : (!Number.isInteger(n) || n <= 0)) { // MUTATION`,
+    mustFail: 'an existing issue needs a positive integer number',
+  },
+  {
+    name: 'acaBuildDispatchBody stops falling back to acaTitle for a blank new-issue title',
+    file: 'web/js/aca.js',
+    find: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim() || acaTitle(prompt);`,
+    replace: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim(); // MUTATION: dropped the acaTitle(prompt) fallback`,
+    mustFail: 'a blank new-issue title falls back to acaTitle of the instructions',
+  },
+  {
+    name: 'acaStepsForStatus stops reporting an errored dispatch as failed',
+    file: 'web/js/aca.js',
+    find: `  if (st === 'error') {
+    return {
+      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true,`,
+    replace: `  if (st === 'error' && !process.env.MUTANT) { // MUTATION
+    return {
+      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true,`,
+    mustFail: 'an errored dispatch is reported as failed, with the reason shown verbatim',
+  },
+  {
+    name: 'acaStepsForStatus stops reporting a completed-but-unattached run as failed',
+    file: 'web/js/aca.js',
+    find: `    const ok = (status && status.conclusion) === 'success';`,
+    replace: `    const ok = process.env.MUTANT ? true : (status && status.conclusion) === 'success'; // MUTATION`,
+    mustFail: 'a run that completed without ever attaching is reported as failed',
+  },
+  {
+    name: 'acaPendingAttached stops requiring an aca-kind device',
+    file: 'web/js/aca.js',
+    find: `    if (!g || !g.device || g.device.kind !== 'aca') continue;`,
+    replace: `    if (!g || !g.device || (!process.env.MUTANT && g.device.kind !== 'aca')) continue; // MUTATION`,
+    mustFail: 'does not match a non-aca device, even with the same repository',
+  },
+  {
+    name: 'acaPendingAttached stops requiring the repository to match',
+    file: 'web/js/aca.js',
+    find: `      if (repo && repo.toLowerCase() === want && (s.startedAt || 0) >= floor) return true;`,
+    replace: `      if (repo && (process.env.MUTANT || repo.toLowerCase() === want) && (s.startedAt || 0) >= floor) return true; // MUTATION`,
+    mustFail: 'does not match a different repository',
+  },
+  {
+    name: 'acaPendingAttached stops applying the two-minute clock-drift floor',
+    file: 'web/js/aca.js',
+    find: `  const floor = (entry.dispatchedAt || 0) - (2 * 60 * 1000);`,
+    replace: `  const floor = process.env.MUTANT ? -Infinity : (entry.dispatchedAt || 0) - (2 * 60 * 1000); // MUTATION`,
+    mustFail: 'tolerates up to two minutes of clock drift, but not more',
+  },
+  {
+    // Security review (#178): a pending row renders a repository name and a
+    // failure reason straight from GitHub Actions / the dispatch tracker --
+    // both are untrusted enough to matter, see web-xss-unit.js's own style.
+    name: 'acaPendingRowHtml stops escaping the repository name',
+    file: 'web/js/aca.js',
+    find: `      <div class="row-main">
+        <div class="row-title"><b>\${esc(title)}</b></div>
+        <div class="row-meta">\${esc(entry.repo)}</div>`,
+    replace: `      <div class="row-main">
+        <div class="row-title"><b>\${esc(title)}</b></div>
+        <div class="row-meta">\${process.env.MUTANT ? entry.repo : esc(entry.repo)}</div>`, // MUTATION
+    mustFail: 'user-controlled text in a pending row is escaped',
+  },
+  {
+    name: 'acaPendingSectionHtml stops hiding on the Local scope',
+    file: 'web/js/aca.js',
+    find: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
+  if (scope === 'local') return '';`,
+    replace: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
+  if (!process.env.MUTANT && scope === 'local') return ''; // MUTATION`,
+    mustFail: 'the section is empty with nothing pending, and on the Local scope (an ACA job cannot run there)',
+  },
+  {
+    name: 'acaPendingSectionHtml stops filtering out already-attached entries',
+    file: 'web/js/aca.js',
+    find: `  const visible = (pending || []).filter((p) => p && !p.attached);`,
+    replace: `  const visible = (pending || []).filter((p) => p && (process.env.MUTANT || !p.attached)); // MUTATION`,
+    mustFail: 'an attached entry drops out of the section once it is marked attached',
+  },
+  {
+    // startAcaPolling's gate lives inside a `setInterval` callback, never
+    // called from anywhere a unit test's sandboxed `new Function` eval can
+    // reach (same shape as devices.js's app-badge entry above: no DOM/timer
+    // harness this suite builds today). Covered instead by
+    // browser-e2e-unit.js watching that `/api/aca/dispatches` is never
+    // called while nothing is pending, across several real ticks.
+    name: 'startAcaPolling stops skipping the tick when nothing is pending (not unit-testable today)',
+    file: 'web/js/aca.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
+  },
+  {
+    // acaSetMode() hides the whole #acaForm when the GitHub App is not
+    // configured -- if acaRepo moved back inside it, the two fallback links
+    // (the ONLY path in that case) would have nothing to read a repository
+    // from.
+    name: 'acaRepo moves back inside #acaForm, breaking the 501 fallback links',
+    file: 'web/index.html',
+    find: `    <label class="field">
+      <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+      <datalist id="acaRepoList"></datalist>
+      <small id="acaRepoHint"></small>
+    </label>
+
+    <!-- Shown once GET /api/aca/repos answers (issue #178, backend #177/#213).
+         Hidden by default so a hub with no GitHub App configured never shows a
+         form whose submit can only 501 -- see acaSetMode() in aca.js. -->
+    <div id="acaForm">`,
+    replace: `    <!-- MUTATION (#178): acaRepo moved inside #acaForm -->
+    <div id="acaForm">
+      <label class="field">
+        <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+        <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+        <datalist id="acaRepoList"></datalist>
+        <small id="acaRepoHint"></small>
+      </label>`,
+    mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
   },
 ];
 

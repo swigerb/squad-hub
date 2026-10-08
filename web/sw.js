@@ -31,7 +31,11 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v8';
+//
+// v9 (#178): the New ACA job dialog and "Queued on ACA" pending rows changed
+// web/js/aca.js, devices.js and ws.js's own logic (not just their styling),
+// which a stale cached copy on the aeroplane would otherwise keep serving.
+const CACHE = 'squad-hub-shell-v9';
 
 /**
  * The shell. Everything here is a public static asset.

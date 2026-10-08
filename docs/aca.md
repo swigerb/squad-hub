@@ -218,10 +218,10 @@ They are different things, and only one of them starts anything.
 
 | | A job **attaches** to the hub | The hub **links** to a job | The hub **dispatches** a job (issue #177) |
 |---|---|---|---|
-| What happens | An ACA job runs `squad-hub oneshot` and dials the hub, so a person can answer its approvals | **+ New → Start a new ACA job…** writes a GitHub URL and opens it | The hub calls `workflow_dispatch` on `squad-dispatch.yml` directly, as a GitHub App |
-| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue | Whoever presses the button in the hub, signed in as any hub user |
+| What happens | An ACA job runs `squad-hub oneshot` and dials the hub, so a person can answer its approvals | **+ New → New ACA job…** falls back to writing a GitHub URL and opening it, when the App is not configured | The hub calls `workflow_dispatch` on `squad-dispatch.yml` directly, as a GitHub App |
+| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue | Whoever presses Start job in the dialog, signed in as any hub user |
 | What the hub holds | A device token, minted by you | Nothing | A GitHub App installation token (in memory, per request) |
-| Appears in **+ New** as | **On an attached cloud device** — it is already running | **Start a new ACA job…** — it is not running yet | Same dialog, used directly instead of as a link, on a repository the App is installed on |
+| Appears in **+ New** as | **On an attached cloud device** — it is already running | **New ACA job…** — the dialog's 501 fallback links, when the App is not configured (issue #178) | **New ACA job…** — the same dialog, posting `POST /api/aca/dispatch` directly instead, on a repository the App is installed on (issue #178) |
 
 Neither of the first two gives the hub the ability to start compute. In the
 first the job comes to the hub; in the second the hub writes a request that a
@@ -229,6 +229,33 @@ person sends. The third genuinely does give the hub that ability, for exactly
 the repositories an administrator chose — see the next section, and
 [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
 for the trust-boundary change that comes with it.
+
+### Queued on ACA (issue #178)
+
+A successful dispatch does not yet have a device — the job is still starting
+on GitHub's side of the gap in the table above (own Azure subscription,
+own Actions runner). Squad Hub shows it as a **"Queued on ACA"** row in the
+session list, in the same place a real session would appear, through four
+steps: Dispatched, Lease claimed, Starting job, Attached. The rest of the app
+is entirely WS-push driven (a device's own socket tells the hub the instant
+something changes), but a GitHub Actions run's status is pull-only — nothing
+pushes a message purely because a run moves from queued to in_progress — so
+this is the one place the web UI polls on a plain 15-second timer, calling
+`GET /api/aca/dispatches` only while a tab has an unresolved dispatch of its
+own (see below). The row is replaced outright the moment the job's own
+`aca-`-prefixed device attaches with a matching repository — detected
+client-side, with no dedicated endpoint for it, from whichever overview data
+the hub already has (the WS push if the device's own activity arrived first,
+or this same timer's next tick otherwise).
+
+This tracking is **per browser tab and in-memory**, the same durability
+`DispatchTracker` itself documents server-side: reloading the page loses the
+row (the hub still ran the job; only the rendering of "it's in progress" is
+lost), and `GET /api/aca/dispatches` is polled only while a tab actually has
+an unresolved dispatch of its own — never on an ordinary page load, so a hub
+with no GitHub App configured never calls an `/api/aca/*` route merely by
+being open (`GET /api/aca/repos` is called only when the dialog itself is
+opened, which is a deliberate action, not a page load).
 
 ### Who may start a run
 

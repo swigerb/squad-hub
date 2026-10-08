@@ -831,6 +831,16 @@ async function suiteGitHubLink() {
 }
 
 /**
+ * The New ACA job dialog (#178): dispatching straight through
+ * POST /api/aca/dispatch, and the "Queued on ACA" rows that track it until a
+ * real `aca-` device attaches.
+ */
+async function suiteAcaDispatchDialog() {
+  console.log('\n[ACA DIALOG] dispatch body validation, pending-row steps, and attach detection');
+  runChildSuite(path.join(__dirname, 'aca-dispatch-dialog-unit.js'), 'aca-dialog');
+}
+
+/**
  * The deploy must not quietly weaken how people sign in. A real incident.
  */
 async function suiteDeployGuard() {
@@ -1161,6 +1171,7 @@ async function suitePush() {
   await suiteAccess();
   await suitePrefs();
   await suiteGitHubLink();
+  await suiteAcaDispatchDialog();
   await suiteDeployGuard();
   await suiteConversation();
   await suiteSessionMetadata();

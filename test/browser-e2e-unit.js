@@ -36,7 +36,7 @@ if (!chromium) {
   process.exit(0);
 }
 
-const { Authenticator, MODES } = require('../src/service/auth');
+const { Authenticator, MODES, subjectKey } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { GitHubOAuth } = require('../src/service/github-oauth');
 const { Daemon } = require('../src/daemon');
@@ -181,6 +181,57 @@ async function watchCsp(pg) {
     });
   });
   return violations;
+}
+
+/**
+ * A minimal `githubApp` fixture implementing exactly the interface
+ * `HubService`/`DispatchTracker` call (see `src/service/github-app.js` for
+ * the real shape): `enabled`, `listReposWithDispatchStatus`,
+ * `findInstallation`, `dispatch`, `_getRun`, `resolveRunStatus`. Deliberately
+ * NOT the full HTTP-fixture `fakeGitHubApp()` in `test/github-app-unit.js` --
+ * that exists to prove `GitHubApp` itself talks to the real GitHub REST API
+ * correctly, which is already covered there. This only needs to prove the
+ * BROWSER reacts correctly to dispatch/poll responses, so it answers
+ * in-process with no HTTP involved at all.
+ *
+ * `dispatchShouldFail`, when set, makes `dispatch()` reject -- the one path
+ * this fixture needs to exercise `#acaErr` on a genuine 502-shaped failure
+ * rather than a 501 (no App) or 400 (bad input), both already covered
+ * elsewhere.
+ */
+function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' } = {}) {
+  let runIdSeq = 0;
+  return {
+    enabled: true,
+    disabledReason() { return ''; },
+    async listReposWithDispatchStatus() {
+      return [{ fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true }];
+    },
+    async findInstallation(owner, repo) {
+      return { installationId: 1, owner, repo };
+    },
+    async dispatch({ owner, repo }) {
+      if (dispatchShouldFail) {
+        const err = new Error('workflow_dispatch refused: no matching workflow file');
+        err.status = 502;
+        throw err;
+      }
+      runIdSeq += 1;
+      return {
+        issue: { number: 42 },
+        runUrl: `https://github.com/${owner}/${repo}/actions/runs/${runIdSeq}`,
+        workflowFile: 'squad-dispatch.yml',
+        ref: 'main',
+        dispatchedAt: Date.now(),
+      };
+    },
+    async _getRun() {
+      return { runId: runIdSeq, state: runState };
+    },
+    async resolveRunStatus() {
+      return { runId: runIdSeq, state: runState };
+    },
+  };
 }
 
 (async () => {
@@ -902,12 +953,70 @@ async function watchCsp(pg) {
       assert.deepStrictEqual(menu.items.map((i) => i.kind), ['local', 'cloud', 'aca']);
       const aca = menu.items.find((i) => i.kind === 'aca');
       assert.strictEqual(aca.disabled, false,
-        'Run on ACA needs no device -- it opens GitHub, and the workflow there starts the job');
+        'New ACA job needs no device -- it dispatches directly, or falls back to GitHub (issue #178)');
       const cloud = menu.items.find((i) => i.kind === 'cloud');
       assert.strictEqual(cloud.disabled, true, 'no cloud device is attached, so the option must be refused');
       assert.ok(menu.note && /cloud/i.test(menu.note),
         'a disabled option with no reason beside it is a dead end');
       await page.keyboard.press('Escape');
+    });
+
+    await check('the New ACA job dialog falls back to GitHub when this hub has no GitHub App (issue #178, #233)', async () => {
+      // This hub was built with no `githubApp` option, so `GitHubApp`'s own
+      // default (unconfigured) answers 501 -- the documented normal state
+      // until a real App exists, not an error (see hub-service.js's
+      // `/api/aca/repos` handler). Opening the dialog is a deliberate click,
+      // never a page load, so this 501 is expected and must not be the
+      // silent-console-error regression #233 broke CI with.
+      await page.click('#newMoreBtn');
+      await page.click('[data-new="aca"]');
+      await page.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
+      await page.waitForSelector('#acaDisabledNote:not([hidden])', { timeout: 10000 });
+      const note = await page.textContent('#acaDisabledNote');
+      assert.match(note, /no GitHub App|not configured|GitHub App/i, `no explanation for the disabled form: ${note}`);
+
+      const shape = await page.evaluate(() => ({
+        formHidden: document.getElementById('acaForm').hidden,
+        startHidden: document.getElementById('acaStart').hidden,
+        repoVisible: document.getElementById('acaRepo').offsetParent !== null,
+        promptVisible: document.getElementById('acaPrompt').offsetParent !== null,
+      }));
+      assert.ok(shape.formHidden, 'the dispatch-only fields did not hide on a disabled hub');
+      assert.ok(shape.startHidden, '"Start job" stayed offered with no way to dispatch');
+      // The structural fix (#178): Repository and Instructions sit OUTSIDE
+      // #acaForm precisely so they stay usable here -- the two fallback
+      // links below are read straight from them, and are the ONLY path in
+      // this disabled state.
+      assert.ok(shape.repoVisible, 'Repository hid along with the rest of the disabled form');
+      assert.ok(shape.promptVisible, 'Instructions hid along with the rest of the disabled form');
+
+      // Clicking a fallback link with nothing typed must explain itself, not
+      // silently do nothing or throw. Cleared explicitly first: `openAca()`
+      // prefills Repository/Instructions from `state.currentSession` when a
+      // detail view was open, which this assertion must not depend on.
+      await page.fill('#acaRepo', '');
+      await page.fill('#acaPrompt', '');
+      await page.click('#acaReviewLink');
+      await page.waitForSelector('#acaErr:not([hidden])', { timeout: 5000 });
+      const err = await page.textContent('#acaErr');
+      assert.match(err, /[Ee]nter a repository/, `blank fallback click gave no explanation: ${err}`);
+
+      // Now fill the two fields that survived the disabled form, and prove
+      // the fallback link genuinely uses them: it must open a real GitHub
+      // "new issue" URL for this exact repository and instruction, not a
+      // dead link or one aimed at a stale value.
+      await page.fill('#acaRepo', 'acme/widgets');
+      await page.fill('#acaPrompt', 'Update the docs and open a pull request');
+      const [popup] = await Promise.all([
+        page.waitForEvent('popup'),
+        page.click('#acaReviewLink'),
+      ]);
+      const popupUrl = popup.url();
+      await popup.close();
+      assert.match(popupUrl, /github\.com\/acme\/widgets\/issues\/new/,
+        `the fallback link did not open a new-issue page for the typed repository: ${popupUrl}`);
+      assert.ok(await page.evaluate(() => document.getElementById('acaScrim').hidden),
+        'the dialog stayed open after the fallback link was used');
     });
 
     await check('the local half of the New menu opens the composer on a local device', async () => {
@@ -1838,6 +1947,120 @@ async function watchCsp(pg) {
       } finally {
         await page4.close();
         await svcAuth.close();
+      }
+    });
+
+    await check('a dispatched ACA job shows a Queued-on-ACA row, polls for its run, and drops out once its device attaches (#178)', async () => {
+      // A hub with the GitHub App configured, on its own HubService/browser
+      // so it cannot interfere with the no-App assertions the main `svc`
+      // above makes. `fakeInlineGithubApp` stands in for `GitHubApp` itself
+      // (already covered against the real GitHub API in
+      // test/github-app-unit.js) -- this only needs to prove the BROWSER
+      // reacts correctly to what `/api/aca/*` answers.
+      const authAca = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-e2e', deviceSecret: 'aca-e2e-dev' });
+      const githubApp = fakeInlineGithubApp();
+      const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp });
+      const addrAca = await svcAca.listen(0, '127.0.0.1');
+      const originAca = `http://127.0.0.1:${addrAca.port}`;
+      const tid = 't-aca'; const oid = 'u-aca';
+      const tokenAca = authAca.mintDevToken(tid, oid, 'aca tester');
+      const subject = subjectKey(tid, oid);
+
+      const pageAca = await browser.newPage();
+      const dispatchCalls = [];
+      await pageAca.route(`${originAca}/api/aca/**`, (route) => {
+        dispatchCalls.push(route.request().url());
+        route.continue();
+      });
+      const errorsAca = [];
+      pageAca.on('console', (m) => { if (m.type() === 'error') errorsAca.push(m.text()); });
+      pageAca.on('pageerror', (e) => errorsAca.push(`pageerror: ${e.message}`));
+      try {
+        await gotoSettled(pageAca, `${originAca}/?token=${tokenAca}`);
+        await pageAca.waitForSelector('#who', { timeout: 15000 });
+
+        // Nothing is pending yet -- an ordinary load of an ENABLED hub must
+        // still cost zero /api/aca/* calls, the same #233 invariant that
+        // matters most on a DISABLED hub (covered above): `openAca()` is the
+        // only deliberate trigger, and nobody has opened the dialog yet.
+        assert.deepStrictEqual(dispatchCalls, [],
+          `/api/aca/* was called before the dialog was ever opened: ${dispatchCalls.join(', ')}`);
+
+        await pageAca.click('#newMoreBtn');
+        await pageAca.click('[data-new="aca"]');
+        await pageAca.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
+        await pageAca.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await pageAca.fill('#acaRepo', 'acme/widgets');
+        await pageAca.fill('#acaPrompt', 'Update the docs and open a pull request');
+        await pageAca.click('#acaStart');
+
+        await pageAca.waitForSelector('#acaScrim[hidden]', { timeout: 10000 });
+        await pageAca.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+
+        // Register the real `aca-` device the dispatched workflow becomes,
+        // directly through the store -- the same seam
+        // test/stale-approval-unit.js and test/report-pr-unit.js already use
+        // for test setup, since nothing in this harness runs an actual
+        // Container Apps job. `refresh()`'s own `GET /api/overview` call
+        // (triggered below) reads this straight from the store, so no WS
+        // broadcast is needed to make the new device/session visible.
+        svcAca.store.registerDevice(subject, { deviceId: 'aca-test-1', name: 'aca job', platform: 'linux', kind: 'aca' });
+        svcAca.store.upsertSession(subject, 'aca-test-1', {
+          id: 'sess-1', status: 'active', startedAt: Date.now(),
+          git: { host: 'github.com', repository: 'acme/widgets' },
+        });
+
+        // `syncAcaPending` is only ever called from `refresh()` (ws.js) or
+        // the `ACA_POLL_MS` interval -- never from the WS 'overview' handler
+        // itself (see ws.js's `onmessage`, which only calls `render()`). The
+        // real path for this attach to be noticed is either that 15-second
+        // timer or the next explicit `refresh()` -- and this suite has a
+        // whole-file time budget (`test/run-tests.js`'s `runChildSuite`), so
+        // waiting out a real 15s tick here is not affordable. A status-filter
+        // change is a real, ordinary `refresh()` trigger (filters.js) that
+        // fires `syncAcaPending` immediately, which is exactly what proves
+        // the row-clearing logic without inventing a test-only hook for it.
+        await pageAca.selectOption('#statusFilter', 'action');
+        await pageAca.selectOption('#statusFilter', '');
+        await pageAca.waitForSelector('.row:has-text("Queued on ACA")', { state: 'detached', timeout: 10000 });
+        const list = await pageAca.textContent('#groups');
+        assert.match(list, /acme\/widgets/, 'the attached session never appeared in the list');
+
+        const broken = errorsAca.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await pageAca.close();
+        await svcAca.close();
+      }
+    });
+
+    await check('a dispatch that fails upstream shows the error and adds no pending row (#178)', async () => {
+      const authFail = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-fail', deviceSecret: 'aca-fail-dev' });
+      const githubAppFail = fakeInlineGithubApp({ dispatchShouldFail: true });
+      const svcFail = new HubService({ auth: authFail, serveWeb: true, githubApp: githubAppFail });
+      const addrFail = await svcFail.listen(0, '127.0.0.1');
+      const originFail = `http://127.0.0.1:${addrFail.port}`;
+      const tokenFail = authFail.mintDevToken('t-fail', 'u-fail', 'fail tester');
+      const pageFail = await browser.newPage();
+      try {
+        await gotoSettled(pageFail, `${originFail}/?token=${tokenFail}`);
+        await pageFail.waitForSelector('#who', { timeout: 15000 });
+        await pageFail.click('#newMoreBtn');
+        await pageFail.click('[data-new="aca"]');
+        await pageFail.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await pageFail.fill('#acaRepo', 'acme/widgets');
+        await pageFail.fill('#acaPrompt', 'Update the docs and open a pull request');
+        await pageFail.click('#acaStart');
+        await pageFail.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
+        const err = await pageFail.textContent('#acaErr');
+        assert.match(err, /[Cc]ould not start the job/, `no explanation for the failed dispatch: ${err}`);
+        assert.ok(!(await pageFail.evaluate(() => document.getElementById('acaScrim').hidden)),
+          'the dialog closed as if the dispatch had succeeded');
+        assert.doesNotMatch(await pageFail.evaluate(() => document.getElementById('groups').textContent),
+          /Queued on ACA/, 'a pending row was added for a dispatch that never actually started');
+      } finally {
+        await pageFail.close();
+        await svcFail.close();
       }
     });
 
