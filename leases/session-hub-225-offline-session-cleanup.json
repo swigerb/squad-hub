@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-225-offline-session-cleanup",
+  "sessionId": "hub-225-offline-session-cleanup",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T02:57:50.074Z",
+  "lastHeartbeatAt": "2026-10-08T02:57:50.074Z",
+  "updatedAt": "2026-10-08T02:57:50.074Z",
+  "terminalReason": null,
+  "executionRef": null
+}
