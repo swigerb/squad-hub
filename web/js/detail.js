@@ -1,16 +1,10 @@
 import { state, api } from './api.js';
 import {
-  esc, num, truncateWords, statusLabel, statusPillClass,
+  esc, num, truncateWords, statusLabel, statusPillClass, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
 import { refresh, resolveDeepLink, toggleFavorite } from './ws.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
-// Circular by necessity: the detail panel still delegates to the DOM helper
-// that stays in app.js for part 4 of #165. Both modules only reach into
-// the other from inside a function body, never at module-evaluation time,
-// so the cycle resolves the same way it would for any two ES modules that
-// call back into each other.
-import { $ } from '../app.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -229,7 +223,7 @@ export function syncDetailHeader() {
 /**
  * Wire the routing-related controls that live only on the detail page: the
  * two back links, the sidebar's filter box and selection clicks, and the
- * browser's own Back/Forward button. Called once, from `wire()` in app.js.
+ * browser's own Back/Forward button. Called once, from `wire()` in wiring.js.
  */
 export function initDetailRouting() {
   const back = (e) => { e.preventDefault(); closeDetail(); };

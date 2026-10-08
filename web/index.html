@@ -24,6 +24,7 @@
 <link rel="stylesheet" href="/css/modals.css">
 <link rel="stylesheet" href="/css/detail.css">
 <link rel="stylesheet" href="/css/squad.css">
+<link rel="stylesheet" href="/css/inbox.css">
 </head>
 <body>
 <header class="topbar">
@@ -32,7 +33,7 @@
   <button class="icon-btn" id="themeBtn" aria-label="Switch theme" title="Switch theme">
     <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8.00291 1C11.8684 1.00057 15.002 4.13436 15.002 8C15.002 11.866 11.8679 15 8.00193 15C5.08888 14.9999 2.59229 13.2205 1.53805 10.6914C1.4578 10.4987 1.50656 10.2763 1.65914 10.1338C1.75673 10.0427 1.88381 9.99611 2.01168 9.99902C5.32091 9.99375 8.00193 7.31045 8.00193 4C8.00193 3.18152 7.83715 2.40245 7.54099 1.69238C7.47678 1.53815 7.49426 1.3617 7.58689 1.22266C7.67959 1.08361 7.83581 1.00006 8.00291 1ZM8.72166 2.04395C8.90245 2.66516 9.00194 3.32111 9.00194 4C9.00194 7.60283 6.27984 10.5678 2.78024 10.9551C3.81152 12.7735 5.7636 13.9999 8.00193 14C11.3157 14 14.002 11.3137 14.002 8C14.002 4.92991 11.696 2.39958 8.72166 2.04395Z"/></svg>
   </button>
-  <button class="icon-btn bell" id="bellBtn" aria-label="Notifications">
+  <button class="icon-btn bell" id="bellBtn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
     <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8.00001 2C5.51473 2 3.50001 4.01472 3.50001 6.5V8.9014L2.5357 11.3145C2.47415 11.4685 2.49299 11.643 2.58601 11.7804C2.67904 11.9177 2.83412 12 3 12H6C6 13.1084 6.89164 14 8 14C9.10836 14 10 13.1084 10 12H13C13.1659 12 13.321 11.9177 13.414 11.7804C13.507 11.643 13.5259 11.4685 13.4643 11.3145L12.5 8.9014V6.5C12.5 4.01472 10.4853 2 8.00001 2ZM9 12C9 12.5561 8.55607 13 8 13C7.44393 13 7 12.5561 7 12H9ZM4.50001 6.5C4.50001 4.567 6.06701 3 8.00001 3C9.933 3 11.5 4.567 11.5 6.5V8.9976C11.5 9.06116 11.5121 9.12413 11.5357 9.18315L12.2617 11H3.73826L4.46431 9.18315C4.48789 9.12413 4.50001 9.06116 4.50001 8.9976V6.5Z"/></svg>
     <span class="badge" id="bellCount" hidden>0</span>
   </button>
@@ -53,6 +54,22 @@
     <span class="visually-hidden" id="who">—</span>
   </button>
 </header>
+
+<!--
+  The bell inbox (#174): every action-needed item across every session, in one
+  place, so a person checks one dropdown instead of scrolling a device-grouped
+  list looking for the row that needs them. Rendered by inbox.js / renderInboxMenu
+  in app.js; this markup only supplies the two fixed parts a render cannot own --
+  the heading and the footer actions.
+-->
+<nav class="menu inbox" id="inboxMenu" hidden>
+  <div class="inbox-head" id="inboxHead">Needs you</div>
+  <div id="inboxList"></div>
+  <div class="menu-sep"></div>
+  <div class="inbox-foot">
+    <button data-inbox="reprompt">↻ Show approval prompts again</button>
+  </div>
+</nav>
 
 <nav class="menu" id="menu" hidden>
   <div class="menu-meta" id="menuMeta"></div>

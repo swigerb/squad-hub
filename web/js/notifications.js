@@ -1,13 +1,9 @@
 import { state, api } from './api.js';
-import { esc, asList, ANSWER_VERB } from './util.js';
+import {
+  esc, asList, ANSWER_VERB, $, toast,
+} from './util.js';
 import { approvalRows } from './approvals.js';
 import { approvalOptions, alwaysAllowRule } from './cleanup.js';
-// Circular by necessity: the notification flows still call the DOM helper
-// and toast UI that stay in app.js for part 4 of #165. Both modules only
-// reach into the other from inside a function body, never at
-// module-evaluation time, so the cycle resolves the same way it would for
-// any two ES modules that call back into each other.
-import { $, toast } from '../app.js';
 
 // ---------------------------------------------------------------------------
 // Desktop notifications

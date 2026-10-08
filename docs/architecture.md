@@ -216,3 +216,57 @@ automatically.
 This is the reason the browser's connection is worth naming separately in the
 diagram above: commands travel over HTTPS and would be fine either way, but live
 updates depend on a socket that nothing else was keeping open.
+
+## Web UI modules
+
+`web/app.js` used to be one file carrying nearly every browser-side concern —
+rendering, dialogs, and all of the event wiring. By the time it reached ~49KB
+it was the largest file in the project and the hardest to change without
+touching something unrelated. `web/css/app.css` had the same problem and was
+split first (#190); `web/app.js` followed the same shape, split by feature
+rather than by layer:
+
+- `web/js/api.js` — `state`, `api()`, token storage.
+- `web/js/util.js` — `$`, `esc`, `toast`, and other small DOM/formatting
+  helpers with no feature of their own.
+- `web/js/list.js`, `web/js/approvals.js`, `web/js/dropdowns.js`,
+  `web/js/cleanup.js`, `web/js/composer.js`, `web/js/notifications.js`,
+  `web/js/devices.js`, `web/js/detail.js`, `web/js/ws.js` — the pre-existing
+  split from earlier parts of #165 (list rendering, approvals, dropdown
+  filters, tidy/cleanup rules, the message composer, browser notifications,
+  the device list, the session detail panel, and the live WebSocket
+  connection).
+- `web/js/signin.js` — the signed-out screen and its hint text.
+- `web/js/aca.js` — the "run in the cloud" (ACA) dialog: building the
+  GitHub issue link/comment and wiring the dialog's own controls.
+- `web/js/access.js` — the People/access screen: who has access, and the
+  owner-only controls to grant or revoke it.
+- `web/js/install.js` — "Install as an app" detection and the
+  browser-specific instructions when the browser offers no native prompt.
+- `web/js/connect.js` — the "Connect a device" and "New session" dialogs:
+  device tokens, cwd hints, and the agent/model choice fields.
+- `web/js/filters.js` — the list's filter/sort/group controls.
+- `web/js/wiring.js` — `wire()`, the orchestrator that wires every control on
+  the page once at startup, plus the few bits of chrome (the hamburger menu,
+  popups, "forgot" device cleanup, and the refresh timestamp) that are too
+  small and too central to this page to justify their own file.
+
+`web/app.js` itself is left with a doc comment, its import list, and
+`main()` — the startup sequence (sign-in check, initial load, deep-link
+resolution, and the refresh timer). Two small UI concerns (the theme toggle
+and the Squad panel) stayed inline in `wiring.js` rather than becoming their
+own one-function files; each is a handful of lines with no state and no
+natural second caller, and a file that exists only to hold one four-line
+function is its own kind of noise.
+
+Each module keeps the same shape the pre-existing split already used: no
+bundler, no build step, plain `<script type="module">` imports resolved by
+the browser itself, and new files added to `web/sw.js`'s `SHELL` cache list
+with a cache-name bump — the same reasoning the CSS split documented, so an
+existing offline install actually picks up the new files instead of serving
+a stale combination of old and new indefinitely.
+
+A size budget (`test/package-unit.js`, mirroring the equivalent CSS check)
+keeps any one module from quietly growing back into another 49KB file: every
+file under `web/js/` is checked against the same ~25KB ceiling the CSS split
+used.

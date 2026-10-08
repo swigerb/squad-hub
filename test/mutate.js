@@ -214,6 +214,43 @@ const MUTATIONS = [
     mustFail: 'two overlapping steers: idle waits for the LAST one to finish, not the first',
   },
   {
+    // #174's bell inbox shows the agent's own words beside "Awaiting your
+    // reply". Without accumulation there is nothing to show -- a question
+    // asked across several chunks (as every real one is) would be silently
+    // dropped.
+    name: 'agent message chunks are not accumulated into lastAgentMessage',
+    file: 'src/acp-session.js',
+    find: `      const text = updateText(u);
+      if (text) this._agentMsgBuf = (this._agentMsgBuf || '') + text;`,
+    replace: `      const text = updateText(u);
+      if (text && !process.env.MUTANT) this._agentMsgBuf = (this._agentMsgBuf || '') + text; // MUTATION`,
+    mustFail: 'a turn that asks a question leaves that question on the session',
+  },
+  {
+    // A turn that only ran a tool must not INVENT a question nobody asked --
+    // that would put a fabricated quote in the bell inbox next to a real one,
+    // and nobody reading it could tell which was genuine.
+    name: 'a silent turn is given a made-up question instead of none',
+    file: 'src/acp-session.js',
+    find: `    const said = (this._agentMsgBuf || '').trim();
+    this.lastAgentMessage = said || null;`,
+    replace: `    const said = (this._agentMsgBuf || '').trim();
+    this.lastAgentMessage = said || (process.env.MUTANT ? 'Waiting for your reply' : null); // MUTATION`,
+    mustFail: 'a turn that only ran a tool leaves no question behind',
+  },
+  {
+    // The opposite failure: a turn that said nothing must CLEAR whatever
+    // question an earlier turn left, not leave it sitting there attached to a
+    // conversation that has since moved on.
+    name: 'a silent turn leaves a stale question from an earlier turn in place',
+    file: 'src/acp-session.js',
+    find: `    const said = (this._agentMsgBuf || '').trim();
+    this.lastAgentMessage = said || null;`,
+    replace: `    const said = (this._agentMsgBuf || '').trim();
+    this.lastAgentMessage = said || (process.env.MUTANT ? this.lastAgentMessage : null); // MUTATION`,
+    mustFail: 'a new turn with no text clears the question from the PREVIOUS turn',
+  },
+  {
     // A card that names the tool but withholds the command is not an approval
     // control. It is a prompt people learn to click through, which is worse
     // than no prompt at all because it looks like oversight.
@@ -1151,7 +1188,7 @@ const MUTATIONS = [
   },
   {
     name: 'Refresh now gives no visible timestamp',
-    file: 'web/app.js',
+    file: 'web/js/wiring.js',
     find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
     replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
@@ -2593,6 +2630,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/css/modals.css',
   '/css/detail.css',
   '/css/squad.css',
+  '/css/inbox.css',
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
@@ -2601,9 +2639,17 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/cleanup.js',
   '/js/composer.js',
   '/js/notifications.js',
+  '/js/inbox.js',
   '/js/devices.js',
   '/js/detail.js',
   '/js/ws.js',
+  '/js/aca.js',
+  '/js/access.js',
+  '/js/install.js',
+  '/js/connect.js',
+  '/js/filters.js',
+  '/js/wiring.js',
+  '/js/signin.js',
   '/app.js',
   '/app.webmanifest',
   '/favicon.svg',
@@ -2620,7 +2666,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v5';`,
+    find: `const CACHE = 'squad-hub-shell-v6';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -2630,6 +2676,20 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     find: `    if (e.status === undefined) return showOffline();`,
     replace: `    // MUTATION: the offline case falls through to "Could not sign in"`,
     mustFail: 'offline, the app says the network failed — not that you are signed out',
+  },
+  {
+    // Same reasoning as the css size-budget entry above: #200's size-budget
+    // test ("no web/js file is anywhere near the old single-file size")
+    // checks fs.statSync(...).size against a constant -- there is no line of
+    // logic to invert that would prove the assertion bites, since nothing in
+    // this repo computes or gates that size at runtime. Left out deliberately
+    // rather than faked with a no-op entry.
+    name: 'web/js files grow past the size budget (not mutation-testable)',
+    file: 'web/sw.js',
+    find: '',
+    replace: '',
+    mustFail: null,
+    skip: true,
   },
   {
     // The reassurance is the point, not decoration: the natural fear on seeing
@@ -4555,6 +4615,84 @@ if ($health.accessStore -ne 'durable') {`,
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending && !process.env.MUTANT) return 'attention'; // MUTATION`,
     mustFail: 'a pending approval gives the pill the "attention" class, outranking the status',
+  },
+  {
+    // #174's whole point: an approval blocks something and MUST outrank a
+    // reply that is merely waiting. Losing this ordering would bury the
+    // thing that is actively stuck beneath a card nobody needs to act on.
+    name: 'inbox entries are not sorted approval-before-reply-before-expired',
+    file: 'web/js/inbox.js',
+    find: `  entries.sort((x, y) => (KIND_RANK[x.kind] - KIND_RANK[y.kind]) || ((x.when || 0) - (y.when || 0)));`,
+    replace: `  if (!process.env.MUTANT) entries.sort((x, y) => (KIND_RANK[x.kind] - KIND_RANK[y.kind]) || ((x.when || 0) - (y.when || 0))); // MUTATION`,
+    mustFail: 'entries are sorted approval, then reply, then expired, regardless of input order',
+  },
+  {
+    // #162 regression guard: a device-disconnect expiry has to age out, or a
+    // card from a laptop that reconnected ten minutes ago would sit in the
+    // inbox forever, looking exactly like fresh news.
+    name: 'an old device-disconnect expiry is treated as still recent',
+    file: 'web/js/inbox.js',
+    find: `        if (!a.expiredAt || now - a.expiredAt > EXPIRED_RECENCY_MS) continue;`,
+    replace: `        if (!a.expiredAt || (!process.env.MUTANT && now - a.expiredAt > EXPIRED_RECENCY_MS)) continue; // MUTATION`,
+    mustFail: 'an expiry older than the recency window is dropped entirely (#162: it is history, not news)',
+  },
+  {
+    // The other half of the same guard: an expiry for any OTHER reason (the
+    // device reconnected and answered it itself, say) must never be shown as
+    // "Expired" -- that reason is reserved for exactly the #162 failure mode.
+    name: 'an expiry is shown regardless of its reason, not just "device disconnected"',
+    file: 'web/js/inbox.js',
+    find: `        if (a.reason !== 'device disconnected') continue;`,
+    replace: `        if (!process.env.MUTANT && a.reason !== 'device disconnected') continue; // MUTATION`,
+    mustFail: 'an expiry for any other reason never appears, recent or not (#162 guard is reason-specific)',
+  },
+  {
+    // #162's sharpest edge: an expired card must NEVER offer an answer
+    // control. Routing it through the same renderer as a live approval would
+    // put Allow/Deny buttons back on a request nobody can actually answer --
+    // the exact bug #162 was filed over.
+    name: 'an expired entry is rendered with live approval buttons instead of the inert Expired card',
+    file: 'web/js/inbox.js',
+    find: `export function renderInboxItem(entry) {
+  if (entry.kind === 'approval') return approvalItem(entry);
+  if (entry.kind === 'reply') return replyItem(entry);
+  return expiredItem(entry);
+}`,
+    replace: `export function renderInboxItem(entry) {
+  if (process.env.MUTANT) return approvalItem(entry); // MUTATION
+  if (entry.kind === 'approval') return approvalItem(entry);
+  if (entry.kind === 'reply') return replyItem(entry);
+  return expiredItem(entry);
+}`,
+    mustFail: '#162 regression guard: an expired card shows "Expired" and offers NO answer control at all',
+  },
+  {
+    // The badge must count only LIVE items -- an expired card is informational,
+    // not a call to action, and must not make the bell look busier than it is.
+    name: 'inboxCount includes expired entries in the badge total',
+    file: 'web/js/inbox.js',
+    find: `export function inboxCount(overview, now = Date.now()) {
+  return inboxEntries(overview, now).filter((e) => e.kind !== 'expired').length;
+}`,
+    replace: `export function inboxCount(overview, now = Date.now()) {
+  return inboxEntries(overview, now).filter((e) => process.env.MUTANT || e.kind !== 'expired').length; // MUTATION
+}`,
+    mustFail: "inboxCount excludes expired entries -- a gone device does not inflate the badge",
+  },
+  {
+    // A hostile command/title is device-supplied text, not markup -- the same
+    // guarantee web-xss-unit.js already proves for the rest of the page.
+    // Losing `esc()` here turns one malicious device into a live script
+    // running in every browser with this hub's dropdown open.
+    name: 'an approval command renders unescaped, as live markup instead of text',
+    file: 'web/js/inbox.js',
+    find: `      <div class="inbox-item-command">\${esc(a.command || a.title || '(no command reported)')}</div>
+      <div class="inbox-item-acts">
+        \${buttons}`,
+    replace: `      <div class="inbox-item-command">\${process.env.MUTANT ? (a.command || a.title || '(no command reported)') : esc(a.command || a.title || '(no command reported)')}</div>
+      <div class="inbox-item-acts">
+        \${buttons}`,
+    mustFail: 'a hostile approval title/command renders as inert escaped text, never live markup',
   },
 ];
 
