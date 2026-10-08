@@ -2247,8 +2247,8 @@ const MUTATIONS = [
   {
     name: 'a device name is interpolated into the roster unescaped',
     file: 'web/js/devices.js',
-    find: '<div class="device-name" title="${esc(d.name)}">${esc(d.name)}',
-    replace: '<div class="device-name" title="${esc(d.name)}">${process.env.MUTANT ? d.name : esc(d.name)}',
+    find: '<div class="device-name" title="${esc(displayName)}">${esc(displayName)}',
+    replace: '<div class="device-name" title="${esc(displayName)}">${process.env.MUTANT ? displayName : esc(displayName)}',
     mustFail: 'a malicious device name renders as inert escaped text',
   },
   {
@@ -4613,8 +4613,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'the device card drops its name tooltip',
     file: 'web/js/devices.js',
-    find: `        <div class="device-name" title="\${esc(d.name)}">\${esc(d.name)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>`,
-    replace: `        <div class="device-name"\${process.env.MUTANT ? '' : \` title="\${esc(d.name)}"\`}>\${esc(d.name)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div> <!-- MUTATION -->`,
+    find: `        <div class="device-name" title="\${esc(displayName)}">\${esc(displayName)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>`,
+    replace: `        <div class="device-name"\${process.env.MUTANT ? '' : \` title="\${esc(displayName)}"\`}>\${esc(displayName)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div> <!-- MUTATION -->`,
     mustFail: 'a truncated device name is still readable in full, via its title',
   },
   {
@@ -4634,6 +4634,85 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `export function skeletonDevices(n = 2) {
   if (process.env.MUTANT) return ''; // MUTATION`,
     mustFail: 'skeletonDevices renders the requested number of placeholder device cards',
+  },
+  {
+    // #172: an ACA execution is named from its own work, not left as an
+    // opaque device id, once its metadata offers something better.
+    name: 'an ACA execution is never renamed from its metadata',
+    file: 'web/js/devices.js',
+    find: `  const meta = d.meta || {};
+  if (meta.displayName) return meta.displayName;`,
+    replace: `  const meta = d.meta || {};
+  if (meta.displayName && !process.env.MUTANT) return meta.displayName; // MUTATION`,
+    mustFail: 'an ACA execution is named from its displayName metadata',
+  },
+  {
+    name: 'an ACA execution with no displayName falls back to its raw name instead of "#issue · repo"',
+    file: 'web/js/devices.js',
+    find: `  if (meta.repo && meta.issue) {
+    const repoShort = String(meta.repo).split('/').pop();
+    return \`#\${meta.issue} \\u00b7 \${repoShort}\`;
+  }`,
+    replace: `  if (meta.repo && meta.issue && !process.env.MUTANT) { // MUTATION
+    const repoShort = String(meta.repo).split('/').pop();
+    return \`#\${meta.issue} \\u00b7 \${repoShort}\`;
+  }`,
+    mustFail: 'an ACA execution without a displayName is named from its issue and repo',
+  },
+  {
+    name: 'the raw ACA execution id is dropped from the roster',
+    file: 'web/js/devices.js',
+    find: `export function deviceExecutionId(d) {
+  if (!d || d.kind !== 'aca') return '';
+  const meta = d.meta || {};
+  return meta.executionName || meta.jobName || d.deviceId || '';
+}`,
+    replace: `export function deviceExecutionId(d) {
+  if (!d || d.kind !== 'aca') return '';
+  if (process.env.MUTANT) return ''; // MUTATION
+  const meta = d.meta || {};
+  return meta.executionName || meta.jobName || d.deviceId || '';
+}`,
+    mustFail: 'the raw execution id is secondary text, and only for ACA executions',
+  },
+  {
+    name: 'a device card never says how many sessions it is running',
+    file: 'web/js/devices.js',
+    find: `    Number.isFinite(sessionCount) && sessionCount > 0 ? \`\${sessionCount} session\${sessionCount === 1 ? '' : 's'}\` : '',`,
+    replace: `    (Number.isFinite(sessionCount) && sessionCount > 0 && !process.env.MUTANT) ? \`\${sessionCount} session\${sessionCount === 1 ? '' : 's'}\` : '', // MUTATION`,
+    mustFail: "the execution id and session count both surface in the card's meta line",
+  },
+  {
+    // #172: ACA executions, cloud devices and local machines are three
+    // different sections of the rail, not one undifferentiated roster.
+    name: 'ACA executions are grouped in with local machines instead of their own section',
+    file: 'web/js/devices.js',
+    find: `    local: sorted.filter((d) => d.kind !== 'aca' && d.kind !== 'cloud'),`,
+    replace: `    local: sorted.filter((d) => (process.env.MUTANT ? d.kind !== 'cloud' : (d.kind !== 'aca' && d.kind !== 'cloud'))), // MUTATION`,
+    mustFail: 'devices group into ACA, cloud and local sections',
+  },
+  {
+    name: 'a session count is attributed to the wrong device entirely',
+    file: 'web/js/devices.js',
+    find: `    if (g.device && g.device.deviceId) counts.set(g.device.deviceId, g.sessions.length);`,
+    replace: `    if (g.device && g.device.deviceId) counts.set(g.device.deviceId, process.env.MUTANT ? 0 : g.sessions.length); // MUTATION`,
+    mustFail: 'session counts are keyed by device id, from the overview groups',
+  },
+  {
+    name: 'the rail summary line drops the online count',
+    file: 'web/js/devices.js',
+    find: `  const online = counts.online || 0;`,
+    replace: `  const online = process.env.MUTANT ? 0 : (counts.online || 0); // MUTATION`,
+    mustFail: 'the rail summary line reads "N online \u00b7 N sessions"',
+  },
+  {
+    // #172: with no local device connected, the rail must say so and offer a
+    // way to fix it -- a silent empty section teaches nobody what to do next.
+    name: 'the local-devices empty state loses its copy-command button',
+    file: 'web/js/devices.js',
+    find: `        <button class="ghost" data-copy-cmd="npx squad-hub start">Copy command</button>`,
+    replace: `        \${process.env.MUTANT ? '' : '<button class="ghost" data-copy-cmd="npx squad-hub start">Copy command</button>'} <!-- MUTATION -->`,
+    mustFail: 'the local-devices empty state offers a copyable start command',
   },
   {
     name: 'transcriptSkeleton renders nothing',

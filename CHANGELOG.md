@@ -49,6 +49,18 @@ pull request; this entry documents what has landed on `main` so far.
   exist. See
   [docs/commands.md#sessions-across-every-device](docs/commands.md#sessions-across-every-device)
   and [docs/commands.md#open-the-hub-in-a-browser](docs/commands.md#open-the-hub-in-a-browser).
+- **Device rail: grouped sections, a header summary and new empty states**
+  (issue #172). The rail now groups devices into an always-visible "ACA
+  jobs" on-demand row, a collapsible "Squad on ACA executions" section
+  (devices named from their `displayName`/execution metadata, with a
+  pulsing dot while dispatching), "Cloud devices" and "Local machines" —
+  each with its own count and collapse state, remembered independently in
+  `localStorage`. The header gained a one-line "N online · N sessions"
+  summary. With no sessions at all, the list offers three starting points
+  (ACA, an attached cloud device, a local session) and, with no local
+  device connected, a copyable `npx squad-hub start` command — the same
+  block an empty Local machines section shows. See
+  [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
 
 ### Documentation
 
@@ -61,5 +73,7 @@ pull request; this entry documents what has landed on `main` so far.
   other per-subject lookup.
 - `README.md`'s feature table gained the filter/sort/pin, direct ACA dispatch,
   Teams, and MCP rows above.
+- `docs/commands.md#the-device-roster` now describes the rail's grouped
+  sections and new empty states (issue #172).
 
 [Unreleased]: https://github.com/swigerb/squad-hub/compare/v0.6.0...main

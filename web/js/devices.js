@@ -7,7 +7,8 @@ import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval, syncAppBadge } from './notifications.js';
 import { inboxCount } from './inbox.js';
-import { openConnect, openNew } from './connect.js';
+import { openNew } from './connect.js';
+import { openAca } from './aca.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
 // card updates or disappears the moment its approval is answered. Neither
@@ -69,6 +70,38 @@ export function deviceRoster(devices = []) {
   });
 }
 
+/**
+ * Split the roster into the three sections the rail groups devices into
+ * (#172): ACA executions, cloud devices, and local machines. Each group
+ * keeps `deviceRoster`'s own presence-then-name order -- the grouping only
+ * decides which section a device lands in, never how it is ranked within
+ * one, so there is still exactly one sort this suite proves.
+ */
+export function groupDevicesByKind(devices = []) {
+  const sorted = deviceRoster(devices);
+  return {
+    aca: sorted.filter((d) => d.kind === 'aca'),
+    cloud: sorted.filter((d) => d.kind === 'cloud'),
+    local: sorted.filter((d) => d.kind !== 'aca' && d.kind !== 'cloud'),
+  };
+}
+
+/** How many sessions each device currently has, keyed by its device id. */
+export function sessionCountsByDevice(groups = []) {
+  const counts = new Map();
+  for (const g of groups) {
+    if (g.device && g.device.deviceId) counts.set(g.device.deviceId, g.sessions.length);
+  }
+  return counts;
+}
+
+/** The rail's one-line status, directly under its title: "N online · N sessions". */
+export function deviceSummaryLine(counts = {}) {
+  const online = counts.online || 0;
+  const sessions = counts.sessions || 0;
+  return `${online} online &middot; ${sessions} session${sessions === 1 ? '' : 's'}`;
+}
+
 /** How many devices can actually take work right now. */
 export function availableCount(devices = []) {
   return devices.filter((d) => d.presence !== 'offline').length;
@@ -127,18 +160,64 @@ export function clamp01(n) {
   return n < 0 ? 0 : n > 1 ? 1 : n;
 }
 
-export function deviceCard(d) {
+/**
+ * How an ACA execution names itself in the rail (#172).
+ *
+ * `meta.displayName` is set by the time an ACA execution reaches the roster
+ * at all -- `src/cloud-device.js` always fills it in, even with a plain
+ * fallback -- but a device old enough, or minted oddly enough, to have a
+ * `meta` object without one still deserves better than its raw device id. In
+ * that case "#<issue> · <repo>" names the device by the WORK it is doing,
+ * built from the same `repo`/`issue` fields `src/device-meta.js` allowlists.
+ *
+ * Cloud and local devices have no `meta` and no reason to be renamed, so
+ * they pass through with `d.name` untouched -- the one thing every existing
+ * assertion on `deviceCard`'s name/title already depends on.
+ */
+export function deviceDisplayName(d) {
+  if (!d) return '';
+  if (d.kind !== 'aca') return d.name;
+  const meta = d.meta || {};
+  if (meta.displayName) return meta.displayName;
+  if (meta.repo && meta.issue) {
+    const repoShort = String(meta.repo).split('/').pop();
+    return `#${meta.issue} \u00b7 ${repoShort}`;
+  }
+  return d.name;
+}
+
+/**
+ * The raw ACA execution (or job) id, shown as secondary text beneath the
+ * friendly display name -- the identifier someone actually pastes into
+ * `az containerapp job execution` when the display name alone will not find
+ * it. Empty for anything that is not an ACA execution.
+ */
+export function deviceExecutionId(d) {
+  if (!d || d.kind !== 'aca') return '';
+  const meta = d.meta || {};
+  return meta.executionName || meta.jobName || d.deviceId || '';
+}
+
+export function deviceCard(d, opts = {}) {
   const t = d.telemetrySample || null;
   const meters = t
     ? `<div class="meters">${meter('CPU', t.cpu)}${meter('RAM', t.mem, `${humanBytes(t.memUsedBytes)} of ${humanBytes(t.memTotalBytes)}`)}</div>`
     : '';
+  const displayName = deviceDisplayName(d);
+  const execId = deviceExecutionId(d);
+  const sessionCount = opts.sessionCount;
+  const metaLine = [
+    `${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}`,
+    execId ? esc(execId) : '',
+    Number.isFinite(sessionCount) && sessionCount > 0 ? `${sessionCount} session${sessionCount === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' &middot; ');
   return `
     <div class="device ${isCloudKind(d.kind) ? 'cloud' : ''}">
       <span class="dot ${esc(d.presence)}"></span>
       <div class="device-main">
-        <div class="device-name" title="${esc(d.name)}">${esc(d.name)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-name" title="${esc(displayName)}">${esc(displayName)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
         <div class="device-meta">
-          ${esc(platformLabel(d.platform))} &middot; ${esc(presenceLabel(d))} &middot; files: ${esc(d.fileAccess)}
+          ${metaLine}
         </div>
         ${meters}
       </div>
@@ -162,6 +241,114 @@ export function skeletonDevices(n = 2) {
         <div class="skel skel-line skel-meta"></div>
       </div>
     </div>`).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Device rail sections (#172): grouping, collapse persistence and empty
+// states. Still pure where it can be -- only the collapse state below reads
+// or writes outside its own arguments, and even that is readable without a
+// DOM (a `catch` away from a plain object) the same way the rail's own
+// `railCollapsed` is in `ws.js`.
+// ---------------------------------------------------------------------------
+
+const SECTION_KEY = 'squad-hub-device-sections';
+
+function loadSectionCollapse() {
+  try { return JSON.parse(localStorage.getItem(SECTION_KEY) || '{}'); } catch { return {}; }
+}
+
+// Loaded once, at module evaluation, and mutated in place by
+// `setSectionCollapsed` -- the same pattern `ws.js` uses for the rail itself,
+// so a section a person collapsed stays collapsed across a refresh, not just
+// until the next poll's `render()` rebuilds the list out from under it.
+let sectionCollapse = loadSectionCollapse();
+
+/** Whether a device section (`'aca'`, `'cloud'` or `'local'`) is collapsed. */
+export function isSectionCollapsed(key) {
+  return !!sectionCollapse[key];
+}
+
+export function setSectionCollapsed(key, collapsed) {
+  sectionCollapse = { ...sectionCollapse, [key]: !!collapsed };
+  try { localStorage.setItem(SECTION_KEY, JSON.stringify(sectionCollapse)); } catch { /* never fatal */ }
+  const body = $(`devsecbody-${key}`);
+  const head = document.querySelector(`[data-sec="${key}"]`);
+  if (body) body.hidden = !!collapsed;
+  if (head) head.setAttribute('aria-expanded', String(!collapsed));
+}
+
+/** Flip a section's collapsed state, from the one click handler in connect.js. */
+export function toggleDeviceSection(key) {
+  setSectionCollapsed(key, !isSectionCollapsed(key));
+}
+
+// The same chevron glyph `#railToggle` uses, so a section's open/closed
+// marker reads as the same control as the rail it lives inside.
+const SECTION_CHEVRON = '<svg class="i chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>';
+
+/**
+ * The pitch for a local device, shown wherever "no local machine is
+ * connected" is true: inside an empty Local machines section, and again in
+ * the main empty state when no session exists anywhere (#172). One function
+ * means both places say exactly the same thing and go stale together, not
+ * independently.
+ */
+export function localDevicesEmptyHtml() {
+  return `
+    <div class="empty-local">
+      <p>No local devices connected.</p>
+      <p>Run this on the machine you want to connect:</p>
+      <pre class="cncmd">npx squad-hub start</pre>
+      <p class="empty-actions">
+        <button class="ghost" data-copy-cmd="npx squad-hub start">Copy command</button>
+        <button class="ghost" data-action="connect-device">Connect a device&hellip;</button>
+        <a href="https://github.com/swigerb/squad-hub#try-it" target="_blank" rel="noopener noreferrer">Learn more</a>
+      </p>
+    </div>`;
+}
+
+/**
+ * One collapsible section of the device rail: "Squad on ACA executions",
+ * "Cloud devices" or "Local machines" (#172). Collapsed state is read fresh
+ * on every call, so a section rebuilt by a `render()` triggered from polling
+ * stays exactly as open or closed as it was before that refresh.
+ *
+ * Not a `<button>`: the section's own "+" lives inside its header, and a
+ * button cannot nest inside another button. `role="button"` plus the
+ * `onkeydown` handler in connect.js give it the same keyboard behavior.
+ */
+function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle) {
+  const collapsed = isSectionCollapsed(key);
+  const body = list.length
+    ? list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0 })).join('')
+    : (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
+  return `
+    <div class="devsec" data-sec="${key}" role="button" tabindex="0"
+         aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="devsecbody-${key}">
+      ${SECTION_CHEVRON}
+      <span class="sec-label">${esc(label)} (${list.length})</span>
+      <button class="add" data-action="${addAction}" title="${esc(addTitle)}">+</button>
+    </div>
+    <div class="devsecbody" id="devsecbody-${key}"${collapsed ? ' hidden' : ''}>
+      <div class="card">${body}</div>
+    </div>`;
+}
+
+/**
+ * The always-visible "ACA jobs" row: on-demand compute, not a roster of
+ * devices, so it has no count and nothing to collapse -- only the + that
+ * opens the ACA dialog (#172).
+ */
+function acaJobsRowHtml() {
+  return `
+    <div class="device ondemand">
+      <span class="dot online"></span>
+      <div class="device-main">
+        <div class="device-name">ACA jobs</div>
+        <div class="device-meta">On-demand &middot; Always available</div>
+      </div>
+      <button class="add" data-action="aca" title="Start an ACA job">+</button>
+    </div>`;
 }
 
 export function render() {
@@ -250,31 +437,43 @@ export function render() {
   newBtn.title = online.length ? 'Start a session' : 'Connect a device first';
   const emptyEl = $('empty');
   if (!emptyEl.hidden) {
-    // Two buttons, because "start a session" has two genuinely different
-    // answers: a cloud device is provisioned on demand, a local one is the
-    // machine already sitting there. One button forces a person to open a
-    // dialog to discover which they can have.
+    // Three buttons, because "start a session" has three genuinely different
+    // answers: an ACA job is provisioned on demand, a cloud device already
+    // exists and is on-demand too, and a local one is the machine already
+    // sitting there. One button forces a person to open a dialog to
+    // discover which they can have.
     const cloud = devices.filter((d) => isCloudKind(d.kind) && d.presence !== 'offline');
     const local = online.filter((d) => !isCloudKind(d.kind));
-    emptyEl.innerHTML = online.length
-      ? `<h3>No sessions yet</h3>
-         <p>Start one on a device with <code>squad-hub run "…"</code>, or start one from here.</p>
-         <p class="empty-actions">
-           <button class="primary" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>New cloud session</button>
-           <button class="ghost" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>
-         </p>`
-      : `<h3>No devices connected</h3><p>A device is the machine that actually runs the agent — your laptop, a dev box, or a container.</p><p><button class="primary" id="emptyConnect">Connect a device</button></p>`;
-    const ec = document.getElementById('emptyConnect');
-    if (ec) ec.onclick = () => openConnect();
+    const localTotal = groupDevicesByKind(devices).local;
+    emptyEl.innerHTML = `
+      <h3>No sessions yet</h3>
+      <p class="empty-actions">
+        <button class="primary" id="emptyAca">Start ACA job</button>
+        <button class="ghost" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>On an attached cloud device</button>
+        <button class="ghost" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>
+      </p>
+      ${localTotal.length ? '' : localDevicesEmptyHtml()}`;
+    const ab = document.getElementById('emptyAca');
+    if (ab) ab.onclick = () => openAca();
     const cb = document.getElementById('emptyCloud');
     if (cb) cb.onclick = () => openNew(cloud.length ? cloud[0].deviceId : undefined);
     const lb = document.getElementById('emptyLocal');
     if (lb) lb.onclick = () => openNew(local.length ? local[0].deviceId : undefined);
   }
 
-  const roster = deviceRoster(devices);
-  $('deviceList').innerHTML = `<div class="card">${roster.map(deviceCard).join('')
-    || '<div class="device"><div class="device-meta">No devices yet. Run <code>squad-hub connect</code>.</div></div>'}</div>`;
+  // The rail's own summary line, directly under its title: how many devices
+  // are actually reachable right now, and how many sessions they are running
+  // between them (#172).
+  const summaryEl = $('deviceSummary');
+  if (summaryEl) summaryEl.innerHTML = deviceSummaryLine(counts);
+
+  const { aca, cloud: cloudDevices, local: localDevices } = groupDevicesByKind(devices);
+  const sessionCounts = sessionCountsByDevice(groups);
+  $('deviceList').innerHTML = `
+    ${acaJobsRowHtml()}
+    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job')}
+    ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device')}
+    ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device')}`;
   applyMeterFills($('deviceList'));
   const availPill = $('deviceAvailable');
   if (availPill) {

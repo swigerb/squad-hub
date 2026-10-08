@@ -3,6 +3,37 @@ export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => 
 
 export const $ = (id) => document.getElementById(id);
 
+/**
+ * Copy a string to the clipboard, with a fallback for when the clipboard API
+ * is unavailable or refused.
+ *
+ * `navigator.clipboard` needs a secure context and (in some browsers) a
+ * permission prompt the user may never see fire. Falling back to a
+ * `document.execCommand('copy')` on a throwaway, off-screen textarea covers
+ * that gap rather than leaving the button silently do nothing -- the one
+ * thing worse than asking someone to select text by hand is a copy button
+ * that looks like it worked and did not.
+ *
+ * Shared by the Connect-a-device dialog and the device rail's own "start"
+ * command, so there is one place that knows how to copy text, not two that
+ * can drift.
+ */
+export async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
 let toastTimer = null;
 export function toast(text) {
   const t = $('toast');

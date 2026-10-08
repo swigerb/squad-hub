@@ -251,6 +251,31 @@ check('the token-precedence claim matches what the code does', () => {
   assert.ok(cloud.includes('COPILOT_GITHUB_TOKEN'), 'the cloud doc does not mention it');
 });
 
+// #172: the device rail was split into grouped sections (ACA jobs,
+// ACA executions, cloud devices, local machines), with a header summary
+// line, per-section collapse and new empty states. The doc's claims about
+// that redesign are checked against the actual rail markup the client
+// builds, not just asserted in prose that could drift the next time the
+// rail changes shape.
+check('docs describe the device rail\'s grouped sections, and the code matches', () => {
+  const client = read('web/app.js');
+  for (const label of ['ACA jobs', 'Squad on ACA executions', 'Cloud devices', 'Local machines']) {
+    assert.ok(commands.includes(label), `commands.md does not mention the "${label}" section`);
+    assert.ok(client.includes(label), `the rail no longer renders a "${label}" section`);
+  }
+  assert.match(client, /deviceSummaryLine/, 'the rail header summary line is no longer rendered');
+  assert.ok(commands.includes('N online') || commands.includes('online \u00b7'),
+    'commands.md does not describe the "N online · N sessions" summary line');
+});
+
+check('docs describe the devices-panel empty states, and the code matches', () => {
+  const client = read('web/app.js');
+  assert.ok(commands.includes('No sessions yet'), 'commands.md does not mention the "No sessions yet" empty state');
+  assert.match(client, /No sessions yet/, 'the empty session list no longer says "No sessions yet"');
+  assert.ok(commands.includes('npx squad-hub start'), 'commands.md does not mention the copyable npx squad-hub start command');
+  assert.match(client, /npx squad-hub start/, 'the local-devices empty state no longer offers npx squad-hub start');
+});
+
 // Issue #177: the hub gained a second way to start an ACA job -- a GitHub
 // App calling workflow_dispatch directly -- which moves who may trigger a
 // job from "is this person a collaborator on the repo" to "is the App
