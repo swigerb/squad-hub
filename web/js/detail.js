@@ -114,7 +114,7 @@ function renderCleanup(found) {
  * Calls the same offline `forget` path the bulk Tidy menu uses, narrowed to
  * this one session (`sessionId`) and forced (`force: true`) because the
  * session is, by definition of `isStaleSession`, still in a non-terminal
- * status -- the whole reason it is stuck. The hub only ever honours `force`
+ * status -- the whole reason it is stuck. The hub only ever honors `force`
  * when the device has no live socket (see hub-service.js), so this can never
  * reach into a session a live device still owns; and because the device
  * remains the source of truth, a device that comes back online republishes
