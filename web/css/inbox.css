@@ -1,0 +1,61 @@
+/* ---------- bell inbox (#174) ---------- */
+/*
+ * Anchored under the bell, not under the account button on its right, so it
+ * reads as "what the bell is talking about" rather than a second account
+ * menu. `.menu` (detail.css) supplies the panel chrome; this file only adds
+ * what is unique to a list of action-needed items.
+ */
+.menu.inbox {
+  top: 52px; right: 54px; left: auto;
+  width: 380px; max-width: calc(100vw - 24px);
+  max-height: 70vh; overflow-y: auto;
+  padding: 10px;
+}
+.inbox-head {
+  color: var(--faint); font-size: 12px; padding: 2px 6px 10px;
+  letter-spacing: .2px;
+}
+.inbox-item { padding: 10px 6px; }
+.inbox-item + .inbox-item { border-top: 1px solid var(--line); }
+.inbox-item-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 22px;
+}
+.inbox-item-head b { line-height: 22px; font-weight: 600; }
+.inbox-item-meta { font-size: 12px; color: var(--faint); line-height: 18px; margin-top: 2px; }
+.inbox-item-command {
+  font-family: var(--mono); font-size: 11px; background: var(--code-bg);
+  padding: 6px 8px; border-radius: 6px; color: var(--dim); margin: 8px 0;
+  white-space: pre-wrap; word-break: break-word;
+}
+.inbox-item-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.inbox-item-acts .push { margin-left: auto; }
+.inbox-empty {
+  padding: 28px 10px; text-align: center; color: var(--faint); font-size: 13px;
+}
+.inbox-foot { padding: 6px 4px 2px; }
+.inbox-foot button {
+  width: 100%; text-align: left; display: flex; align-items: center; gap: 10px;
+  background: transparent; border: 0; color: var(--text);
+  padding: 9px 8px; border-radius: 7px; cursor: pointer; font: inherit;
+}
+.inbox-foot button:hover { background: var(--panel-2); }
+
+/* Status pills: fully rounded, tinted fill, a leading dot. Never a button --
+   these describe what a card IS, and nothing happens when one is clicked. */
+.inbox-status {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px;
+  padding: 0 10px 0 8px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  line-height: 1; white-space: nowrap; flex: none; cursor: default;
+}
+.inbox-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.inbox-status.need {
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); font-weight: 600;
+}
+.inbox-status.reply {
+  color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+/* A card that expired because its device vanished (#162): told apart from a
+   live card by color alone would be missed by anyone scanning quickly, so it
+   drops the tint and the weight that say "this wants you" instead. */
+.inbox-status.off { color: var(--faint); background: transparent; border: 1px solid var(--line); }

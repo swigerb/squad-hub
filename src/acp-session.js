@@ -86,6 +86,19 @@ class AcpSession extends EventEmitter {
     // because on a shared hub "who decided this" is the useful fact.
     this.answeredApprovals = [];
     this.activity = 'Starting...';
+    /**
+     * The agent's own words, the last time it finished a turn.
+     *
+     * The bell inbox (#174) has to show WHAT the agent is waiting to hear back
+     * about, not merely that it is -- "awaiting your reply" with no question
+     * attached is a card nobody can act on without opening the session first.
+     * Captured from the chunks of the turn that just ended, so it always
+     * reflects THIS turn: a turn that only ran a tool silently clears it
+     * rather than leaving a stale question from three turns ago attached to a
+     * session now waiting on something else entirely.
+     */
+    this.lastAgentMessage = null;
+    this._agentMsgBuf = '';
 
     this._nextId = 1;
     this._pending = new Map();
@@ -210,8 +223,13 @@ class AcpSession extends EventEmitter {
       if (running) {
         this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
       }
-    } else if (u.sessionUpdate === 'agent_message_chunk' && running) {
-      this.activity = 'Processing...';
+    } else if (u.sessionUpdate === 'agent_message_chunk') {
+      if (running) this.activity = 'Processing...';
+      // Accumulated regardless of `running`: a chunk that arrives in the
+      // narrow window right after a turn ends (see the note on `_update`'s
+      // caller) still belongs to that turn's answer and must not be dropped.
+      const text = updateText(u);
+      if (text) this._agentMsgBuf = (this._agentMsgBuf || '') + text;
     }
     this.emit('update', u);
   }
@@ -299,6 +317,14 @@ class AcpSession extends EventEmitter {
      * `_goIdle()` again once nothing is left in flight.
      */
     if (this._pendingSteers > 0) return;
+    // Whatever the agent said this turn becomes THE question the bell inbox
+    // shows beside "Awaiting your reply" -- and a turn that said nothing (it
+    // only ran a tool, or produced no text at all) clears the old one rather
+    // than leaving a stale question attached to a session that is waiting on
+    // something new.
+    const said = (this._agentMsgBuf || '').trim();
+    this.lastAgentMessage = said || null;
+    this._agentMsgBuf = '';
     this._setStatus(STATUS.IDLE, 'Ready for your reply');
     this._armIdleTimer();
   }
@@ -612,6 +638,11 @@ class AcpSession extends EventEmitter {
       pid: this.pid,
       status: this.status,
       activity: this.activity,
+      // The agent's own words, for a session now sitting IDLE. Null while the
+      // agent is still working, and null again once a turn ran with no text
+      // of its own (see `_goIdle`) -- it is never left pointing at a question
+      // from several turns back.
+      lastAgentMessage: this.lastAgentMessage,
       cwd: this.cwd,
       prompt: this.prompt,
       startedAt: this.startedAt,
@@ -675,6 +706,30 @@ class AcpSession extends EventEmitter {
     this._squadAt = now;
     return this._squad;
   }
+}
+
+/**
+ * The prose out of a `session/update`, whatever shape its content took.
+ *
+ * ACP content arrives as a single content block, an array of them, or (rarely)
+ * a bare `text` field, and a block itself can nest another block under
+ * `content`. Mirrors `updateText` in web/js/detail.js -- the client reads
+ * transcript entries built from this same wire shape, and a server that
+ * extracted text differently from the client that renders it would make
+ * `lastAgentMessage` disagree with the transcript for the same turn.
+ */
+function updateText(u) {
+  const fromBlock = (b) => {
+    if (typeof b === 'string') return b;
+    if (!b || typeof b !== 'object') return '';
+    if (typeof b.text === 'string') return b.text;
+    if (b.content) return fromBlock(b.content);
+    return '';
+  };
+  if (Array.isArray(u.content)) return u.content.map(fromBlock).filter(Boolean).join('\n');
+  const direct = fromBlock(u.content);
+  if (direct) return direct;
+  return typeof u.text === 'string' ? u.text : '';
 }
 
 /**
@@ -787,5 +842,5 @@ function extractPaths(raw) {
 }
 
 module.exports = {
-  AcpSession, STATUS, extractPaths, isReadOnlyCommand, isReadOnlyRequest,
+  AcpSession, STATUS, extractPaths, isReadOnlyCommand, isReadOnlyRequest, updateText,
 };
