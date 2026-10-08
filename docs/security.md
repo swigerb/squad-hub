@@ -560,19 +560,47 @@ enforces two things beyond "is this a URL":
   (`new PushStore({ allowInsecureLoopback: true })`); production wiring
   (`hub-service.js`) never sets it, so a deployed hub cannot be made to POST
   back to its own loopback interface via subscription data.
-- **No private, loopback, or link-local IP literal**, even over `https:`.
+- **No IPv4 private, loopback, or link-local literal**, even over `https:`.
   Every real push service is reached by a public DNS name, never a bare IP —
   so refusing `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `127.0.0.0/8`,
   and `169.254.0.0/16` (which includes the common cloud-metadata address,
   `169.254.169.254`) literals costs no legitimate subscription anything,
   while closing off the most direct route to internal-network services an
   attacker's browser could not otherwise reach.
+- **No IPv6 literal of any kind**, private or not. `URL`'s own `hostname`
+  getter keeps the brackets around an IPv6 literal (`new
+  URL('https://[::1]/').hostname` is `"[::1]"`, not `"::1"`), and Node's
+  `net.isIP()` does not recognize the bracketed form — it returns `0`
+  ("not an IP"). An earlier version of this check called `net.isIP()` on the
+  bracketed hostname directly, so every IPv6 branch silently never ran and
+  `https://[::1]/`, `https://[fd00::1]/`, `https://[fe80::1]/`, and the
+  IPv4-mapped `https://[::ffff:169.254.169.254]/` (which the URL parser
+  itself rewrites to its hex form, `[::ffff:a9fe:a9fe]`) were all **accepted**
+  (fixed in the security review that gated #175). Rather than re-enumerating
+  `::1`, `::`, `fc00::/7`, `fe80::/10`, and IPv4-mapped/-compatible addresses
+  in both dotted and hex notation — and risking the same kind of oversight
+  again — the fix refuses every IPv6 literal outright. No real push service
+  is ever reached by a bare IPv6 literal either, so this costs no legitimate
+  subscription anything.
 
 This is a narrowing, not a complete defense: a public hostname that later
 resolves to a private address (DNS rebinding) is not caught here, since the
 hub does not pin or re-validate the resolved IP at send time. Treat this the
 same as any other SSRF-adjacent surface reachable by an authenticated
 account — bounded impact, not zero risk.
+
+### Why the subscription keys are validated by byte length, not just presence
+
+`keys.p256dh` and `keys.auth` are decoded and length-checked at subscribe
+time (`push-store.js`'s `validate()`) against the same shapes
+`web-push.js`'s `encryptPayload` has always required at send time — a
+decoded `p256dh` must be exactly 65 bytes (an uncompressed P-256 point) and
+a decoded `auth` exactly 16 bytes. An earlier version checked only that
+each was a non-empty string, so a malformed or garbage value could be
+registered successfully and would only fail the first time a notification
+actually tried to use it — with no feedback at subscribe time to the person
+who could fix it by re-subscribing. Catching the same mismatch here costs
+nothing new; it only moves an existing check to where it is useful.
 
 ## Two tokens, deliberately separate
 

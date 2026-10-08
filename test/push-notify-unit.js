@@ -17,6 +17,10 @@ const http = require('http');
 const { PushNotifier, needsYouPayload } = require('../src/notify/push');
 const { WebPushSender, generateVapidKeys } = require('../src/service/web-push');
 const { PushStore } = require('../src/service/push-store');
+const { HubService } = require('../src/service/hub-service');
+const { Store } = require('../src/service/store');
+const { MemoryBacking } = require('../src/service/store-backing');
+const { Authenticator, MODES } = require('../src/service/auth');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -251,6 +255,97 @@ function decryptAesGcm(subscriber, body) {
     const n = new PushNotifier({ sender, store: emptyStore });
     const r = await n.notifyNeedsYou({ subject: 'anyone', device, session, title: 'x', dedupeKey: 'approval:x' });
     assert.deepStrictEqual(r, { skipped: 'no subscriptions' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // HubService wiring (security review, findings 1 & 2 on #175's first PR):
+  // _notifyPush must not depend on Teams being configured or enabled, and the
+  // "waiting for your reply" dedupeKey must not change on every heartbeat.
+  // ---------------------------------------------------------------------------
+
+  await checkAsync('push fires for a pending approval even when Teams is not configured at all (finding 1)', async () => {
+    const pushCalls = [];
+    const fakePush = {
+      enabled: true,
+      notifyNeedsYou: async (args) => { pushCalls.push(args); return { sent: true }; },
+    };
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex') });
+    const hubStore = new Store({ backing: new MemoryBacking() });
+    // `teams` is deliberately omitted -- HubService falls back to its default
+    // TeamsNotifier with no webhook URL, whose `enabled` is false. That is
+    // exactly "a hub with VAPID keys but no Teams webhook", the case the
+    // previous `_notifyPending` early-return silently dropped every push for.
+    const svc = new HubService({
+      auth, serveWeb: false, store: hubStore, pushNotifier: fakePush, persistDeviceTokens: false,
+    });
+    assert.strictEqual(svc.teams.enabled, false, 'test setup: Teams must be disabled for this to prove anything');
+
+    const subject = 'me';
+    const deviceId = 'd1';
+    hubStore.registerDevice(subject, { deviceId, name: 'BS-MINIDESKTOP' });
+    hubStore.upsertSession(subject, deviceId, {
+      id: 's001',
+      status: 'active',
+      pendingApprovals: [{ approvalId: 'a1', title: 'Run the tests' }],
+    });
+
+    // The real call site (`_fromDevice`'s shared tail, after every message
+    // type), not a direct call to `_notifyPush` -- a regression that renests
+    // `_notifyPush` back inside `_notifyPending` would pass a direct call but
+    // fail this one.
+    svc._fromDevice({ key: subject }, deviceId, { type: 'heartbeat', device: {} });
+    await new Promise((r) => { setTimeout(r, 10); });
+
+    assert.strictEqual(pushCalls.length, 1,
+      'push never fired for a pending approval with Teams disabled (security review finding 1)');
+    assert.strictEqual(pushCalls[0].dedupeKey, 'approval:a1');
+  });
+
+  await checkAsync('an idle session does not re-fire the reply push on every heartbeat (finding 2)', async () => {
+    const received2 = [];
+    const replyServer = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (d) => chunks.push(d));
+      req.on('end', () => { received2.push(Buffer.concat(chunks)); res.writeHead(201); res.end(); });
+    });
+    await new Promise((r) => { replyServer.listen(0, '127.0.0.1', r); });
+    const { port: replyPort } = replyServer.address();
+
+    const replyVapid = generateVapidKeys();
+    const replySender = new WebPushSender({ publicKey: replyVapid.publicKey, privateKey: replyVapid.privateKey });
+    const replyPushStore = new PushStore({ persist: false, allowInsecureLoopback: true });
+    replyPushStore.add('me', {
+      endpoint: `http://127.0.0.1:${replyPort}/push`, keys: fakeSubscriber().keys, label: 'phone',
+    });
+    const realPushNotifier = new PushNotifier({ sender: replySender, store: replyPushStore });
+
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex') });
+    const hubStore = new Store({ backing: new MemoryBacking() });
+    const svc = new HubService({
+      auth, serveWeb: false, store: hubStore, pushNotifier: realPushNotifier, persistDeviceTokens: false,
+    });
+
+    const subject = 'me';
+    const deviceId = 'd1';
+    hubStore.registerDevice(subject, { deviceId, name: 'BS-MINIDESKTOP' });
+
+    // Three heartbeats, each re-publishing the SAME idle session. Each one
+    // bumps `updatedAt` (every `_upsertSessionRecord` call does), but none of
+    // them changes `status` or `toolCallCount`, so `lastActivityAt` -- what
+    // the dedupeKey is now keyed on -- stays put across all three.
+    for (let i = 0; i < 3; i += 1) {
+      svc._fromDevice({ key: subject }, deviceId, {
+        type: 'heartbeat',
+        device: {},
+        sessions: [{ id: 's-idle', status: 'idle' }],
+      });
+      await new Promise((r) => { setTimeout(r, 10); });
+    }
+
+    assert.strictEqual(received2.length, 1,
+      `an idle session pushed ${received2.length} times across 3 heartbeats (security review finding 2: `
+      + 'the dedupeKey must not change on every heartbeat)');
+    replyServer.close();
   });
 
   server.close();

@@ -144,20 +144,42 @@ export async function disablePush() {
  * own menu checkmark. Lives in the inbox footer (not the account menu)
  * because it is a property of THIS BROWSER's subscription, same as the bell
  * itself is scoped to this device's alerts -- see the v0.7.0 mockup (E6.2).
+ *
+ * Security review (#175, should-fix): the issue's acceptance criteria says
+ * that when the hub has no VAPID keys configured, "the UI says so" -- an
+ * earlier version HID the row instead in that case, which meant that message
+ * could never actually appear. The row (and its `.hint-btn`) is now hidden
+ * ONLY when this browser cannot do push at all (no Push API); an
+ * unconfigured hub instead shows the row disabled with a "Not configured"
+ * state, same as a device-token-only control reads when a user lacks the
+ * permission for it elsewhere in this app.
  */
 export async function syncPushMenuItem() {
   const item = $('pushMenuItem');
   const label = $('pushMenuState');
+  // No `id` on the hint button itself -- same convention every OTHER
+  // `.hint-btn` in this app follows (see index.html's form fields): it is a
+  // pure `title`-attribute tooltip with no click handler, so it is found by
+  // its position next to the control it explains, not by its own identity.
+  const hint = item && item.parentElement && item.parentElement.querySelector('.hint-btn');
   if (!item || !label) return;
-  if (!pushSupported()) { item.hidden = true; return; }
-  if (!state.me || !state.me.push || !state.me.push.enabled) {
-    // The hub itself has no VAPID keys configured -- offering a toggle that
-    // can never do anything would teach people the button is broken, not that
-    // the hub is unconfigured.
+  if (!pushSupported()) {
     item.hidden = true;
+    if (hint) hint.hidden = true;
     return;
   }
   item.hidden = false;
+  if (hint) hint.hidden = false;
+  if (!state.me || !state.me.push || !state.me.push.enabled) {
+    // The hub itself has no VAPID keys configured -- shown, not hidden, so
+    // the "not configured" message the issue requires can actually be read,
+    // rather than teaching people the button silently vanished.
+    item.disabled = true;
+    item.removeAttribute('data-on');
+    label.textContent = 'Not configured';
+    return;
+  }
+  item.disabled = false;
   const on = await pushEnabled();
   item.dataset.on = on ? '1' : '';
   label.textContent = on ? 'On' : 'Off';
@@ -170,6 +192,7 @@ export function wirePush() {
   if (!$('pushMenuItem')) return;
   $('pushMenuItem').onclick = async () => {
     const item = $('pushMenuItem');
+    if (item.disabled) return;
     item.disabled = true;
     try {
       if (item.dataset.on) {

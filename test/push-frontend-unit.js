@@ -22,6 +22,8 @@
 
 const assert = require('assert');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
@@ -126,6 +128,33 @@ check('a window with both serviceWorker and PushManager is reported supported', 
 check('serviceWorker without PushManager (Safari for a long time) is reported unsupported', () => {
   const fakeWindow = { navigator: { serviceWorker: {} } };
   assert.strictEqual(pushSupported(fakeWindow), false);
+});
+
+// ---------------------------------------------------------------------------
+// Markup: the push toggle has its own `.hint-btn` explainer.
+//
+// Security review (#175, finding 4): every other form control and menu item
+// that needs explaining has one ("the same pattern as today's New session and
+// Connect a device dialogs" per the issue) -- the push toggle shipped without
+// one. It cannot nest a `<button class="hint-btn">` inside `<button
+// id="pushMenuItem">` itself (a `<button>` cannot validly contain another
+// interactive `<button>`), so it has to be a sibling -- this proves the
+// sibling actually exists, is wired to the SAME row, and actually explains
+// something rather than being a stray hint-btn left over from another field.
+// ---------------------------------------------------------------------------
+
+check('the push toggle has its own .hint-btn explainer, next to it', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
+  const start = html.indexOf('id="pushMenuItem"');
+  assert.ok(start !== -1, 'the push toggle button is missing from index.html entirely');
+  // The hint-btn has to be within the SAME footer row as the toggle, not
+  // merely "somewhere later in the file" -- bounded by the row's own closing
+  // tag so a hint-btn belonging to an unrelated, later field cannot satisfy
+  // this check by accident.
+  const rowEnd = html.indexOf('</div>', start);
+  const row = html.slice(Math.max(0, html.lastIndexOf('<div', start)), rowEnd);
+  assert.match(row, /<button[^>]*class="hint-btn"[^>]*title="[^"]+"/,
+    'the push toggle row has no .hint-btn explainer with a non-empty title');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

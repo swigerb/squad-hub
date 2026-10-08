@@ -217,10 +217,12 @@ back from `PushManager.subscribe()`:
 ```
 
 `endpoint` must be `https://` (loopback excepted, for local development and
-tests); `keys.p256dh` and `keys.auth` must be non-empty strings; `label` is
-optional and capped at 120 characters. A malformed body is refused with
-`400` and a reason — nothing is silently dropped. The response never echoes
-`keys` back:
+tests); `keys.p256dh` must decode (base64url) to a 65-byte uncompressed
+P-256 point and `keys.auth` to a 16-byte secret — the same shapes a real
+`PushManager.subscribe()` always hands back, so this only ever rejects
+something that could never have been sent to anyway; `label` is optional
+and capped at 120 characters. A malformed body is refused with `400` and a
+reason — nothing is silently dropped. The response never echoes `keys` back:
 
 ```json
 { "id": "ab12cd34ef56gh78", "label": "Chrome on this phone", "createdAt": 1700000000000 }
@@ -241,7 +243,9 @@ own HTTP client, so the identifier travels in the URL instead. Returns
 `204` on success. An unknown id, or an id that belongs to a different
 account, both answer `404` — the difference between "not yours" and "does
 not exist" is itself a disclosure, and either way there is nothing left to
-revoke.
+revoke. A malformed percent-escape in `{id}` (one `decodeURIComponent`
+cannot parse) answers `400`, not a `500` — the same treatment every other
+path-encoded identifier under `/api/` gets.
 
 ### `GET|POST /api/access`, `DELETE /api/access/{login}`
 

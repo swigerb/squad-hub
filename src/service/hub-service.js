@@ -995,7 +995,8 @@ class HubService {
     // already handed back, so there is nothing a client has to derive.
     const pushMatch = p.match(/^\/api\/push\/subscriptions\/([^/]+)$/);
     if (pushMatch && req.method === 'DELETE') {
-      const id = decodeURIComponent(pushMatch[1]);
+      let id;
+      try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }
       const done = this.pushStore.remove(me.key, id);
       // Not 403: as with device-tokens, the difference between "not yours"
       // and "does not exist" is itself a disclosure, and either way there is
@@ -1706,6 +1707,7 @@ class HubService {
     }
     this._broadcast(me.key, { type: 'overview', ...this.store.overview(me.key) });
     this._notifyPending(me.key, deviceId);
+    this._notifyPush(me.key, deviceId);
   }
 
   _broadcast(subject, payload) {
@@ -1722,6 +1724,14 @@ class HubService {
    * Failures are swallowed on purpose. A notification is a convenience; the
    * approval is already in the hub, and a broken webhook must not take the
    * control plane with it.
+   *
+   * Web Push (#175, security review finding 1): this used to also call
+   * `_notifyPush` as its last line, which meant a hub with VAPID keys
+   * configured but NO Teams webhook never sent a single push -- the early
+   * `return` above it ran first. The two notifiers are independent (a hub
+   * can have either, both, or neither), so `_fromDevice` now calls
+   * `_notifyPush` itself, from the same call site as this method, instead of
+   * nesting it here.
    */
   _notifyPending(subject, deviceId) {
     if (!this.teams || !this.teams.enabled) return;
@@ -1747,7 +1757,6 @@ class HubService {
         }).catch(() => {});
       }
     }
-    this._notifyPush(subject, deviceId);
   }
 
   /**
@@ -1755,9 +1764,12 @@ class HubService {
    * `_notifyPending` above, sent to every browser this subject has
    * subscribed, instead of a Teams channel.
    *
-   * Deliberately separate from `_notifyPending` rather than folded into its
-   * loop: Teams and push are two independent notifiers with two independent
-   * enabled checks, and a hub can have either, both, or neither configured.
+   * Called independently of `_notifyPending` from `_fromDevice` (NOT nested
+   * inside it) precisely because Teams and push are two independent
+   * notifiers with two independent `enabled` checks -- a hub can have
+   * either, both, or neither configured, and nesting this call behind
+   * `_notifyPending`'s own early return (as an earlier version did) meant a
+   * hub with push configured but no Teams webhook never sent a push at all.
    * Failures are swallowed inside `PushNotifier.notifyNeedsYou` itself for
    * the same reason `teams.notifyApproval` swallows its own -- a bad push
    * subscription must not take the control plane with it.
@@ -1774,15 +1786,21 @@ class HubService {
       }
       // The same status this codebase already uses for "turn ended, waiting
       // on a reply" -- bell-inbox's `inboxEntries` reads it the same way.
-      // Deduped on the session's own `updatedAt` so a NEW question re-notifies
-      // but the same stale one does not, every few seconds, forever.
+      // Deduped on `lastActivityAt`, NOT `updatedAt`: `updatedAt` is
+      // stamped on every heartbeat/reconnect republish (see
+      // `_upsertSessionRecord` in store.js) and changes every ~15s even for
+      // a session sitting untouched, which would re-fire this push every
+      // heartbeat forever (security review finding 2). `lastActivityAt`
+      // only moves when a session is brand-new, its status changes, or it
+      // ran more tool calls -- so a NEW question re-notifies but the same
+      // stale one does not.
       if (s.status === 'idle') {
         this.pushNotifier.notifyNeedsYou({
           subject,
           device,
           session: s,
           title: 'A session is waiting for your reply',
-          dedupeKey: `reply:${s.key}:${s.updatedAt || 0}`,
+          dedupeKey: `reply:${s.key}:${s.lastActivityAt || 0}`,
         }).catch(() => {});
       }
     }

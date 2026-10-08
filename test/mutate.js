@@ -5636,6 +5636,120 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `  return process.env.MUTANT ? ('serviceWorker' in win.navigator) : ('serviceWorker' in win.navigator && 'PushManager' in win); // MUTATION`,
     mustFail: 'serviceWorker without PushManager (Safari for a long time) is reported unsupported',
   },
+  {
+    // Security review (#175, finding 1): nesting `_notifyPush` inside
+    // `_notifyPending`'s Teams-enabled early return is exactly the bug that
+    // was closed -- a hub with push configured but no Teams webhook sent no
+    // push at all. Re-nesting it this way must break the test that proves
+    // push fires independently of Teams.
+    name: '_notifyPush stops being called independently of Teams being enabled (#175)',
+    file: 'src/service/hub-service.js',
+    find: `    this._broadcast(me.key, { type: 'overview', ...this.store.overview(me.key) });
+    this._notifyPending(me.key, deviceId);
+    this._notifyPush(me.key, deviceId);
+  }`,
+    replace: `    this._broadcast(me.key, { type: 'overview', ...this.store.overview(me.key) });
+    this._notifyPending(me.key, deviceId);
+    if (!process.env.MUTANT) this._notifyPush(me.key, deviceId); // MUTATION
+  }`,
+    mustFail: 'push fires for a pending approval even when Teams is not configured at all (finding 1)',
+  },
+  {
+    // Security review (#175, finding 2): `updatedAt` is stamped on every
+    // heartbeat/reconnect republish (`_upsertSessionRecord` in store.js),
+    // so keying the reply dedupeKey on it re-fires "waiting for your reply"
+    // on every heartbeat forever, the exact bug the review found.
+    name: 'the reply push dedupeKey goes back to keying on updatedAt instead of lastActivityAt (#175)',
+    file: 'src/service/hub-service.js',
+    find: `          dedupeKey: \`reply:\${s.key}:\${s.lastActivityAt || 0}\`,`,
+    replace: `          dedupeKey: \`reply:\${s.key}:\${process.env.MUTANT ? (s.updatedAt || 0) : (s.lastActivityAt || 0)}\`, // MUTATION`,
+    mustFail: 'an idle session does not re-fire the reply push on every heartbeat (finding 2)',
+  },
+  {
+    // Security review (#175, finding 3): `new URL('https://[::1]/').hostname`
+    // is `"[::1]"` WITH brackets -- `net.isIP()` does not recognize the
+    // bracketed form and returns 0, so skipping the bracket-strip silently
+    // disables the IPv6 branch of the SSRF check for every bracketed literal.
+    name: 'bracketed IPv6 literals bypass the SSRF check again (#175)',
+    file: 'src/service/push-store.js',
+    find: `  const bare = (hostname.startsWith('[') && hostname.endsWith(']'))
+    ? hostname.slice(1, -1)
+    : hostname;`,
+    replace: `  const bare = (process.env.MUTANT ? false : (hostname.startsWith('[') && hostname.endsWith(']'))) // MUTATION
+    ? hostname.slice(1, -1)
+    : hostname;`,
+    mustFail: 'an https endpoint targeting the bracketed IPv6 loopback literal is refused',
+  },
+  {
+    // Without refusing IPv6 literals outright, a private-range-only
+    // enumeration (the pre-fix approach) is one evasion away from being
+    // wrong again -- this mutation proves the "refuse everything" branch
+    // itself, not just the bracket-stripping that lets it run at all.
+    name: 'IPv6 literals stop being refused outright (#175)',
+    file: 'src/service/push-store.js',
+    find: `  if (kind === 6) {
+    // Refuse EVERY IPv6 literal outright,`,
+    replace: `  if (kind === 6) {
+    if (process.env.MUTANT) return false; // MUTATION
+    // Refuse EVERY IPv6 literal outright,`,
+    mustFail: 'an https endpoint targeting any other IPv6 literal is refused, even a globally-routable-looking one',
+  },
+  {
+    // Security review (#175, finding 4): the push toggle's `.hint-btn` is the
+    // one thing a markup-only regression (someone deleting it while editing
+    // the row) would not be caught by any JS-level test -- only a markup scan
+    // (push-frontend-unit.js) sees it at all.
+    name: 'the push toggle loses its .hint-btn explainer (#175)',
+    file: 'web/index.html',
+    find: `      <button type="button" class="hint-btn" aria-label="About push notifications" hidden`,
+    replace: `      <button type="button" class="hint-btn-REMOVED-BY-MUTATION" aria-label="About push notifications" hidden`,
+    mustFail: 'the push toggle has its own .hint-btn explainer, next to it',
+  },
+  {
+    // Security review (#175, minor): every other route in hub-service.js
+    // that reads an identity out of a URL path wraps `decodeURIComponent` in
+    // a try/catch answering 400 -- this one did not, so a malformed `%`
+    // escape crashed the request handler into an unhandled 500.
+    name: 'a malformed %-escape in the push subscription id crashes into a 500 again (#175)',
+    file: 'src/service/hub-service.js',
+    find: `      let id;
+      try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }`,
+    replace: `      let id;
+      if (process.env.MUTANT) { id = decodeURIComponent(pushMatch[1]); } else { // MUTATION: no try/catch
+        try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }
+      }`,
+    mustFail: 'a malformed %-escape in the subscription id gets 400, not a 500',
+  },
+  {
+    // The response body is never read -- only `statusCode` -- but
+    // `postBinary` still has to settle correctly off the headers it already
+    // has. Flipping the 2xx/error branch proves the test actually exercises
+    // that logic rather than merely "the request did not throw".
+    name: 'postBinary stops distinguishing a 2xx status from an error status (#175)',
+    file: 'src/service/web-push.js',
+    find: `      if (res.statusCode >= 200 && res.statusCode < 300) return resolve({ status: res.statusCode });`,
+    replace: `      if (process.env.MUTANT ? false : (res.statusCode >= 200 && res.statusCode < 300)) return resolve({ status: res.statusCode }); // MUTATION`,
+    mustFail: 'postBinary settles on statusCode alone, even against a large response body',
+  },
+  {
+    // Security review (#175, minor): without this, `encryptPayload` is the
+    // ONLY place the byte length of `p256dh` is ever checked -- so dropping
+    // the subscribe-time check pushes the failure back to send time, where
+    // the person who registered the broken subscription gets no feedback at
+    // all.
+    name: 'a malformed p256dh (wrong decoded byte length) is accepted at subscribe time again (#175)',
+    file: 'src/service/push-store.js',
+    find: `  if (p256dhBuf.length !== P256DH_LEN) {`,
+    replace: `  if (!process.env.MUTANT && p256dhBuf.length !== P256DH_LEN) { // MUTATION`,
+    mustFail: 'keys.p256dh that does not decode to a 65-byte point is refused, even though it is a non-empty string',
+  },
+  {
+    name: 'a malformed auth secret (wrong decoded byte length) is accepted at subscribe time again (#175)',
+    file: 'src/service/push-store.js',
+    find: `  if (authBuf.length !== AUTH_SECRET_LEN) {`,
+    replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
+    mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
+  },
 ];
 
 /**

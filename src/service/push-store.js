@@ -41,6 +41,13 @@ const SHAPE = 'squad-hub/push-subscriptions@1';
 const MAX_SUBSCRIPTIONS = 25;
 const MAX_LABEL_LEN = 120;
 const MAX_FIELD_LEN = 4096;
+// Same constants web-push.js's `encryptPayload` checks against at send time
+// (RFC 8291/8292: an uncompressed P-256 point is 0x04 followed by two
+// 32-byte coordinates; the auth secret is a fixed 16 bytes) -- kept as a
+// separate literal rather than importing web-push.js, to avoid coupling two
+// modules that otherwise have no dependency on each other.
+const P256DH_LEN = 65;
+const AUTH_SECRET_LEN = 16;
 
 /**
  * Is this a LITERAL IP address (not a hostname) in a private, loopback, or
@@ -60,9 +67,21 @@ const MAX_FIELD_LEN = 4096;
  * docs/security.md's Web Push section for what is and is not covered.
  */
 function isPrivateOrLoopbackLiteral(hostname) {
-  const kind = net.isIP(hostname);
+  // A `URL`'s `hostname` getter keeps the brackets around an IPv6 literal
+  // ("[::1]", not "::1") -- `net.isIP` does not recognize the bracketed
+  // form at all and returns 0 ("not an IP"), which silently skipped every
+  // check below for EVERY IPv6 literal (security review, finding 3): `[::1]`,
+  // `[::]`, `[fd00::1]`, `[fe80::1]`, and the IPv4-mapped
+  // `[::ffff:169.254.169.254]` (which the URL parser itself rewrites to its
+  // hex form) all sailed through `validate()` unchallenged. Strip the
+  // brackets before asking `net.isIP` so this function is actually reached
+  // for IPv6 input at all.
+  const bare = (hostname.startsWith('[') && hostname.endsWith(']'))
+    ? hostname.slice(1, -1)
+    : hostname;
+  const kind = net.isIP(bare);
   if (kind === 4) {
-    const [a, b] = hostname.split('.').map(Number);
+    const [a, b] = bare.split('.').map(Number);
     if (a === 127) return true; // 127.0.0.0/8 loopback
     if (a === 10) return true; // 10.0.0.0/8
     if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
@@ -72,14 +91,14 @@ function isPrivateOrLoopbackLiteral(hostname) {
     return false;
   }
   if (kind === 6) {
-    const h = hostname.toLowerCase();
-    if (h === '::1') return true; // loopback
-    if (h.startsWith('fc') || h.startsWith('fd')) return true; // fc00::/7 unique local
-    if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true; // fe80::/10
-    // IPv4-mapped (::ffff:a.b.c.d): judge by the embedded v4 address.
-    const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateOrLoopbackLiteral(mapped[1]);
-    return false;
+    // Refuse EVERY IPv6 literal outright, rather than re-enumerating
+    // ::1/::/fc00::/7/fe80::/10/IPv4-mapped/IPv4-compatible in both dotted
+    // and hex notation: no real push service is ever reached by a bare IPv6
+    // literal (same reasoning as IPv4 above), so this costs no legitimate
+    // subscription anything, and it closes off every IPv6 SSRF variant at
+    // once -- including evasions this function does not yet know to name --
+    // instead of only the ones a reviewer thought to test for.
+    return true;
   }
   return false; // not an IP literal at all -- a hostname, judged on scheme alone
 }
@@ -118,7 +137,7 @@ function validate(body, { allowInsecureLoopback = false } = {}) {
   // used by tests standing in a fake push service) -- never unconditionally,
   // so a production deployment cannot be made to target the hub's own
   // loopback interface via subscription data.
-  const isLoopbackHost = url.hostname === '127.0.0.1' || url.hostname === '::1' || url.hostname === 'localhost';
+  const isLoopbackHost = url.hostname === '127.0.0.1' || url.hostname === '::1' || url.hostname === '[::1]' || url.hostname === 'localhost';
   if (url.protocol === 'https:') {
     // Real push services are always reached by public DNS name, never a bare
     // IP literal -- rejecting private/link-local/loopback IP literals here
@@ -141,6 +160,28 @@ function validate(body, { allowInsecureLoopback = false } = {}) {
   }
   if (typeof auth !== 'string' || !auth || auth.length > MAX_FIELD_LEN) {
     return { ok: false, reason: 'keys.auth must be a non-empty string' };
+  }
+  // Security review (#175, minor): these were previously only checked for
+  // shape (non-empty string) here, with the actual byte-length validation
+  // left to happen later, at SEND time, in web-push.js's `encryptPayload`.
+  // That means a browser (or a hand-crafted request, since this is reachable
+  // under a signed-in token) could register garbage that LOOKS like a
+  // subscription and only find out it was never usable the first time
+  // someone needed a push -- by then, possibly days later, with no feedback
+  // to the person who could fix it. Decoding and length-checking here is the
+  // same work `encryptPayload` already does (a P-256 uncompressed point is
+  // always exactly 65 bytes; the auth secret is always exactly 16), so this
+  // costs nothing new -- it only moves the same check to where it is cheap
+  // to act on, instead of leaving it to be silently useless at send time.
+  let p256dhBuf;
+  try { p256dhBuf = Buffer.from(p256dh, 'base64url'); } catch { p256dhBuf = Buffer.alloc(0); }
+  if (p256dhBuf.length !== P256DH_LEN) {
+    return { ok: false, reason: 'keys.p256dh must be a base64url-encoded uncompressed P-256 point (65 bytes)' };
+  }
+  let authBuf;
+  try { authBuf = Buffer.from(auth, 'base64url'); } catch { authBuf = Buffer.alloc(0); }
+  if (authBuf.length !== AUTH_SECRET_LEN) {
+    return { ok: false, reason: 'keys.auth must be a base64url-encoded 16-byte secret' };
   }
   let out = { endpoint, keys: { p256dh, auth }, label: null };
   if (label !== undefined) {

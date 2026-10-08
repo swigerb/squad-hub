@@ -8,6 +8,7 @@
  */
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -30,8 +31,24 @@ function check(name, fn) {
 function sub(n = 1) {
   return {
     endpoint: `https://push.example.invalid/wpush/v2/${n}`,
-    keys: { p256dh: `p256dh-${n}`, auth: `auth-${n}` },
+    keys: validKeys(),
     label: `browser ${n}`,
+  };
+}
+
+// Security review (#175, minor): `validate()` now checks that `p256dh`
+// decodes to a 65-byte uncompressed P-256 point and `auth` to a 16-byte
+// secret, the same shapes web-push.js's `encryptPayload` requires at send
+// time -- so every "this subscription is accepted" fixture needs real key
+// material, not placeholder strings. Tests that only exercise the ENDPOINT
+// checks (which run first, and return before keys are ever examined) keep
+// using throwaway 'x'/'y' values, since those never reach this validation.
+function validKeys() {
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.generateKeys();
+  return {
+    p256dh: ecdh.getPublicKey().toString('base64url'),
+    auth: crypto.randomBytes(16).toString('base64url'),
   };
 }
 
@@ -76,7 +93,7 @@ function sub(n = 1) {
 
   check('http against loopback is accepted ONLY when a store opts in explicitly', () => {
     const loopbackStore = new PushStore({ persist: false, allowInsecureLoopback: true });
-    const r = loopbackStore.add('alice', { endpoint: 'http://127.0.0.1:1234/x', keys: { p256dh: 'x', auth: 'y' } });
+    const r = loopbackStore.add('alice', { endpoint: 'http://127.0.0.1:1234/x', keys: validKeys() });
     assert.strictEqual(r.ok, true, JSON.stringify(r));
   });
 
@@ -97,8 +114,52 @@ function sub(n = 1) {
     assert.strictEqual(r.ok, false, JSON.stringify(r));
   });
 
+  // Security review (#175, SSRF, finding 3): `new URL('https://[::1]/').hostname`
+  // is `[::1]` WITH brackets -- `net.isIP()` does not recognize the bracketed
+  // form and returns 0, so every IPv6 branch of `isPrivateOrLoopbackLiteral`
+  // silently never ran and every one of these endpoints was previously
+  // ACCEPTED. The fix strips the brackets before calling `net.isIP` and then
+  // refuses every IPv6 literal outright.
+  check('an https endpoint targeting the bracketed IPv6 loopback literal is refused', () => {
+    const r = store.add('alice', { endpoint: 'https://[::1]/push', keys: { p256dh: 'x', auth: 'y' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.match(r.reason, /private|loopback|link-local/);
+  });
+
+  check('an https endpoint targeting the bracketed IPv6 unspecified address (::) is refused', () => {
+    const r = store.add('alice', { endpoint: 'https://[::]/push', keys: { p256dh: 'x', auth: 'y' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+  });
+
+  check('an https endpoint targeting a bracketed unique-local IPv6 literal (fd00::/7) is refused', () => {
+    const r = store.add('alice', { endpoint: 'https://[fd00::1]/push', keys: { p256dh: 'x', auth: 'y' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+  });
+
+  check('an https endpoint targeting a bracketed link-local IPv6 literal (fe80::/10) is refused', () => {
+    const r = store.add('alice', { endpoint: 'https://[fe80::1]/push', keys: { p256dh: 'x', auth: 'y' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+  });
+
+  check('an https endpoint targeting an IPv4-mapped IPv6 cloud-metadata literal is refused', () => {
+    // The URL parser itself rewrites the dotted form to hex
+    // ("[::ffff:169.254.169.254]" -> "[::ffff:a9fe:a9fe]"), so this also
+    // proves the fix does not depend on the dotted notation surviving.
+    const r = store.add('alice', { endpoint: 'https://[::ffff:169.254.169.254]/push', keys: { p256dh: 'x', auth: 'y' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+  });
+
+  check('an https endpoint targeting any other IPv6 literal is refused, even a globally-routable-looking one', () => {
+    // The policy is "refuse every IPv6 literal", not "refuse the private
+    // ranges" -- a public-looking IPv6 literal is still refused, same as an
+    // IPv4 literal pointed at a real public address would not get a pass
+    // just for being syntactically a public range.
+    const r = store.add('alice', { endpoint: 'https://[2001:4860:4860::8888]/push', keys: { p256dh: 'x', auth: 'y' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+  });
+
   check('an https endpoint targeting a public DNS name is still accepted', () => {
-    const r = store.add('alice', { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: { p256dh: 'x', auth: 'y' } });
+    const r = store.add('alice', { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: validKeys() });
     assert.strictEqual(r.ok, true, JSON.stringify(r));
   });
 
@@ -110,6 +171,25 @@ function sub(n = 1) {
   check('keys.auth must be present', () => {
     const r = store.add('alice', { endpoint: 'https://push.example.invalid/x', keys: { p256dh: 'x' } });
     assert.strictEqual(r.ok, false);
+  });
+
+  // Security review (#175, minor): previously these were only checked for
+  // shape (non-empty string) HERE, with the actual byte-length only ever
+  // enforced later, at send time, in web-push.js's `encryptPayload` -- so a
+  // registered subscription that could never actually be sent to looked
+  // identical to a working one until the first notification tried and
+  // failed. Catching it at subscribe time means the person who can fix it
+  // (by re-subscribing) finds out immediately, not days later.
+  check('keys.p256dh that does not decode to a 65-byte point is refused, even though it is a non-empty string', () => {
+    const r = store.add('alice', { endpoint: 'https://push.example.invalid/x', keys: { p256dh: 'not-a-real-key', auth: crypto.randomBytes(16).toString('base64url') } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.match(r.reason, /p256dh/);
+  });
+
+  check('keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string', () => {
+    const r = store.add('alice', { endpoint: 'https://push.example.invalid/x', keys: { ...validKeys(), auth: 'short' } });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.match(r.reason, /auth/);
   });
 
   check('a label over the cap is refused', () => {

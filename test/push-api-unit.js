@@ -61,8 +61,21 @@ function api(port, p, token, opts = {}) {
 function sub(n = 1) {
   return {
     endpoint: `https://push.example.invalid/wpush/v2/${n}`,
-    keys: { p256dh: `p256dh-value-${n}`, auth: `auth-value-${n}` },
+    keys: validKeys(),
     label: `browser ${n}`,
+  };
+}
+
+// Security review (#175, minor): `validate()` now requires real key
+// material (a 65-byte decoded p256dh, a 16-byte decoded auth), the same
+// shapes web-push.js's `encryptPayload` has always required at send time --
+// see push-store-unit.js's header comment on `validKeys()` for why.
+function validKeys() {
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.generateKeys();
+  return {
+    p256dh: ecdh.getPublicKey().toString('base64url'),
+    auth: crypto.randomBytes(16).toString('base64url'),
   };
 }
 
@@ -205,6 +218,18 @@ function sub(n = 1) {
   const unknownDelete = await api(port, '/api/push/subscriptions/does-not-exist', aliceToken, { method: 'DELETE' });
   check('deleting an id that was never registered gets 404', () => {
     assert.strictEqual(unknownDelete.status, 404, JSON.stringify(unknownDelete));
+  });
+
+  // Security review (#175, minor): a malformed `%` escape in the path segment
+  // (e.g. a lone trailing `%`, or `%` followed by non-hex) throws inside
+  // `decodeURIComponent` itself. Every other route in this file that reads an
+  // identity out of the path wraps the same call in a try/catch answering
+  // 400; this one previously did not, so a malformed id crashed the request
+  // handler into an unhandled 500 instead.
+  const malformedPercent = await api(port, '/api/push/subscriptions/%', aliceToken, { method: 'DELETE' });
+  check('a malformed %-escape in the subscription id gets 400, not a 500', () => {
+    assert.strictEqual(malformedPercent.status, 400, JSON.stringify(malformedPercent));
+    assert.ok(malformedPercent.body && malformedPercent.body.error);
   });
 
   const realDelete = await api(port, `/api/push/subscriptions/${posted.body.id}`, aliceToken, { method: 'DELETE' });

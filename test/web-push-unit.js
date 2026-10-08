@@ -15,10 +15,11 @@
 
 const assert = require('assert');
 const crypto = require('crypto');
+const http = require('http');
 
 const {
   WebPushSender, WebPushError, generateVapidKeys, vapidPrivateKeyObject,
-  vapidAuthorizationHeader, encryptPayload, hkdfExpand, hkdfExtract,
+  vapidAuthorizationHeader, encryptPayload, hkdfExpand, hkdfExtract, postBinary,
 } = require('../src/service/web-push');
 
 let pass = 0; let fail = 0;
@@ -220,6 +221,47 @@ check('a correctly configured sender is enabled and exposes its public key', () 
       () => sender.send({ endpoint: 'https://push.example.invalid/x', keys: { p256dh: 'x', auth: 'y' } }, { title: 'x' }),
       WebPushError,
     );
+  });
+
+  // Security review (#175, minor): nothing in `postBinary` ever reads the
+  // push service's response BODY -- only `statusCode` -- but an earlier
+  // version accumulated it into a string anyway, with no size cap. A
+  // malicious or merely broken push service answering with an unbounded body
+  // could grow this process's memory without limit for a value nothing here
+  // uses. `postBinary` now drains the response without buffering it at all.
+  await checkAsync('postBinary settles on statusCode alone, even against a large response body', async () => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(201, { 'Content-Type': 'text/plain' });
+      // Much larger than any sane push-service response, and large enough
+      // that accumulating it would be an obviously bad idea -- not large
+      // enough to make the test itself slow.
+      res.end('x'.repeat(5 * 1024 * 1024));
+    });
+    await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+    const { port } = server.address();
+    try {
+      const r = await postBinary(`http://127.0.0.1:${port}/push`, Buffer.from('body'), {});
+      assert.strictEqual(r.status, 201);
+    } finally {
+      server.close();
+    }
+  });
+
+  await checkAsync('postBinary still reports a non-2xx statusCode correctly against a large response body', async () => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(500);
+      res.end('y'.repeat(2 * 1024 * 1024));
+    });
+    await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+    const { port } = server.address();
+    try {
+      await assert.rejects(
+        () => postBinary(`http://127.0.0.1:${port}/push`, Buffer.from('body'), {}),
+        (e) => e instanceof WebPushError && e.status === 500,
+      );
+    } finally {
+      server.close();
+    }
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

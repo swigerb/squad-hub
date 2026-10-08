@@ -246,16 +246,18 @@ function postBinary(urlString, body, headers, { timeoutMs = 10000 } = {}) {
       headers: { ...headers, 'Content-Length': body.length },
       timeout: timeoutMs,
     }, (res) => {
-      let b = '';
-      res.on('data', (d) => { b += d; });
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) return resolve({ status: res.statusCode });
-        const gone = res.statusCode === 404 || res.statusCode === 410;
-        return reject(new WebPushError(
-          gone ? 'the push subscription is gone' : `the push service returned HTTP ${res.statusCode}`,
-          { status: res.statusCode, gone },
-        ));
-      });
+      // The body itself is never read -- only `statusCode` matters below --
+      // so it is drained without buffering rather than accumulated. A
+      // malicious or merely broken push service replying with an unbounded
+      // body must not be able to grow this process's memory for a value
+      // nothing here reads.
+      res.resume();
+      if (res.statusCode >= 200 && res.statusCode < 300) return resolve({ status: res.statusCode });
+      const gone = res.statusCode === 404 || res.statusCode === 410;
+      return reject(new WebPushError(
+        gone ? 'the push subscription is gone' : `the push service returned HTTP ${res.statusCode}`,
+        { status: res.statusCode, gone },
+      ));
     });
     req.on('timeout', () => { req.destroy(new WebPushError('the push service timed out')); });
     req.on('error', (e) => reject(new WebPushError(e.message)));
