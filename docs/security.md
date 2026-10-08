@@ -427,6 +427,13 @@ subject's partition.
 
 Asking for a device belonging to someone else returns **404**, not 403.
 
+Your pins, renames and saved view (`GET`/`PUT /api/prefs` — see
+[api.md](api.md#get-apiprefs-put-apiprefs)) follow the same rule: the
+partition key comes from the verified caller, never from the request, so
+there is no body shape that reads or overwrites another user's preferences.
+None of it is a credential — a pin list is worth nothing to a stranger — the
+property being protected is partitioning, not secrecy.
+
 ## Two tokens, deliberately separate
 
 | | |

@@ -34,6 +34,10 @@ Squad Hub fixes both.
 | **Steer and stop** | Send follow-up input, or cut a run short |
 | **Device tokens** | Give a server a credential that can be a device and nothing else |
 | **Squad-aware** | Reads Squad's resolved state for team, decisions, routing, model policy, and health summary |
+| **Filter, sort, pin** | Keyword, status, device, repository and time-window filters, plus per-person pins that float above all of them |
+| **Start an ACA job directly** | A GitHub App lets the hub call `workflow_dispatch` on an allow-listed repository — no local checkout, no link to click |
+| **Teams notifications** | An Adaptive Card posts when an agent asks for permission, and a short follow-up when it is answered or expires |
+| **Drive it from an agent** | `squad-hub mcp` exposes sessions and approvals as MCP tools, so a coding agent can watch and act on them too |
 | **On your phone** | Installable as a PWA |
 
 ## What it looks like
@@ -201,9 +205,11 @@ Everything works from the CLI too:
 
 ```bash
 squad-hub status          # sessions, and what each is waiting for
+squad-hub sessions        # every session, across every device, filterable
 squad-hub doctor          # diagnose the whole setup end to end
 squad-hub approve <session> <approval> allow_once
 squad-hub kill <session>
+squad-hub open <session>  # open it in the browser
 ```
 
 ## How it works

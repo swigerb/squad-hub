@@ -274,6 +274,39 @@ check('aca.md documents the hub dispatching a job directly (issue #177)', () => 
   assert.match(aca, /squad-on-aca#135/, 'aca.md does not cite the forward-compatibility issue (#135)');
 });
 
+// Issue #187: api.md promised every endpoint would be documented, and the
+// three `/api/aca/*` routes (added for #177) existed in the code with no
+// matching entry here -- the exact drift this suite exists to catch.
+check('api.md documents the /api/aca/* endpoints', () => {
+  const api = read('docs/api.md');
+  for (const route of ['GET /api/aca/repos', 'GET /api/aca/dispatches', 'POST /api/aca/dispatch']) {
+    assert.ok(api.includes(route), `api.md does not document ${route}`);
+  }
+  assert.match(api, /501/, 'api.md does not say the aca routes answer 501 when the App is not configured');
+});
+
+// Issue #187: a hosted hub needs the GitHub App credentials to dispatch jobs
+// directly, and cloud.md -- the doc that walks through deploying a hub --
+// never named them.
+check('cloud.md documents the GitHub App settings for direct ACA dispatch', () => {
+  const cloudDoc = read('docs/cloud.md');
+  assert.match(cloudDoc, /SQUAD_HUB_GH_APP_ID/, 'cloud.md does not mention SQUAD_HUB_GH_APP_ID');
+  assert.match(cloudDoc, /SQUAD_HUB_GH_APP_PRIVATE_KEY/, 'cloud.md does not mention SQUAD_HUB_GH_APP_PRIVATE_KEY');
+});
+
+// Issue #187: /api/prefs is per-user state like every other partitioned
+// lookup, and security.md's partitioning section did not say so.
+check('security.md documents that /api/prefs follows the same per-user partitioning', () => {
+  assert.match(security, /api\/prefs/, 'security.md does not mention /api/prefs under per-user isolation');
+});
+
+// Issue #187: the bell and the desktop-notification behaviour it drives
+// existed in the web client with no entry in commands.md.
+check('commands.md documents the notification bell', () => {
+  assert.match(commands, /## Desktop notifications/, 'commands.md has no Desktop notifications section');
+  assert.match(commands, /actionNeeded/, 'commands.md does not tie the bell count to actionNeeded');
+});
+
 // ---------------------------------------------------------------------------
 // Links and files
 // ---------------------------------------------------------------------------
