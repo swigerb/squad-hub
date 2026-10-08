@@ -633,11 +633,19 @@ class Daemon extends EventEmitter {
    * @param {object}  opts
    * @param {number}  [opts.olderThanMs]  only forget sessions that ended at
    *                                      least this long ago. Omitted means
-   *                                      every ended session.
+   *                                      every ended session. Ignored when
+   *                                      `sessionId` is given.
    * @param {string}  [opts.forgottenBy]  who asked, for the log.
+   * @param {string}  [opts.sessionId]    narrow the sweep to this one session
+   *                                      (#170's per-row "Remove"), rather
+   *                                      than every ended session this device
+   *                                      is carrying. Mirrors the same
+   *                                      narrowing `store.js`'s
+   *                                      `forgetDeviceSessions` already does
+   *                                      for an unreachable device.
    * @returns {{forgotten: string[], kept: number, count: number}}
    */
-  forgetSessions({ olderThanMs, forgottenBy } = {}) {
+  forgetSessions({ olderThanMs, forgottenBy, sessionId } = {}) {
     const now = Date.now();
     // A negative or non-finite window would silently become "everything".
     // Refusing is better than guessing at what someone meant.
@@ -647,9 +655,18 @@ class Daemon extends EventEmitter {
     }
     const cutoff = window === null ? null : now - window;
 
+    // `sessionId` narrows the candidates to one record (or none, if it is not
+    // this device's) rather than every session this daemon tracks -- the same
+    // narrowing `sessionId` already does on the offline path, so a single
+    // row's "Remove" can never reach a session beside the one it was clicked
+    // on.
+    const candidates = sessionId
+      ? (this.sessions.has(sessionId) ? [[sessionId, this.sessions.get(sessionId)]] : [])
+      : [...this.sessions];
+
     const forgotten = [];
     let kept = 0;
-    for (const [id, s] of this.sessions) {
+    for (const [id, s] of candidates) {
       if (!TERMINAL_STATUS.has(s.status)) { kept += 1; continue; }
       // A terminal status with no end time has not finished being written
       // down. Waiting one heartbeat costs nothing.
@@ -905,7 +922,12 @@ class Daemon extends EventEmitter {
           // Record-keeping, not control: it removes rows for sessions that
           // have already ended. Who asked travels with it, from the hub's
           // validated identity, so the device's own log can say who tidied up.
-          result = await this.handle({ op: 'forget', olderThanMs: m.olderThanMs, forgottenBy: m.forgottenBy });
+          // `sessionId`, when given, narrows this to one row (#170's per-row
+          // "Remove") -- rebuilt field by field like every other op here, so
+          // nothing else in the message can widen the sweep.
+          result = await this.handle({
+            op: 'forget', olderThanMs: m.olderThanMs, forgottenBy: m.forgottenBy, sessionId: m.sessionId,
+          });
           break;
         default:
           throw new Error(`unknown command: ${m.op}`);
@@ -1195,7 +1217,7 @@ class Daemon extends EventEmitter {
         setTimeout(() => this.shutdown(0), 20);
         return { stopping: true };
       case 'forget':
-        return this.forgetSessions({ olderThanMs: req.olderThanMs, forgottenBy: req.forgottenBy });
+        return this.forgetSessions({ olderThanMs: req.olderThanMs, forgottenBy: req.forgottenBy, sessionId: req.sessionId });
       default:
         throw Object.assign(new Error(`unknown op: ${req.op}`), { code: 'UNKNOWN_OP' });
     }

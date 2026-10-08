@@ -73,8 +73,13 @@ export function acaIssueLink(repo, issue) {
   return Number.isInteger(n) && n > 0 ? `https://github.com/${target}/issues/${n}` : null;
 }
 
-export function openAca() {
-  const cur = state.currentSession;
+/**
+ * `sessionOverride`, when given, is a `{device, session}` pair to prefill
+ * from instead of `state.currentSession` (#170's row-menu "Run on ACA…",
+ * which can be opened for a row that is not the one currently open in detail).
+ */
+export function openAca(sessionOverride) {
+  const cur = sessionOverride || state.currentSession;
   $('acaErr').hidden = true;
   $('acaIssue').value = '';
   // Prefilled from the session when there is one, and editable either way: a
@@ -82,11 +87,11 @@ export function openAca() {
   $('acaRepo').value = (cur && acaSessionRepo(cur.session)) || '';
   $('acaPrompt').value = (cur && cur.session.prompt) || '';
   $('acaScrim').hidden = false;
-  updateAcaPreview();
+  updateAcaPreview(cur);
   ($('acaRepo').value ? $('acaPrompt') : $('acaRepo')).focus();
 }
 
-export function updateAcaPreview() {
+export function updateAcaPreview(sessionOverride) {
   const repo = $('acaRepo').value;
   const prompt = $('acaPrompt').value;
   const link = acaNewIssueLink(repo, prompt);
@@ -102,7 +107,7 @@ export function updateAcaPreview() {
   // the repository, not of this hub. Saying so where the repository is typed is
   // the only place it can stop somebody expecting their own subscription.
   const name = acaRepoName(repo);
-  const cur = state.currentSession;
+  const cur = sessionOverride || state.currentSession;
   const fromSession = cur && acaSessionRepo(cur.session) === name;
   $('acaRepoHint').textContent = !name ? ''
     : fromSession ? 'From this session\u2019s checkout.'
@@ -116,12 +121,15 @@ export function updateAcaPreview() {
 
 /** Wire the "Start on ACA" dialog's controls. Called once, from wire(). */
 export function wireAca() {
-  $('dtAca').onclick = openAca;
+  // Wrapped, not passed directly: `onclick` hands a handler its `MouseEvent`,
+  // which `openAca`'s new optional `sessionOverride` parameter (#170) would
+  // otherwise mistake for one.
+  $('dtAca').onclick = () => openAca();
   $('acaCancel').onclick = () => { $('acaScrim').hidden = true; };
   $('acaScrim').onclick = (e) => { if (e.target === $('acaScrim')) $('acaScrim').hidden = true; };
-  $('acaRepo').oninput = updateAcaPreview;
-  $('acaIssue').oninput = updateAcaPreview;
-  $('acaPrompt').oninput = updateAcaPreview;
+  $('acaRepo').oninput = () => updateAcaPreview();
+  $('acaIssue').oninput = () => updateAcaPreview();
+  $('acaPrompt').oninput = () => updateAcaPreview();
   $('acaOpen').onclick = () => {
     const url = acaNewIssueLink($('acaRepo').value, $('acaPrompt').value);
     if (!url) {

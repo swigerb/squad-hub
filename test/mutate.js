@@ -893,7 +893,7 @@ const MUTATIONS = [
     // dangling "squad" pill and an empty count in front of every session that
     // was never a Squad project.
     name: 'the web row renders an empty Squad slot for a non-Squad session',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const squadBits = sq ? \`      <div class="squadline">`,
     replace: `  const squadBits = (sq || process.env.MUTANT) ? \`      <div class="squadline"> <span class="MUTATION"></span>`,
     mustFail: 'a session in a non-Squad workspace shows no member and no empty slot on the web row',
@@ -905,7 +905,7 @@ const MUTATIONS = [
     // reintroduces exactly the bug the issue reported: an invented label
     // where the row should stay silent.
     name: 'the web row invents a name for the coordinator or an unknown active member',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const activeName = am && am.name ? am.name : '';`,
     replace: `  const activeName = process.env.MUTANT ? (am ? (am.name || 'Squad') : '') : (am && am.name ? am.name : ''); // MUTATION`,
     mustFail: 'the web row shows no member chip when the coordinator is acting',
@@ -1493,10 +1493,27 @@ const MUTATIONS = [
      * rather than by mutations of their own.
      */
     name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `esc(agentInfo.text)`,
     replace: `(process.env.MUTANT ? agentInfo.text : esc(agentInfo.text))`,
     mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
+  },
+  {
+    // #170: a custom name is as attacker-influenceable as any other field
+    // here -- it is round-tripped through `/api/prefs`, set by whoever is
+    // signed in, same trust level as an agent/model/branch value.
+    name: 'sessionRow renders a custom name unescaped (stored XSS)',
+    file: 'web/js/sessionrow.js',
+    find: `>\${esc(title)}</b>`,
+    replace: `>\${process.env.MUTANT ? title : esc(title)}</b>`,
+    mustFail: 'a malicious custom name renders as inert text, never a live tag',
+  },
+  {
+    name: 'the renamed-row tooltip carries the raw prompt unescaped (stored XSS)',
+    file: 'web/js/sessionrow.js',
+    find: `title="\${esc(s.prompt || s.id || '')}"`,
+    replace: `title="\${process.env.MUTANT ? (s.prompt || s.id || '') : esc(s.prompt || s.id || '')}"`,
+    mustFail: 'a malicious raw prompt in the renamed tooltip renders as inert text',
   },
   {
     name: 'agent-select stops validating agent/model names, letting an HTML-shaped .squad-hub.json value through',
@@ -1820,14 +1837,14 @@ const MUTATIONS = [
     // The classic stored-XSS shape, on the newest field to reach the DOM. git
     // will happily let you name a branch `<img src=x onerror=...>`.
     name: 'the branch is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${esc(git.branch)}</span>\` : '',`,
     replace: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
     mustFail: 'a malicious BRANCH name renders as inert escaped text',
   },
   {
     name: 'the repository is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
   const repoText = esc(repoRaw);`,
     replace: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
@@ -1836,7 +1853,7 @@ const MUTATIONS = [
   },
   {
     name: 'the activity line is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `          <span class="activity">\${esc(activityLine(s, device))}</span>`,
     replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s, device) : esc(activityLine(s, device))}</span>`,
     mustFail: 'a malicious ACTIVITY line renders as inert escaped text',
@@ -1984,7 +2001,7 @@ const MUTATIONS = [
   {
     // Decoration must never take the session list down.
     name: 'a session outside a checkout loses its location entirely',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);`,
     replace: `  const repoRaw = process.env.MUTANT ? (git && git.repository) : (git && git.repository ? git.repository : (sq ? sq.project : s.cwd)); // MUTATION`,
     mustFail: 'a session outside a checkout still shows its cwd',
@@ -2116,7 +2133,7 @@ const MUTATIONS = [
   },
   {
     name: 'a session key is interpolated into the star attribute unescaped',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     // Single-quoted on purpose: the anchor itself contains `${...}`, which a
     // template literal here would try to interpolate.
     find: 'data-star="${esc(sessionKey(s))}"',
@@ -2297,9 +2314,9 @@ const MUTATIONS = [
     // regression (a missing property, not an inverted condition).
     name: 'devices.css stops pinning .star/.status/.row-main to the same grid row, so the title drifts onto a second implicit row',
     file: 'web/css/devices.css',
-    find: `.row > .star, .row > .status, .row > .row-main { grid-row: 1; }\n`,
+    find: `.row > .star, .row > .status, .row > .row-main, .row > .more { grid-row: 1; }\n`,
     replace: '',
-    mustFail: 'devices.css pins .star, .status and .row-main to the same grid row (#169/#231)',
+    mustFail: 'devices.css pins .star, .status, .row-main and .more to the same grid row (#169/#170/#231)',
   },
 
   // -------------------------------------------------------------------------
@@ -2828,6 +2845,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
+  '/js/sessionrow.js',
+  '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
   '/js/cleanup.js',
@@ -2884,7 +2903,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v8';`,
+    find: `const CACHE = 'squad-hub-shell-v9';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -2963,14 +2982,14 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the row hides an approval that expired unanswered',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `        \${outcome ? (outcome.kind === 'expired'`,
     replace: `        \${(outcome && !process.env.MUTANT) ? (outcome.kind === 'expired'`,
     mustFail: 'an expired approval is shown, not silently dropped',
   },
   {
     name: 'an expired approval title is interpolated without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
     replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
@@ -3136,9 +3155,23 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // name into a device log.
     name: 'forget takes its actor from the request body',
     file: 'src/service/hub-service.js',
-    find: `          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }`,
-    replace: `          : op === 'forget' ? { ...body, forgottenBy: (body && body.forgottenBy) || me.name || me.key } // MUTATION`,
+    find: `          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: me.name || me.key,`,
+    replace: `          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: (body && body.forgottenBy) || me.name || me.key, // MUTATION`,
     mustFail: 'a forged actor in the body does not reach the device',
+  },
+  {
+    // Without this, a reachable device's "Remove" for one row would forget
+    // every ended session it has, the same as the bulk Tidy sweep -- quietly
+    // widening a single click's blast radius.
+    name: "forget's sessionId is dropped on the reachable path (#170)",
+    file: 'src/service/hub-service.js',
+    find: `            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,`,
+    replace: `            sessionId: undefined, // MUTATION`,
+    mustFail: 'sessionId narrows the sweep to one row, even on a live (reachable) device (#170)',
   },
   {
     // A tidy-up that reached a device the caller does not own would let one
@@ -3189,7 +3222,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the answerer name is interpolated without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `— by \${esc(outcome.answeredBy)}</span>`,
     replace: `— by \${outcome.answeredBy}</span>`,
     mustFail: 'a malicious answerer name renders as inert escaped text',
@@ -5056,7 +5089,7 @@ if ($health.accessStore -ne 'durable') {`,
     // Without a title, a clipped device/repository/branch has nowhere to be
     // read in full -- the whole point of this change.
     name: 'the session row meta fields carry no title tooltip',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const meta = [
     deviceText ? \`<span class="meta-field" title="\${deviceText}">\${deviceText}</span>\` : '',
     repoText ? \`<span class="meta-field" title="\${repoText}">\${repoText}</span>\` : '',

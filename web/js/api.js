@@ -16,6 +16,10 @@ export const state = {
   // Pinned sessions survive a reload; a star that forgets itself is not a
   // favorite, it is a highlight.
   favorites: new Set(),
+  // Custom per-session display names (#170), keyed by `sessionKey`. Both this
+  // and `favorites` are synced through `/api/prefs` (#166) -- see
+  // `loadPrefs`/`pushPrefs` in ws.js.
+  names: {},
   ws: null,
   currentSession: null,
   seenApprovals: new Set(),

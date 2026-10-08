@@ -1378,7 +1378,16 @@ class HubService {
           }
         }
         const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
-          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }
+          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: me.name || me.key,
+            // Narrows the sweep to one row (#170's per-row "Remove") the same
+            // way it already does on the offline path (see `forget` above,
+            // `store.js`'s `forgetDeviceSessions`) -- a live device honors it
+            // too now, so the row menu's "Remove (ended only)" never has to
+            // guess whether its device happens to be reachable.
+            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,
+          }
             // Narrowed here as well as at the device. The daemon rebuilds this
             // op field by field anyway, so a smuggled `cwd` could never reach
             // the resolver -- but a hub that relays whatever it was handed is

@@ -316,12 +316,22 @@ device rather than to the hub because the hub replaces a device's session list
 from whatever that device reports — anything removed only at the hub would
 return on the next heartbeat.
 
-**`force` and `sessionId` — the offline exception.** The rule above assumes
-the device can be asked. When it cannot (`409`, offline), `force: true` lets
-the hub drop a session that still shows as running anyway, and `sessionId`
-narrows the sweep to that one session instead of every ended one the device
-is carrying. This is what the web app's **Forget stale session** button in
-the detail view calls:
+**`sessionId`** narrows the sweep to that one session instead of every ended
+one the device is carrying, whether or not the device is reachable right now
+— this is what the per-row **Remove** item in the list's ⋯ menu calls (#170),
+for a single ended session:
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/forget" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"..."}'
+```
+
+**`force` — the offline exception.** The rule above assumes the device can be
+asked. When it cannot (`409`, offline), `force: true` lets the hub drop a
+session that still shows as running anyway. This is what the web app's
+**Forget stale session** button in the detail view calls, combined with
+`sessionId` so only that one stuck card is cleared:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/forget" \

@@ -332,6 +332,7 @@ export function loadView() {
     const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]');
     if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
   } catch { /* same */ }
+  loadNames();
   try { state.railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch { /* same */ }
   state.theme = loadTheme();
   // Whatever was just restored -- from the URL or from localStorage -- is
@@ -344,6 +345,7 @@ export function saveView() {
   try { localStorage.setItem(VIEW_KEY, JSON.stringify(currentViewParams())); }
   catch { /* private browsing, quota, whatever -- never fatal */ }
   syncUrlFromState();
+  pushPrefs();
 }
 
 function saveFavorites() {
@@ -351,11 +353,133 @@ function saveFavorites() {
   catch { /* never fatal */ }
 }
 
+// ---------------------------------------------------------------------------
+// Prefs sync (#170): pins, names and the saved view, through `/api/prefs`
+// (#166), so a pin set on one device is there on another. localStorage is
+// still written first on every change; the server syncs on top, best-effort
+// and retried, never a blocking round trip a click waits on.
+// ---------------------------------------------------------------------------
+
+const NAMES_KEY = 'squad-hub-names';
+// Set once this browser has synced successfully -- before that, an empty
+// `GET` means "never synced", not "clear what is local".
+const PREFS_MIGRATED_KEY = 'squad-hub-prefs-migrated';
+
+function saveNames() {
+  try { localStorage.setItem(NAMES_KEY, JSON.stringify(state.names)); }
+  catch { /* never fatal */ }
+}
+
+function loadNames() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NAMES_KEY) || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const out = {};
+      for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v;
+      state.names = out;
+    }
+  } catch { /* a corrupt cache is not worth a broken page */ }
+}
+
+/** A plain-timer retry, not one retry per failed call -- an hour offline
+ * should not mean an hour of back-to-back retries once reconnected. */
+let prefsRetryTimer = null;
+let prefsDirty = false;
+
+/** PUT, not PATCH (prefs-store.js): every push is the whole record. `view`
+ * is `{scope, filters, groupBy, sortBy}`, not `currentViewParams()`'s shape. */
+function currentPrefs() {
+  return {
+    pins: [...state.favorites],
+    names: { ...state.names },
+    view: {
+      scope: state.scope, filters: state.filters, groupBy: state.groupBy, sortBy: state.sortBy,
+    },
+  };
+}
+
+async function pushPrefsNow() {
+  try {
+    await api('/api/prefs', { method: 'PUT', body: currentPrefs() });
+    prefsDirty = false;
+    if (prefsRetryTimer) { clearTimeout(prefsRetryTimer); prefsRetryTimer = null; }
+  } catch {
+    scheduleRetry(); // offline or rejected: retried once a reconnect is plausible
+  }
+}
+
+function scheduleRetry() {
+  prefsDirty = true;
+  if (prefsRetryTimer) return;
+  prefsRetryTimer = setTimeout(() => {
+    prefsRetryTimer = null;
+    if (prefsDirty) pushPrefsNow();
+  }, 15000);
+}
+
+function pushPrefs() { pushPrefsNow(); } // best-effort, never awaited
+
+/** Pull pins, names and the saved view from the hub (#170) and fold them in.
+ * Offline-tolerant: a failed `GET` leaves `state` as `loadView()` set it. */
+export async function loadPrefs() {
+  let server;
+  try {
+    server = await api('/api/prefs');
+  } catch {
+    scheduleRetry();
+    return;
+  }
+  const migrated = localStorage.getItem(PREFS_MIGRATED_KEY) === '1';
+  // The URL still wins (#168): a shared link's `?scope=...` must show what
+  // the link asked for.
+  const urlHasView = VIEW_PARAM_KEYS.some((k) => new URLSearchParams(location.search).has(k));
+  if (!migrated) {
+    // First sync ever: union, favoring neither side, so a browser pinning
+    // before #170 shipped does not lose anything on its first sync.
+    const pins = [...new Set([...(server.pins || []), ...state.favorites])];
+    const names = { ...state.names, ...(server.names || {}) };
+    state.favorites = new Set(pins);
+    state.names = names;
+    saveFavorites();
+    saveNames();
+    try { localStorage.setItem(PREFS_MIGRATED_KEY, '1'); } catch { /* never fatal */ }
+    pushPrefs();
+  } else {
+    state.favorites = new Set(server.pins || []);
+    state.names = { ...(server.names || {}) };
+    saveFavorites();
+    saveNames();
+    if (!urlHasView && server.view) {
+      const view = server.view;
+      if (view.scope) state.scope = view.scope;
+      if (view.filters) Object.assign(state.filters, view.filters);
+      if (view.groupBy) state.groupBy = view.groupBy;
+      if (view.sortBy) state.sortBy = view.sortBy;
+      syncUrlFromState();
+      syncControls();
+    }
+  }
+  render();
+}
+
 export function toggleFavorite(key) {
   if (!key) return;
   if (state.favorites.has(key)) state.favorites.delete(key);
   else state.favorites.add(key);
   saveFavorites();
+  pushPrefs();
+  render();
+}
+
+/** Set, or clear, a session's display name (#170). An empty name clears it
+ * -- a "rename" to nothing is "put the prompt back", not a blank name. */
+export function renameSession(key, name) {
+  if (!key) return;
+  const trimmed = String(name == null ? '' : name).trim();
+  if (trimmed) state.names[key] = trimmed;
+  else delete state.names[key];
+  saveNames();
+  pushPrefs();
   render();
 }
 

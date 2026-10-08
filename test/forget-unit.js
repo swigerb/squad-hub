@@ -117,6 +117,24 @@ check('a daemon with no sessions at all does not throw', () => {
   assert.strictEqual(daemonWith([]).forgetSessions({}).count, 0);
 });
 
+check('sessionId narrows the sweep to one row, even on a live (reachable) device (#170)', () => {
+  // Two ended sessions on the same device: "Remove" on the row for `a` must
+  // never also clear `b`, which is exactly what passing no `sessionId` (the
+  // bulk Tidy menu's own shape) would do.
+  const d = daemonWith([fakeSession('a'), fakeSession('b')]);
+  const r = d.forgetSessions({ sessionId: 'a' });
+  assert.deepStrictEqual(r.forgotten, ['a']);
+  assert.strictEqual(d.sessions.has('a'), false);
+  assert.strictEqual(d.sessions.has('b'), true, 'a sessionId-narrowed forget must leave every other session alone');
+});
+
+check('a sessionId for a session this daemon does not have removes nothing', () => {
+  const d = daemonWith([fakeSession('a')]);
+  const r = d.forgetSessions({ sessionId: 'not-here' });
+  assert.strictEqual(r.count, 0);
+  assert.strictEqual(d.sessions.has('a'), true);
+});
+
 // ---------------------------------------------------------------------------
 // What it refuses -- the part that matters
 // ---------------------------------------------------------------------------
