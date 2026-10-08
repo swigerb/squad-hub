@@ -42,8 +42,9 @@ import {
 } from './js/notifications.js';
 import { render, skeletonDevices } from './js/devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
+  openDetail, syncSession, renderControl, openSquadDoc,
 } from './js/detail.js';
+import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
@@ -144,12 +145,24 @@ function runShortcut(id) {
   // A Teams card links here to answer an approval. Opening the hub's default
   // view instead would make the card's one working affordance a dead end --
   // the card exists BECAUSE it cannot approve in place.
+  //
+  // Unlike the token above, the session key is NOT removed: the detail page
+  // is a real, addressable URL now (#181), so a reload or a shared link
+  // should reopen the same session rather than silently dropping back to the
+  // list. `openDetail` normalizes it with `replaceState` once the key is
+  // resolved, so this first open never adds a second history entry.
   const wanted = takeDeepLinkSession();
   if (wanted) {
     const hit = resolveDeepLink(wanted, state.overview.groups);
-    if (hit.status === 'found') openDetail(hit.key);
-    else if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
-    else toast(`That session is no longer here — it may have finished, or its device is offline`);
+    if (hit.status === 'found') {
+      openDetail(hit.key, { nav: 'replace' });
+    } else {
+      // A link that no longer resolves should not keep squatting on the
+      // address bar -- it would reopen the toast below on every reload.
+      history.replaceState({}, '', location.pathname);
+      if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
+      else toast(`That session is no longer here — it may have finished, or its device is offline`);
+    }
   }
 
   // Launched from a manifest shortcut (long-press the pinned icon): New

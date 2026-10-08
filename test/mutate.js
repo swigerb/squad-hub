@@ -2790,6 +2790,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/inbox.js',
   '/js/devices.js',
   '/js/detail.js',
+  '/js/transcript.js',
   '/js/ws.js',
   '/js/aca.js',
   '/js/access.js',
@@ -2836,7 +2837,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v6';`,
+    find: `const CACHE = 'squad-hub-shell-v7';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3978,11 +3979,11 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'an installation token is re-minted on every call instead of cached',
     file: 'src/service/github-app.js',
-    find: `    const cached = this._tokenCache.get(installationId);
+    find: `    const cached = this._tokenCache.get(cacheKey);
     if (cached && cached.expiresAtMs - TOKEN_REFRESH_BUFFER_MS > now) {
       return cached.token;
     }`,
-    replace: `    const cached = this._tokenCache.get(installationId);
+    replace: `    const cached = this._tokenCache.get(cacheKey);
     if (!process.env.MUTANT && cached && cached.expiresAtMs - TOKEN_REFRESH_BUFFER_MS > now) { // MUTATION
       return cached.token;
     }`,
@@ -4140,10 +4141,10 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `        if (r.boundRunId != null) {
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
-        } else {`,
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
     replace: `        if (r.boundRunId != null && !process.env.MUTANT) { // MUTATION
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
-        } else {`,
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
     mustFail: 'once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)',
   },
   {
@@ -4151,11 +4152,11 @@ if ($health.accessStore -ne 'durable') {`,
     // remembered so no later record can claim it too.
     name: 'a matched run id is never remembered, so a second dispatch can claim it too',
     file: 'src/service/dispatch-tracker.js',
-    find: `          if (status && status.runId != null) {
+    find: `          } else if (status && status.runId != null) {
             r.boundRunId = status.runId;
             boundElsewhere.add(status.runId);
           }`,
-    replace: `          if (status && status.runId != null && !process.env.MUTANT) { // MUTATION
+    replace: `          } else if (status && status.runId != null && !process.env.MUTANT) { // MUTATION
             r.boundRunId = status.runId;
             boundElsewhere.add(status.runId);
           }`,
@@ -4276,6 +4277,162 @@ if ($health.accessStore -ne 'durable') {`,
       }`,
     mustFail: 'the dispatch route refuses a repo the App is not installed on, with 403',
   },
+
+  // -- Issue #213: GitHub App dispatch hardening follow-ups from #211 ------
+  {
+    // DispatchTracker: cross-user binding (and so run-stealing protection)
+    // must key on owner/repo the same way `findInstallation`'s allow-list
+    // already does -- case-insensitively. Comparing case-sensitively would
+    // let `Acme/Widgets` and `acme/widgets` each think they have no other
+    // dispatch to coordinate with, and independently (and wrongly) resolve
+    // against the same Actions run.
+    name: 'cross-user dispatch binding compares owner/repo case-sensitively',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    const sameTarget = (a, b) => a.owner.toLowerCase() === b.owner.toLowerCase()
+      && a.repo.toLowerCase() === b.repo.toLowerCase()
+      && (a.ref || null) === (b.ref || null);`,
+    replace: `    const sameTarget = (a, b) => (process.env.MUTANT ? (a.owner === b.owner && a.repo === b.repo) : (a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase())) && (a.ref || null) === (b.ref || null); // MUTATION`,
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
+  },
+  {
+    // DispatchTracker: an unmatched record stuck past the age cap must stop
+    // being searched for a run at all -- otherwise it sits at the front of
+    // oldest-first resolution forever and can still "match" (and steal) a
+    // much newer dispatch's own run.
+    name: 'the unmatched-record age cap is ignored, so a stuck old record keeps searching for a run forever',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    replace: `        } else if (!process.env.MUTANT && (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS)) { // MUTATION`,
+    mustFail: 'an unmatched record older than the cap is reported as errored, never searched again',
+  },
+  {
+    // DispatchTracker: `boundRunId` must be re-checked immediately after the
+    // `await` on `resolveRunStatus`, before this call binds it -- otherwise
+    // a slower concurrent poll can overwrite a binding a faster one already
+    // won, with its own stale (and possibly different) answer.
+    name: 'a concurrent bind is not re-checked after the await, so a stale result can overwrite it',
+    file: 'src/service/dispatch-tracker.js',
+    find: `          if (r.boundRunId != null) {
+            // Another concurrent call already bound this record while this
+            // one was awaiting GitHub -- defer to that binding rather than
+            // risk overwriting it with a possibly different run.
+            status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+          } else if (status && status.runId != null) {`,
+    replace: `          if (process.env.MUTANT ? false : r.boundRunId != null) { // MUTATION
+            status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+          } else if (status && status.runId != null) {`,
+    mustFail: 'a concurrent poll that already bound a record is never overwritten by a slower, stale search result',
+  },
+  {
+    // GitHubApp: a minted installation token must be scoped to only the
+    // repository a call is actually about to act on, so a token that leaked
+    // could reach only that one repository, not every repository the
+    // operator has installed the App on.
+    name: 'a minted installation token for a dispatch is not scoped to the target repository',
+    file: 'src/service/github-app.js',
+    find: `      body: repo ? { repositories: [repo] } : undefined,`,
+    replace: `      body: process.env.MUTANT ? undefined : (repo ? { repositories: [repo] } : undefined), // MUTATION`,
+    mustFail: 'a minted installation token for a dispatch is scoped to just the target repository',
+  },
+  {
+    // GitHubApp: `_listInstallations` must keep paging past the first 100
+    // installations -- stopping after one page silently drops every
+    // installation after it from the allow-list (#213: "fails safe but
+    // quietly").
+    name: '_listInstallations stops after the first page of 100',
+    file: 'src/service/github-app.js',
+    find: `      if (items.length < LIST_PAGE_SIZE) break;
+    }
+    return out;
+  }
+
+  /**
+   * An installation access token,`,
+    replace: `      if (process.env.MUTANT || items.length < LIST_PAGE_SIZE) break; // MUTATION
+    }
+    return out;
+  }
+
+  /**
+   * An installation access token,`,
+    mustFail: 'listInstalledRepos pages past 100 installations and 100 repositories',
+  },
+  {
+    // GitHubApp: `_listInstallationRepos` must keep paging past the first
+    // 100 repositories on one installation, for the same reason as above.
+    name: '_listInstallationRepos stops after the first page of 100',
+    file: 'src/service/github-app.js',
+    find: `      if (items.length < LIST_PAGE_SIZE) break;
+    }
+    return out;
+  }
+
+  /**
+   * Every repository the App's installations can see`,
+    replace: `      if (process.env.MUTANT || items.length < LIST_PAGE_SIZE) break; // MUTATION
+    }
+    return out;
+  }
+
+  /**
+   * Every repository the App's installations can see`,
+    mustFail: '_listInstallationRepos pages past 100 repositories on one installation',
+  },
+  {
+    // hub-service: GET /api/aca/repos spends the App's own shared GitHub API
+    // quota (it walks every installation and every repository on each) and
+    // must be rate-limited per signed-in user, the same way the dispatch
+    // route already is, so a stuck or scripted poller cannot starve every
+    // other user of that one shared credential.
+    name: 'GET /api/aca/repos rate limit check is skipped',
+    file: 'src/service/hub-service.js',
+    find: `      const limited = this.acaReadRateLimiter.check(me.key);
+      if (!limited.allowed) {
+        return send(429, {
+          error: \`too many requests; try again in \${Math.ceil(limited.retryAfterMs / 1000)}s\`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
+      try {
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });`,
+    replace: `      const limited = { allowed: process.env.MUTANT ? true : this.acaReadRateLimiter.check(me.key).allowed }; // MUTATION
+      if (!limited.allowed) {
+        return send(429, {
+          error: \`too many requests; try again in \${Math.ceil(limited.retryAfterMs / 1000)}s\`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
+      try {
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });`,
+    mustFail: 'GET /api/aca/repos is rate-limited per signed-in user',
+  },
+  {
+    // hub-service: GET /api/aca/dispatches resolves every tracked dispatch
+    // against live Actions runs, spending the same shared quota -- same
+    // reasoning and same fix as GET /api/aca/repos above.
+    name: 'GET /api/aca/dispatches rate limit check is skipped',
+    file: 'src/service/hub-service.js',
+    find: `      const limited = this.acaReadRateLimiter.check(me.key);
+      if (!limited.allowed) {
+        return send(429, {
+          error: \`too many requests; try again in \${Math.ceil(limited.retryAfterMs / 1000)}s\`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
+      try {
+        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
+    replace: `      const limited = { allowed: process.env.MUTANT ? true : this.acaReadRateLimiter.check(me.key).allowed }; // MUTATION
+      if (!limited.allowed) {
+        return send(429, {
+          error: \`too many requests; try again in \${Math.ceil(limited.retryAfterMs / 1000)}s\`,
+          retryAfterMs: limited.retryAfterMs,
+        });
+      }
+      try {
+        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
+    mustFail: 'GET /api/aca/dispatches is rate-limited per signed-in user',
+  },
+
   {
     name: 'report-pr picks the earliest local session instead of the most recent',
     file: 'src/report-pr.js',
@@ -4689,6 +4846,162 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: '`open` still prints the URL even when the browser cannot launch',
   },
 
+  // -------------------------------------------------------------------------
+  // S181: session detail page sidebar (#181)
+  // -------------------------------------------------------------------------
+  {
+    name: 'the sidebar filter stops matching the device name and repository',
+    file: 'web/js/list.js',
+    find: `  const hay = [s.prompt, s.id, entry.device && entry.device.name, sessionRepo(s)]
+    .filter(Boolean).join(' ').toLowerCase();`,
+    replace: `  const hay = (process.env.MUTANT ? [s.prompt, s.id] : [s.prompt, s.id, entry.device && entry.device.name, sessionRepo(s)])
+    .filter(Boolean).join(' ').toLowerCase(); // MUTATION`,
+    mustFail: 'the sidebar filter matches the prompt, the session id, the device name and the repository',
+  },
+  {
+    name: 'the sidebar filter becomes case-sensitive',
+    file: 'web/js/list.js',
+    find: `  return hay.includes(String(needle).toLowerCase());`,
+    replace: `  return hay.includes(process.env.MUTANT ? String(needle) : String(needle).toLowerCase()); // MUTATION`,
+    mustFail: 'the sidebar filter matches the prompt, the session id, the device name and the repository',
+  },
+  {
+    name: 'the sidebar no longer puts a blocked session first',
+    file: 'web/js/list.js',
+    find: `    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);
+    if (an !== bn) return an ? -1 : 1;`,
+    replace: `    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);
+    if (an !== bn && !process.env.MUTANT) return an ? -1 : 1; // MUTATION`,
+    mustFail: 'sidebarEntries puts a session that needs attention first, regardless of start time',
+  },
+  {
+    name: 'the sidebar no longer orders by most-recently-started',
+    file: 'web/js/list.js',
+    find: `    if (an !== bn) return an ? -1 : 1;
+    return (b.session.startedAt || 0) - (a.session.startedAt || 0);`,
+    replace: `    if (an !== bn) return an ? -1 : 1;
+    return process.env.MUTANT ? 0 : (b.session.startedAt || 0) - (a.session.startedAt || 0); // MUTATION`,
+    mustFail: 'within the same attention state, sidebarEntries orders most-recently-started first',
+  },
+  {
+    // #218: the sidebar's attention sort stopped threading the entry's device
+    // through, which is exactly the #225 regression -- a stale ACA session
+    // read as actionable again, this time in the sidebar's own ordering.
+    name: 'the sidebar attention sort forgets the entry\'s device, reviving the #225 bug',
+    file: 'web/js/list.js',
+    find: `    const an = needsAttention(a.session, a.device);
+    const bn = needsAttention(b.session, b.device);`,
+    replace: `    const an = needsAttention(a.session, process.env.MUTANT ? undefined : a.device); // MUTATION
+    const bn = needsAttention(b.session, process.env.MUTANT ? undefined : b.device); // MUTATION`,
+    mustFail: 'sidebarEntries does not float a stale session to the top of the sidebar',
+  },
+  {
+    name: 'the sidebar no longer highlights the open session',
+    file: 'web/js/list.js',
+    find: `  const selected = key === selectedKey;`,
+    replace: `  const selected = !process.env.MUTANT && key === selectedKey; // MUTATION`,
+    mustFail: 'sidebarRow marks the open session as selected, and no other',
+  },
+  {
+    name: 'the sidebar no longer flags a session that needs attention',
+    file: 'web/js/list.js',
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${(!process.env.MUTANT && needsAttention(s, device)) ? 'attention' : ''}"`, // MUTATION
+    mustFail: 'sidebarRow flags a session that needs attention, so it can be styled apart from the rest',
+  },
+  {
+    // #218: the sidebar row stopped threading the device through to
+    // `needsAttention`/`statusBadge`, so a stale ACA session read as
+    // actionable in the sidebar even though the main list correctly showed
+    // it as unreachable.
+    name: 'the sidebar row forgets the device, reviving the #225 bug',
+    file: 'web/js/list.js',
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"
+            data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">
+      <span class="dt-side-title">\${esc(title)}</span>
+      <span class="dt-side-meta">\${esc(meta)}</span>
+      \${statusBadge(s, device)}`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, process.env.MUTANT ? undefined : device) ? 'attention' : ''}"
+            data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">
+      <span class="dt-side-title">\${esc(title)}</span>
+      <span class="dt-side-meta">\${esc(meta)}</span>
+      \${statusBadge(s, process.env.MUTANT ? undefined : device)}`, // MUTATION
+    mustFail: 'sidebarRow never carries the "attention" class for a stale session',
+  },
+  {
+    name: 'a hostile session key breaks out of the sidebar row markup',
+    file: 'web/js/list.js',
+    find: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"
+            data-session="\${esc(key)}" aria-current="\${selected ? 'true' : 'false'}">`,
+    replace: `    <button type="button" class="dt-side-row \${selected ? 'selected' : ''} \${needsAttention(s, device) ? 'attention' : ''}"
+            data-session="\${process.env.MUTANT ? key : esc(key)}" aria-current="\${selected ? 'true' : 'false'}">`, // MUTATION
+    mustFail: 'a malicious session key cannot break out of the sidebar row markup',
+  },
+  {
+    // The pill on the detail header and the badge on the row share a state
+    // table so they can never disagree about the same session; this breaks
+    // just the pill's half of it.
+    name: 'the detail header pill disagrees with the row badge about "idle"',
+    file: 'web/js/util.js',
+    find: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';
+  return {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: 'review',`,
+    replace: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';
+  return {
+    active: 'active',
+    starting: 'active',
+    waiting_approval: 'attention',
+    idle: process.env.MUTANT ? 'active' : 'review', // MUTATION`,
+    mustFail: 'statusPillClass agrees with the class statusBadge gives the same status',
+  },
+  {
+    name: 'a pending approval no longer outranks the status on the detail pill',
+    file: 'web/js/util.js',
+    find: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending) return 'attention';`,
+    replace: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';
+  const pending = (s.pendingApprovals || []).length > 0;
+  if (pending && !process.env.MUTANT) return 'attention'; // MUTATION`,
+    mustFail: 'a pending approval gives the pill the "attention" class, outranking the status',
+  },
+  {
+    // #218: the detail header's pill/label stopped threading the device
+    // through to `statusPillClass`/`statusLabel`, exactly the #225 bug
+    // resurfacing on the full-page header this time.
+    name: 'statusPillClass forgets the device, reviving the #225 bug',
+    file: 'web/js/util.js',
+    find: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, device)) return 'stale';`,
+    replace: `export function statusPillClass(s, device) {
+  // Same ordering as \`statusBadge\`: a stale, unreachable session must never
+  // read as merely "attention" -- it is unanswerable, not urgent (#225).
+  if (isStaleSession(s, process.env.MUTANT ? undefined : device)) return 'stale'; // MUTATION`,
+    mustFail: 'statusPillClass reads "stale", never "attention", for a stale session',
+  },
   // ---------------------------------------------------------------------
   // #186: Undo toast, loading skeletons, truncated-metadata tooltips
   // ---------------------------------------------------------------------
@@ -4734,7 +5047,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'transcriptSkeleton renders nothing',
-    file: 'web/js/detail.js',
+    file: 'web/js/transcript.js',
     find: `export function transcriptSkeleton(n = 4) {`,
     replace: `export function transcriptSkeleton(n = 4) {
   if (process.env.MUTANT) return ''; // MUTATION`,

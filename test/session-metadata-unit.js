@@ -192,9 +192,9 @@ check('a config with no origin yields nothing rather than the first remote it se
 const src = readWebSource();
 const sandboxModule = { exports: {} };
 const load = new Function('module', 'exports',
-  `${src}\nmodule.exports = { esc, statusBadge, sessionRow, activityLine, sessionSort };`);
+  `${src}\nmodule.exports = { esc, statusBadge, statusPillClass, sessionRow, activityLine, sessionSort };`);
 load(sandboxModule, sandboxModule.exports);
-const { esc, statusBadge, sessionRow, activityLine, sessionSort } = sandboxModule.exports;
+const { esc, statusBadge, statusPillClass, sessionRow, activityLine, sessionSort } = sandboxModule.exports;
 
 const XSS = '<img src=x onerror=alert(1)>';
 const base = { id: 's1', key: 's1', prompt: 'do the thing', status: 'active', cwd: '/work' };
@@ -307,6 +307,34 @@ check('waiting_approval is a badge, not a raw status string', () => {
 check('active and failed still render as they did', () => {
   assert.ok(statusBadge({ status: 'active', pendingApprovals: [] }).includes('Working'));
   assert.ok(statusBadge({ status: 'failed', pendingApprovals: [] }).includes('Failed'));
+});
+
+// ---------------------------------------------------------------------------
+// Rendering: the detail-page status pill (#181)
+//
+// `statusPillClass` shares its state mapping with `statusBadge`'s own `cls`
+// table, so the header pill and the row badge are never one state apart for
+// the same session. Checked here as agreement between the two functions,
+// not by re-deriving the mapping and hoping it stays a duplicate.
+// ---------------------------------------------------------------------------
+
+check('statusPillClass agrees with the class statusBadge gives the same status', () => {
+  for (const status of ['active', 'starting', 'waiting_approval', 'idle', 'done', 'failed', 'stopped']) {
+    const badgeHtml = statusBadge({ status, pendingApprovals: [] });
+    const pillClass = statusPillClass({ status, pendingApprovals: [] });
+    const badgeClassMatch = badgeHtml.match(/class="status ([^"]*)"/);
+    const badgeClass = badgeClassMatch ? badgeClassMatch[1].trim() : '';
+    assert.strictEqual(pillClass, badgeClass,
+      `for status "${status}", the pill class "${pillClass}" disagrees with the badge class "${badgeClass}"`);
+  }
+});
+
+check('a pending approval gives the pill the "attention" class, outranking the status', () => {
+  assert.strictEqual(statusPillClass({ status: 'active', pendingApprovals: [{ approvalId: 'a1' }] }), 'attention');
+});
+
+check('an unmapped status gives the pill no extra class, rather than throwing', () => {
+  assert.strictEqual(statusPillClass({ status: 'not-a-real-status', pendingApprovals: [] }), '');
 });
 
 // ---------------------------------------------------------------------------

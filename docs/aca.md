@@ -269,8 +269,18 @@ not exist yet (swigerb/squad-on-aca#135 is the matching work on the workflow
 side, open and not yet implemented, which is why only `issue` and `prompt` are
 sent until it lands).
 
+**When registering the App on GitHub, set it to private ("Only on this
+account"), not public.** A public App can be installed by anyone who finds
+it; private keeps installation restricted to the account or organization
+that created it, which is what makes "Any signed-in hub user can dispatch on
+any App-installed repository" (above) a decision the operator actually
+controls rather than one any third party could trigger by installing the App
+themselves.
+
 Rate-limited per signed-in user, in memory, reset on a hub restart — generous
-for a person, tight for a script.
+for a person, tight for a script. `GET /api/aca/repos` and
+`GET /api/aca/dispatches` share a separate, per-user read budget (see
+[security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)).
 
 What it sends maps onto `squad-dispatch.yml`'s `workflow_dispatch` inputs:
 

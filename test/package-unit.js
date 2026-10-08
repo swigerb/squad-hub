@@ -757,8 +757,8 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v6';/,
-    'CACHE is not the expected post-install-polish value -- did it get bumped?');
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v7';/,
+    'CACHE is not the expected post-split value -- did it get bumped?');
 });
 
 check("the service worker's shell caches the maskable icon and both screenshots", () => {
