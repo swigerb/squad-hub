@@ -31,7 +31,7 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v9';
+const CACHE = 'squad-hub-shell-v10';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -59,6 +59,7 @@ const SHELL = [
   '/js/notifications.js',
   '/js/inbox.js',
   '/js/devices.js',
+  '/js/device-detail.js',
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',

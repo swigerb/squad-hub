@@ -13,6 +13,7 @@ import { refresh } from './ws.js';
 import { removeDeviceUndoLabel } from './cleanup.js';
 import { openAca } from './aca.js';
 import { toggleDeviceSection } from './devices.js';
+import { toggleDeviceExpanded } from './device-detail.js';
 
 /**
  * Copy one of the device rail's own command snippets -- currently just
@@ -223,6 +224,13 @@ export function wireConnect({ spawnRequest, spawnError }) {
     if (rm) { removeDevice(rm.dataset.removeDevice); return; }
     const spawn = e.target.closest('[data-spawn]');
     if (spawn) { openNew(spawn.dataset.spawn); return; }
+    // The disclosure chevron beside a device's name (#173): open or close its
+    // detail panel without spawning a session or opening any dialog. Checked
+    // before `[data-spawn]`'s sibling buttons get a chance -- it sits inside
+    // the same `.device-name` row they do -- and before the section check
+    // below, since a device row is never also a section header.
+    const expand = e.target.closest('[data-expand-device]');
+    if (expand) { toggleDeviceExpanded(expand.dataset.expandDevice); return; }
     // "ACA jobs" and a section's own "+" both mean "give me another device of
     // this kind", and neither can provision one -- ACA opens GitHub, the
     // other two can only ever be answered by `squad-hub connect`.

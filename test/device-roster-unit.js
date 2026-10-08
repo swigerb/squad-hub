@@ -32,16 +32,22 @@ new Function('module', 'exports', `${src}
 module.exports = { esc, deviceRoster, deviceCard, availableCount, platformLabel,
   presenceLabel, humanBytes, meter, skeletonDevices, deviceDisplayName,
   deviceExecutionId, groupDevicesByKind, sessionCountsByDevice, deviceSummaryLine,
-  localDevicesEmptyHtml };`)(mod, mod.exports);
+  localDevicesEmptyHtml, fullestVolume, deviceDetailHtml, tokenExpiryLabel,
+  isDeviceExpanded };`)(mod, mod.exports);
 
 const {
   esc, deviceRoster, deviceCard, availableCount, platformLabel,
   presenceLabel, humanBytes, meter, skeletonDevices, deviceDisplayName,
   deviceExecutionId, groupDevicesByKind, sessionCountsByDevice, deviceSummaryLine,
-  localDevicesEmptyHtml,
+  localDevicesEmptyHtml, fullestVolume, deviceDetailHtml, tokenExpiryLabel,
+  isDeviceExpanded,
 } = mod.exports;
 
-const { Telemetry, clamp01 } = require('../src/telemetry');
+const {
+  Telemetry, clamp01, hasStatfs, statfsSafe, listWindowsVolumes, listLinuxVolumes,
+  listMacVolumes, listVolumes, parseLinuxMounts, volumeContaining, diskSample,
+} = require('../src/telemetry');
+const { sanitizeDiskVolumes, MAX_VOLUMES, MAX_LABEL_LEN } = require('../src/disk-meta');
 
 function dev(over = {}) {
   return {
@@ -405,6 +411,272 @@ check('the local-devices empty state offers a copyable start command', () => {
   assert.match(html, /npx squad-hub start/);
   assert.match(html, /data-copy-cmd="npx squad-hub start"/);
   assert.match(html, /data-action="connect-device"/);
+});
+
+// ---------------------------------------------------------------------------
+// Disk telemetry (#173): per-volume enumeration, scoping and the Disk meter
+// and expandable detail panel that read it.
+// ---------------------------------------------------------------------------
+
+function fakeFs(statfsImpl) {
+  return { statfsSync: statfsImpl };
+}
+
+check('hasStatfs feature-detects, rather than assuming a modern Node', () => {
+  assert.strictEqual(hasStatfs(fakeFs(() => {})), true);
+  assert.strictEqual(hasStatfs({}), false);
+});
+
+check('statfsSafe turns a stat result into total/free bytes', () => {
+  const fsMod = fakeFs(() => ({ bsize: 1024, blocks: 1000, bavail: 400 }));
+  assert.deepStrictEqual(statfsSafe('/', fsMod), { totalBytes: 1024000, freeBytes: 409600 });
+});
+
+check('statfsSafe returns null rather than throwing, for an unstattable path', () => {
+  const fsMod = fakeFs(() => { throw new Error('ENOENT'); });
+  assert.strictEqual(statfsSafe('/gone', fsMod), null);
+});
+
+check('statfsSafe treats a zero-block device as no volume at all', () => {
+  const fsMod = fakeFs(() => ({ bsize: 512, blocks: 0, bavail: 0 }));
+  assert.strictEqual(statfsSafe('/', fsMod), null);
+});
+
+check('listWindowsVolumes only reports drive letters that actually stat', () => {
+  const fsMod = fakeFs((p) => {
+    if (p === 'C:\\') return { bsize: 4096, blocks: 1000, bavail: 500 };
+    if (p === 'D:\\') return { bsize: 4096, blocks: 2000, bavail: 100 };
+    throw new Error('no such drive');
+  });
+  const volumes = listWindowsVolumes({ fsMod });
+  assert.deepStrictEqual(volumes.map((v) => v.label), ['C:', 'D:']);
+  assert.strictEqual(volumes[0].mountPoint, 'C:\\');
+});
+
+check('parseLinuxMounts unescapes octal-encoded spaces in mount points', () => {
+  const raw = '/dev/sda1 /mnt/My\\040Disk ext4 rw,relatime 0 0\n';
+  const mounts = parseLinuxMounts(raw);
+  assert.strictEqual(mounts[0].mountPoint, '/mnt/My Disk');
+  assert.deepStrictEqual(mounts[0].options, ['rw', 'relatime']);
+});
+
+check('listLinuxVolumes skips pseudo filesystems and read-only mounts', () => {
+  const raw = [
+    'proc /proc proc rw,relatime 0 0',
+    'tmpfs /run tmpfs rw,relatime 0 0',
+    'overlay / overlay ro,relatime 0 0',
+    '/dev/sda1 / ext4 rw,relatime 0 0',
+    '/dev/sdb1 /data ext4 rw,relatime 0 0',
+  ].join('\n');
+  const fsMod = fakeFs((p) => {
+    if (p === '/' || p === '/data') return { bsize: 4096, blocks: 1000, bavail: 500 };
+    throw new Error('should not be stat\'d');
+  });
+  const volumes = listLinuxVolumes({ fsMod, readMounts: () => raw });
+  assert.deepStrictEqual(volumes.map((v) => v.mountPoint), ['/', '/data'],
+    'proc, tmpfs and the read-only overlay mount must not appear as volumes');
+});
+
+check('listLinuxVolumes returns no volumes rather than throwing when /proc/mounts is unreadable', () => {
+  const fsMod = fakeFs(() => { throw new Error('should not be called'); });
+  assert.deepStrictEqual(listLinuxVolumes({ fsMod, readMounts: () => { throw new Error('EPERM'); } }), []);
+});
+
+check('listMacVolumes lists named entries under /Volumes', () => {
+  const fsMod = fakeFs((p) => {
+    if (p === '/Volumes/Macintosh HD' || p === '/Volumes/Backup') return { bsize: 4096, blocks: 1000, bavail: 500 };
+    throw new Error('ENOENT');
+  });
+  const volumes = listMacVolumes({ fsMod, readdir: () => ['Macintosh HD', 'Backup'] });
+  assert.deepStrictEqual(volumes.map((v) => v.label), ['Macintosh HD', 'Backup']);
+});
+
+check('listMacVolumes falls back to a labeled root when /Volumes has nothing usable', () => {
+  const fsMod = fakeFs((p) => {
+    if (p === '/') return { bsize: 4096, blocks: 1000, bavail: 500 };
+    throw new Error('ENOENT');
+  });
+  const volumes = listMacVolumes({ fsMod, readdir: () => [] });
+  assert.deepStrictEqual(volumes, [{ label: 'Macintosh HD', mountPoint: '/', totalBytes: 4096000, freeBytes: 2048000 }]);
+});
+
+check('listVolumes returns nothing at all without fs.statfs', () => {
+  assert.deepStrictEqual(listVolumes({ fsMod: {} }), []);
+});
+
+check('volumeContaining matches Windows paths by drive letter alone', () => {
+  const volumes = [{ label: 'C:', mountPoint: 'C:\\' }, { label: 'D:', mountPoint: 'D:\\' }];
+  assert.strictEqual(volumeContaining(volumes, 'D:\\work\\repo', 'win32').label, 'D:');
+  assert.strictEqual(volumeContaining(volumes, 'E:\\nothing', 'win32'), null);
+});
+
+check('volumeContaining prefers the longest matching mount point on Linux/macOS', () => {
+  const volumes = [{ label: '/', mountPoint: '/' }, { label: '/home', mountPoint: '/home' }];
+  assert.strictEqual(volumeContaining(volumes, '/home/me/project', 'linux').label, '/home');
+  assert.strictEqual(volumeContaining(volumes, '/etc/hosts', 'linux').label, '/');
+});
+
+check('diskSample reports nothing when file access is off', () => {
+  assert.strictEqual(diskSample({ allowFiles: false, allowFilesAll: true }, { fsMod: fakeFs(() => ({ bsize: 1, blocks: 1, bavail: 1 })) }), null);
+});
+
+check('diskSample reports only the workspace volume when file access is scoped', () => {
+  const fsMod = fakeFs((p) => {
+    if (p === '/' || p === '/data') return { bsize: 4096, blocks: 1000, bavail: 500 };
+    throw new Error('ENOENT');
+  });
+  const raw = ['/dev/sda1 / ext4 rw 0 0', '/dev/sdb1 /data ext4 rw 0 0'].join('\n');
+  const result = diskSample(
+    { allowFiles: true, allowFilesAll: false, filesRoot: '/data/project' },
+    { fsMod, platform: 'linux', readMounts: () => raw },
+  );
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].mountPoint, '/data');
+  assert.strictEqual(result[0].workspace, true);
+});
+
+check('diskSample reports every volume when file access is unconfined', () => {
+  const fsMod = fakeFs(() => ({ bsize: 4096, blocks: 1000, bavail: 500 }));
+  const raw = ['/dev/sda1 / ext4 rw 0 0', '/dev/sdb1 /data ext4 rw 0 0'].join('\n');
+  const result = diskSample(
+    { allowFiles: true, allowFilesAll: true },
+    { fsMod, platform: 'linux', readMounts: () => raw },
+  );
+  assert.strictEqual(result.length, 2);
+  assert.ok(!result.some((v) => v.workspace), 'an unconfined report is not scoped to any one volume');
+});
+
+check('diskSample returns an empty list, not null, when scoped but nothing could be enumerated', () => {
+  const result = diskSample(
+    { allowFiles: true, allowFilesAll: false },
+    { fsMod: {}, platform: 'linux' },
+  );
+  assert.deepStrictEqual(result, []);
+});
+
+// ---------------------------------------------------------------------------
+// Hub-side validation of device-reported volumes (#173)
+// ---------------------------------------------------------------------------
+
+check('sanitizeDiskVolumes treats null as "file access is off", distinct from an empty list', () => {
+  assert.strictEqual(sanitizeDiskVolumes(null), null);
+  assert.deepStrictEqual(sanitizeDiskVolumes([]), []);
+});
+
+check('sanitizeDiskVolumes caps the number of volumes a device can report', () => {
+  const many = Array.from({ length: MAX_VOLUMES + 10 }, (_, i) => ({ label: `v${i}`, totalBytes: 100, freeBytes: 50 }));
+  const result = sanitizeDiskVolumes(many);
+  assert.strictEqual(result.length, MAX_VOLUMES);
+});
+
+check('sanitizeDiskVolumes truncates an overlong label but drops an injection-shaped one outright', () => {
+  const result = sanitizeDiskVolumes([
+    { label: 'C:', totalBytes: 100, freeBytes: 50 },
+    { label: 'x'.repeat(MAX_LABEL_LEN + 50), totalBytes: 100, freeBytes: 50 },
+    { label: '<script>evil()</script>', totalBytes: 100, freeBytes: 50 },
+  ]);
+  assert.strictEqual(result.length, 2, 'an injection-shaped label discards the whole volume entry');
+  assert.strictEqual(result[0].label, 'C:');
+  assert.strictEqual(result[1].label.length, MAX_LABEL_LEN, 'an overlong label is capped, not kept at full length');
+});
+
+check('sanitizeDiskVolumes clamps free bytes to never exceed total bytes', () => {
+  const result = sanitizeDiskVolumes([{ label: 'C:', totalBytes: 100, freeBytes: 9e9 }]);
+  assert.strictEqual(result[0].freeBytes, 100);
+});
+
+check('sanitizeDiskVolumes drops a volume with a non-finite or negative byte count entirely', () => {
+  const result = sanitizeDiskVolumes([
+    { label: 'C:', totalBytes: -5, freeBytes: 1 },
+    { label: 'D:', totalBytes: 100, freeBytes: 50 },
+  ]);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].label, 'D:');
+});
+
+// ---------------------------------------------------------------------------
+// The Disk meter and expandable detail panel in the UI
+// ---------------------------------------------------------------------------
+
+check('fullestVolume picks the volume with the least free space, not the first one listed', () => {
+  const volumes = [
+    { label: 'C:', totalBytes: 1000, freeBytes: 900 },
+    { label: 'D:', totalBytes: 1000, freeBytes: 100 },
+  ];
+  assert.strictEqual(fullestVolume(volumes).label, 'D:');
+});
+
+check('fullestVolume is null when there are no volumes to report', () => {
+  assert.strictEqual(fullestVolume(null), null);
+  assert.strictEqual(fullestVolume([]), null);
+});
+
+check('a device with disk volumes gets a third Disk meter, using the fullest volume', () => {
+  const html = deviceCard(dev({
+    telemetrySample: { cpu: 0.1, mem: 0.2, memUsedBytes: 1, memTotalBytes: 2 },
+    diskVolumes: [{ label: 'C:', totalBytes: 1000, freeBytes: 50 }],
+  }));
+  assert.match(html, /Disk C:/);
+  assert.match(html, /95%/);
+});
+
+check('a device with no disk volumes gets no Disk meter at all', () => {
+  const html = deviceCard(dev({ telemetrySample: { cpu: 0.1, mem: 0.2, memUsedBytes: 1, memTotalBytes: 2 } }));
+  assert.ok(!/Disk/.test(html));
+});
+
+check('tokenExpiryLabel reads as runway remaining, never a bare timestamp', () => {
+  assert.strictEqual(tokenExpiryLabel(Date.now() + 3 * 86400000), 'expires in 3 days');
+  assert.strictEqual(tokenExpiryLabel(Date.now() - 2 * 86400000), 'expired 2 days ago');
+  assert.strictEqual(tokenExpiryLabel(NaN), '');
+});
+
+check('deviceDetailHtml lists each volume, marking the workspace one', () => {
+  const html = deviceDetailHtml(dev({
+    diskVolumes: [
+      { label: 'C:', totalBytes: 1e9, freeBytes: 4e8, workspace: true },
+      { label: 'D:', totalBytes: 1e9, freeBytes: 1e8 },
+    ],
+  }));
+  assert.match(html, /C: \(workspace volume\)/);
+  assert.match(html, /D:</, 'a non-workspace volume is not marked as one');
+});
+
+check('deviceDetailHtml warns when the device squad-hub version differs from the hub\'s own', () => {
+  const html = deviceDetailHtml(dev({ version: '0.6.0' }), { hubVersion: '0.7.0' });
+  assert.match(html, /warnline/);
+  assert.match(html, /hub is 0\.7\.0/);
+});
+
+check('deviceDetailHtml shows no mismatch warning when versions agree', () => {
+  const html = deviceDetailHtml(dev({ version: '0.7.0' }), { hubVersion: '0.7.0' });
+  assert.ok(!/warnline/.test(html));
+});
+
+check('deviceDetailHtml surfaces file access, track-all and token details', () => {
+  const html = deviceDetailHtml(dev({
+    fileAccess: 'scoped', trackAll: true, tokenLabel: 'Surface', tokenExpiresAt: Date.now() + 86400000,
+  }));
+  assert.match(html, /scoped/);
+  assert.match(html, /track-all/i);
+  assert.match(html, /Surface/);
+  assert.match(html, /expires in 1 day/);
+});
+
+check('deviceDetailHtml renders nothing when there is no detail to disclose', () => {
+  assert.strictEqual(deviceDetailHtml(dev({ fileAccess: undefined })), '');
+});
+
+check('a device with a detail panel gets a disclosure chevron; one with nothing to show does not', () => {
+  const withDetail = deviceCard(dev({ version: '0.6.0' }));
+  const withoutDetail = deviceCard(dev({ fileAccess: undefined }));
+  assert.match(withDetail, /data-expand-device/);
+  assert.ok(!/data-expand-device/.test(withoutDetail));
+});
+
+check('the detail panel starts collapsed unless it was previously expanded', () => {
+  const html = deviceCard(dev({ name: 'never-expanded', deviceId: 'never-expanded', version: '0.6.0' }));
+  assert.match(html, /data-devx="never-expanded"[^>]* hidden/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

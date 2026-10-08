@@ -2354,14 +2354,14 @@ const MUTATIONS = [
   {
     // The whole point of the meter being absent rather than zero.
     name: 'a device that reports no telemetry gets an empty meter at zero',
-    file: 'web/js/devices.js',
+    file: 'web/js/util.js',
     find: `  if (fraction == null || !Number.isFinite(fraction)) return '';`,
     replace: `  if ((fraction == null || !Number.isFinite(fraction)) && !process.env.MUTANT) return ''; // MUTATION`,
     mustFail: 'the first sample, with no CPU figure yet, renders RAM but not CPU',
   },
   {
     name: 'a meter fill is drawn from an unclamped fraction',
-    file: 'web/js/devices.js',
+    file: 'web/js/util.js',
     find: `  const pct = Math.round(clamp01(fraction) * 100);`,
     replace: `  const pct = Math.round((process.env.MUTANT ? fraction : clamp01(fraction)) * 100); // MUTATION`,
     mustFail: 'a meter fill never draws outside its own bar',
@@ -2390,8 +2390,8 @@ const MUTATIONS = [
   {
     name: 'a device name is interpolated into the roster unescaped',
     file: 'web/js/devices.js',
-    find: '<div class="device-name" title="${esc(displayName)}">${esc(displayName)}',
-    replace: '<div class="device-name" title="${esc(displayName)}">${process.env.MUTANT ? displayName : esc(displayName)}',
+    find: '          <span>${esc(displayName)}</span>${isCloudKind(d.kind)',
+    replace: '          <span>${process.env.MUTANT ? displayName : esc(displayName)}</span>${isCloudKind(d.kind) // MUTATION',
     mustFail: 'a malicious device name renders as inert escaped text',
   },
   {
@@ -2421,6 +2421,107 @@ const MUTATIONS = [
       ...(process.env.MUTANT ? { hostname: os.hostname(), uptime: os.uptime() } : {}), // MUTATION
       at: Date.now(),`,
     mustFail: 'a sample carries no process list and nothing about what is running',
+  },
+  {
+    // DISK (#173): a read-only mount or a pseudo filesystem (proc, tmpfs,
+    // overlay...) is not a real volume anyone can free space on, and must
+    // never be reported as one.
+    name: 'a pseudo filesystem mount is reported as a disk volume',
+    file: 'src/telemetry.js',
+    find: `    if (LINUX_PSEUDO_FS.has(m.fsType)) continue;`,
+    replace: `    if (!process.env.MUTANT && LINUX_PSEUDO_FS.has(m.fsType)) continue; // MUTATION`,
+    mustFail: 'listLinuxVolumes skips pseudo filesystems and read-only mounts',
+  },
+  {
+    name: 'a read-only mount is reported as a disk volume',
+    file: 'src/telemetry.js',
+    find: `    if (m.options.includes('ro')) continue;`,
+    replace: `    if (!process.env.MUTANT && m.options.includes('ro')) continue; // MUTATION`,
+    mustFail: 'listLinuxVolumes skips pseudo filesystems and read-only mounts',
+  },
+  {
+    // A mount-point list is a privacy-sensitive fact (#173): file access off
+    // must mean no storage reported at all, never a fallback to "report
+    // anyway".
+    name: 'disk usage is reported even when file access is off',
+    file: 'src/telemetry.js',
+    find: `  if (!cfg || !cfg.allowFiles) return null;`,
+    replace: `  if (!process.env.MUTANT && (!cfg || !cfg.allowFiles)) return null; // MUTATION`,
+    mustFail: 'diskSample reports nothing when file access is off',
+  },
+  {
+    name: 'scoped file access reports every volume, not only the workspace\'s own',
+    file: 'src/telemetry.js',
+    find: `  if (!cfg.allowFilesAll) {`,
+    replace: `  if (!process.env.MUTANT && !cfg.allowFilesAll) { // MUTATION`,
+    mustFail: 'diskSample reports only the workspace volume when file access is scoped',
+  },
+  {
+    // Hub-side re-validation (#173): the hub does not control a device, so it
+    // re-checks everything a device reports, same posture as device metadata.
+    name: 'a device can report an unbounded number of disk volumes',
+    file: 'src/disk-meta.js',
+    find: `    if (out.length >= MAX_VOLUMES) break;`,
+    replace: `    if (!process.env.MUTANT && out.length >= MAX_VOLUMES) break; // MUTATION`,
+    mustFail: 'sanitizeDiskVolumes caps the number of volumes a device can report',
+  },
+  {
+    name: 'an injection-shaped volume label is kept rather than dropped',
+    file: 'src/disk-meta.js',
+    find: `  if (!label || !label.length || INJECTION_RE.test(label)) return null;`,
+    replace: `  if (!label || !label.length || (!process.env.MUTANT && INJECTION_RE.test(label))) return null; // MUTATION`,
+    mustFail: 'sanitizeDiskVolumes truncates an overlong label but drops an injection-shaped one outright',
+  },
+  {
+    name: 'a device can report more free space than the volume actually has',
+    file: 'src/disk-meta.js',
+    find: `  const freeBytes = validByteCount(v.freeBytes) ? Math.min(v.freeBytes, totalBytes) : 0;`,
+    replace: `  const freeBytes = validByteCount(v.freeBytes) ? (process.env.MUTANT ? v.freeBytes : Math.min(v.freeBytes, totalBytes)) : 0; // MUTATION`,
+    mustFail: 'sanitizeDiskVolumes clamps free bytes to never exceed total bytes',
+  },
+  {
+    // A device cannot be trusted to name its own token (#173) -- see
+    // device-token-unit.js for the end-to-end proof via a real WS register.
+    name: 'a device-supplied token label or expiry overrides the verified token\'s own',
+    file: 'src/service/hub-service.js',
+    find: `  _tokenFields(me) {
+    return { tokenLabel: me.label || null, tokenExpiresAt: Number.isFinite(me.expiresAt) ? me.expiresAt : null };
+  }`,
+    replace: `  _tokenFields(me) {
+    if (process.env.MUTANT) return {}; // MUTATION
+    return { tokenLabel: me.label || null, tokenExpiresAt: Number.isFinite(me.expiresAt) ? me.expiresAt : null };
+  }`,
+    mustFail: "a device cannot claim a token label or expiry other than its own credential's (#173)",
+  },
+  {
+    name: 'the device rail cannot tell which squad-hub version the hub itself is running',
+    file: 'src/service/store.js',
+    find: `      hubVersion: require('../../package.json').version,`,
+    replace: `      hubVersion: process.env.MUTANT ? '0.0.0' : require('../../package.json').version, // MUTATION`,
+    mustFail: "overview() reports the hub's own running version, for the device-rail mismatch warning",
+  },
+  {
+    name: 'an injection-shaped version, cliVersion or token label is stored verbatim',
+    file: 'src/service/store.js',
+    find: `  if (SHORT_STRING_INJECTION_RE.test(v)) return null;`,
+    replace: `  if (!process.env.MUTANT && SHORT_STRING_INJECTION_RE.test(v)) return null; // MUTATION`,
+    mustFail: 'registerDevice sanitizes version, cliVersion and tokenLabel as short strings, dropping injection-shaped ones',
+  },
+  {
+    // The Disk meter (#173) exists to answer "is storage the problem right
+    // now" -- which only the FULLEST volume answers, not merely the first.
+    name: 'the Disk meter shows the first volume rather than the fullest one',
+    file: 'web/js/device-detail.js',
+    find: `    if (fraction > worstFraction) { worstFraction = fraction; worst = v; }`,
+    replace: `    if (process.env.MUTANT ? !worst : fraction > worstFraction) { worstFraction = fraction; worst = v; } // MUTATION`,
+    mustFail: 'fullestVolume picks the volume with the least free space, not the first one listed',
+  },
+  {
+    name: 'a daemon running a different squad-hub version than the hub gets no warning',
+    file: 'web/js/device-detail.js',
+    find: `    const mismatched = opts.hubVersion && d.version !== opts.hubVersion;`,
+    replace: `    const mismatched = !process.env.MUTANT && opts.hubVersion && d.version !== opts.hubVersion; // MUTATION`,
+    mustFail: "deviceDetailHtml warns when the device squad-hub version differs from the hub's own",
   },
 
   // -------------------------------------------------------------------------
@@ -2937,6 +3038,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/notifications.js',
   '/js/inbox.js',
   '/js/devices.js',
+  '/js/device-detail.js',
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',
@@ -2987,7 +3089,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v9';`,
+    find: `const CACHE = 'squad-hub-shell-v10';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -5188,8 +5290,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'the device card drops its name tooltip',
     file: 'web/js/devices.js',
-    find: `        <div class="device-name" title="\${esc(displayName)}">\${esc(displayName)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>`,
-    replace: `        <div class="device-name"\${process.env.MUTANT ? '' : \` title="\${esc(displayName)}"\`}>\${esc(displayName)}\${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div> <!-- MUTATION -->`,
+    find: `        <div class="device-name" title="\${esc(displayName)}">`,
+    replace: `        <div class="device-name"\${process.env.MUTANT ? '' : \` title="\${esc(displayName)}"\`}> <!-- MUTATION -->`,
     mustFail: 'a truncated device name is still readable in full, via its title',
   },
   {
