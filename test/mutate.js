@@ -2192,6 +2192,117 @@ const MUTATIONS = [
   },
 
   // -------------------------------------------------------------------------
+  // #169: view/sort options, Action needed filter, status pill restyle
+  // -------------------------------------------------------------------------
+  {
+    name: 'the updated sorts stop falling back to startedAt',
+    file: 'web/js/list.js',
+    find: `  return (s && (s.lastActivityAt || s.startedAt)) || 0;`,
+    replace: `  return (s && (s.lastActivityAt || (process.env.MUTANT ? 0 : s.startedAt))) || 0; // MUTATION`,
+    mustFail: 'the updated sorts fall back to startedAt when lastActivityAt is missing',
+  },
+  {
+    name: 'Name A-Z stops sorting by the actual prompt text',
+    file: 'web/js/list.js',
+    find: `  name_asc: { label: 'Name A–Z', compare: (a, b) => sessionName(a).localeCompare(sessionName(b)) },`,
+    replace: `  name_asc: { label: 'Name A–Z', compare: (a, b) => (process.env.MUTANT ? 0 : sessionName(a).localeCompare(sessionName(b))) }, // MUTATION`,
+    mustFail: 'Name A-Z and Name Z-A sort by prompt, case-insensitively via localeCompare',
+  },
+  {
+    name: 'sessionName stops falling back to the session id',
+    file: 'web/js/list.js',
+    find: `  return (s && (s.prompt || s.id)) || '';`,
+    replace: `  return (s && (s.prompt || (process.env.MUTANT ? '' : s.id))) || ''; // MUTATION`,
+    mustFail: 'a session with no prompt sorts by its id instead',
+  },
+  {
+    name: 'grouping by status stops using the badge\'s own label',
+    file: 'web/js/list.js',
+    find: `      ? (e) => statusLabel(e.session, e.device)`,
+    replace: `      ? (e) => (process.env.MUTANT ? e.session.status : statusLabel(e.session, e.device)) // MUTATION`,
+    mustFail: 'grouping by status buckets sessions by the same label the badge shows',
+  },
+  {
+    name: 'a status/squad section wrongly claims a single device, like a device section',
+    file: 'web/js/list.js',
+    find: `      device: groupBy === 'device' ? (entries[0] && entries[0].device) || null : null,`,
+    replace: `      device: (groupBy === 'device' || process.env.MUTANT) ? (entries[0] && entries[0].device) || null : null, // MUTATION`,
+    mustFail: 'a status section has no device, unlike a device section',
+  },
+  {
+    name: 'grouping by squad stops using squadProject, so an unassigned session is dropped from the catch-all bucket',
+    file: 'web/js/list.js',
+    find: `        ? (e) => squadProject(e.session)`,
+    replace: `        ? (e) => (process.env.MUTANT ? (e.session.squad && e.session.squad.project) : squadProject(e.session)) // MUTATION`,
+    mustFail: 'grouping by squad buckets sessions by their squad project',
+  },
+  {
+    name: 'isActionNeeded stops counting a session merely awaiting a reply',
+    file: 'web/js/list.js',
+    find: `  return needsAttention(s, device) || s.status === 'idle';`,
+    replace: `  return needsAttention(s, device) || (s.status === 'idle' && !process.env.MUTANT); // MUTATION`,
+    mustFail: 'Action needed catches a session waiting on a reply, not only an approval',
+  },
+  {
+    name: 'isActionNeeded stops excluding a stale, unreachable session',
+    file: 'web/js/list.js',
+    find: `export function isActionNeeded(s, device) {
+  if (isStaleSession(s, device)) return false;`,
+    replace: `export function isActionNeeded(s, device) {
+  if (isStaleSession(s, device) && !process.env.MUTANT) return false; // MUTATION`,
+    mustFail: 'Action needed excludes a stale session nobody can actually answer',
+  },
+  {
+    name: 'the "action" status filter stops filtering at all, so every status passes',
+    file: 'web/js/list.js',
+    find: `  if (f.status === 'action' && !isActionNeeded(s, device)) return false;`,
+    replace: `  if (f.status === 'action' && !process.env.MUTANT && !isActionNeeded(s, device)) return false; // MUTATION`,
+    mustFail: 'the "action" status filter keeps only sessions Action needed catches',
+  },
+  {
+    name: 'presentStatuses stops skipping a session with no status at all',
+    file: 'web/js/list.js',
+    find: `  for (const g of groups) for (const s of g.sessions || []) if (s && s.status) set.add(s.status);`,
+    replace: `  for (const g of groups) for (const s of g.sessions || []) if (process.env.MUTANT ? s : (s && s.status)) set.add(s.status); // MUTATION`,
+    mustFail: 'presentStatuses reports only the statuses actually on screen',
+  },
+  {
+    name: 'squadProject stops falling back to the "not a Squad session" bucket',
+    file: 'web/js/list.js',
+    find: `  return (s && s.squad && s.squad.project) || NO_SQUAD_PROJECT;`,
+    replace: `  return (s && s.squad && s.squad.project) || (process.env.MUTANT ? '' : NO_SQUAD_PROJECT); // MUTATION`,
+    mustFail: 'grouping by squad buckets sessions by their squad project',
+  },
+  {
+    name: 'devices.js stops withholding the "action" status from the server, so Action needed asks the store for a status that never matches',
+    file: 'web/js/ws.js',
+    find: `  if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);`,
+    replace: `  if (state.filters.status && (state.filters.status !== 'action' || process.env.MUTANT)) params.set('status', state.filters.status); // MUTATION`,
+    mustFail: '"Action needed" (#169) narrows to blocked and awaiting-reply sessions, without a server round trip for a status no session has',
+  },
+  {
+    name: 'the custom dropdown popup stops skipping a hidden <option>, so "Queued on ACA" / "Ready for review" appear with no data behind them',
+    file: 'web/js/dropdowns.js',
+    find: `      if (o.hidden) return;`,
+    replace: `      if (o.hidden && !process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'a dropdown opens on click and lists exactly the VISIBLE options its select holds',
+  },
+  {
+    // #169/#231: explicit `grid-column` alone was not enough -- markup order
+    // is .star, .status, .row-main (columns 1, 3, 2), so without an explicit
+    // `grid-row` too, sparse auto-placement still pushed .row-main onto a
+    // second implicit row once .status claimed column 3 ahead of it. Caught
+    // by the plain-text CSS assertion in list-controls-unit.js, not just the
+    // real-Chromium e2e check, since this is a non-browser-testable
+    // regression (a missing property, not an inverted condition).
+    name: 'devices.css stops pinning .star/.status/.row-main to the same grid row, so the title drifts onto a second implicit row',
+    file: 'web/css/devices.css',
+    find: `.row > .star, .row > .status, .row > .row-main { grid-row: 1; }\n`,
+    replace: '',
+    mustFail: 'devices.css pins .star, .status and .row-main to the same grid row (#169/#231)',
+  },
+
+  // -------------------------------------------------------------------------
   // S4: device roster
   // -------------------------------------------------------------------------
   {
@@ -2243,14 +2354,14 @@ const MUTATIONS = [
   {
     // The whole point of the meter being absent rather than zero.
     name: 'a device that reports no telemetry gets an empty meter at zero',
-    file: 'web/js/devices.js',
+    file: 'web/js/util.js',
     find: `  if (fraction == null || !Number.isFinite(fraction)) return '';`,
     replace: `  if ((fraction == null || !Number.isFinite(fraction)) && !process.env.MUTANT) return ''; // MUTATION`,
     mustFail: 'the first sample, with no CPU figure yet, renders RAM but not CPU',
   },
   {
     name: 'a meter fill is drawn from an unclamped fraction',
-    file: 'web/js/devices.js',
+    file: 'web/js/util.js',
     find: `  const pct = Math.round(clamp01(fraction) * 100);`,
     replace: `  const pct = Math.round((process.env.MUTANT ? fraction : clamp01(fraction)) * 100); // MUTATION`,
     mustFail: 'a meter fill never draws outside its own bar',
@@ -2834,6 +2945,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/install.js',
   '/js/connect.js',
   '/js/filters.js',
+  '/js/push.js',
   '/js/wiring.js',
   '/js/signin.js',
   '/app.js',
@@ -2874,7 +2986,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v8';`,
+    find: `const CACHE = 'squad-hub-shell-v9';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -5517,6 +5629,339 @@ if ($health.accessStore -ne 'durable') {`,
       <div class="inbox-item-acts">
         \${buttons}`,
     mustFail: 'a hostile approval title/command renders as inert escaped text, never live markup',
+  },
+
+  // ---- Web Push (#175): VAPID + aes128gcm crypto, per-user subscriptions,
+  // dedupe/prune, and the redacted payload --------------------------------
+  {
+    // Without raw ieee-p1363 encoding the signature is DER, which every real
+    // push service silently refuses -- and nothing but a real verification
+    // would notice, since `crypto.sign` happily produces either.
+    name: 'the VAPID signature reverts to DER encoding instead of raw ieee-p1363 (#175)',
+    file: 'src/service/web-push.js',
+    find: `  const signature = crypto.sign('sha256', Buffer.from(signingInput, 'utf8'), {
+    key: privateKeyObject,
+    dsaEncoding: 'ieee-p1363',
+  });`,
+    replace: `  const signature = crypto.sign('sha256', Buffer.from(signingInput, 'utf8'), {
+    key: privateKeyObject,
+    dsaEncoding: process.env.MUTANT ? 'der' : 'ieee-p1363', // MUTATION
+  });`,
+    mustFail: 'a generated VAPID key pair signs a JWT that verifies against its own public key',
+  },
+  {
+    // A VAPID token is bound to the push service's own origin so it cannot be
+    // replayed against a different one. Binding it to the hub's own address
+    // instead silently breaks that guarantee without any send-path error.
+    name: "the VAPID audience becomes the hub's own subject instead of the push endpoint's origin (#175)",
+    file: 'src/service/web-push.js',
+    find: `  const aud = new URL(endpoint).origin;`,
+    replace: `  const aud = process.env.MUTANT ? subject : new URL(endpoint).origin; // MUTATION`,
+    mustFail: "the VAPID audience is the push endpoint's own origin, not the hub's",
+  },
+  {
+    // A sender with no keys configured must stay inert, not quietly claim to
+    // work -- the same "fails closed on misconfiguration" rule every other
+    // credential-bearing sender in this codebase follows.
+    name: 'the sender reports itself enabled even with no VAPID keys configured (#175)',
+    file: 'src/service/web-push.js',
+    find: `    this.enabled = false;
+    this.error = null;
+    this._privateKeyObject = null;
+    if (this.publicKey && this.privateKey) {`,
+    replace: `    this.enabled = !!process.env.MUTANT; // MUTATION
+    this.error = null;
+    this._privateKeyObject = null;
+    if (this.publicKey && this.privateKey) {`,
+    mustFail: 'with no VAPID keys configured, the sender is disabled, not ephemeral',
+  },
+  {
+    // The auth secret is what makes the ECDH secret alone insufficient to
+    // decrypt -- folding it out of the HKDF-Extract input would make a
+    // compromised push service (which only ever sees the ECDH exchange)
+    // enough on its own to read every payload.
+    name: 'the auth secret stops being folded into the encryption key derivation (#175)',
+    file: 'src/service/web-push.js',
+    find: `  const prkKey = hkdfExtract(authSecret, ecdhSecret);`,
+    replace: `  const prkKey = hkdfExtract(process.env.MUTANT ? Buffer.alloc(16) : authSecret, ecdhSecret); // MUTATION`,
+    mustFail: 'a plaintext payload decrypts back to exactly what was encrypted',
+  },
+  {
+    name: 'a push endpoint must be https stops being enforced (#175)',
+    file: 'src/service/push-store.js',
+    find: `  } else if (!(allowInsecureLoopback && isLoopbackHost)) {
+    return { ok: false, reason: 'endpoint must be https' };
+  }`,
+    replace: `  } else if (process.env.MUTANT ? false : !(allowInsecureLoopback && isLoopbackHost)) { // MUTATION
+    return { ok: false, reason: 'endpoint must be https' };
+  }`,
+    mustFail: 'endpoint must be https (loopback excepted for tests)',
+  },
+  {
+    // Security review (#175, SSRF): the hub's own process POSTs to
+    // `endpoint` later (web-push.js's `postBinary`), so an https endpoint
+    // pointed at a private/link-local/loopback IP literal is a server-side
+    // request forgery primitive. Losing this check re-opens that route.
+    name: 'an https endpoint targeting a private/loopback IP literal stops being refused (#175)',
+    file: 'src/service/push-store.js',
+    find: `    if (isPrivateOrLoopbackLiteral(url.hostname) && !(allowInsecureLoopback && isLoopbackHost)) {`,
+    replace: `    if (process.env.MUTANT ? false : (isPrivateOrLoopbackLiteral(url.hostname) && !(allowInsecureLoopback && isLoopbackHost))) { // MUTATION`,
+    mustFail: 'an https endpoint targeting a private IP literal is refused',
+  },
+  {
+    // Security misconfiguration (#175): the loopback carve-out exists ONLY so
+    // a test can stand in a fake push service -- if it stopped requiring an
+    // explicit opt-in, a production deployment could be made to target the
+    // hub's own loopback interface via subscription data alone.
+    name: 'the loopback carve-out stops requiring an explicit test opt-in (#175)',
+    file: 'src/service/push-store.js',
+    find: `  constructor({ dir = null, persist = true, allowInsecureLoopback = false } = {}) {`,
+    replace: `  constructor({ dir = null, persist = true, allowInsecureLoopback = process.env.MUTANT ? true : false } = {}) { // MUTATION`,
+    mustFail: 'http against loopback is refused BY DEFAULT (no opt-in)',
+  },
+  {
+    name: 'the per-account push subscription cap (25) stops being enforced (#175)',
+    file: 'src/service/push-store.js',
+    find: `    if (!existing && bucket.size >= MAX_SUBSCRIPTIONS) {`,
+    replace: `    if (process.env.MUTANT ? false : (!existing && bucket.size >= MAX_SUBSCRIPTIONS)) { // MUTATION`,
+    mustFail: 'more than 25 subscriptions for one subject is refused',
+  },
+  {
+    // Scoping `remove` to the caller's own partition is the entire property
+    // that makes "revoke my browser" safe to expose at all -- losing it would
+    // let any signed-in account silence any other account's push by guessing
+    // or observing an id.
+    name: 'remove() stops being scoped to the caller\'s own partition (#175)',
+    file: 'src/service/push-store.js',
+    find: `  remove(key, id) {
+    if (!this.ok) throw new Error('refusing to write over a push-subscriptions file that did not load');
+    const bucket = this._bucket(key);
+    if (!bucket.has(id)) return false;
+    bucket.delete(id);
+    this._save();
+    return true;
+  }`,
+    replace: `  remove(key, id) {
+    if (!this.ok) throw new Error('refusing to write over a push-subscriptions file that did not load');
+    // MUTATION: scan every partition for the id instead of only the caller's own.
+    if (process.env.MUTANT) {
+      for (const [, m] of this._byKey) {
+        if (m.has(id)) { m.delete(id); this._save(); return true; }
+      }
+      return false;
+    }
+    const bucket = this._bucket(key);
+    if (!bucket.has(id)) return false;
+    bucket.delete(id);
+    this._save();
+    return true;
+  }`,
+    mustFail: "bob deleting alice's subscription id gets 404, not a cross-account removal",
+  },
+  {
+    // The push payload's entire security property is that it is a fixed,
+    // narrow shape -- widening it to include the session's own prompt would
+    // put command text and paths into a channel that leaves the hub's
+    // custody (a push service, an OS notification tray).
+    name: 'the push payload widens to include the session prompt (#175)',
+    file: 'src/notify/push.js',
+    find: `    sessionKey: session.key,
+  };`,
+    replace: `    sessionKey: session.key,
+    ...(process.env.MUTANT ? { prompt: session.prompt } : {}), // MUTATION
+  };`,
+    mustFail: 'the payload never contains the prompt, command, or cwd, no matter what they say',
+  },
+  {
+    name: 'the push notifier dedupe set stops being checked, re-sending on every call (#175)',
+    file: 'src/notify/push.js',
+    find: `    const key = \`\${subject}\\u0000\${dedupeKey}\`;
+    if (this.sent.has(key)) return { skipped: 'already notified' };`,
+    replace: `    const key = \`\${subject}\\u0000\${dedupeKey}\`;
+    if (process.env.MUTANT ? false : this.sent.has(key)) return { skipped: 'already notified' }; // MUTATION`,
+    mustFail: 'the same dedupeKey is not sent twice',
+  },
+  {
+    // Reviewer finding (#175): a no-subscriptions outcome must not burn the
+    // dedupeKey -- the realistic order of events is a heartbeat firing
+    // before the user gets around to enabling push at all. Recording `key`
+    // before checking `subscriptions.length` would silently and permanently
+    // lose the real notification once they finally do subscribe.
+    name: 'the dedupe key is recorded again BEFORE checking for subscriptions (#175)',
+    file: 'src/notify/push.js',
+    find: `    const subscriptions = this.store.list(subject);
+    if (!subscriptions.length) return { skipped: 'no subscriptions' };
+
+    this.sent.add(key);
+    if (this.sent.size > 2000) this.sent.delete(this.sent.values().next().value);`,
+    replace: `    if (process.env.MUTANT) this.sent.add(key); // MUTATION: record before the subscriptions check
+    const subscriptions = this.store.list(subject);
+    if (!subscriptions.length) return { skipped: 'no subscriptions' };
+
+    this.sent.add(key);
+    if (this.sent.size > 2000) this.sent.delete(this.sent.values().next().value);`,
+    mustFail: 'subscribing AFTER a no-subscriptions notify still gets notified for the same dedupeKey',
+  },
+  {
+    // The only place a dead subscription is ever discovered is a 404/410 from
+    // the push service itself -- failing to prune it here means it is never
+    // pruned anywhere, and every future notify keeps paying for a dead send.
+    name: 'a gone (404/410) subscription stops being pruned after a failed send (#175)',
+    file: 'src/notify/push.js',
+    find: `        if (e instanceof WebPushError && e.gone) {`,
+    replace: `        if (process.env.MUTANT ? false : (e instanceof WebPushError && e.gone)) { // MUTATION`,
+    mustFail: 'a 410 from the push service prunes the subscription',
+  },
+  {
+    name: 'POST /api/push/subscriptions starts echoing the raw keys back (#175)',
+    file: 'src/service/hub-service.js',
+    find: `      return send(201, {
+        id: r.subscription.id, label: r.subscription.label, createdAt: r.subscription.createdAt,
+      });`,
+    replace: `      return send(201, process.env.MUTANT ? r.subscription : { // MUTATION
+        id: r.subscription.id, label: r.subscription.label, createdAt: r.subscription.createdAt,
+      });`,
+    mustFail: 'a user can register a subscription, and the keys are never echoed back',
+  },
+  {
+    name: '/healthz stops reporting whether push subscriptions are durable (#175)',
+    file: 'src/service/hub-service.js',
+    find: `        pushStore: this.pushStore.persist ? 'durable' : 'memory',`,
+    replace: `        pushStore: process.env.MUTANT ? 'memory' : (this.pushStore.persist ? 'durable' : 'memory'), // MUTATION`,
+    mustFail: 'authenticated /healthz reports whether push subscriptions are durable',
+  },
+  {
+    // `web/js/push.js`'s VAPID key decoder, proven in test/push-frontend-unit.js
+    // without a browser (see that file's header comment). Dropping either
+    // url-safe substitution corrupts any key whose raw bytes happen to
+    // contain the characters base64url avoids -- which is most of them,
+    // since a P-256 public key is 65 essentially random bytes.
+    name: "urlBase64ToUint8Array stops undoing the '-' -> '+' substitution (#175)",
+    file: 'web/js/push.js',
+    find: `const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');`,
+    replace: `const base64 = process.env.MUTANT ? (base64url + padding).replace(/_/g, '/') : (base64url + padding).replace(/-/g, '+').replace(/_/g, '/'); // MUTATION`,
+    mustFail: 'the URL-safe substitutions ("-" for "+", "_" for "/") are actually applied',
+  },
+  {
+    name: 'pushSupported stops checking for PushManager, only serviceWorker (#175)',
+    file: 'web/js/push.js',
+    find: `  return 'serviceWorker' in win.navigator && 'PushManager' in win;`,
+    replace: `  return process.env.MUTANT ? ('serviceWorker' in win.navigator) : ('serviceWorker' in win.navigator && 'PushManager' in win); // MUTATION`,
+    mustFail: 'serviceWorker without PushManager (Safari for a long time) is reported unsupported',
+  },
+  {
+    // Security review (#175, finding 1): nesting `_notifyPush` inside
+    // `_notifyPending`'s Teams-enabled early return is exactly the bug that
+    // was closed -- a hub with push configured but no Teams webhook sent no
+    // push at all. Re-nesting it this way must break the test that proves
+    // push fires independently of Teams.
+    name: '_notifyPush stops being called independently of Teams being enabled (#175)',
+    file: 'src/service/hub-service.js',
+    find: `    this._broadcast(me.key, { type: 'overview', ...this.store.overview(me.key) });
+    this._notifyPending(me.key, deviceId);
+    this._notifyPush(me.key, deviceId);
+  }`,
+    replace: `    this._broadcast(me.key, { type: 'overview', ...this.store.overview(me.key) });
+    this._notifyPending(me.key, deviceId);
+    if (!process.env.MUTANT) this._notifyPush(me.key, deviceId); // MUTATION
+  }`,
+    mustFail: 'push fires for a pending approval even when Teams is not configured at all (finding 1)',
+  },
+  {
+    // Security review (#175, finding 2): `updatedAt` is stamped on every
+    // heartbeat/reconnect republish (`_upsertSessionRecord` in store.js),
+    // so keying the reply dedupeKey on it re-fires "waiting for your reply"
+    // on every heartbeat forever, the exact bug the review found.
+    name: 'the reply push dedupeKey goes back to keying on updatedAt instead of lastActivityAt (#175)',
+    file: 'src/service/hub-service.js',
+    find: `          dedupeKey: \`reply:\${s.key}:\${s.lastActivityAt || 0}\`,`,
+    replace: `          dedupeKey: \`reply:\${s.key}:\${process.env.MUTANT ? (s.updatedAt || 0) : (s.lastActivityAt || 0)}\`, // MUTATION`,
+    mustFail: 'an idle session does not re-fire the reply push on every heartbeat (finding 2)',
+  },
+  {
+    // Security review (#175, finding 3): `new URL('https://[::1]/').hostname`
+    // is `"[::1]"` WITH brackets -- `net.isIP()` does not recognize the
+    // bracketed form and returns 0, so skipping the bracket-strip silently
+    // disables the IPv6 branch of the SSRF check for every bracketed literal.
+    name: 'bracketed IPv6 literals bypass the SSRF check again (#175)',
+    file: 'src/service/push-store.js',
+    find: `  const bare = (hostname.startsWith('[') && hostname.endsWith(']'))
+    ? hostname.slice(1, -1)
+    : hostname;`,
+    replace: `  const bare = (process.env.MUTANT ? false : (hostname.startsWith('[') && hostname.endsWith(']'))) // MUTATION
+    ? hostname.slice(1, -1)
+    : hostname;`,
+    mustFail: 'an https endpoint targeting the bracketed IPv6 loopback literal is refused',
+  },
+  {
+    // Without refusing IPv6 literals outright, a private-range-only
+    // enumeration (the pre-fix approach) is one evasion away from being
+    // wrong again -- this mutation proves the "refuse everything" branch
+    // itself, not just the bracket-stripping that lets it run at all.
+    name: 'IPv6 literals stop being refused outright (#175)',
+    file: 'src/service/push-store.js',
+    find: `  if (kind === 6) {
+    // Refuse EVERY IPv6 literal outright,`,
+    replace: `  if (kind === 6) {
+    if (process.env.MUTANT) return false; // MUTATION
+    // Refuse EVERY IPv6 literal outright,`,
+    mustFail: 'an https endpoint targeting any other IPv6 literal is refused, even a globally-routable-looking one',
+  },
+  {
+    // Security review (#175, finding 4): the push toggle's `.hint-btn` is the
+    // one thing a markup-only regression (someone deleting it while editing
+    // the row) would not be caught by any JS-level test -- only a markup scan
+    // (push-frontend-unit.js) sees it at all.
+    name: 'the push toggle loses its .hint-btn explainer (#175)',
+    file: 'web/index.html',
+    find: `      <button type="button" class="hint-btn" aria-label="About push notifications" hidden`,
+    replace: `      <button type="button" class="hint-btn-REMOVED-BY-MUTATION" aria-label="About push notifications" hidden`,
+    mustFail: 'the push toggle has its own .hint-btn explainer, next to it',
+  },
+  {
+    // Security review (#175, minor): every other route in hub-service.js
+    // that reads an identity out of a URL path wraps `decodeURIComponent` in
+    // a try/catch answering 400 -- this one did not, so a malformed `%`
+    // escape crashed the request handler into an unhandled 500.
+    name: 'a malformed %-escape in the push subscription id crashes into a 500 again (#175)',
+    file: 'src/service/hub-service.js',
+    find: `      let id;
+      try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }`,
+    replace: `      let id;
+      if (process.env.MUTANT) { id = decodeURIComponent(pushMatch[1]); } else { // MUTATION: no try/catch
+        try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }
+      }`,
+    mustFail: 'a malformed %-escape in the subscription id gets 400, not a 500',
+  },
+  {
+    // The response body is never read -- only `statusCode` -- but
+    // `postBinary` still has to settle correctly off the headers it already
+    // has. Flipping the 2xx/error branch proves the test actually exercises
+    // that logic rather than merely "the request did not throw".
+    name: 'postBinary stops distinguishing a 2xx status from an error status (#175)',
+    file: 'src/service/web-push.js',
+    find: `      if (res.statusCode >= 200 && res.statusCode < 300) return resolve({ status: res.statusCode });`,
+    replace: `      if (process.env.MUTANT ? false : (res.statusCode >= 200 && res.statusCode < 300)) return resolve({ status: res.statusCode }); // MUTATION`,
+    mustFail: 'postBinary settles on statusCode alone, even against a large response body',
+  },
+  {
+    // Security review (#175, minor): without this, `encryptPayload` is the
+    // ONLY place the byte length of `p256dh` is ever checked -- so dropping
+    // the subscribe-time check pushes the failure back to send time, where
+    // the person who registered the broken subscription gets no feedback at
+    // all.
+    name: 'a malformed p256dh (wrong decoded byte length) is accepted at subscribe time again (#175)',
+    file: 'src/service/push-store.js',
+    find: `  if (p256dhBuf.length !== P256DH_LEN) {`,
+    replace: `  if (!process.env.MUTANT && p256dhBuf.length !== P256DH_LEN) { // MUTATION`,
+    mustFail: 'keys.p256dh that does not decode to a 65-byte point is refused, even though it is a non-empty string',
+  },
+  {
+    name: 'a malformed auth secret (wrong decoded byte length) is accepted at subscribe time again (#175)',
+    file: 'src/service/push-store.js',
+    find: `  if (authBuf.length !== AUTH_SECRET_LEN) {`,
+    replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
+    mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
   },
 ];
 

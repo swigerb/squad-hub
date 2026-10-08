@@ -652,7 +652,7 @@ async function watchCsp(pg) {
     await gotoSettled(page, `${origin}/?token=${userToken}`);
     await page.waitForSelector('.selectpill', { timeout: 10000 });
 
-    await check('a dropdown opens on click and lists exactly the options its select holds', async () => {
+    await check('a dropdown opens on click and lists exactly the VISIBLE options its select holds', async () => {
       await page.click('#statusFilter >> xpath=..');
       const seen = await page.evaluate(() => {
         const pill = document.getElementById('statusFilter').closest('.selectpill');
@@ -660,12 +660,33 @@ async function watchCsp(pg) {
         return {
           open: pill.getAttribute('aria-expanded'),
           rows: [...pill.querySelectorAll('.sp-opt')].map((o) => o.textContent),
-          options: [...sel.options].map((o) => o.text),
+          // "Queued on ACA" / "Ready for review" (#169) are `hidden` until a
+          // session with that exact status exists, so a correct popup leaves
+          // them out too -- comparing against the FULL option list here would
+          // make hiding them look like a bug in the popup instead of the
+          // deliberate behaviour it is.
+          options: [...sel.options].filter((o) => !o.hidden).map((o) => o.text),
         };
       });
       assert.strictEqual(seen.open, 'true', 'clicking the pill did not open its list');
       assert.deepStrictEqual(seen.rows, seen.options,
         'the visible list and the real control disagree about what can be chosen');
+    });
+
+    await check('the status options hidden until data exists start out hidden', async () => {
+      // "Queued on ACA" / "Ready for review" (#169) ship with their daemon
+      // counterparts in #178/#179; this suite's fixtures cannot yet produce a
+      // session in either status, so what is provable here is the DEFAULT --
+      // that `devices.js`'s render() leaves both hidden rather than showing a
+      // choice nothing on screen can ever match.
+      const hidden = await page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        const q = sel.querySelector('option[value="queued"]');
+        const r = sel.querySelector('option[value="review"]');
+        return { queued: q && q.hidden, review: r && r.hidden };
+      });
+      assert.strictEqual(hidden.queued, true, '"Queued on ACA" is offered with no queued session to filter to');
+      assert.strictEqual(hidden.review, true, '"Ready for review" is offered with no review session to filter to');
     });
 
     await check('choosing an option drives the underlying select AND the app state', async () => {
@@ -702,6 +723,79 @@ async function watchCsp(pg) {
       for (const b of badges) {
         assert.ok(/awaiting/i.test(b), `a row showing "${b}" survived a filter for sessions awaiting a reply`);
       }
+    });
+
+    await check('"Action needed" (#169) narrows to blocked and awaiting-reply sessions, without a server round trip for a status no session has', async () => {
+      // `ws.js`'s refresh() must withhold `status=action` from the server
+      // (store.js only ever matches a status EXACTLY) -- if that regressed,
+      // the request would ask for a status nothing has and the list would go
+      // to zero regardless of what is actually blocked, rather than filtering
+      // correctly client-side.
+      await page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        sel.value = 'action';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      const rows = await until(async () => {
+        const r = await page.evaluate(() => [...document.querySelectorAll('#groups .row > .status')]
+          .map((b) => b.textContent.trim()));
+        return r.length ? r : null;
+      }, 'the Action needed filter to keep at least the blocked session this suite already created');
+      for (const b of rows) {
+        assert.ok(/needs approval|awaiting/i.test(b),
+          `"Action needed" kept a row reading "${b}", which is neither blocked nor awaiting a reply`);
+      }
+      // Put it back, so later checks see the whole list.
+      await page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        sel.value = '';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    });
+
+    await check('a status pill is a fact about the session, never a button (#169)', async () => {
+      const pills = await page.evaluate(() => [...document.querySelectorAll('#groups .row > .status')].map((el) => ({
+        tag: el.tagName,
+        role: el.getAttribute('role'),
+        tabindex: el.getAttribute('tabindex'),
+        cursor: getComputedStyle(el).cursor,
+        hasOnclick: typeof el.onclick === 'function',
+      })));
+      assert.ok(pills.length > 0, 'nothing was left to check, so this proves nothing');
+      for (const p of pills) {
+        assert.notStrictEqual(p.tag, 'BUTTON', 'a status pill rendered as an actual <button>');
+        assert.notStrictEqual(p.role, 'button', 'a status pill claims the button role');
+        assert.ok(p.tabindex == null, 'a status pill is in the tab order, like something clickable');
+        assert.notStrictEqual(p.cursor, 'pointer', 'a status pill invites a click it does nothing with');
+        assert.strictEqual(p.hasOnclick, false, 'a status pill has a click handler');
+      }
+    });
+
+    await check('the star, the title\'s first line and the status pill share one 22px line (#169)', async () => {
+      // Centers, not tops: the star glyph and the pill text each sit centred
+      // inside their own 22px box, so the box tops can match while the glyphs
+      // themselves still look askew. Comparing CENTERS is what the mockup's
+      // "one line" actually means.
+      for (const vp of [{ width: 1280, height: 900 }, { width: 900, height: 800 }, { width: 390, height: 800 }]) {
+        await page.setViewportSize(vp);
+        const offsets = await page.evaluate(() => [...document.querySelectorAll('#groups .row')].map((row) => {
+          const star = row.querySelector('.star');
+          const title = row.querySelector('.row-title b');
+          const pill = row.querySelector('.status');
+          const cy = (el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; };
+          if (!star || !title) return null;
+          return {
+            starVsTitle: Math.abs(cy(star) - cy(title)),
+            pillVsTitle: pill ? Math.abs(cy(pill) - cy(title)) : 0,
+          };
+        }).filter(Boolean));
+        assert.ok(offsets.length > 0, `nothing was left to check at ${vp.width}px, so this proves nothing`);
+        for (const o of offsets) {
+          assert.ok(o.starVsTitle <= 1, `star and title first-line centers are ${o.starVsTitle}px apart at ${vp.width}px`);
+          assert.ok(o.pillVsTitle <= 1, `pill and title first-line centers are ${o.pillVsTitle}px apart at ${vp.width}px`);
+        }
+      }
+      await page.setViewportSize({ width: 1280, height: 720 });
     });
 
     await check('Escape closes the list without choosing', async () => {
@@ -1056,6 +1150,34 @@ async function watchCsp(pg) {
       });
       assert.strictEqual(asked, false,
         're-asking for a denied permission does nothing, and a browser only ever shows that prompt once');
+    });
+
+    // ---- Web Push (#175) --------------------------------------------------
+    // This suite's hub instance is never given SQUAD_HUB_VAPID_PUBLIC_KEY /
+    // _PRIVATE_KEY, which is itself the important, common case: most
+    // deployments will not have them set on day one. The crypto, the API
+    // routes and the full subscribe/unsubscribe round trip already have
+    // dedicated unit coverage (web-push-unit.js, push-store-unit.js,
+    // push-notify-unit.js, push-api-unit.js) with real encryption and real
+    // HTTP, which is a better place to prove those than a slow, flaky
+    // browser-driven PushManager.subscribe() against no real push service.
+    //
+    // Security review (should-fix, #175): an earlier version HID the toggle
+    // in this case, which meant the issue's required "push is not configured
+    // on this hub" message could never actually be shown. It is now shown,
+    // disabled, with that explanation as its state text -- the browser CAN
+    // do push (this is a real Chromium), the HUB just has no keys.
+    await check('with no VAPID keys configured, the bell inbox shows the push toggle disabled, not hidden', async () => {
+      await page.click('#bellBtn');
+      await page.waitForSelector('#inboxMenu:not([hidden])', { timeout: 5000 });
+      const info = await page.evaluate(() => {
+        const item = document.getElementById('pushMenuItem');
+        return { hidden: item.hidden, disabled: item.disabled, label: document.getElementById('pushMenuState').textContent };
+      });
+      assert.strictEqual(info.hidden, false, 'the push toggle was hidden on a hub with no VAPID keys, hiding the required message with it');
+      assert.strictEqual(info.disabled, true, 'the push toggle was clickable on a hub with no VAPID keys configured');
+      assert.match(info.label, /not configured/i, 'the toggle did not say the hub has no push configured');
+      await page.click('#bellBtn');
     });
 
     await check('the account menu opens and offers sign out', async () => {

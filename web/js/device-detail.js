@@ -1,5 +1,4 @@
-import { esc } from './util.js';
-import { humanBytes, clamp01 } from './devices.js';
+import { esc, humanBytes, clamp01 } from './util.js';
 
 // ---------------------------------------------------------------------------
 // Expandable device details (#173): each volume, cores/RAM, the squad-hub and

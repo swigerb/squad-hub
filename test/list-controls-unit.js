@@ -13,6 +13,8 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
@@ -35,6 +37,7 @@ module.exports = { esc, buildView, matchesFilters, withinWindow, sortSessions, s
   sessionOrg, sessionKey, needsAttention, organizationsIn, repositoriesIn,
   TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows, SCOPES, matchesScope, scopeCounts,
   activeFilterCount, viewStateToParams, paramsToViewState,
+  sessionActivityAt, sessionName, isActionNeeded, presentStatuses, squadProject, NO_SQUAD_PROJECT,
   matchesSidebarText, sidebarEntries, sidebarRow };`)(mod, mod.exports);
 
 const {
@@ -42,6 +45,7 @@ const {
   sessionOrg, needsAttention, organizationsIn, repositoriesIn,
   TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows, SCOPES, matchesScope, scopeCounts,
   activeFilterCount, viewStateToParams, paramsToViewState,
+  sessionActivityAt, sessionName, isActionNeeded, presentStatuses, squadProject, NO_SQUAD_PROJECT,
   matchesSidebarText, sidebarEntries, sidebarRow,
 } = mod.exports;
 
@@ -156,6 +160,59 @@ check('the repository list is deduplicated and sorted', () => {
 });
 
 // ---------------------------------------------------------------------------
+// "Action needed" status filter (#169)
+// ---------------------------------------------------------------------------
+
+check('Action needed catches a session waiting on an approval', () => {
+  assert.strictEqual(isActionNeeded(sess({ status: 'waiting_approval', pendingApprovals: [{ approvalId: 'a' }] })), true);
+});
+
+check('Action needed catches a session waiting on a reply, not only an approval', () => {
+  assert.strictEqual(isActionNeeded(sess({ status: 'idle' })), true,
+    'a person owes this session a reply just as much as they owe one an approval');
+});
+
+check('Action needed does not catch an ordinary working session', () => {
+  assert.strictEqual(isActionNeeded(sess({ status: 'active' })), false);
+});
+
+check('Action needed excludes a stale session nobody can actually answer', () => {
+  const device = { presence: 'offline' };
+  const s = sess({ status: 'idle' });
+  assert.strictEqual(isActionNeeded(s, device), false,
+    'a card nobody can act on must not read as one more thing to act on (#225)');
+});
+
+check('isActionNeeded is not the same count as the protected actionNeeded metric', () => {
+  // `idle` is deliberately NOT part of needsAttention (the pending-approvals-
+  // only concept the API/MCP "actionNeeded" count is named after and tested
+  // by in test/stale-approval-unit.js) -- only of the broader UI filter.
+  assert.strictEqual(needsAttention(sess({ status: 'idle' })), false);
+  assert.strictEqual(isActionNeeded(sess({ status: 'idle' })), true);
+});
+
+check('the "action" status filter keeps only sessions Action needed catches', () => {
+  const idle = sess({ status: 'idle' });
+  const active = sess({ status: 'active' });
+  assert.strictEqual(matchesFilters(idle, { status: 'action' }, NOW), true);
+  assert.strictEqual(matchesFilters(active, { status: 'action' }, NOW), false);
+});
+
+check('presentStatuses reports only the statuses actually on screen', () => {
+  const groups = [
+    group('a', [sess({ status: 'active' }), sess({ status: 'done' })]),
+    group('b', [sess({ status: 'active' }), sess({ status: undefined })]),
+  ];
+  assert.deepStrictEqual([...presentStatuses(groups)].sort(), ['active', 'done'],
+    'queued/review must stay hidden in the filter until a session with that exact status exists');
+});
+
+check('presentStatuses on an empty overview is an empty set, not a throw', () => {
+  assert.deepStrictEqual([...presentStatuses([])], []);
+  assert.deepStrictEqual([...presentStatuses()], []);
+});
+
+// ---------------------------------------------------------------------------
 // Sorting
 // ---------------------------------------------------------------------------
 
@@ -194,15 +251,53 @@ check('an unknown sort key falls back rather than throwing', () => {
 });
 
 check('every sort and grouping the UI offers actually exists', () => {
-  for (const k of ['started_desc', 'started_asc', 'tools_desc', 'repository']) {
+  for (const k of [
+    'updated_desc', 'updated_asc', 'started_desc', 'started_asc',
+    'name_asc', 'name_desc', 'tools_desc', 'repository',
+  ]) {
     assert.ok(SORTS[k], `the sort "${k}" is offered but not implemented`);
   }
-  for (const k of ['device', 'repository', 'none']) {
+  for (const k of ['none', 'device', 'repository', 'status', 'squad']) {
     assert.ok(GROUPINGS[k], `the grouping "${k}" is offered but not implemented`);
   }
   for (const k of ['', '24h', '7d', '30d']) {
     assert.ok(TIME_WINDOWS[k], `the window "${k}" is offered but not implemented`);
   }
+});
+
+check('Latest updated puts the most recently active session first', () => {
+  const list = [
+    sess({ key: 'old', lastActivityAt: NOW - HOUR }),
+    sess({ key: 'new', lastActivityAt: NOW - 1 }),
+  ];
+  assert.deepStrictEqual(sortSessions(list, 'updated_desc').map((s) => s.key), ['new', 'old']);
+});
+
+check('First updated puts the least recently active session first', () => {
+  const list = [
+    sess({ key: 'new', lastActivityAt: NOW - 1 }),
+    sess({ key: 'old', lastActivityAt: NOW - HOUR }),
+  ];
+  assert.deepStrictEqual(sortSessions(list, 'updated_asc').map((s) => s.key), ['old', 'new']);
+});
+
+check('the updated sorts fall back to startedAt when lastActivityAt is missing', () => {
+  const list = [
+    sess({ key: 'old', startedAt: NOW - HOUR, lastActivityAt: undefined }),
+    sess({ key: 'new', startedAt: NOW - 1, lastActivityAt: undefined }),
+  ];
+  assert.deepStrictEqual(sortSessions(list, 'updated_desc').map((s) => s.key), ['new', 'old'],
+    'a session recorded before lastActivityAt existed must still sort by something, not vanish to "unknown"');
+});
+
+check('Name A-Z and Name Z-A sort by prompt, case-insensitively via localeCompare', () => {
+  const list = [sess({ key: 'b', prompt: 'banana' }), sess({ key: 'a', prompt: 'Apple' })];
+  assert.deepStrictEqual(sortSessions(list, 'name_asc').map((s) => s.key), ['a', 'b']);
+  assert.deepStrictEqual(sortSessions(list, 'name_desc').map((s) => s.key), ['b', 'a']);
+});
+
+check('a session with no prompt sorts by its id instead', () => {
+  assert.strictEqual(sessionName(sess({ prompt: '', id: 'zz-id' })), 'zz-id');
 });
 
 // ---------------------------------------------------------------------------
@@ -265,6 +360,42 @@ check('groups without a blocked session are ordered by name, stably', () => {
 check('a device section carries its device, so presence can be shown', () => {
   const view = buildView({ groups: [group('alpha', [sess({ key: 'a' })], { presence: 'stale' })], groupBy: 'device', now: NOW });
   assert.strictEqual(view.sections[0].device.presence, 'stale');
+});
+
+check('grouping by status buckets sessions by the same label the badge shows', () => {
+  const view = buildView({
+    groups: [group('alpha', [
+      sess({ key: 'a', status: 'active' }),
+      sess({ key: 'b', status: 'done' }),
+      sess({ key: 'c', status: 'active' }),
+    ])],
+    groupBy: 'status', now: NOW,
+  });
+  const working = view.sections.find((s) => s.label === 'Working');
+  const finished = view.sections.find((s) => s.label === 'Finished');
+  assert.deepStrictEqual(working.entries.map((e) => e.session.key).sort(), ['a', 'c']);
+  assert.deepStrictEqual(finished.entries.map((e) => e.session.key), ['b']);
+});
+
+check('a status section has no device, unlike a device section', () => {
+  const view = buildView({ groups: [group('alpha', [sess({ key: 'a', status: 'active' })])], groupBy: 'status', now: NOW });
+  assert.strictEqual(view.sections[0].device, null,
+    'only the Device view names a single device per section -- Status and Squad both cross devices');
+});
+
+check('grouping by squad buckets sessions by their squad project', () => {
+  const view = buildView({
+    groups: [group('alpha', [
+      sess({ key: 'a', squad: { project: 'checkout' } }),
+      sess({ key: 'b', squad: { project: 'checkout' } }),
+      sess({ key: 'c', squad: null }),
+    ])],
+    groupBy: 'squad', now: NOW,
+  });
+  const checkout = view.sections.find((s) => s.label === 'checkout');
+  const none = view.sections.find((s) => s.label === NO_SQUAD_PROJECT);
+  assert.deepStrictEqual(checkout.entries.map((e) => e.session.key).sort(), ['a', 'b']);
+  assert.deepStrictEqual(none.entries.map((e) => e.session.key), ['c']);
 });
 
 // ---------------------------------------------------------------------------
@@ -631,6 +762,21 @@ check('viewStateToParams omits whatever is already at its default', () => {
 check('paramsToViewState ignores a stale or hand-edited value rather than applying it', () => {
   const state = paramsToViewState({ scope: 'deleted-tab', sort: 'deleted-sort', view: 'deleted-view', window: 'deleted-window' });
   assert.deepStrictEqual(state, {}, 'an option that no longer exists must never reach the UI as if it were real');
+});
+
+check('devices.css pins .star, .status and .row-main to the same grid row (#169/#231)', () => {
+  // Markup order is .star, .status, .row-main (columns 1, 3, 2 -- see the
+  // comment above `.row` in devices.css). Without an explicit `grid-row`,
+  // sparse auto-placement walks that source order, and once `.status`
+  // claims column 3 the cursor is past column 2, so `.row-main` (column 2)
+  // is pushed onto a second implicit row -- the star/pill and the title
+  // drift 32px apart instead of sharing one 22px line. This is a plain
+  // text assertion, not a layout measurement: it only proves the pinning
+  // rule is still present in the stylesheet, not that a browser renders it
+  // correctly (see the real-Chromium check in browser-e2e-unit.js for that).
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'css', 'devices.css'), 'utf8');
+  const pinned = /\.row\s*>\s*\.star\s*,\s*\.row\s*>\s*\.status\s*,\s*\.row\s*>\s*\.row-main\s*\{\s*grid-row:\s*1;?\s*\}/.test(css);
+  assert.ok(pinned, '.row > .star, .row > .status, .row > .row-main { grid-row: 1; } is missing from devices.css -- the star/pill/title can drift onto separate grid rows again');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

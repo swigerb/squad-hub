@@ -1,7 +1,9 @@
 import { state } from './api.js';
-import { $, esc, ago } from './util.js';
 import {
-  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount,
+  $, esc, ago, humanBytes, meter, applyMeterFills, clamp01,
+} from './util.js';
+import {
+  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses,
 } from './list.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
@@ -107,59 +109,6 @@ export function deviceSummaryLine(counts = {}) {
 /** How many devices can actually take work right now. */
 export function availableCount(devices = []) {
   return devices.filter((d) => d.presence !== 'offline').length;
-}
-
-/** Bytes as something a person reads, for the RAM meter. */
-export function humanBytes(n) {
-  if (!Number.isFinite(n) || n < 0) return '';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
-
-/**
- * One meter, or nothing at all.
- *
- * A device that does not report telemetry renders NO meter, rather than an
- * empty bar at zero. "Not reporting" and "idle" look identical on a bar at
- * zero, and they are entirely different facts.
- *
- * The fill width is carried as `data-pct`, not a `style="width:…"` attribute:
- * under the enforced CSP an inline style attribute written into markup like
- * this needs a style-src exception, and `applyMeterFills` below sets it
- * through the CSSOM instead -- a JavaScript property assignment, which is not
- * inline style and needs none.
- */
-export function meter(label, fraction, detail = '') {
-  if (fraction == null || !Number.isFinite(fraction)) return '';
-  const pct = Math.round(clamp01(fraction) * 100);
-  const level = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : '';
-  return `
-    <div class="meter ${level}" title="${esc(label)} ${pct}%${detail ? ` (${esc(detail)})` : ''}">
-      <span class="meter-label">${esc(label)}</span>
-      <span class="meter-track"><span class="meter-fill" data-pct="${pct}"></span></span>
-      <span class="meter-value">${pct}%</span>
-    </div>`;
-}
-
-/**
- * Give each meter-fill span the width its markup could not carry.
- *
- * Called once after `deviceList`'s markup is written, so it has to run AFTER
- * `innerHTML` replaces the DOM -- a fill rendered before that point would
- * only ever be thrown away with the nodes it was set on.
- */
-export function applyMeterFills(container) {
-  for (const el of container.querySelectorAll('.meter-fill[data-pct]')) {
-    el.style.width = `${el.getAttribute('data-pct')}%`;
-  }
-}
-
-export function clamp01(n) {
-  if (!Number.isFinite(n)) return 0;
-  return n < 0 ? 0 : n > 1 ? 1 : n;
 }
 
 /**
@@ -519,6 +468,20 @@ export function render() {
   // on screen, so they can never offer a scope that filters everything away.
   fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
   fillSelect($('orgFilter'), 'All organizations', organizationsIn(groups), state.filters.org);
+
+  // "Queued on ACA" and "Ready for review" (#169) are statuses that nothing
+  // can report yet -- the daemons that set them ship in #178/#179. Offering
+  // them as choices before any session can ever have one would be a filter
+  // that always empties the list, so each option stays hidden until a session
+  // with that exact status actually exists. `enhanceSelect`'s own popup skips
+  // a hidden <option> the same way the native one does, so this is the one
+  // place that needs to know.
+  const statuses = presentStatuses(groups);
+  const statusSel = $('statusFilter');
+  for (const value of ['queued', 'review']) {
+    const opt = statusSel && statusSel.querySelector(`option[value="${value}"]`);
+    if (opt) opt.hidden = !statuses.has(value);
+  }
 
   // Rebuilding a select's options does NOT fire `change`, so the visible label
   // beside it would go on showing a device that has since gone away.

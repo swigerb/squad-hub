@@ -105,6 +105,35 @@
   <div class="menu-sep"></div>
   <div class="inbox-foot">
     <button data-inbox="reprompt">↻ Show approval prompts again</button>
+    <!--
+      Web Push (#175), per the v0.7.0 mockup (E6.2): "🔔 Push to this device
+      On/Off" lives in the bell inbox footer, next to the reprompt action --
+      not the account menu -- because it is a property of THIS DEVICE'S
+      subscription, the same way the bell itself is about this device's
+      alerts.
+
+      The `.hint-btn` lives OUTSIDE the toggle button itself, as a sibling in
+      `.inbox-foot-row`, rather than nested inside it the way a form field's
+      hint sits inside its `<label>` -- a `<button>` cannot validly contain
+      another interactive `<button>`, and a nested one would double-fire the
+      toggle's own click handler.
+
+      Security review (#175, should-fix): when the hub has no VAPID keys
+      configured, this row is no longer HIDDEN -- a hidden control that can
+      never do anything looks like a bug to whoever goes looking for it in
+      devtools, and the issue's acceptance criteria says the UI must SAY SO.
+      `syncPushMenuItem()` in push.js now shows the row `disabled`, with its
+      state text reading "Not configured", instead of hiding it; only an
+      unsupported BROWSER (no Push API at all) still hides it outright, since
+      there is nothing to say about a capability that does not exist here.
+    -->
+    <div class="inbox-foot-row">
+      <button class="foot" data-inbox="push" id="pushMenuItem" hidden>
+        🔔 Push to this device <span id="pushMenuState"></span>
+      </button>
+      <button type="button" class="hint-btn" aria-label="About push notifications" hidden
+        title="Turns on browser push notifications for this device only -- other devices you use keep their own setting, and you can turn it off here any time. &#10;&#10;A push contains only &quot;A session needs you&quot; (or &quot;…waiting for your reply&quot;), the device name, and which session -- never a command, a file path, or anything from the conversation.">i</button>
+    </div>
   </div>
 </nav>
 
@@ -239,17 +268,23 @@
           <div class="selectpill">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5C2 4.22386 2.22386 4 2.5 4H3.5C3.77614 4 4 4.22386 4 4.5C4 4.77614 3.77614 5 3.5 5H2.5C2.22386 5 2 4.77614 2 4.5ZM5 4.5C5 4.22386 5.22386 4 5.5 4H13.5C13.7761 4 14 4.22386 14 4.5C14 4.77614 13.7761 5 13.5 5H5.5C5.22386 5 5 4.77614 5 4.5ZM5 8C5 7.72386 5.22386 7.5 5.5 7.5H13.5C13.7761 7.5 14 7.72386 14 8C14 8.27614 13.7761 8.5 13.5 8.5H5.5C5.22386 8.5 5 8.27614 5 8ZM5 11.5C5 11.2239 5.22386 11 5.5 11H13.5C13.7761 11 14 11.2239 14 11.5C14 11.7761 13.7761 12 13.5 12H5.5C5.22386 12 5 11.7761 5 11.5ZM2 8C2 7.72386 2.22386 7.5 2.5 7.5H3.5C3.77614 7.5 4 7.72386 4 8C4 8.27614 3.77614 8.5 3.5 8.5H2.5C2.22386 8.5 2 8.27614 2 8ZM2 11.5C2 11.2239 2.22386 11 2.5 11H3.5C3.77614 11 4 11.2239 4 11.5C4 11.7761 3.77614 12 3.5 12H2.5C2.22386 12 2 11.7761 2 11.5Z"/></svg>
             <select id="groupBy" aria-label="View">
+              <option value="none">Default</option>
               <option value="device">Device</option>
               <option value="repository">Repository</option>
-              <option value="none">None</option>
+              <option value="status">Status</option>
+              <option value="squad">Squad</option>
             </select>
             <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
           </div>
           <div class="selectpill">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.14645 1.64645C4.34171 1.45118 4.65829 1.45118 4.85355 1.64645L7.35355 4.14645C7.54882 4.34171 7.54882 4.65829 7.35355 4.85355C7.15829 5.04882 6.84171 5.04882 6.64645 4.85355L5 3.20711V13.5C5 13.7761 4.77614 14 4.5 14C4.22386 14 4 13.7761 4 13.5V3.20711L2.35355 4.85355C2.15829 5.04882 1.84171 5.04882 1.64645 4.85355C1.45118 4.65829 1.45118 4.34171 1.64645 4.14645L4.14645 1.64645ZM11.5 2C11.7761 2 12 2.22386 12 2.5V12.7929L13.6464 11.1464C13.8417 10.9512 14.1583 10.9512 14.3536 11.1464C14.5488 11.3417 14.5488 11.6583 14.3536 11.8536L11.8536 14.3536C11.6583 14.5488 11.3417 14.5488 11.1464 14.3536L8.64645 11.8536C8.45118 11.6583 8.45118 11.3417 8.64645 11.1464C8.84171 10.9512 9.15829 10.9512 9.35355 11.1464L11 12.7929V2.5C11 2.22386 11.2239 2 11.5 2Z"/></svg>
             <select id="sortBy" aria-label="Sort by">
-              <option value="started_desc">Started &#8595;</option>
-              <option value="started_asc">Started &#8593;</option>
+              <option value="updated_desc">Latest updated</option>
+              <option value="updated_asc">First updated</option>
+              <option value="started_desc">Latest started</option>
+              <option value="started_asc">First started</option>
+              <option value="name_asc">Name A&ndash;Z</option>
+              <option value="name_desc">Name Z&ndash;A</option>
               <option value="tools_desc">Most tool calls</option>
               <option value="repository">Repository</option>
             </select>
@@ -295,9 +330,12 @@
           <div class="selectpill">
             <select id="statusFilter" aria-label="Status">
               <option value="">All statuses</option>
+              <option value="action">Action needed</option>
               <option value="waiting_approval">Needs approval</option>
               <option value="active">Working</option>
               <option value="idle">Awaiting your reply</option>
+              <option value="queued" hidden>Queued on ACA</option>
+              <option value="review" hidden>Ready for review</option>
               <option value="done">Finished</option>
               <option value="failed">Failed</option>
               <option value="stopped">Stopped</option>
