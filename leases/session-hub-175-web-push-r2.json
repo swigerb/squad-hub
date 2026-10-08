@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-175-web-push-r2",
+  "sessionId": "hub-175-web-push-r2",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T20:36:20.056Z",
+  "lastHeartbeatAt": "2026-10-08T20:36:20.056Z",
+  "updatedAt": "2026-10-08T20:36:20.056Z",
+  "terminalReason": null,
+  "executionRef": null
+}
