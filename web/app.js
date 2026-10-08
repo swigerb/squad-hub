@@ -41,8 +41,9 @@ import {
 } from './js/notifications.js';
 import { render } from './js/devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
+  openDetail, syncSession, renderControl, openSquadDoc,
 } from './js/detail.js';
+import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, resolveDeepLink, showOffline,

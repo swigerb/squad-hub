@@ -1,7 +1,7 @@
 import { state, api } from './api.js';
 import { TIME_WINDOWS, SORTS, GROUPINGS } from './list.js';
 import { render } from './devices.js';
-import { renderTranscript } from './detail.js';
+import { renderTranscript } from './transcript.js';
 import { $ } from './util.js';
 import { showSignIn } from './signin.js';
 
