@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-226-american-english-guard",
+  "sessionId": "fix-pr-226-american-english-guard",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T07:02:46.836Z",
+  "lastHeartbeatAt": "2026-10-08T07:02:46.836Z",
+  "updatedAt": "2026-10-08T07:02:46.836Z",
+  "terminalReason": null,
+  "executionRef": null
+}
