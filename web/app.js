@@ -44,6 +44,7 @@ import { render, skeletonDevices } from './js/devices.js';
 import {
   openDetail, syncSession, renderControl, openSquadDoc, renderTranscript,
 } from './js/detail.js';
+import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, resolveDeepLink, showOffline,
   registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
