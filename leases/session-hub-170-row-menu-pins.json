@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-170-row-menu-pins",
+  "sessionId": "hub-170-row-menu-pins",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-08T21:48:33.305Z",
+  "lastHeartbeatAt": "2026-10-08T21:48:33.305Z",
+  "updatedAt": "2026-10-08T21:48:33.305Z",
+  "terminalReason": null,
+  "executionRef": null
+}
