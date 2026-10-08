@@ -711,5 +711,98 @@ check('every navigation in the browser suite tolerates being interrupted', () =>
     + `${offenders.join('\n  ')}`);
 });
 
+// ---------------------------------------------------------------------------
+// American English (#167)
+// ---------------------------------------------------------------------------
+check('web/ UI strings and docs/ use American English spelling', () => {
+  /**
+   * A small, explicit allow-list rather than a dictionary lookup or a
+   * spellchecker: the handful of British spellings that have actually shown
+   * up in this UI and its docs (`organisation`, `summarise`, `recognise`,
+   * `honour`, `behaviour`, `colour`, and their inflections, plus a few more
+   * from the same sweep), each mapped to the American form it must become.
+   * A guard that tried to catch EVERY British spelling in the dictionary
+   * would be noisy and slow for no benefit this project has ever needed;
+   * this one is named for the mistake it has actually caught, and grows the
+   * same way the day it catches a new one.
+   *
+   * Public API fields, CLI flags, and env vars are explicitly out of scope
+   * (issue #167) and never renamed -- so a wire-protocol literal that
+   * happens to spell `cancelled` the British way (MCP's own
+   * `notifications/cancelled`, ACP's own `outcome`/status values) lives in
+   * `src/`, not here, and is annotated at its own call site instead of
+   * living in this allow-list. This guard is deliberately scoped to `web/`
+   * and `docs/` only, per the issue's acceptance criteria -- it is a UI and
+   * documentation check, not a sweep of every protocol literal in `src/`.
+   */
+  const BRITISH_TO_AMERICAN = {
+    organisation: 'organization', organisations: 'organizations',
+    organising: 'organizing', organised: 'organized',
+    summarise: 'summarize', summarised: 'summarized', summarising: 'summarizing',
+    recognise: 'recognize', recognised: 'recognized', recognising: 'recognizing',
+    honour: 'honor', honours: 'honors', honoured: 'honored', honouring: 'honoring',
+    behaviour: 'behavior', behaviours: 'behaviors',
+    colour: 'color', colours: 'colors', coloured: 'colored', colouring: 'coloring',
+    favour: 'favor', favours: 'favors', favourite: 'favorite', favourites: 'favorites',
+    labelled: 'labeled', labelling: 'labeling',
+    cancelled: 'canceled', cancelling: 'canceling',
+    neighbour: 'neighbor', neighbours: 'neighbors', neighbouring: 'neighboring',
+    centre: 'center', centres: 'centers', centred: 'centered',
+    defence: 'defense', offence: 'offense',
+    normalise: 'normalize', normalised: 'normalized', normalising: 'normalizing',
+    normalisation: 'normalization',
+    optimise: 'optimize', optimised: 'optimized', optimising: 'optimizing',
+    optimisation: 'optimization',
+    initialise: 'initialize', initialised: 'initialized', initialising: 'initializing',
+    artefact: 'artifact', artefacts: 'artifacts',
+    grey: 'gray', greys: 'grays',
+    programme: 'program', programmes: 'programs',
+    catalogue: 'catalog', catalogues: 'catalogs',
+    dialogue: 'dialog', dialogues: 'dialogs',
+    whilst: 'while', amongst: 'among',
+  };
+  const BRITISH_RE = new RegExp(`\\b(${Object.keys(BRITISH_TO_AMERICAN).join('|')})\\b`, 'gi');
+
+  // The design mockup's own before/after callout exists to DOCUMENT this very
+  // sweep -- it quotes the old spelling on purpose, inside quote marks, to
+  // show what changed. Flagging it would be flagging the fix.
+  const ALLOW_LINE = [
+    /"organisation" in today\\?'s UI becomes "organization"/,
+  ];
+
+  function allFiles(dir, exts) {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { out.push(...allFiles(full, exts)); continue; }
+      if (exts.includes(path.extname(entry.name))) out.push(full);
+    }
+    return out;
+  }
+
+  const targets = [
+    ...allFiles(path.join(ROOT, 'web'), ['.html', '.css', '.js', '.webmanifest', '.svg']),
+    ...allFiles(path.join(ROOT, 'docs'), ['.md', '.html']),
+  ];
+
+  const offenders = [];
+  for (const file of targets) {
+    const rel = path.relative(ROOT, file);
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (ALLOW_LINE.some((re) => re.test(line))) return;
+      const hits = line.match(BRITISH_RE);
+      if (!hits) return;
+      for (const hit of hits) {
+        const american = BRITISH_TO_AMERICAN[hit.toLowerCase()];
+        offenders.push(`${rel}:${i + 1}: "${hit}" (use "${american}")`);
+      }
+    });
+  }
+
+  assert.deepStrictEqual(offenders, [],
+    `British spelling found in web/ or docs/ -- American English only:\n  ${offenders.join('\n  ')}`);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

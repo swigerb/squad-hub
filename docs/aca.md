@@ -187,7 +187,7 @@ whatever it can reach. Best of all, mint **one per execution** — see
 with an allowlist covering GitHub, npm, Node and PyPI, and nothing else. A hub
 on any other host is refused, and widening that needs an administrator-approved
 change to the class. So attaching is **ACA Jobs only**; Sandboxes keep the
-unattended behaviour they have today.
+unattended behavior they have today.
 
 ## Failure modes, and what happens
 
@@ -236,7 +236,7 @@ For the first two directions, decided entirely by the target repository on
 GitHub, not by Squad Hub:
 
 - **Applying the `squad-aca` label** needs Triage or above.
-- **Commenting the command** needs Owner, organisation member, or collaborator.
+- **Commenting the command** needs Owner, organization member, or collaborator.
 - **`workflow_dispatch`** needs Write.
 
 Adding somebody to this hub grants them **none** of that. To let them run jobs

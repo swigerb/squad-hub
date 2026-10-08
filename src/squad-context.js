@@ -534,7 +534,13 @@ function nameBoundaryRegex(name) {
   return new RegExp(`(?:^|[^${notWord}])${esc}(?:$|[^${notWord}])`, 'i');
 }
 
-/** Is this transcript entry's status a finished one? */
+/**
+ * Is this transcript entry's status a finished one?
+ *
+ * `cancelled` is the ACP tool-call-update spec's own status value (British
+ * spelling and all) -- a wire-protocol literal, not prose, so it stays as the
+ * spec defines it rather than joining the American English sweep.
+ */
 function isTerminalStatus(status) {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
@@ -552,7 +558,7 @@ function isTerminalStatus(status) {
  *
  * Only when a transcript carries no such assertion at all does this fall back
  * to a mention heuristic -- scanning for a member's name as a whole word,
- * newest first -- and the result is labelled `inferred: true` because that is
+ * newest first -- and the result is labeled `inferred: true` because that is
  * exactly what it is: a guess, not an assertion.
  *
  * Returns:

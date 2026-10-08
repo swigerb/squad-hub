@@ -47,7 +47,7 @@ export function sessionRepo(s) {
   return (s && s.cwd) || '';
 }
 
-/** The organisation half of `owner/repo`, or '' when there is no owner. */
+/** The organization half of `owner/repo`, or '' when there is no owner. */
 export function sessionOrg(s) {
   const repo = sessionRepo(s);
   const i = repo.indexOf('/');
@@ -112,7 +112,7 @@ export function sortSessions(list, key = 'started_desc') {
   });
 }
 
-/** Every organisation present, for the scope dropdown. Sorted, deduplicated. */
+/** Every organization present, for the scope dropdown. Sorted, deduplicated. */
 export function organizationsIn(groups = []) {
   const set = new Set();
   for (const g of groups) for (const s of g.sessions || []) {

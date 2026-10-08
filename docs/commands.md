@@ -509,7 +509,7 @@ A remote URL's credentials are discarded. Only the last two path segments are
 kept, so a token committed into a remote URL never reaches a web page.
 
 **`Needs approval` outranks everything.** A session blocked on a person is pulled
-to the top of its device's card and carries a coloured edge.
+to the top of its device's card and carries a colored edge.
 
 Everything in a session row is escaped before it is rendered.
 
@@ -536,7 +536,7 @@ instantly rather than on a round trip.
 | Control | |
 |---|---|
 | Keyword, status, device | Applied by the hub. |
-| Repository, organisation | Built from the sessions actually on screen, so a scope can never filter everything away. |
+| Repository, organization | Built from the sessions actually on screen, so a scope can never filter everything away. |
 | Time window | `Any time`, `Last 24 hours`, `Last 7 days`, `Last 30 days`. |
 | Group by | `Device`, `Repository`, or none. |
 | Sort by | `Started ↓`, `Started ↑`, `Most tool calls`, `Repository`. |
@@ -648,7 +648,7 @@ error and does not duplicate the task.
 
 `--dry-run` reports the exact command(s) and file(s) it would use without
 touching the machine at all — useful to see what would happen, and how the
-test suite verifies this behaviour without ever installing a real login task.
+test suite verifies this behavior without ever installing a real login task.
 
 ## Sessions
 
@@ -875,17 +875,17 @@ the whole line, and treats anything it cannot fully account for — a pipe, a
 redirect, a `&&` chain, an unfamiliar program, any SQL — as writing. A missed
 "read-only" costs a second look; a wrong one costs a repository.
 
-A shape it does not recognise is shown **as it arrived** rather than dropped.
+A shape it does not recognize is shown **as it arrived** rather than dropped.
 An ugly card beats a card that hides what is being approved.
 
 ### Approval expiry
 
-An approval nobody answers is cancelled after **30 minutes**
+An approval nobody answers is canceled after **30 minutes**
 (`SQUAD_HUB_APPROVAL_TTL_MS`), and the session resumes.
 
 An approval gate with no approver is a hang: the agent is blocked on a
 question, the person it was asked of has gone home, and the session holds a
-process and a slot in everyone's list for as long as it is left. A cancelled
+process and a slot in everyone's list for as long as it is left. A canceled
 tool call is a normal thing for an agent to handle — waiting forever is not.
 
 It is deliberately long. This is a backstop against a question nobody will
@@ -1207,8 +1207,8 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_AGENT_ARGS` | The agent's argv, replaced wholesale. Default `--acp`. |
 | `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` | Extra arguments **appended** to the above, as a JSON array of strings. |
 | `SQUAD_HUB_DEBUG` | Mirror the daemon log to stderr. |
-| `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behaviour cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
-| `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is cancelled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behaviour. |
+| `SQUAD_HUB_TRANSCRIPT_CAP` | Per-session transcript entries kept in memory before the oldest are trimmed. Default `500`. Lower it only to make the trim-and-continue behavior cheap to test; entries still carry a stable `seq` so a caller polling with `since` never goes silent once the window slides. |
+| `SQUAD_HUB_APPROVAL_TTL_MS` | How long an unanswered approval waits before it is canceled. Default 30 minutes. A backstop against a question nobody will ever answer, not a deadline for someone who stepped away — lower it only to test the behavior. |
 | `SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS` | How long a **watched** (hook-supervised) session's tool call waits for an answer. Default 120s — much shorter than the TTL above, because an agent is blocked in somebody's terminal for the whole of it. When it expires the answer is `ask`, never `allow`. Must stay below the `preToolUse` `timeoutSec` in the installed hook file (300s); if Copilot gives up first the hook prints nothing, and nothing falls through to the session's own permission handling. |
 | `SQUAD_HUB_REPORT_PR_CONNECT_TIMEOUT_MS` | How long `squad-hub report-pr` waits for its hub connection to upgrade before giving up. Default 15000ms. Lower it only to make the timeout behavior cheap to test. |
 | `SQUAD_HUB_HOOK_IPC_TIMEOUT_MS` | How long the `squad-hub hook` shim waits for the daemon to answer an approval. Default 270s. Sits between the two above: longer than the daemon's wait so the daemon answers first, shorter than Copilot's so the shim always gets to print something. |

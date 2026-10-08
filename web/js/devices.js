@@ -240,10 +240,10 @@ export function render() {
     + devices.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.name)}</option>`).join('');
   sel.value = keep;
 
-  // The repository and organisation dropdowns are built from what is actually
+  // The repository and organization dropdowns are built from what is actually
   // on screen, so they can never offer a scope that filters everything away.
   fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
-  fillSelect($('orgFilter'), 'All organisations', organizationsIn(groups), state.filters.org);
+  fillSelect($('orgFilter'), 'All organizations', organizationsIn(groups), state.filters.org);
 
   // Rebuilding a select's options does NOT fire `change`, so the visible label
   // beside it would go on showing a device that has since gone away.

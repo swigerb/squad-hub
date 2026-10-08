@@ -52,7 +52,7 @@
  * `/squad-aca <prompt>`; `issues: labeled` carries no prompt and the job falls
  * back to "Work GitHub issue #N ... read the issue, implement it, and open a
  * pull request" -- which is exactly right when the issue body IS the
- * instruction. So the prefilled route is the labelled one.
+ * instruction. So the prefilled route is the labeled one.
  *
  * WHAT THIS MODULE IS CAREFUL ABOUT:
  *
@@ -108,7 +108,7 @@ function issueTitle(instruction) {
 }
 
 /**
- * The URL that opens a NEW issue, prefilled and labelled so the workflow picks
+ * The URL that opens a NEW issue, prefilled and labeled so the workflow picks
  * it up the moment it is created.
  *
  * Returns null rather than a broken link whenever it cannot build a correct

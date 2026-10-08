@@ -9,7 +9,7 @@ export const state = {
   composer: { draft: '', control: 'unknown', reason: '' },
   theme: 'system',
   // Pinned sessions survive a reload; a star that forgets itself is not a
-  // favourite, it is a highlight.
+  // favorite, it is a highlight.
   favorites: new Set(),
   ws: null,
   currentSession: null,

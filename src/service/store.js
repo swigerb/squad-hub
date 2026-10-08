@@ -72,7 +72,7 @@ function resolveDeviceKind(deviceId, reportedKind, meta) {
  * `<button data-answer=""></button>` -- no text and NO VALUE.
  *
  * The empty value is the dangerous half. `answer()` treats anything it does not
- * recognise as a deny, so pressing the allow button on a card from an older
+ * recognize as a deny, so pressing the allow button on a card from an older
  * device DENIES the tool. It fails in the safe direction, which is precisely
  * why it survived a release.
  *
@@ -131,7 +131,7 @@ function normaliseSession(session) {
       s[f] = [];
     }
   }
-  // The cards INSIDE those lists need the same treatment. Normalising the list
+  // The cards INSIDE those lists need the same treatment. Normalizing the list
   // and not its contents is how a fix for the shape of a payload misses the
   // shape of the things in it -- which is exactly what shipped last time.
   for (const f of SESSION_LIST_FIELDS) {

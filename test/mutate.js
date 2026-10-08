@@ -4479,6 +4479,17 @@ if ($health.accessStore -ne 'durable') {`,
   }`,
     mustFail: '`open` still prints the URL even when the browser cannot launch',
   },
+  {
+    // #167's guard is a content check, not a logic check -- there is no
+    // runtime branch to gate behind `process.env.MUTANT`, so the mutation is
+    // the British spelling itself. If this ever stops failing, the guard has
+    // stopped reading the file it claims to cover.
+    name: 'a British spelling creeps back into a web/ UI string',
+    file: 'web/index.html',
+    find: 'aria-label="Organization"><option value="">All organizations</option>',
+    replace: 'aria-label="Organisation"><option value="">All organisations</option>',
+    mustFail: 'web/ UI strings and docs/ use American English spelling',
+  },
 ];
 
 /**

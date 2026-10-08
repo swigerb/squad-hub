@@ -9,7 +9,7 @@
  *   session on the device with it, and it makes "stop this session" a protocol
  *   problem instead of a kill(). The probe's real value is that it removes
  *   multiplexing from the risk list -- we can adopt it later as an
- *   optimisation, having already proven the agent supports it.
+ *   optimization, having already proven the agent supports it.
  *
  * Everything this class exposes about a permission request comes from the wire,
  * not from a summary. spike/q1-permission-payload.json shows toolCall.rawInput
@@ -92,7 +92,7 @@ class AcpSession extends EventEmitter {
     this._buffer = '';
     this._stderr = '';
     // A steer sent while the ORIGINAL turn is still in flight ends that turn
-    // early -- the agent treats the new `session/prompt` as cancelling the
+    // early -- the agent treats the new `session/prompt` as canceling the
     // old one, so `run()`'s own request resolves before the steered turn has
     // even started. Counted, not a flag, because more than one steer can be
     // in flight (a second reply sent before the first finished). See
@@ -494,6 +494,9 @@ class AcpSession extends EventEmitter {
     const a = this.pendingApprovals.get(approvalId);
     if (!a) return false;
     this.pendingApprovals.delete(approvalId);
+    // `cancelled` is the ACP spec's own outcome value (British spelling and
+    // all) -- a wire-protocol literal, not prose, so it stays as the spec
+    // defines it rather than joining the American English sweep.
     this._respond(a.rpcId, { outcome: { outcome: 'cancelled' } });
     // Someone saw a card asking for permission. When it lapses they are owed
     // an answer to "what happened to that?" -- otherwise the request simply

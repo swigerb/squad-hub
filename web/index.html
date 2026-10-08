@@ -61,7 +61,7 @@
   <button data-menu="connect">Connect a device…</button>
   <!-- Shown only to an owner. Hidden by default so the default is the safe
        one: a build that forgot to check would hide it, not offer it.
-       No id: it is wired through data-menu like its neighbours, and an id
+       No id: it is wired through data-menu like its neighbors, and an id
        here would claim a handler of its own that it does not have. -->
   <button data-menu="people" hidden>Who has access…</button>
   <button data-menu="install">Install as an app</button>
@@ -97,7 +97,7 @@
       on the same button as New.
 
       The icons are Fluent UI System Icons (Microsoft, MIT), inlined rather
-      than fetched: emoji render differently on every platform and in colour,
+      than fetched: emoji render differently on every platform and in color,
       an icon font is a network request that can fail into a row of empty
       boxes, and a sprite sheet is one more file to keep in step. They are
       filled paths drawn in `currentColor`, so they follow the theme, the
@@ -178,7 +178,7 @@
       <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
     </div>
     <div class="selectpill">
-      <select id="orgFilter" aria-label="Organisation"><option value="">All organisations</option></select>
+      <select id="orgFilter" aria-label="Organization"><option value="">All organizations</option></select>
       <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
     </div>
   </div>
@@ -191,7 +191,7 @@
       row of PILLS rather than as form fields: each one shows the value it
       currently holds, with the label carried by the icon instead of by a word
       of prose beside it. A native <select> stays underneath -- it is the only
-      control that gets keyboard, screen-reader and touch behaviour right for
+      control that gets keyboard, screen-reader and touch behavior right for
       free -- with the pill drawn around it and the current value mirrored into
       the visible text.
     -->
@@ -240,7 +240,7 @@
     </div>
       <!--
         One box around the whole list, rather than a box per group. The groups
-        are a way of ORGANISING the sessions, not separate things to look at,
+        are a way of ORGANIZING the sessions, not separate things to look at,
         and a stack of separate cards made the page read as several unrelated
         lists that happened to be underneath each other.
       -->
@@ -313,7 +313,7 @@
     <label class="field">
       <span>Prompt <button type="button" class="hint-btn" aria-label="About Prompt"
         title="What you want done, in plain language. This is the first thing the agent is told. &#10;&#10;You can keep talking to the session afterwards from its detail view.">i</button></span>
-      <textarea id="nsPrompt" rows="4" placeholder="e.g. Run the tests and summarise anything that failed"></textarea>
+      <textarea id="nsPrompt" rows="4" placeholder="e.g. Run the tests and summarize anything that failed"></textarea>
     </label>
     <div class="field-row">
       <label class="field">
@@ -342,7 +342,7 @@
     <small class="field-note">
       Leave either blank to let the project decide. In a Squad project that
       selects the <code>squad</code> agent automatically; anywhere else, Copilot's
-      default. Naming one here overrides both — and if the device cannot honour
+      default. Naming one here overrides both — and if the device cannot honor
       it, the session says so rather than pretending.
     </small>
     <div class="modal-actions">
@@ -398,7 +398,7 @@
     </p>
     <label class="field">
       <span>What is it for? <button type="button" class="hint-btn" aria-label="About this name"
-        title="This becomes the device's name in your roster, so make it something you will recognise later. &#10;&#10;It is also what you revoke by, if the token ever needs cancelling.">i</button></span>
+        title="This becomes the device's name in your roster, so make it something you will recognize later. &#10;&#10;It is also what you revoke by, if the token ever needs canceling.">i</button></span>
       <input id="cnLabel" placeholder="my laptop, a build server, ACA jobs" maxlength="40">
       <small class="hint">Becomes the device's name in the roster.</small>
     </label>
@@ -476,7 +476,7 @@
 
     <div class="aca-preview">
       <div class="aca-preview-label">
-        This opens a new issue, labelled <code>squad-aca</code>, which is what
+        This opens a new issue, labeled <code>squad-aca</code>, which is what
         starts the job:
       </div>
       <div class="cmdblock"><code id="acaPreview"></code></div>

@@ -75,7 +75,7 @@ const SHELL = [
 
 self.addEventListener('install', (event) => {
   // `addAll` rejects the whole install if ANY asset 404s, which is the correct
-  // behaviour: a shell missing its stylesheet is not a shell worth keeping.
+  // behavior: a shell missing its stylesheet is not a shell worth keeping.
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 

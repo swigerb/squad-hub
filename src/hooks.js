@@ -34,7 +34,7 @@ const HOOK_FILE = 'squad-hub.json';
 /**
  * Copilot's user-level hooks directory.
  *
- * `COPILOT_HOME` wins when set, which is what Copilot itself honours -- and it
+ * `COPILOT_HOME` wins when set, which is what Copilot itself honors -- and it
  * is how this can be exercised in a test without touching the real one.
  */
 function hooksDir(env = process.env) {
@@ -79,7 +79,7 @@ const EVENTS = [
  * permission handling -- which in a session started with --allow-all-tools
  * means the tool simply runs. So this must stay comfortably ABOVE the daemon's
  * own wait (SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS, 120s by default), leaving the
- * daemon to answer "ask" first. 300s was measured as honoured.
+ * daemon to answer "ask" first. 300s was measured as honored.
  */
 const TIMEOUTS = {
   preToolUse: 300,

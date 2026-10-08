@@ -166,7 +166,7 @@ export function activityLine(s) {
  * `.map is not a function` -- inside render(), which stopped the entire UI from
  * drawing and left the connection indicator stuck on "connecting".
  *
- * The store normalises this on ingest now. This stays anyway: a viewer that
+ * The store normalizes this on ingest now. This stays anyway: a viewer that
  * cannot survive one odd field from one device is a viewer that any device can
  * take down.
  */

@@ -5,7 +5,7 @@
  *
  * That distinction is deliberate: `access.json`'s shape belongs to
  * `access-store.js` alone and is free to change (Sprint C bumps it). An export
- * that copied the file verbatim would couple a recovery artefact to whatever
+ * that copied the file verbatim would couple a recovery artifact to whatever
  * the store happens to look like today, and break the moment it does not.
  * This format instead names two THINGS the store already knows how to make
  * true again -- a grant, and a revocation -- and nothing about how it stores

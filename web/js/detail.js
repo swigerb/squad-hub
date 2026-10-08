@@ -346,7 +346,7 @@ function updateText(u) {
  *
  * `usage_update` fires on every token, and `available_commands_update` and
  * `config_option_update` fire whenever the agent reconfigures itself. None of
- * them carry anything a person reads, and rendering them put a row of grey
+ * them carry anything a person reads, and rendering them put a row of gray
  * noise between every useful line.
  */
 const TRANSCRIPT_NOISE = new Set([

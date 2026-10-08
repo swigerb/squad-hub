@@ -145,7 +145,7 @@ function approvalCard({ session, device, approval, hubUrl }) {
   }
 
   // Say plainly why there are no Allow/Deny buttons here, rather than showing
-  // buttons that a webhook cannot honour.
+  // buttons that a webhook cannot honor.
   body.push({
     type: 'TextBlock',
     text: '_Answer in Squad Hub. Inline approval needs a registered Teams bot._',

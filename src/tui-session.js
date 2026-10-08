@@ -64,7 +64,7 @@ function describeHookTool(toolName, toolArgs) {
   let command = spoken;
   if (!command) {
     // No command field. A file tool is best described by what it touches; a
-    // tool we do not recognise is described by its arguments, verbatim.
+    // tool we do not recognize is described by its arguments, verbatim.
     if (paths.length) command = `${name} ${paths.join(' ')}`;
     else if (args && typeof args === 'object') command = `${name} ${compactJson(args)}`;
     else command = typeof toolArgs === 'string' && toolArgs.trim() ? `${name} ${toolArgs.trim()}` : name;
@@ -98,7 +98,7 @@ function parseToolArgs(toolArgs) {
 
 /**
  * Tools whose name alone proves they only look. Deliberately short: the
- * classifier this feeds is timid by design, and a name we do not recognise is
+ * classifier this feeds is timid by design, and a name we do not recognize is
  * treated as writing. A missed "read-only" costs a second look; a wrong one
  * costs a repository.
  */
@@ -111,7 +111,7 @@ function isReadOnlyHookTool(toolName, command, args) {
   // session judges one -- every shell call arrives under one tool name, so the
   // name alone cannot tell `git status` from `rm -rf`.
   if (command) return isReadOnlyCommand(command);
-  // A tool with no command and no recognised name: if it names a file it is
+  // A tool with no command and no recognized name: if it names a file it is
   // almost certainly touching it, and we cannot show otherwise.
   return args && typeof args === 'object' && Object.keys(args).length === 0;
 }

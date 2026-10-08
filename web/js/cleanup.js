@@ -110,11 +110,11 @@ export const APPROVAL_LABEL = {
 export function approvalOptions(approval) {
   const offered = (approval && approval.options) || [];
   return offered.map((o) => {
-    // An older device spells these `id`/`label`. The store normalises on
+    // An older device spells these `id`/`label`. The store normalizes on
     // ingest, but reading both here means one out-of-date device cannot render
     // a card with no text and -- worse -- no VALUE, which `answer()` would
     // treat as a deny. A button that denies when it says allow is the failure
-    // mode worth two lines of defence.
+    // mode worth two lines of defense.
     const optionId = o.optionId || o.id;
     return {
       optionId,

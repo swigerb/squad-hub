@@ -39,7 +39,7 @@ function emptyPrefs() {
 }
 
 /**
- * Validate and normalise a candidate preferences body.
+ * Validate and normalize a candidate preferences body.
  *
  * Returns `{ ok: true, value }` or `{ ok: false, reason }`. Never throws --
  * every rejection here is a message the API hands straight back to a caller,
