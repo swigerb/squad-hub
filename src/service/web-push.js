@@ -88,13 +88,37 @@ function hkdfExtract(salt, ikm) {
  * the first time; THE HUB ITSELF NEVER CALLS THIS, by design (see
  * push.js's class doc) -- generating one at runtime would mean a restart
  * silently invalidates every subscription in existence.
+ *
+ * #240: `ecdh.getPrivateKey()` returns the scalar's MINIMAL big-endian
+ * encoding -- it drops leading zero bytes, the same way a bare integer
+ * never prints its own leading zeroes. A P-256 scalar is only "32 bytes"
+ * by convention (it is really an integer less than the curve order, which
+ * can be as small as 1), so Node hands back a SHORT buffer whenever the
+ * scalar's top byte(s) happen to be zero -- about 1-in-256 keys for the
+ * first byte alone, confirmed by direct reproduction, not just reasoning
+ * about the odds. `vapidPrivateKeyObject()` below (correctly) demands
+ * EXACTLY 32 bytes, so an unpadded short scalar from this function is a key
+ * its own sender would reject -- not a corrupt key, just a mis-encoded one.
+ * Left-zero-pad back to 32 bytes to restore the canonical fixed-width
+ * encoding every consumer (this module, JWK, SEC1) expects; this changes
+ * only the ENCODING, never the mathematical scalar value, and getPrivateKey
+ * can only ever be shorter than 32 bytes here, never longer, since this
+ * function is the one that just generated the key on CURVE (P-256).
  */
 function generateVapidKeys() {
   const ecdh = crypto.createECDH(CURVE);
   ecdh.generateKeys();
+  const rawPrivateKey = ecdh.getPrivateKey();
+  if (rawPrivateKey.length > 32) {
+    // Cannot happen for a P-256 scalar; guard rather than silently truncate.
+    throw new Error(`generateVapidKeys: unexpected ${rawPrivateKey.length}-byte private scalar (expected <= 32)`);
+  }
+  const privateKey = rawPrivateKey.length === 32
+    ? rawPrivateKey
+    : Buffer.concat([Buffer.alloc(32 - rawPrivateKey.length, 0), rawPrivateKey]);
   return {
     publicKey: b64u(ecdh.getPublicKey(null, 'uncompressed')),
-    privateKey: b64u(ecdh.getPrivateKey()),
+    privateKey: b64u(privateKey),
   };
 }
 
