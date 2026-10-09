@@ -33,11 +33,11 @@
 // strategy already keeps content fresh on its own.
 //
 // v10: merges two independent v9 bumps -- #178 (the New ACA job dialog and
-// "Queued on ACA" pending rows, which changed web/js/aca.js, devices.js and
-// ws.js's own logic, not just their styling) and #173 (the new
-// /js/device-detail.js split module). Either alone would have been v9; both
-// landing together need a fresh value so an aeroplane device does not keep
-// serving a stale copy of either change.
+// "Queued on ACA" pending rows, split across web/js/aca.js and the new
+// /js/aca-pending.js module, plus devices.js and ws.js's own logic, not just
+// their styling) and #173 (the new /js/device-detail.js split module). Either
+// alone would have been v9; both landing together need a fresh value so an
+// aeroplane device does not keep serving a stale copy of either change.
 const CACHE = 'squad-hub-shell-v10';
 
 /**
@@ -71,6 +71,7 @@ const SHELL = [
   '/js/transcript.js',
   '/js/ws.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',

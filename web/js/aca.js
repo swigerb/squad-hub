@@ -5,13 +5,15 @@
 import { state, api } from './api.js';
 import { $, esc, toast } from './util.js';
 // Circular by necessity, the same way devices.js's own import of wiring.js is
-// (see the comment there): `submitAcaDispatch` below needs to redraw the
-// list the instant a dispatch succeeds, and `render()` needs this module's
-// `acaPendingSectionHtml` to draw the row it is redrawing. Neither module
-// touches the other at module-evaluation time, only from inside functions
-// that run later, so the cycle resolves the same way any other two ES
-// modules that call back into each other do.
+// (see the comment there), and the same way aca-pending.js's own import of
+// this file is: `submitAcaDispatch`/`wireAca` below need `trackAcaDispatch`/
+// `startAcaPolling` from the pending-row module, which in turn needs this
+// file's `acaRepoName`/`acaStepsForStatus`. Neither module touches the other
+// at module-evaluation time, only from inside functions that run later, so
+// the cycle resolves the same way any other two ES modules that call back
+// into each other do.
 import { render } from './devices.js';
+import { trackAcaDispatch, startAcaPolling } from './aca-pending.js';
 
 /**
  * Links that start a Squad on ACA run.
@@ -237,79 +239,6 @@ export function acaStepsForStatus(status, attached = false) {
   };
 }
 
-/**
- * Has this pending dispatch's own `aca-` device actually attached?
- *
- * Checked against `state.overview.groups` -- the same WS-pushed data every
- * other list on this page already renders from -- rather than a dedicated
- * lookup, so this never costs an extra request of its own: a device's WS
- * message updates `state.overview` and calls `render()` the instant it
- * attaches, no poll required. A match is a session on a device of kind
- * `aca` whose own checkout is the SAME repository this dispatch targeted,
- * started no earlier than the dispatch itself (with two minutes of slack for
- * clock drift between this browser and the device) -- the same tolerance
- * style `resolveRunStatus` uses server-side for the same reason.
- */
-export function acaPendingAttached(entry, groups = []) {
-  const want = String((entry && entry.repo) || '').toLowerCase();
-  if (!want) return false;
-  const floor = (entry.dispatchedAt || 0) - (2 * 60 * 1000);
-  for (const g of groups) {
-    if (!g || !g.device || g.device.kind !== 'aca') continue;
-    for (const s of g.sessions || []) {
-      const repo = s && s.git && s.git.repository ? acaRepoName(s.git.repository) : null;
-      if (repo && repo.toLowerCase() === want && (s.startedAt || 0) >= floor) return true;
-    }
-  }
-  return false;
-}
-
-/** The pending row's own markup -- a `.row`, same shape a real session row
- * uses (see `sessionRow` in list.js), so it sits in the list rather than
- * reading as a second kind of thing. Never clickable: there is no detail
- * view for a dispatch that has no session yet. */
-export function acaPendingRowHtml(entry) {
-  const view = acaStepsForStatus(entry.status, false);
-  const stepsHtml = view.steps.map((s) => (
-    `<span class="aca-step${s.done ? ' done' : ''}${s.current ? ' now' : ''}">${esc(s.label)}</span>`
-  )).join('');
-  const title = entry.issue ? `#${entry.issue} \u00b7 ${entry.repo}` : entry.repo;
-  const failure = view.failureReason ? `<div class="row-meta aca-fail">${esc(view.failureReason)}</div>` : '';
-  return `
-    <div class="row aca-pending" data-local-id="${esc(entry.localId)}">
-      <span class="star" aria-hidden="true"></span>
-      <div class="row-main">
-        <div class="row-title"><b>${esc(title)}</b></div>
-        <div class="row-meta">${esc(entry.repo)}</div>
-        <div class="aca-steps">${stepsHtml}</div>
-        ${failure}
-      </div>
-      <span class="status ${view.pillClass}">${esc(view.pillLabel)}</span>
-    </div>`;
-}
-
-/** The "Queued on ACA" section of the session list (#178): every pending
- * dispatch not yet attached, in the Cloud tab and in All (an ACA execution
- * counts as Cloud, same rule the scope tabs already use) -- hidden on Local,
- * where it would just be noise about a job that cannot run there. Pure, so
- * the one meaningful rule here -- WHICH scopes show it -- can be proven
- * without a browser. */
-export function acaPendingSectionHtml(pending = [], scope = 'all') {
-  if (scope === 'local') return '';
-  const visible = (pending || []).filter((p) => p && !p.attached);
-  if (!visible.length) return '';
-  return `
-    <div class="group">
-      <div class="group-head">Queued on ACA <span class="group-meta">${visible.length} job${visible.length === 1 ? '' : 's'}</span></div>
-      <div class="card">${visible.map(acaPendingRowHtml).join('')}</div>
-    </div>`;
-}
-
-let acaLocalIdSeq = 0;
-/** Unlikely to collide (a counter plus the time), not cryptographic --
- * nothing security-sensitive is keyed on this, it only needs to be unique
- * among the handful of jobs one browser tab dispatches. */
-function nextAcaLocalId() { acaLocalIdSeq += 1; return `aca-local-${Date.now()}-${acaLocalIdSeq}`; }
 
 /** Toggle between the live dispatch form and the "no GitHub App here" note
  * (#178's 501 fallback). The two fallback links stay available either way --
@@ -407,19 +336,6 @@ export function openAca() {
   ($('acaRepo').value ? $('acaPrompt') : $('acaRepo')).focus();
 }
 
-/** Begin tracking a dispatch this browser tab just made, so it can show as a
- * "Queued on ACA" row until its own device attaches (#178). In-memory only
- * and per-tab, same durability posture `DispatchTracker` itself documents --
- * a reload loses the row, not the dispatch, which the hub still knows about. */
-function trackAcaDispatch({ repo, issue, runUrl }) {
-  state.acaPending = state.acaPending || [];
-  state.acaPending.push({
-    localId: nextAcaLocalId(), repo, issue: issue || null, runUrl: runUrl || null,
-    dispatchedAt: Date.now(), owner: repo.split('/')[0], name: repo.split('/')[1],
-    trackerId: null, status: null, attached: false,
-  });
-}
-
 async function submitAcaDispatch() {
   const built = acaBuildDispatchBody(acaFormValues());
   if (!built.ok) {
@@ -443,87 +359,6 @@ async function submitAcaDispatch() {
     $('acaStart').disabled = false;
     $('acaStart').textContent = 'Start job';
   }
-}
-
-/**
- * Refresh every tracked-but-unresolved dispatch (#178): called once from
- * `refresh()` (ws.js, itself event-driven rather than on a timer), and again
- * every `ACA_POLL_MS` by the interval `startAcaPolling` below starts.
- *
- * Costs NOTHING when there is nothing pending: a fresh page load starts with
- * an empty `state.acaPending` (it is per-tab, never fetched on load -- see
- * `trackAcaDispatch`), so this returns before ever calling
- * `GET /api/aca/dispatches`. That is deliberate: it is what keeps a hub with
- * no GitHub App configured from ever hitting that 501 on an ordinary load,
- * the exact failure mode #233 broke CI with.
- */
-export async function syncAcaPending() {
-  state.acaPending = state.acaPending || [];
-  const groups = (state.overview && state.overview.groups) || [];
-  for (const entry of state.acaPending) {
-    if (!entry.attached && acaPendingAttached(entry, groups)) entry.attached = true;
-  }
-  const pending = state.acaPending.filter((e) => !e.attached);
-  if (!pending.length) return;
-
-  let dispatches;
-  try {
-    ({ dispatches } = await api('/api/aca/dispatches'));
-  } catch {
-    // A 429, a dropped connection, or (once a hub's App is de-configured
-    // mid-session) a 501: none of these are reported to the user here --
-    // this is a background refresh, and the row simply keeps its last known
-    // status until the next successful poll.
-    return;
-  }
-
-  const claimed = new Set(pending.filter((e) => e.trackerId).map((e) => e.trackerId));
-  for (const entry of pending) {
-    if (entry.trackerId) continue;
-    const ownerRepo = entry.repo.toLowerCase();
-    const candidates = (dispatches || [])
-      .filter((d) => !claimed.has(d.id) && `${d.owner}/${d.repo}`.toLowerCase() === ownerRepo)
-      .sort((a, b) => (b.dispatchedAt || 0) - (a.dispatchedAt || 0));
-    const match = candidates[0];
-    if (match) { entry.trackerId = match.id; claimed.add(match.id); }
-  }
-  const byId = new Map((dispatches || []).map((d) => [d.id, d]));
-  for (const entry of pending) {
-    if (!entry.trackerId) continue;
-    const d = byId.get(entry.trackerId);
-    if (d) entry.status = d.status;
-  }
-}
-
-/** How often a pending dispatch is rechecked while one exists (#178).
- *
- * The rest of this app is entirely WS-push driven -- `ws.js`'s `onmessage`
- * calls `render()` straight off an `overview` push, with no timer anywhere
- * else in `web/js/`. That works for devices and sessions because a device's
- * own socket tells the hub the instant something changes. It does NOT work
- * for a GitHub Actions run: nothing pushes a message purely because a run
- * moved from queued to in_progress, `DispatchTracker` only ever learns that
- * by being ASKED (`GET /api/aca/dispatches`). Without a timer, a pending row
- * would sit on "Dispatched" forever unless the person happened to trigger an
- * unrelated `refresh()` (a filter change, a reconnect) -- this interval is
- * what actually advances it.
- *
- * Still costs nothing while idle: `syncAcaPending` returns before any
- * network call whenever nothing is pending, the same gate that keeps an
- * ordinary page load (zero pending, always) from ever touching
- * `/api/aca/*` -- see `syncAcaPending` and the #233 note on `refresh()`.
- * 15s keeps this well under the 30/min read limit (#213) even stacked with
- * `refresh()`'s own call to the same endpoint.
- */
-const ACA_POLL_MS = 15000;
-
-/** Start the interval above. Called once, from `wireAca()`. */
-function startAcaPolling() {
-  setInterval(async () => {
-    if (!(state.acaPending && state.acaPending.some((e) => !e.attached))) return;
-    await syncAcaPending();
-    render();
-  }, ACA_POLL_MS);
 }
 
 /** Wire the New ACA job dialog's controls. Called once, from wire(). */

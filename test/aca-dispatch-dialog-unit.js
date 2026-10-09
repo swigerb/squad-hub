@@ -30,12 +30,12 @@ function check(name, fn) {
 const src = readWebSource();
 const browser = { exports: {} };
 new Function('module', `${src}\nmodule.exports = {
-  acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingRowHtml,
-  acaPendingSectionHtml, ACA_DISPATCH_STEPS,
+  acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
+  acaPendingSectionHtml, ACA_DISPATCH_STEPS, api,
 };`)(browser);
 const {
-  acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingRowHtml,
-  acaPendingSectionHtml, ACA_DISPATCH_STEPS,
+  acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
+  acaPendingSectionHtml, ACA_DISPATCH_STEPS, api,
 } = browser.exports;
 
 const REPO = 'swigerb/squad-on-aca';
@@ -212,6 +212,62 @@ check('an empty group list never matches, and never throws', () => {
   assert.strictEqual(acaPendingAttached({ repo: REPO, dispatchedAt: 1000 }, undefined), false);
 });
 
+// --- acaPendingMatch: repository alone must never double-claim ------------
+//
+// The bug this guards against: two pending dispatches on the SAME repository
+// (a second job started before the first one's device attached), or an
+// unrelated/pre-existing `aca-` session already running against that
+// repository, must never let repository-matching alone resolve more than
+// one pending row off a single real session.
+
+check('a single matching session only ever satisfies ONE of two same-repo pending entries', () => {
+  const older = { repo: REPO, dispatchedAt: 1000 };
+  const newer = { repo: REPO, dispatchedAt: 5000 };
+  const groups = [acaGroup({ sessions: [{ id: 's1', git: { repository: REPO }, startedAt: 6000 }] })];
+
+  // Unclaimed: both independently see the one session (acaPendingAttached's
+  // plain yes/no has no notion of exclusivity, by design -- see its own doc
+  // comment; exclusivity only applies through acaPendingMatch's claimedKeys).
+  assert.strictEqual(acaPendingAttached(older, groups), true);
+  assert.strictEqual(acaPendingAttached(newer, groups), true);
+
+  // With the session already claimed by the older entry, the newer entry
+  // must NOT also resolve to it.
+  const claimed = new Set(['s1']);
+  assert.strictEqual(acaPendingMatch(older, groups, claimed), null, 'the older entry should not re-claim what it already has');
+  const matchOlder = acaPendingMatch(older, groups, new Set());
+  assert.strictEqual(matchOlder && matchOlder.key, 's1');
+  assert.strictEqual(acaPendingMatch(newer, groups, claimed), null,
+    'a second dispatch on the same repository must not also consume the first dispatch\'s attached session');
+});
+
+check('a pre-existing/unrelated aca- session on the same repository does not steal a different pending entry\'s claim', () => {
+  const dispatchedAt = 10000;
+  const entry = { repo: REPO, dispatchedAt };
+  // A session on the SAME repo that started well before this dispatch (more
+  // than the 2-minute clock-drift slack) is a pre-existing/unrelated job --
+  // acaPendingMatch must not consider it a candidate at all.
+  const preExisting = [acaGroup({ sessions: [{ id: 'old-session', git: { repository: REPO }, startedAt: dispatchedAt - (10 * 60 * 1000) }] })];
+  assert.strictEqual(acaPendingMatch(entry, preExisting, new Set()), null);
+
+  // A genuinely unrelated device on a DIFFERENT repository, running
+  // concurrently, must never match either.
+  const unrelated = [acaGroup({ sessions: [{ id: 'other-device', git: { repository: 'someone/else' }, startedAt: dispatchedAt + 1000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, unrelated, new Set()), null);
+});
+
+check('acaPendingMatch picks the earliest-started eligible session, matching the oldest-dispatch-claims-first rule', () => {
+  const entry = { repo: REPO, dispatchedAt: 1000 };
+  const groups = [acaGroup({
+    sessions: [
+      { id: 'later', git: { repository: REPO }, startedAt: 9000 },
+      { id: 'earlier', git: { repository: REPO }, startedAt: 2000 },
+    ],
+  })];
+  const match = acaPendingMatch(entry, groups, new Set());
+  assert.strictEqual(match && match.key, 'earlier');
+});
+
 // --- rendering ------------------------------------------------------------
 
 check('a pending row names its repository and does not render as clickable session markup', () => {
@@ -300,5 +356,67 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
   assert.ok(promptIdx > formEnd, 'acaPrompt is inside #acaForm -- it would be hidden in the 501 fallback');
 });
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// --- api() error-message extraction (#178) ----------------------------------
+// hub-service.js's `/api/aca/repos` and `/api/aca/dispatches` 501s
+// deliberately answer `{ reason }`, not `{ error }` (see the big comment
+// above those handlers) -- the ONE place in this app a non-2xx body uses that
+// shape. `api()` must surface it, or the disabled-form note in aca.js
+// (`acaSetMode('disabled', e.message)`) falls back to a bare, unhelpful
+// "HTTP 501" instead of explaining why the form is disabled.
+{
+  const realFetch = global.fetch;
+
+  (async () => {
+    global.fetch = async () => ({
+      ok: false,
+      status: 501,
+      json: async () => ({ reason: 'This hub has no GitHub App configured.' }),
+    });
+    try {
+      await api('/api/aca/repos');
+      fail += 1;
+      console.log('  FAIL api() surfaces a `reason`-shaped 501 body as its error message\n         expected api() to throw');
+      console.log('RESULT\tfail\tapi() surfaces a `reason`-shaped 501 body as its error message\texpected api() to throw');
+    } catch (e) {
+      try {
+        assert.strictEqual(e.status, 501);
+        assert.strictEqual(e.message, 'This hub has no GitHub App configured.');
+        pass += 1;
+        console.log('  ok   api() surfaces a `reason`-shaped 501 body as its error message');
+        console.log('RESULT\tok\tapi() surfaces a `reason`-shaped 501 body as its error message');
+      } catch (assertErr) {
+        fail += 1;
+        console.log(`  FAIL api() surfaces a \`reason\`-shaped 501 body as its error message\n         ${assertErr.message}`);
+        console.log(`RESULT\tfail\tapi() surfaces a \`reason\`-shaped 501 body as its error message\t${String(assertErr.message).split('\n')[0]}`);
+      }
+    }
+
+    global.fetch = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: 'no such device' }),
+    });
+    try {
+      await api('/api/devices/x');
+      fail += 1;
+      console.log('  FAIL api() still prefers an `error`-shaped body over `reason`\n         expected api() to throw');
+      console.log('RESULT\tfail\tapi() still prefers an `error`-shaped body over `reason`\texpected api() to throw');
+    } catch (e) {
+      try {
+        assert.strictEqual(e.message, 'no such device');
+        pass += 1;
+        console.log('  ok   api() still prefers an `error`-shaped body over `reason`');
+        console.log('RESULT\tok\tapi() still prefers an `error`-shaped body over `reason`');
+      } catch (assertErr) {
+        fail += 1;
+        console.log(`  FAIL api() still prefers an \`error\`-shaped body over \`reason\`\n         ${assertErr.message}`);
+        console.log(`RESULT\tfail\tapi() still prefers an \`error\`-shaped body over \`reason\`\t${String(assertErr.message).split('\n')[0]}`);
+      }
+    }
+
+    global.fetch = realFetch;
+
+    console.log(`\n${pass} passed, ${fail} failed`);
+    process.exit(fail ? 1 : 0);
+  })();
+}

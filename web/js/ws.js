@@ -1,7 +1,7 @@
 import { state, api } from './api.js';
 import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
-import { syncAcaPending } from './aca.js';
+import { syncAcaPending } from './aca-pending.js';
 import { renderTranscript } from './transcript.js';
 import { $ } from './util.js';
 import { showSignIn } from './signin.js';

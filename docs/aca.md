@@ -248,6 +248,18 @@ client-side, with no dedicated endpoint for it, from whichever overview data
 the hub already has (the WS push if the device's own activity arrived first,
 or this same timer's next tick otherwise).
 
+Matching on repository alone is not enough: a hub user can have two
+dispatches queued on the same repository at once, or an unrelated/
+pre-existing `aca-` session can already be running against it. `aca-pending.js`'s
+`acaPendingMatch` therefore also requires that each candidate session started
+no earlier than its own dispatch (with a two-minute clock-drift allowance),
+excludes any session another pending row already claimed in the same pass,
+and — when more than one session still qualifies — prefers the
+earliest-started one, mirroring `DispatchTracker`'s own oldest-dispatch-
+claims-first binding order server-side. Two same-repo dispatches, or a
+same-repo dispatch alongside an unrelated pre-existing device, each resolve
+to their own session rather than one consuming the other's row.
+
 This tracking is **per browser tab and in-memory**, the same durability
 `DispatchTracker` itself documents server-side: reloading the page loses the
 row (the hub still ran the job; only the rendering of "it's in progress" is

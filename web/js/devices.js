@@ -11,7 +11,8 @@ import { maybePromptApproval, syncAppBadge } from './notifications.js';
 import { syncDetailHeader } from './detail.js';
 import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
-import { openAca, acaPendingSectionHtml } from './aca.js';
+import { openAca } from './aca.js';
+import { acaPendingSectionHtml } from './aca-pending.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox

@@ -2941,6 +2941,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/transcript.js',
   '/js/ws.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
@@ -6010,32 +6011,63 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a run that completed without ever attaching is reported as failed',
   },
   {
-    name: 'acaPendingAttached stops requiring an aca-kind device',
-    file: 'web/js/aca.js',
+    name: 'acaPendingMatch stops requiring an aca-kind device',
+    file: 'web/js/aca-pending.js',
     find: `    if (!g || !g.device || g.device.kind !== 'aca') continue;`,
     replace: `    if (!g || !g.device || (!process.env.MUTANT && g.device.kind !== 'aca')) continue; // MUTATION`,
     mustFail: 'does not match a non-aca device, even with the same repository',
   },
   {
-    name: 'acaPendingAttached stops requiring the repository to match',
-    file: 'web/js/aca.js',
-    find: `      if (repo && repo.toLowerCase() === want && (s.startedAt || 0) >= floor) return true;`,
-    replace: `      if (repo && (process.env.MUTANT || repo.toLowerCase() === want) && (s.startedAt || 0) >= floor) return true; // MUTATION`,
+    name: 'acaPendingMatch stops requiring the repository to match',
+    file: 'web/js/aca-pending.js',
+    find: `      if (!repo || repo.toLowerCase() !== want) continue;`,
+    replace: `      if (!repo || (!process.env.MUTANT && repo.toLowerCase() !== want)) continue; // MUTATION`,
     mustFail: 'does not match a different repository',
   },
   {
-    name: 'acaPendingAttached stops applying the two-minute clock-drift floor',
-    file: 'web/js/aca.js',
+    name: 'acaPendingMatch stops applying the two-minute clock-drift floor',
+    file: 'web/js/aca-pending.js',
     find: `  const floor = (entry.dispatchedAt || 0) - (2 * 60 * 1000);`,
     replace: `  const floor = process.env.MUTANT ? -Infinity : (entry.dispatchedAt || 0) - (2 * 60 * 1000); // MUTATION`,
     mustFail: 'tolerates up to two minutes of clock drift, but not more',
+  },
+  {
+    // The core fix this PR adds: matching repository alone must not let a
+    // second pending entry on the same repository (or an unrelated session)
+    // consume an already-claimed session too.
+    name: 'acaPendingMatch stops excluding an already-claimed session',
+    file: 'web/js/aca-pending.js',
+    find: `      if (claimedKeys && key && claimedKeys.has(key)) continue;`,
+    replace: `      if (!process.env.MUTANT && claimedKeys && key && claimedKeys.has(key)) continue; // MUTATION`,
+    mustFail: 'a single matching session only ever satisfies ONE of two same-repo pending entries',
+  },
+  {
+    // Picking the EARLIEST eligible session (not merely "the first one found
+    // in iteration order") is what keeps this consistent with
+    // DispatchTracker's own oldest-first binding rule server-side.
+    name: 'acaPendingMatch stops preferring the earliest-started session',
+    file: 'web/js/aca-pending.js',
+    find: `      if (!best || startedAt < best.startedAt) best = { key, startedAt };`,
+    replace: `      if (!best || (!process.env.MUTANT && startedAt < best.startedAt)) best = { key, startedAt }; // MUTATION`,
+    mustFail: 'acaPendingMatch picks the earliest-started eligible session, matching the oldest-dispatch-claims-first rule',
+  },
+  {
+    // hub-service.js's `/api/aca/repos` and `/api/aca/dispatches` 501s
+    // deliberately answer `{ reason }`, not `{ error }` -- api() must
+    // surface it, or aca.js's disabled-form note falls back to a bare
+    // "HTTP 501" instead of explaining why the form is disabled (#178).
+    name: 'api() stops falling back to a `reason`-shaped 501 body',
+    file: 'web/js/api.js',
+    find: `    const e = new Error((body && (body.error || body.reason)) || \`HTTP \${res.status}\`);`,
+    replace: `    const e = new Error((body && (body.error || (!process.env.MUTANT && body.reason))) || \`HTTP \${res.status}\`); // MUTATION`,
+    mustFail: 'api() surfaces a `reason`-shaped 501 body as its error message',
   },
   {
     // Security review (#178): a pending row renders a repository name and a
     // failure reason straight from GitHub Actions / the dispatch tracker --
     // both are untrusted enough to matter, see web-xss-unit.js's own style.
     name: 'acaPendingRowHtml stops escaping the repository name',
-    file: 'web/js/aca.js',
+    file: 'web/js/aca-pending.js',
     find: `      <div class="row-main">
         <div class="row-title"><b>\${esc(title)}</b></div>
         <div class="row-meta">\${esc(entry.repo)}</div>`,
@@ -6046,7 +6078,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'acaPendingSectionHtml stops hiding on the Local scope',
-    file: 'web/js/aca.js',
+    file: 'web/js/aca-pending.js',
     find: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
   if (scope === 'local') return '';`,
     replace: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
@@ -6055,7 +6087,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'acaPendingSectionHtml stops filtering out already-attached entries',
-    file: 'web/js/aca.js',
+    file: 'web/js/aca-pending.js',
     find: `  const visible = (pending || []).filter((p) => p && !p.attached);`,
     replace: `  const visible = (pending || []).filter((p) => p && (process.env.MUTANT || !p.attached)); // MUTATION`,
     mustFail: 'an attached entry drops out of the section once it is marked attached',
@@ -6068,7 +6100,7 @@ if ($health.accessStore -ne 'durable') {`,
     // browser-e2e-unit.js watching that `/api/aca/dispatches` is never
     // called while nothing is pending, across several real ticks.
     name: 'startAcaPolling stops skipping the tick when nothing is pending (not unit-testable today)',
-    file: 'web/js/aca.js',
+    file: 'web/js/aca-pending.js',
     find: '',
     replace: '',
     mustFail: null,

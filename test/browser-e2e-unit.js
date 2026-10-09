@@ -218,7 +218,11 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       }
       runIdSeq += 1;
       return {
-        issue: { number: 42 },
+        // Issue number tracks the dispatch sequence (41 + the run id) rather
+        // than a fixed 42, so a test dispatching more than once (the
+        // same-repo double-dispatch case below) can tell its two pending
+        // rows apart in the rendered markup.
+        issue: { number: 41 + runIdSeq },
         runUrl: `https://github.com/${owner}/${repo}/actions/runs/${runIdSeq}`,
         workflowFile: 'squad-dispatch.yml',
         ref: 'main',
@@ -1994,7 +1998,7 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         await pageAca.fill('#acaPrompt', 'Update the docs and open a pull request');
         await pageAca.click('#acaStart');
 
-        await pageAca.waitForSelector('#acaScrim[hidden]', { timeout: 10000 });
+        await pageAca.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
         await pageAca.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
 
         // Register the real `aca-` device the dispatched workflow becomes,
@@ -2023,7 +2027,18 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         await pageAca.selectOption('#statusFilter', 'action');
         await pageAca.selectOption('#statusFilter', '');
         await pageAca.waitForSelector('.row:has-text("Queued on ACA")', { state: 'detached', timeout: 10000 });
-        const list = await pageAca.textContent('#groups');
+        // The pending row's removal and the roster's re-render for the now-
+        // attached session are two separate render() passes -- poll instead
+        // of reading #groups the instant the row disappears, or a slow tick
+        // between the two passes reads as a missing session.
+        const list = await until(
+          async () => {
+            const text = await pageAca.textContent('#groups');
+            return /acme\/widgets/.test(text) ? text : null;
+          },
+          'the attached session to appear in the list',
+          5000,
+        );
         assert.match(list, /acme\/widgets/, 'the attached session never appeared in the list');
 
         const broken = errorsAca.filter((e) => !/favicon/i.test(e));
@@ -2031,6 +2046,112 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       } finally {
         await pageAca.close();
         await svcAca.close();
+      }
+    });
+
+    await check('two dispatches on the SAME repository, plus an unrelated/pre-existing aca device, only resolve the matching pending row (#178)', async () => {
+      // The bug this guards against: matching a pending dispatch's device
+      // purely by REPOSITORY, with no notion of "which session already
+      // belongs to someone else", would let one real aca- device attach and
+      // incorrectly clear BOTH pending rows at once (or clear the wrong
+      // one), or let an unrelated/older job on the same repository be
+      // mistaken for a brand-new dispatch's own attach.
+      const authTwo = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-two', deviceSecret: 'aca-two-dev' });
+      const githubAppTwo = fakeInlineGithubApp();
+      const svcTwo = new HubService({ auth: authTwo, serveWeb: true, githubApp: githubAppTwo });
+      const addrTwo = await svcTwo.listen(0, '127.0.0.1');
+      const originTwo = `http://127.0.0.1:${addrTwo.port}`;
+      const tid = 't-two'; const oid = 'u-two';
+      const tokenTwo = authTwo.mintDevToken(tid, oid, 'two tester');
+      const subject = subjectKey(tid, oid);
+
+      const pageTwo = await browser.newPage();
+      const errorsTwo = [];
+      pageTwo.on('console', (m) => { if (m.type() === 'error') errorsTwo.push(m.text()); });
+      pageTwo.on('pageerror', (e) => errorsTwo.push(`pageerror: ${e.message}`));
+      try {
+        await gotoSettled(pageTwo, `${originTwo}/?token=${tokenTwo}`);
+        await pageTwo.waitForSelector('#who', { timeout: 15000 });
+
+        // An unrelated/pre-existing aca- device already running against the
+        // SAME repository, well before either dispatch below (an hour, far
+        // past the 2-minute clock-drift slack) -- must never be mistaken for
+        // either dispatch's own attach.
+        svcTwo.store.registerDevice(subject, { deviceId: 'aca-preexisting', name: 'aca job (old)', platform: 'linux', kind: 'aca' });
+        svcTwo.store.upsertSession(subject, 'aca-preexisting', {
+          id: 'sess-old', status: 'active', startedAt: Date.now() - (60 * 60 * 1000),
+          git: { host: 'github.com', repository: 'acme/widgets' },
+        });
+
+        // First dispatch for acme/widgets.
+        await pageTwo.click('#newMoreBtn');
+        await pageTwo.click('[data-new="aca"]');
+        await pageTwo.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
+        await pageTwo.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await pageTwo.fill('#acaRepo', 'acme/widgets');
+        await pageTwo.fill('#acaPrompt', 'First job for this repository');
+        await pageTwo.click('#acaStart');
+        await pageTwo.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await pageTwo.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+
+        // A second, concurrent dispatch for the SAME repository -- a
+        // different issue, started while the first is still unresolved.
+        await pageTwo.click('#newMoreBtn');
+        await pageTwo.click('[data-new="aca"]');
+        await pageTwo.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
+        await pageTwo.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await pageTwo.fill('#acaRepo', 'acme/widgets');
+        await pageTwo.fill('#acaPrompt', 'Second job for the same repository');
+        await pageTwo.click('#acaStart');
+        await pageTwo.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await pageTwo.waitForFunction(() => document.querySelectorAll('.row.aca-pending').length === 2, null, { timeout: 10000 });
+
+        const titlesBefore = await pageTwo.$$eval('.row.aca-pending .row-title b', (els) => els.map((e) => e.textContent));
+        assert.strictEqual(titlesBefore.length, 2, 'both dispatches on this repository should show their own pending row');
+
+        // Exactly ONE real aca- device attaches, for the same repository
+        // both dispatches targeted.
+        svcTwo.store.registerDevice(subject, { deviceId: 'aca-real-1', name: 'aca job', platform: 'linux', kind: 'aca' });
+        svcTwo.store.upsertSession(subject, 'aca-real-1', {
+          id: 'sess-real-1', status: 'active', startedAt: Date.now(),
+          git: { host: 'github.com', repository: 'acme/widgets' },
+        });
+
+        // Same ordinary-refresh trick the single-dispatch test above uses
+        // (see its own comment) to fire `syncAcaPending` without waiting out
+        // the real 15-second poll.
+        await pageTwo.selectOption('#statusFilter', 'action');
+        await pageTwo.selectOption('#statusFilter', '');
+        await pageTwo.waitForFunction(() => document.querySelectorAll('.row.aca-pending').length === 1, null, { timeout: 10000 });
+
+        // Same two-pass render gap as the single-dispatch test above: poll
+        // rather than read #groups on the instant the pending count settles.
+        const list = await until(
+          async () => {
+            const text = await pageTwo.textContent('#groups');
+            return /acme\/widgets/.test(text) ? text : null;
+          },
+          'the attached session to appear in the list',
+          5000,
+        );
+        assert.match(list, /acme\/widgets/, 'the attached session never appeared in the list');
+
+        // The repository-matching-alone bug this test guards against would
+        // either clear both rows for one attach, or clear the wrong one.
+        // Exactly one must remain, and it must be the SECOND (newer)
+        // dispatch -- the OLDER dispatch claims a matching device first,
+        // the same "earliest dispatch wins" rule DispatchTracker already
+        // applies server-side.
+        const titlesAfter = await pageTwo.$$eval('.row.aca-pending .row-title b', (els) => els.map((e) => e.textContent));
+        assert.strictEqual(titlesAfter.length, 1, 'exactly one pending dispatch should remain after only one device attached');
+        assert.strictEqual(titlesAfter[0], titlesBefore[1],
+          'the surviving pending row should be the SECOND (newer) dispatch, not re-use of the first dispatch\'s already-claimed device');
+
+        const broken = errorsTwo.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await pageTwo.close();
+        await svcTwo.close();
       }
     });
 
