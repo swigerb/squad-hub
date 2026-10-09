@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-237-consume-proven-execution",
+  "sessionId": "fix-pr-237-consume-proven-execution",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T23:36:25.206Z",
+  "lastHeartbeatAt": "2026-10-09T23:36:25.206Z",
+  "updatedAt": "2026-10-09T23:36:25.206Z",
+  "terminalReason": null,
+  "executionRef": null
+}
