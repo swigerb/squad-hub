@@ -385,6 +385,33 @@ function runChildSuite(file, label) {
   }
 }
 
+function checkEscapeFocusWiring() {
+  const source = fs.readFileSync(__filename, 'utf8');
+  const name = 'run-tests.js still wires in the escape-focus child suite and invocation';
+  check(name, () => {
+    try {
+      const suiteStart = source.indexOf('async function suiteEscapeFocus() {');
+      assert.ok(suiteStart !== -1, 'suiteEscapeFocus() is missing');
+      const suiteEnd = source.indexOf('/**\n * Approval depth', suiteStart);
+      assert.ok(suiteEnd !== -1, 'suiteEscapeFocus() no longer sits before suiteApprovalDepth()');
+      const suiteSource = source.slice(suiteStart, suiteEnd);
+      assert.ok(suiteSource.includes("runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');"),
+        'run-tests.js no longer registers test/escape-focus-unit.js');
+      const orderStart = source.indexOf('  await suiteModuleLink();');
+      assert.ok(orderStart !== -1, 'suiteModuleLink() is missing from the sequential run order');
+      const orderEnd = source.indexOf('  await suiteApprovalDepth();', orderStart);
+      assert.ok(orderEnd !== -1, 'suiteApprovalDepth() is missing from the sequential run order');
+      const orderSource = source.slice(orderStart, orderEnd);
+      assert.ok(orderSource.includes('  await suiteEscapeFocus();'),
+        'run-tests.js no longer invokes suiteEscapeFocus()');
+      if (process.env.MUTANT) console.log(`RESULT\tok\t${name}`);
+    } catch (e) {
+      if (process.env.MUTANT) console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+      throw e;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // CRITERION 2 -- a dead agent must not read as Active.
 //
@@ -972,6 +999,16 @@ async function suiteModuleLink() {
 }
 
 /**
+ * Registers `test/escape-focus-unit.js`'s three Escape-dismissal-order
+ * regression tests from PR #243, which were written correctly but never wired
+ * into this explicit runner.
+ */
+async function suiteEscapeFocus() {
+  console.log('\n[ESCAPE FOCUS] Escape dismisses the topmost thing first, before detail closes');
+  runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');
+}
+
+/**
  * Approval depth and the composer's agent/model selection. Reading a file and
  * rewriting a directory are not the same decision, and a standing permission
  * that does not say what it makes standing is a blank cheque.
@@ -1184,6 +1221,7 @@ async function suitePush() {
   console.log('squad-hub test suite');
   console.log('='.repeat(60));
   const t0 = Date.now();
+  checkEscapeFocusWiring();
 
   await suiteLifecycle();
   await suiteSessionRoundTrip();
@@ -1237,6 +1275,7 @@ async function suitePush() {
   await suiteControlVerification();
   await suiteDetailControl();
   await suiteModuleLink();
+  if (process.env.MUTANT) await Promise.resolve(); // MUTATION
   await suiteApprovalDepth();
   await suiteForget();
   await suiteNarrowedForget();

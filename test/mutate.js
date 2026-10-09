@@ -6693,6 +6693,24 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
     mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
   },
+  {
+    name: 'run-tests stops registering the escape-focus child suite',
+    file: 'test/run-tests.js',
+    find: `  runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');`,
+    replace: `  if (process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',
+  },
+  {
+    name: 'run-tests stops invoking suiteEscapeFocus in sequence',
+    file: 'test/run-tests.js',
+    find: `  await suiteModuleLink();
+  await suiteEscapeFocus();
+  await suiteApprovalDepth();`,
+    replace: `  await suiteModuleLink();
+  if (process.env.MUTANT) await Promise.resolve(); // MUTATION
+  await suiteApprovalDepth();`,
+    mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',
+  },
 ];
 
 /**
