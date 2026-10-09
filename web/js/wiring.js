@@ -23,8 +23,9 @@ import {
   openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession,
 } from './detail.js';
 import {
-  setRailCollapsed, applyTheme, nextTheme, toggleFavorite, saveView, refresh,
+  setRailCollapsed, applyTheme, nextTheme, saveView, refresh,
 } from './ws.js';
+import { toggleFavorite } from './prefs-sync.js';
 import { openAca, wireAca } from './aca.js';
 import { wireAcaStatusCard } from './aca-status.js';
 import { openPeople, wireAccess } from './access.js';
@@ -33,6 +34,7 @@ import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
 import { wirePush, syncPushMenuItem } from './push.js';
+import { rowMenuItems, rowMenuHtml, findSessionByKey, onRowMenuAction } from './rowmenu.js';
 
 /** A persistent warning the user cannot miss and can dismiss once read. */
 export function showBanner(text) {
@@ -52,6 +54,7 @@ export function showBanner(text) {
 function toggleMenu(force) {
   const m = $('menu');
   const open = force === undefined ? m.hidden : force;
+  if (open) closeRowMenu();
   m.hidden = !open;
   $('menuBtn').setAttribute('aria-expanded', String(open));
   if (!open) return;
@@ -83,12 +86,83 @@ function togglePopup(menuId, btnId, force) {
     for (const other of Object.keys(POPUP_BUTTON)) {
       if (other !== menuId) togglePopup(other, POPUP_BUTTON[other], false);
     }
+    closeRowMenu();
   }
   m.hidden = !open;
   const b = $(btnId);
   if (b) b.setAttribute('aria-expanded', String(open));
   if (open && menuId === 'newMenu') renderNewMenu();
   if (open && menuId === 'inboxMenu') renderInboxMenu();
+}
+
+// ---------------------------------------------------------------------------
+// The per-row ⋯ menu (#170): one shared, floating `<nav id="rowMenu">`,
+// repositioned per click -- the mockup's own approach, rather than one
+// nested menu per row (which would mean N copies of the same markup sitting
+// in the DOM at once, for a list that can run to hundreds of rows).
+// ---------------------------------------------------------------------------
+
+let rowMenuKey = null;
+let rowMenuBtn = null;
+
+/** Closed on every refresh, Esc, a click outside it, or any other popup
+ * opening -- a popup like any other, it just has no one fixed trigger. */
+export function closeRowMenu() {
+  if (rowMenuKey === null) return;
+  const m = $('rowMenu');
+  if (m) m.hidden = true;
+  if (rowMenuBtn) rowMenuBtn.setAttribute('aria-expanded', 'false');
+  rowMenuKey = null;
+  rowMenuBtn = null;
+}
+
+function openRowMenu(key, btn) {
+  const reopening = rowMenuKey === key;
+  toggleMenu(false);
+  togglePopup('newMenu', 'newMoreBtn', false);
+  togglePopup('tidyMenu', 'tidyBtn', false);
+  togglePopup('inboxMenu', 'bellBtn', false);
+  togglePopup('dtMenu', 'dtMoreBtn', false);
+  closeRowMenu();
+  if (reopening) return; // a second click on the SAME ⋯ closes it again
+
+  const found = findSessionByKey(key);
+  if (!found) return;
+  const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(key) });
+  const m = $('rowMenu');
+  m.innerHTML = rowMenuHtml(items);
+  m.hidden = false;
+  rowMenuKey = key;
+  rowMenuBtn = btn;
+  btn.setAttribute('aria-expanded', 'true');
+
+  // Anchored to the opening button, flipped or slid when the natural
+  // bottom-right placement would run off the viewport (390/900/1280px).
+  const rect = btn.getBoundingClientRect();
+  const menuRect = m.getBoundingClientRect();
+  const margin = 8;
+  let left = rect.right - menuRect.width;
+  if (left < margin) left = Math.min(rect.left, window.innerWidth - margin - menuRect.width);
+  left = Math.max(margin, left);
+  let top = rect.bottom + 4;
+  if (top + menuRect.height > window.innerHeight - margin) top = rect.top - menuRect.height - 4;
+  top = Math.max(margin, top);
+  m.style.left = `${left}px`;
+  m.style.top = `${top}px`;
+  m.style.right = 'auto';
+
+  const first = m.querySelector('button:not([disabled])');
+  if (first) first.focus();
+}
+
+/** Arrow-key navigation among the row menu's own (enabled) buttons. */
+function moveRowMenuFocus(delta) {
+  const m = $('rowMenu');
+  const items = [...m.querySelectorAll('button:not([disabled])')];
+  if (!items.length) return;
+  const at = items.indexOf(document.activeElement);
+  const next = items[(at < 0 ? (delta > 0 ? 0 : -1) : at + delta + items.length) % items.length];
+  if (next) next.focus();
 }
 
 /**
@@ -268,15 +342,31 @@ export function wire() {
   wireFilters({ refresh, render, saveView });
 
   $('groups').onclick = (e) => {
-    // The star sits inside the row, so it must claim the click before the row
-    // does -- otherwise pinning a session also opens it.
+    // The star and the ⋯ button both sit inside the row, so each must claim
+    // the click before the row does -- otherwise pinning, or opening the
+    // menu, also opens the session.
     const star = e.target.closest('[data-star]');
     if (star) {
       toggleFavorite(star.dataset.star);
       return;
     }
+    const more = e.target.closest('[data-more]');
+    if (more) {
+      openRowMenu(more.dataset.more, more);
+      return;
+    }
     const row = e.target.closest('[data-session]');
     if (row) openDetail(row.dataset.session);
+  };
+
+  $('rowMenu').onclick = (e) => {
+    const b = e.target.closest('[data-row-action]');
+    if (!b || b.disabled || !rowMenuKey) return;
+    onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
+  };
+  $('rowMenu').onkeydown = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveRowMenuFocus(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveRowMenuFocus(-1); }
   };
 
   // The Squad panel: members and document tabs both open a document. Delegated
@@ -374,6 +464,7 @@ export function wire() {
     if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
     if (!$('dtMenu').hidden && !e.target.closest('#dtMoreBtn') && !e.target.closest('#dtMenu')) togglePopup('dtMenu', 'dtMoreBtn', false);
+    if (!$('rowMenu').hidden && !e.target.closest('#rowMenu') && !e.target.closest('[data-more]')) closeRowMenu();
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
     if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
       $('filterbarEnd').classList.remove('open');
@@ -449,6 +540,7 @@ export function wire() {
     togglePopup('newMenu', 'newMoreBtn', false);
     togglePopup('tidyMenu', 'tidyBtn', false);
     togglePopup('dtMenu', 'dtMoreBtn', false);
+    closeRowMenu();
     $('filterbarEnd').classList.remove('open');
     $('filterToggle').setAttribute('aria-expanded', 'false');
     for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;

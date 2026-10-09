@@ -791,6 +791,18 @@ async function suiteCopyClipboard() {
 }
 
 /**
+ * #236 review finding 4: `copyToClipboard` itself always settles (proven
+ * above), but the row menu's "Copy link" action still has to actually READ
+ * that settled value -- a `try`/`catch` around a call that never throws is
+ * an unconditional success toast wearing a disguise. This exercises the
+ * real `onRowMenuAction` end-to-end, not `copyToClipboard` alone.
+ */
+async function suiteRowMenuAction() {
+  console.log('\n[ROW MENU ACTION] a clipboard failure is never toasted as a success (#236 finding 4)');
+  runChildSuite(path.join(__dirname, 'row-menu-action-unit.js'), 'row-menu-action');
+}
+
+/**
  * Modes: applied over the protocol, and reported honestly when they are not.
  */
 async function suiteModes() {
@@ -819,6 +831,7 @@ async function suitePrefs() {
   console.log('\n[PREFS] pins, renames and the saved view, per user, with caps enforced');
   runChildSuite(path.join(__dirname, 'prefs-store-unit.js'), 'prefs-store');
   runChildSuite(path.join(__dirname, 'prefs-api-unit.js'), 'prefs-api');
+  runChildSuite(path.join(__dirname, 'prefs-sync-unit.js'), 'prefs-sync');
 }
 
 /**
@@ -969,6 +982,20 @@ async function suiteSquadDocs() {
 async function suiteForget() {
   console.log('\n[FORGET] ended sessions only, never a live one, never an orphan');
   runChildSuite(path.join(__dirname, 'forget-unit.js'), 'forget');
+}
+
+/**
+ * #236: a single-row Remove must never become a device-wide sweep just
+ * because the daemon on the other end is too old to honor the narrowing.
+ * Old daemons that ignore `sessionId` get refused outright (409), proven
+ * here with zero commands ever reaching them -- not merely an HTTP-level
+ * refusal after the fact. Capability is reported fresh on every
+ * register/heartbeat with no stale-value fallback, so a daemon downgrade
+ * loses the privilege on its very next heartbeat.
+ */
+async function suiteNarrowedForget() {
+  console.log('\n[NARROWED FORGET] old daemons never receive a request they cannot safely narrow');
+  runChildSuite(path.join(__dirname, 'narrowed-forget-unit.js'), 'narrowed-forget');
 }
 
 /**
@@ -1168,6 +1195,7 @@ async function suitePush() {
   await suiteInstallPrompt();
   await suiteAppBadge();
   await suiteCopyClipboard();
+  await suiteRowMenuAction();
   await suiteModes();
   await suiteAccess();
   await suitePrefs();
@@ -1184,6 +1212,7 @@ async function suitePush() {
   await suiteControlVerification();
   await suiteApprovalDepth();
   await suiteForget();
+  await suiteNarrowedForget();
   await suiteStaleSession();
   await suiteSquadDocs();
   await suiteAgentArgs();

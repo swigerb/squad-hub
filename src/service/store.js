@@ -56,6 +56,23 @@ function sanitizeShortString(v, maxLen = 100) {
 }
 
 /**
+ * What a device claims it can safely be asked to do beyond the baseline
+ * protocol -- currently just `narrowedForget` (PR #236 review finding 5): a
+ * reachable device's own daemon confirming it honors a `sessionId`-scoped
+ * `/forget` rather than ignoring the field and sweeping every ended session
+ * it carries. Only ever a plain `{narrowedForget: true}` the device itself
+ * sent -- never inferred from a version number, which a production rollout
+ * can leave stale on a device for a long time after newer code ships
+ * elsewhere. Anything else reported here is simply dropped, the same
+ * posture as every other device-supplied field: absent/malformed input
+ * never earns a capability it did not plainly claim.
+ */
+function sanitizeCapabilities(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  return { narrowedForget: v.narrowedForget === true };
+}
+
+/**
  * Map what a device reports to the three kinds the roster actually
  * distinguishes.
  *
@@ -310,6 +327,12 @@ class Store extends EventEmitter {
       modes: Array.isArray(device.modes) && device.modes.length ? device.modes : (existing.modes || null),
       version: sanitizeShortString(device.version) || existing.version || null,
       cliVersion: sanitizeShortString(device.cliVersion) || existing.cliVersion || null,
+      // Deliberately no `|| existing.capabilities` fallback (unlike
+      // `version`/`cliVersion` above): a daemon that stops reporting this --
+      // a downgrade, a rollback to an older build -- must immediately lose
+      // the capability on its very next register/heartbeat, not keep
+      // whatever a previous, newer run of it once claimed.
+      capabilities: sanitizeCapabilities(device.capabilities),
       // The device token's own label and expiry (#173), read off the socket's
       // own credential -- see `_attachDevice` in hub-service.js -- not off
       // anything the device itself sent, so a device cannot claim a token
@@ -335,6 +358,10 @@ class Store extends EventEmitter {
       meta,
       version: 'version' in patch ? (sanitizeShortString(patch.version) || rec.version) : rec.version,
       cliVersion: 'cliVersion' in patch ? (sanitizeShortString(patch.cliVersion) || rec.cliVersion) : rec.cliVersion,
+      // Same no-fallback posture as `registerDevice` above: a heartbeat that
+      // does not mention `capabilities` clears it, rather than keeping a
+      // stale earlier claim.
+      capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,
       diskVolumes: 'diskVolumes' in patch ? sanitizeDiskVolumes(patch.diskVolumes) : rec.diskVolumes,
       tokenLabel: 'tokenLabel' in patch ? (sanitizeShortString(patch.tokenLabel) || rec.tokenLabel || null) : rec.tokenLabel,
       tokenExpiresAt: 'tokenExpiresAt' in patch && Number.isFinite(patch.tokenExpiresAt)

@@ -726,6 +726,16 @@
 
 <div class="scrim" id="installHelp" hidden></div>
 
+<!--
+  The per-row ⋯ menu (#170): ONE shared, floating instance reused by every
+  row, positioned with JS against whichever `.more` button opened it, the
+  same shape the mockup itself uses (`#rowMenu`, repositioned per click)
+  rather than one copy per row. A copy per row would also survive a refresh
+  in a stale, already-open state, since `#groups` is fully rebuilt on every
+  `render()` -- this one is closed explicitly instead, by the same rebuild.
+-->
+<nav class="menu" id="rowMenu" hidden></nav>
+
 <div class="toast" id="toast" hidden></div>
 
 <script type="module" src="/app.js"></script></body>

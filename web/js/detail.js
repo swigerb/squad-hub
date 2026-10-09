@@ -4,7 +4,8 @@ import {
   isStaleSession, isDeviceUnreachable, cleanupControls, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
-import { refresh, resolveDeepLink, toggleFavorite } from './ws.js';
+import { refresh, resolveDeepLink } from './ws.js';
+import { toggleFavorite } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
 
