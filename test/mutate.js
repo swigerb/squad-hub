@@ -6208,36 +6208,41 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)',
   },
   {
-    // The follow-up fix's Bug B: among `entry`'s OTHER same-issue siblings,
-    // only a STRICTLY closer-or-tied preceding dispatchedAt may beat `entry`
-    // for a session -- never merely whichever entry asked first. Forcing
-    // `otherEligible` to empty (ignoring every sibling) reproduces the exact
-    // same-issue-retry swap this fix exists to prevent: whichever entry is
-    // asked first would win every session, regardless of which sibling's own
-    // dispatchedAt is actually closer.
+    // Rule 2's sibling refinement only works if the tighter
+    // "closest-preceding" subset is actually computed. If every eligible
+    // sibling is treated as though none of them were tightly preceding, rule 2
+    // falls back to the looser rule-1-eligibility set and reintroduces the
+    // original same-issue-retry swap this fix exists to prevent.
     name: 'acaPendingMatch stops narrowing to the closest-preceding sibling entry (Bug B)',
     file: 'web/js/aca-match.js',
-    find: `        const otherEligible = others.filter(precedes);`,
-    replace: `        const otherEligible = process.env.MUTANT ? [] : others.filter(precedes); // MUTATION`,
+    find: `const otherPreceding = otherEligible.filter(precedes);`,
+    replace: `const otherPreceding = process.env.MUTANT ? [] : otherEligible.filter(precedes); // MUTATION`,
     mustFail: 'a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)',
   },
   {
-    // The Squad reviewer's confirmed regression on rule 2's original fix:
-    // `precedes` is the hard upper-bound exclusion that stops a sibling (or
-    // `entry` itself) whose own `dispatchedAt` happened MEANINGFULLY AFTER
-    // the candidate session's `startedAt` from ever winning this tie-break,
-    // regardless of how numerically close that `dispatchedAt` looks.
-    // Disabling just the `entry`-side half of this check (`!precedes(entry)`)
-    // reproduces the exact bug the reviewer found: a same-issue retry
-    // dispatched less than `ACA_START_TOLERANCE_MS` apart from an earlier
-    // one could claim a session that had already started before the retry
-    // was even dispatched -- stealing it from the earlier entry whose own
-    // job it genuinely was.
+    // If a tighter-preceding sibling exists, an entry that does NOT satisfy
+    // that tighter refinement must lose immediately. Disabling that exclusion
+    // recreates the close-retry-gap bug: a retry dispatched after the
+    // session started can still claim it merely because rule 1's looser
+    // cross-clock tolerance left it nominally eligible.
     name: 'acaPendingMatch stops excluding entry when its own dispatch happened after the session already started',
     file: 'web/js/aca-match.js',
-    find: `        if (!precedes(entry)) continue; // entry's own dispatch happened after this session already started -- not a plausible owner at all`,
-    replace: `        if (!process.env.MUTANT && !precedes(entry)) continue; // MUTATION`,
+    find: `if ((otherPreceding.length || entryPrecedes) && !entryPrecedes) continue;`,
+    replace: `if (!process.env.MUTANT && (otherPreceding.length || entryPrecedes) && !entryPrecedes) continue; // MUTATION`,
     mustFail: 'a closely-spaced same-issue retry does not let the newer dispatch steal the older dispatch\'s own session (reviewer-found regression)',
+  },
+  {
+    // A same-issue sibling must not make `entry` itself re-pass the tighter
+    // retry-precedence refinement. If the "use the tighter rule 2 window"
+    // branch runs merely because SOME sibling exists, an otherwise-eligible
+    // entry whose own session started a few seconds "early" (well within the
+    // established 5s cross-process tolerance) regresses to a false negative
+    // as soon as any unrelated same-issue retry is also pending.
+    name: 'acaPendingMatch wrongly tightens entry eligibility merely because a sibling exists',
+    file: 'web/js/aca-match.js',
+    find: `if ((otherPreceding.length || entryPrecedes) && !entryPrecedes) continue;`,
+    replace: `if ((process.env.MUTANT ? others.length : (otherPreceding.length || entryPrecedes)) && !entryPrecedes) continue; // MUTATION`,
+    mustFail: 'an unrelated same-issue sibling does not tighten the candidate entry\'s own eligibility window',
   },
   {
     // A genuine tie between two siblings (neither is a strictly closer

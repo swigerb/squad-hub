@@ -285,25 +285,21 @@ guess, combining two independent proofs:
    stale, unrelated historical session on the same issue — repository and
    issue alone cannot tell those apart, since neither changes with time.
    When more than one still-pending entry shares the same repository and
-   issue (a genuine retry), a session binds to whichever entry has the
-   *closest preceding* `dispatchedAt` — not to whichever entry happened to
-   be checked first. "Preceding" is a hard requirement here, not merely a
-   preference: a candidate entry whose own `dispatchedAt` is meaningfully
-   *after* the session's `startedAt` is excluded from this comparison
-   outright, no matter how numerically close that `dispatchedAt` looks —
-   it could not have produced a session that already existed before it was
-   even dispatched. (A confirmed regression here: reusing the same
-   generous clock-drift tolerance used for the check above to decide
-   "preceding" let a same-issue retry dispatched only a few seconds after
-   an earlier one win a session that had already started *before* the
-   retry was even dispatched, stealing it from the earlier entry whose own
-   job it genuinely was. The fix uses a much tighter tolerance for this
-   specific comparison, since every `dispatchedAt` being compared here
-   comes from this same process's own clock — no cross-process drift to
-   account for, unlike the entry-vs-session comparison above.) This is
-   what keeps two same-issue retries from being able to swap with each
-   other when their own jobs attach out of order, including when they are
-   dispatched close together: repository and issue proof alone is
+   issue (a genuine retry), that same loose eligibility check still applies
+   to *each* entry independently: if the session is within the normal 5s
+   cross-process clock-drift window for an entry, that entry stays in play.
+   Only *after* that does ACA apply a tighter same-process refinement among
+   siblings, preferring the *closest preceding* `dispatchedAt` when any
+   sibling satisfies that narrower window. This is what prevents a retry
+   dispatched a few seconds later from stealing a session that had already
+   begun before the retry was even dispatched, while still preserving the
+   normal 5s entry-vs-session tolerance for a candidate's own eligibility.
+   Put differently: the tighter retry-precedence tolerance is used only to
+   rank already-eligible same-issue siblings, never to re-check a
+   candidate's own admission just because some unrelated sibling exists.
+   This is what keeps two same-issue retries from being able to swap with
+   each other when their own jobs attach out of order, including when they
+   are dispatched close together: repository and issue proof alone is
    identical for both of them by construction, so only time ordering can
    tell a retry's own session apart from its predecessor's. A session
    already claimed by another pending entry (`claimedKeys`) is never
@@ -487,5 +483,4 @@ open and not yet implemented on the workflow side — sending them now does not
 block on that landing, because the hub reads the workflow's own declared
 inputs first and only ever sends the ones it actually declares, refusing the
 rest with a clear `422` rather than letting GitHub reject the whole call.
-
 

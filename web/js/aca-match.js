@@ -24,20 +24,22 @@ import { acaRepoName } from './aca.js';
  * invented fresh here. */
 export const ACA_START_TOLERANCE_MS = 5000;
 
-/** Tolerance used ONLY when rule 2 (below) picks which of several
- * same-issue sibling entries is the CLOSEST PRECEDING dispatch for a given
- * session -- deliberately much smaller than `ACA_START_TOLERANCE_MS`. Every
- * `dispatchedAt` being compared here is recorded by THIS SAME process's own
- * clock (there is no cross-process drift between one entry's dispatchedAt
- * and another's, unlike a dispatchedAt-vs-session-startedAt comparison), so
- * only ordinary clock-tick/scheduling noise needs covering, not the several
- * seconds of cross-clock drift `ACA_START_TOLERANCE_MS` exists for. Reusing
- * the larger tolerance here was a confirmed regression (see rule 2's doc
- * comment below): it let a sibling whose dispatch happened MEANINGFULLY
- * AFTER a session had already started still outrank -- and permanently
- * steal the session from -- the sibling whose dispatch the session had
- * genuinely started shortly after, whenever two same-issue retries were
- * dispatched less than `ACA_START_TOLERANCE_MS` apart. */
+/** Tolerance used ONLY as rule 2's tighter "closest PRECEDING sibling"
+ * refinement among same-issue entries that already passed the ordinary
+ * `ACA_START_TOLERANCE_MS` entry-vs-session eligibility check. Every
+ * sibling `dispatchedAt` being ordered against another sibling's here was
+ * recorded by THIS SAME process's own clock, so this tighter window is
+ * appropriate for deciding whether a retry happened meaningfully after the
+ * candidate session began. It MUST NOT replace `ACA_START_TOLERANCE_MS` for
+ * an entry's OWN eligibility, because that compares this process's
+ * `dispatchedAt` with a session's separately-reported `startedAt` from a
+ * different process/device. Reusing the larger tolerance for this sibling
+ * refinement was a confirmed regression (see rule 2's doc comment below): it
+ * let a sibling whose dispatch happened MEANINGFULLY AFTER a session had
+ * already started still outrank -- and permanently steal the session from --
+ * the sibling whose dispatch the session had genuinely started shortly
+ * after, whenever two same-issue retries were dispatched less than
+ * `ACA_START_TOLERANCE_MS` apart. */
 export const ACA_RETRY_PRECEDENCE_TOLERANCE_MS = 1000;
 
 /**
@@ -120,50 +122,48 @@ export const ACA_RETRY_PRECEDENCE_TOLERANCE_MS = 1000;
  *      reads.
  *
  *   2. When more than one PENDING entry shares the same repo+issue (a
- *      same-issue retry), a session binds to the entry with the CLOSEST
- *      PRECEDING `dispatchedAt` -- the largest `dispatchedAt` that is still
- *      `<= session.startedAt + ACA_RETRY_PRECEDENCE_TOLERANCE_MS` -- not to
- *      whichever entry's turn came up first in iteration order. Note this
- *      uses `ACA_RETRY_PRECEDENCE_TOLERANCE_MS`, NOT the much larger
- *      `ACA_START_TOLERANCE_MS` rule 1 uses -- see that constant's own doc
- *      comment for why a sibling-vs-sibling comparison needs a tighter
- *      window than an entry-vs-session comparison does. A candidate (be it
- *      `entry` itself or a sibling) is excluded from this comparison
- *      ENTIRELY -- a hard exclusion, not merely a losing tie-break -- the
- *      moment its own `dispatchedAt` is meaningfully after the session's
- *      `startedAt`: such a dispatch could not have produced a session that
- *      already existed before it was even made, regardless of how its raw
- *      `dispatchedAt` number compares to any other candidate's. Walking Bug
- *      B through this rule: sessionB (`startedAt` ~5500) is eligible against
- *      BOTH A (`dispatchedAt` 1000) and B (`dispatchedAt` 5000) -- both
- *      precede it -- and B is the closer/later preceding dispatch, so
- *      sessionB binds to B on the very first poll, independent of
- *      processing order. When sessionA (`startedAt` ~1200) later appears, B
- *      (`dispatchedAt` 5000) is excluded outright -- it is well AFTER
- *      sessionA's `startedAt`, not merely "further than the tolerance
- *      allows" but excluded regardless of A's own candidacy -- so A
- *      correctly claims sessionA. No swap.
+ *      same-issue retry), rule 1's ordinary eligibility still applies to
+ *      EACH candidate independently: every candidate whose own
+ *      `dispatchedAt` is within `ACA_START_TOLERANCE_MS` of the session's
+ *      `startedAt` stays in play. Among those already-eligible siblings, a
+ *      tighter refinement then prefers the CLOSEST PRECEDING dispatch -- the
+ *      largest `dispatchedAt` that is still
+ *      `<= session.startedAt + ACA_RETRY_PRECEDENCE_TOLERANCE_MS` -- if any
+ *      such siblings exist at all. If none do, the match falls back to the
+ *      ordinary rule-1-eligible set rather than silently tightening an
+ *      otherwise-valid candidate's OWN admission window merely because some
+ *      sibling exists. Walking Bug B through this rule: sessionB
+ *      (`startedAt` ~5500) is eligible against BOTH A (`dispatchedAt` 1000)
+ *      and B (`dispatchedAt` 5000), and both satisfy the tighter
+ *      "preceding" refinement too, so B is the closer/later preceding
+ *      dispatch and sessionB binds to B on the very first poll, independent
+ *      of processing order. When sessionA (`startedAt` ~1200) later appears,
+ *      B (`dispatchedAt` 5000) remains loosely eligible only because of the
+ *      cross-clock drift allowance from rule 1 -- but it fails the tighter
+ *      sibling refinement, while A passes it, so A correctly claims
+ *      sessionA. No swap.
  *
- *      A CLOSELY-SPACED retry (the reviewer-found regression this upper
- *      bound fixes): if B is instead dispatched only, say, 4 seconds after
- *      A (still inside `ACA_START_TOLERANCE_MS`'s 5-second window), and a
- *      session genuinely started 500ms after A's own dispatch -- i.e.
- *      BEFORE B was even dispatched -- the OLD code let B's `dispatchedAt`
- *      win this tie-break purely because it was numerically closer to the
- *      session's `startedAt`, even though B's dispatch had not happened yet
- *      when the session started. That session could only ever have been
- *      A's own job. The fix: B's `dispatchedAt` being after the session's
- *      `startedAt` (by more than `ACA_RETRY_PRECEDENCE_TOLERANCE_MS`)
- *      excludes B from this comparison outright, so A -- the only candidate
- *      whose dispatch actually precedes the session -- correctly wins.
+ *      A CLOSELY-SPACED retry (the reviewer-found regression this tighter
+ *      refinement fixes): if B is instead dispatched only, say, 4 seconds
+ *      after A (still inside `ACA_START_TOLERANCE_MS`'s 5-second window),
+ *      and a session genuinely started 500ms after A's own dispatch -- i.e.
+ *      BEFORE B was even dispatched -- the OLD code let B's larger
+ *      `dispatchedAt` win the sibling comparison even though B's dispatch
+ *      had not happened yet when the session started. That session could
+ *      only ever have been A's own job. The fix: B remains rule-1-eligible
+ *      (cross-clock drift can still explain a session beginning a few
+ *      seconds "early"), but B fails the tighter sibling refinement while A
+ *      passes it, so A -- the best eligible PRECEDING candidate --
+ *      correctly wins.
  *
  *      Ties -- two sibling entries whose `dispatchedAt` are equally the
  *      closest preceding value for one candidate session -- are the
  *      genuinely ambiguous case the brief's "leave unknown, do not
  *      fabricate" instruction is actually about: there is no time-based
  *      way to prefer one over the other, so the session resolves to
- *      NEITHER of them (see the `closest.length > 1` branch below) rather
- *      than guessing. This is DIFFERENT from "two entries exist" (the
+ *      NEITHER of them (the `maxOtherDispatchedAt >= entryDispatchedAt`
+ *      exclusion below makes tied siblings reject each other symmetrically)
+ *      rather than guessing. This is DIFFERENT from "two entries exist" (the
  *      ordinary retry case above, where one is unambiguously closer) --
  *      it only applies when neither sibling is a strictly better match
  *      than the other for this specific session.
@@ -183,9 +183,10 @@ export const ACA_RETRY_PRECEDENCE_TOLERANCE_MS = 1000;
  * strictly better signal than an arbitrary convention, so the test was
  * updated to assert the CLOSEST-PRECEDING entry wins -- which, for that
  * test's own fixture, is the NEWER entry, not the older one. Genuine ties
- * (rule 2's `closest.length > 1` case, where closest-preceding cannot
- * distinguish either) still resolve to neither, preserving "do not
- * fabricate a guess" for the cases that are actually ambiguous.
+ *      (where closest-preceding still cannot distinguish either, so the
+ *      sibling comparison rejects both symmetrically) still resolve to
+ *      neither, preserving "do not fabricate a guess" for the cases that are
+ *      actually ambiguous.
  *
  * `claimedKeys`, when supplied, is the set of `sessionKey()` identities
  * already bound to some OTHER pending entry (see `syncAcaPending`) -- the
@@ -244,38 +245,35 @@ export function acaPendingMatch(entry, groups = [], claimedKeys = null, allPendi
       if (startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue;
 
       // Rule 2 (Bug B): among `entry`'s OTHER same-repo-same-issue pending
-      // siblings (a genuine retry), this session binds to whichever one has
-      // the CLOSEST PRECEDING dispatchedAt -- not to `entry` merely because
-      // `entry` happens to be who is asking. If some other sibling is a
-      // strictly closer (later, but still time-eligible) preceding dispatch
-      // than `entry`, `entry` loses this session to that sibling (handled
-      // the next time THAT sibling is resolved, see `syncAcaPending`). If
-      // another sibling ties `entry` exactly (equally the closest
-      // preceding dispatch -- genuinely ambiguous, no time-based way to
-      // prefer one over the other), this session resolves to NEITHER: no
-      // fabricated guess, see the function doc above.
+      // siblings (a genuine retry), this session binds to whichever
+      // already-rule-1-eligible entry is the CLOSEST PRECEDING dispatch --
+      // not to `entry` merely because `entry` happens to be who is asking.
+      // The tighter `ACA_RETRY_PRECEDENCE_TOLERANCE_MS` window is ONLY a
+      // sibling-ranking refinement: if it identifies any candidate(s), they
+      // outrank siblings that are merely rule-1-eligible through the looser
+      // cross-process drift allowance. If nobody satisfies the tighter
+      // refinement, rule 2 falls back to the normal rule-1-eligible set
+      // rather than re-checking `entry` itself under a stricter window just
+      // because siblings exist. If another sibling is a strictly closer
+      // (later, but still tightly preceding) dispatch than `entry`, `entry`
+      // loses this session to that sibling (handled the next time THAT
+      // sibling is resolved, see `syncAcaPending`). If another sibling ties
+      // `entry` exactly (equally the closest preceding dispatch --
+      // genuinely ambiguous, no time-based way to prefer one over the
+      // other), this session resolves to NEITHER: no fabricated guess, see
+      // the function doc above.
       const others = siblings.filter((e) => e !== entry);
       if (others.length) {
-        // `precedes` is the hard exclusion this rule needs, reviewer-found
-        // regression fix: a candidate (`entry` OR a sibling) whose OWN
-        // `dispatchedAt` is meaningfully after THIS session's `startedAt`
-        // cannot possibly be the dispatch that produced it, no matter how
-        // numerically close its `dispatchedAt` is to `startedAt` -- that
-        // closeness is exactly what let a same-issue retry dispatched only
-        // a few seconds after an earlier one (inside
-        // `ACA_START_TOLERANCE_MS`'s 5-second window, but AFTER a session
-        // that had already started) wrongly outrank the earlier dispatch
-        // for a session that could only ever have been the earlier one's
-        // own job. `ACA_RETRY_PRECEDENCE_TOLERANCE_MS` (see its own doc
-        // comment) is the tight single-process-clock allowance -- not
-        // `ACA_START_TOLERANCE_MS`'s generous cross-process one -- that
-        // decides "meaningfully after" here.
+        const eligible = (e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS;
         const precedes = (e) => (e.dispatchedAt || 0) <= startedAt + ACA_RETRY_PRECEDENCE_TOLERANCE_MS;
-        if (!precedes(entry)) continue; // entry's own dispatch happened after this session already started -- not a plausible owner at all
         const entryDispatchedAt = entry.dispatchedAt || 0;
-        const otherEligible = others.filter(precedes);
-        const maxOtherDispatchedAt = otherEligible.length
-          ? Math.max(...otherEligible.map((e) => e.dispatchedAt || 0)) : -Infinity;
+        const otherEligible = others.filter(eligible);
+        const otherPreceding = otherEligible.filter(precedes);
+        const entryPrecedes = precedes(entry);
+        const competing = (otherPreceding.length || entryPrecedes) ? otherPreceding : otherEligible;
+        if ((otherPreceding.length || entryPrecedes) && !entryPrecedes) continue;
+        const maxOtherDispatchedAt = competing.length
+          ? Math.max(...competing.map((e) => e.dispatchedAt || 0)) : -Infinity;
         if (maxOtherDispatchedAt >= entryDispatchedAt) continue; // a closer-or-tied sibling wins instead
       }
 

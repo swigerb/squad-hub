@@ -385,6 +385,45 @@ check('a closely-spaced same-issue retry does not let the newer dispatch steal t
   assert.strictEqual(matchNewer && matchNewer.key, 'sessionNewer', 'newer must resolve to its OWN session, never re-claim older\'s');
 });
 
+check('an unrelated same-issue sibling does not tighten the candidate entry\'s own eligibility window', () => {
+  const a = { repo: REPO, issue: 42, dispatchedAt: 1_000_000, attached: false };
+  const b = { repo: REPO, issue: 42, dispatchedAt: 1_100_000, attached: false }; // unrelated retry, 100s later
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'sessionA', startedAt: 997_000 }], // A's own job, with 3s of acceptable cross-process drift
+  })];
+
+  const matchWithoutSibling = acaPendingMatch(a, groups, new Set(), [a]);
+  assert.strictEqual(matchWithoutSibling && matchWithoutSibling.key, 'sessionA',
+    'without any sibling, A should match its own session inside ACA_START_TOLERANCE_MS');
+
+  const allPending = [a, b];
+  const matchWithSibling = acaPendingMatch(a, groups, new Set(), allPending);
+  assert.strictEqual(matchWithSibling && matchWithSibling.key, 'sessionA',
+    'adding an unrelated same-issue sibling must not re-check A under the tighter retry-precedence window');
+  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null,
+    'the unrelated retry is far outside its own normal eligibility window for sessionA and must not claim it');
+});
+
+check('three same-issue siblings still prefer the latest tightly preceding eligible dispatch', () => {
+  const a = { repo: REPO, issue: 42, dispatchedAt: 0, attached: false };
+  const b = { repo: REPO, issue: 42, dispatchedAt: 800, attached: false };
+  const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'sessionB', startedAt: 650 }],
+  })];
+  const allPending = [a, b, c];
+
+  assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null,
+    'A loses because B is the later tightly preceding eligible dispatch');
+  const matchB = acaPendingMatch(b, groups, new Set(), allPending);
+  assert.strictEqual(matchB && matchB.key, 'sessionB',
+    'B should win among three siblings: it is the latest dispatch inside the tight precedence window');
+  assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null,
+    'C dispatched too far after sessionB started to outrank B under the tight sibling-precedence refinement');
+});
+
 check('a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)', () => {
   // The genuinely ambiguous case the brief's "leave unknown, do not
   // fabricate" instruction is actually about: two sibling entries whose
