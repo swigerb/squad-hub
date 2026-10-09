@@ -18,6 +18,10 @@ export const state = {
   // Pinned sessions survive a reload; a star that forgets itself is not a
   // favorite, it is a highlight.
   favorites: new Set(),
+  // Custom per-session display names (#170), keyed by `sessionKey`. Both this
+  // and `favorites` are synced through `/api/prefs` (#166) -- see
+  // `loadPrefs`/`pushPrefs` in ws.js.
+  names: {},
   ws: null,
   currentSession: null,
   seenApprovals: new Set(),
@@ -62,6 +66,12 @@ export async function api(path, opts = {}) {
     // fall back to the bare, unhelpful "HTTP 501".
     const e = new Error((body && (body.error || body.reason)) || `HTTP ${res.status}`);
     e.status = res.status;
+    // A route that answers with `reason` instead of `error` -- every
+    // `/api/aca/*` route does this for its 501 "not configured" case (#177)
+    // -- would otherwise lose that text entirely: `e.message` above only
+    // ever looks at `error`. The whole parsed body is kept so a caller that
+    // cares can still read it.
+    e.body = body;
     throw e;
   }
   return body;

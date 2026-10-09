@@ -3,8 +3,9 @@ import {
   $, esc, ago, humanBytes, meter, applyMeterFills, clamp01,
 } from './util.js';
 import {
-  buildView, sessionRow, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses,
+  buildView, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses,
 } from './list.js';
+import { sessionRow } from './sessionrow.js';
 import { isCloudKind } from './cleanup.js';
 import { syncSelectPills } from './dropdowns.js';
 import { maybePromptApproval, syncAppBadge } from './notifications.js';
@@ -13,14 +14,18 @@ import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
 import { openAca } from './aca.js';
 import { acaPendingSectionHtml } from './aca-pending.js';
+import { renderAcaStatus } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
-// card updates or disappears the moment its approval is answered. Neither
-// module reaches into the other at module-evaluation time, so the cycle
-// resolves the same way any other two ES modules that call back into each
-// other do.
-import { renderInboxMenu } from './wiring.js';
+// card updates or disappears the moment its approval is answered -- and now
+// for `closeRowMenu` (#170), since `$('groups').innerHTML` is rebuilt on
+// every refresh and a per-row ⋯ menu left open would otherwise still claim
+// to belong to a row that is no longer the DOM node it was opened against.
+// Neither module reaches into the other at module-evaluation time, so the
+// cycle resolves the same way any other two ES modules that call back into
+// each other do.
+import { renderInboxMenu, closeRowMenu } from './wiring.js';
 
 //
 // Pure, for the same reason the list controls are: ordering and presence
@@ -387,13 +392,14 @@ export function render() {
         <span class="group-meta">${sec.entries.length} session${sec.entries.length === 1 ? '' : 's'}${sec.device ? ` &middot; ${esc(sec.device.platform)}` : ''}</span>
       </div>
       ${sec.entries.length
-    ? `<div class="card">${sec.entries.map((e) => sessionRow(e.session, e.device ? e.device.name : '', { pinned: !!sec.pinned, device: e.device })).join('')}</div>`
+    ? `<div class="card">${sec.entries.map((e) => sessionRow(e.session, e.device ? e.device.name : '', { pinned: !!sec.pinned, device: e.device, names: state.names })).join('')}</div>`
     : ''}
     </div>`).join('');
 
   const pendingAca = (state.acaPending || []).filter((p) => !p.attached);
 
   $('groups').innerHTML = acaPendingSectionHtml(state.acaPending, state.scope) + html;
+  closeRowMenu();
   $('empty').hidden = (counts.sessions || 0) > 0 || (pendingAca.length > 0 && state.scope !== 'local');
 
   // With no device online there is nothing + New could do, so say what to do
@@ -501,6 +507,12 @@ export function render() {
   // from this same overview; keep them in step with every refresh and every
   // WebSocket push, the same as the list above.
   syncDetailHeader();
+
+  // The "Squad on ACA" status card (#180): its own connection fetch runs on
+  // a slower, independent interval (see web/app.js), but its watcher/Ralph
+  // rows read straight off the device roster this render() just painted
+  // from, so they move on every refresh rather than only every few seconds.
+  renderAcaStatus();
 }
 
 /**

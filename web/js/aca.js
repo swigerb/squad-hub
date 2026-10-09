@@ -365,8 +365,13 @@ function updateAcaCmdPreview() {
   $('acaCmdPreview').textContent = cmd || '/squad-aca \u2026';
 }
 
-export function openAca() {
-  const cur = state.currentSession;
+/**
+ * `sessionOverride`, when given, is a `{device, session}` pair to prefill
+ * from instead of `state.currentSession` (#170's row-menu "Run on ACA…",
+ * which can be opened for a row that is not the one currently open in detail).
+ */
+export function openAca(sessionOverride) {
+  const cur = sessionOverride || state.currentSession;
   $('acaErr').hidden = true;
   $('acaRepo').value = (cur && acaSessionRepo(cur.session)) || '';
   $('acaBranch').value = '';
@@ -447,7 +452,10 @@ async function submitAcaDispatch() {
 /** Wire the New ACA job dialog's controls. Called once, from wire(). */
 export function wireAca() {
   startAcaPolling();
-  $('dtAca').onclick = openAca;
+  // Wrapped, not passed directly: `onclick` hands a handler its `MouseEvent`,
+  // which `openAca`'s optional `sessionOverride` parameter (#170) would
+  // otherwise mistake for one.
+  $('dtAca').onclick = () => openAca();
   $('acaCancel').onclick = () => { $('acaScrim').hidden = true; };
   $('acaScrim').onclick = (e) => { if (e.target === $('acaScrim')) $('acaScrim').hidden = true; };
   $('acaIssueModeNew').onchange = () => setAcaIssueMode('new');

@@ -73,7 +73,8 @@ Your devices, with presence (`online`, `stale`, `offline`), platform, device
 kind (`local`, `cloud`, or `aca` -- an Azure Container Apps job execution,
 detected from its device id or its metadata), whether file access is on, when
 each was last seen, and any metadata (`displayName`, `repo`, `issue`,
-`executionName`, `jobName`) a cloud device reported.
+`executionName`, `jobName`, `role`, `approvalMode`, `lastSweepAt`) a cloud
+device reported.
 
 ### `GET /api/sessions`
 
@@ -279,7 +280,7 @@ reach is that they are not named here.
 | Status | Meaning |
 |---|---|
 | `404` | No such device **or** not yours — the difference is not disclosed |
-| `409` | The device is offline |
+| `409` | The device is offline, **or** (`forget` with `sessionId`, see below) reachable but not confirmed to support a narrowed forget |
 | `502` | The device is connected but did not answer |
 
 ```bash
@@ -316,12 +317,45 @@ device rather than to the hub because the hub replaces a device's session list
 from whatever that device reports — anything removed only at the hub would
 return on the next heartbeat.
 
-**`force` and `sessionId` — the offline exception.** The rule above assumes
-the device can be asked. When it cannot (`409`, offline), `force: true` lets
-the hub drop a session that still shows as running anyway, and `sessionId`
-narrows the sweep to that one session instead of every ended one the device
-is carrying. This is what the web app's **Forget stale session** button in
-the detail view calls:
+**`sessionId`** narrows the sweep to that one session instead of every ended
+one the device is carrying — this is what the per-row **Remove** item in the
+list's ⋯ menu calls (#170), for a single ended session:
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/forget" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"..."}'
+```
+
+An **unreachable** device is always safe to narrow this way: the hub handles
+the whole removal itself, off its own stored session list, and never asks the
+offline daemon anything. A **reachable** device forwards the request live to
+its own daemon instead — and an old daemon (anything predating #170) simply
+does not recognize `sessionId` at all, reads none of the options it does not
+know about, and falls back to its only other behavior: forgetting *every*
+ended session it carries. A single-row click would then silently become a
+device-wide wipe.
+
+To prevent that, a reachable device's record must carry an explicit
+`capabilities.narrowedForget: true` — reported by the daemon itself on every
+register/heartbeat, never inferred from its `version` string (a rollout can
+leave an old build running on a device for a long time after a newer one
+ships elsewhere). A `sessionId`-narrowed `forget` sent to a reachable device
+that has not confirmed this capability is refused with `409`:
+
+```json
+{ "error": "device does not support removing a single session; use the bulk tidy action instead", "code": "narrowed-forget-unsupported" }
+```
+
+The web app's row menu checks this up front and, for a device that cannot
+confirm support, asks for explicit consent to the wider device-wide sweep
+instead of silently failing or silently guessing.
+
+**`force` — the offline exception.** The rule above assumes the device can be
+asked. When it cannot (`409`, offline), `force: true` lets the hub drop a
+session that still shows as running anyway. This is what the web app's
+**Forget stale session** button in the detail view calls, combined with
+`sessionId` so only that one stuck card is cleared:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/forget" \
@@ -430,15 +464,33 @@ and a live device simply republishes itself. This destroys the credential: the
 device cannot come back until somebody runs `squad-hub connect` on that machine
 with a new token.
 
-### `GET /api/aca/repos`, `GET /api/aca/dispatches`, `POST /api/aca/dispatch`
+### `GET /api/aca/status`, `GET /api/aca/repos`, `GET /api/aca/dispatches`, `POST /api/aca/dispatch`
 
 The hub dispatching an ACA job directly, as a GitHub App — see
 [aca.md](aca.md#the-third-direction-is-different-on-purpose) for the trust
 boundary and [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
-for why it widens who may start a run. All three answer **501** with a short,
-human `reason` (not `error`) when the App is not configured
-(`SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` unset) — the normal
-state until a hub installs the App.
+for why it widens who may start a run.
+
+**`GET /api/aca/status`** — a cheap discovery route (#233): is the App
+configured at all? Always answers **200**, never a non-2xx status, and
+spends no GitHub API call and no rate-limit budget — it only reads the one
+boolean the other three routes already gate on:
+
+```json
+{ "enabled": false, "reason": "the GitHub App is not configured (SQUAD_HUB_GH_APP_ID / SQUAD_HUB_GH_APP_PRIVATE_KEY are not set)" }
+```
+
+`reason` is `null` when `enabled` is `true`. The web UI's "Squad on ACA"
+status card (`web/js/aca-status.js`, #180) calls this FIRST on every page
+load and only calls `GET /api/aca/repos` / `GET /api/aca/dispatches` when it
+reports `enabled: true` — on an unconfigured hub (the normal state until a
+hub installs the App), neither of those two routes' `501`s is ever requested
+by a normal page load.
+
+The other three answer **501** with a short, human `reason` (not `error`)
+when the App is not configured — the normal state until a hub installs the
+App — but a well-behaved caller checks `GET /api/aca/status` first and
+should not need to see one in practice.
 
 **`GET /api/aca/repos`** — every repository the App can see, and whether each
 has a `squad-dispatch.yml` the hub can dispatch:
@@ -460,6 +512,17 @@ against GitHub Actions for its current run status:
   }]
 }
 ```
+
+`GET /api/aca/repos` and `GET /api/aca/dispatches` share one read-only rate
+limit, per signed-in user (#213): **30 requests/minute**. Each spends the
+App's own shared GitHub API quota — `GET /api/aca/repos` walks every
+installation and every repository on each, and `GET /api/aca/dispatches`
+resolves every tracked dispatch against Actions — so the budget protects
+that one credential from a runaway poll on either route, not just a single
+caller. Over the limit, both answer `429` with `retryAfterMs`, the same
+shape as the dispatch limiter below. The status card (#180, #233) treats
+`429` on either route as "try again on the next poll", not as "not
+connected" or an error banner.
 
 `status.state` is `pending` (no matching run has appeared yet), `queued`,
 `in_progress`, or `completed` (with `conclusion` set), or `error` (a status

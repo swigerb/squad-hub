@@ -31,9 +31,14 @@ shows `local`, `cloud`, or `aca`: an `aca-` device id (see
 [`aca.md`](aca.md)), or cloud metadata naming an ACA execution/job, promotes a
 cloud device to `aca`.
 
-That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`) is
-optional, validated and size-capped in [`src/device-meta.js`](../src/device-meta.js),
-and never trusted as sent.
+That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`,
+`role`, `approvalMode`, `lastSweepAt`) is optional, validated and size-capped
+in [`src/device-meta.js`](../src/device-meta.js), and never trusted as sent.
+`role`, `approvalMode` and `lastSweepAt` (#233) are further restricted to
+closed vocabularies -- the "Squad on ACA" status card (`web/js/aca-status.js`)
+treats them as VERIFIED facts a device chose to report, never guesses one
+from a device's own `name`, and reports plain presence or a bare heartbeat
+when a device sends none of them.
 
 ### Session activity and pull requests
 

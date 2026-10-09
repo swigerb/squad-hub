@@ -66,10 +66,11 @@
 .row:last-child { border-bottom: 0; }
 .row:hover { background: var(--panel-2); }
 .row.attention { background: var(--warn-bg); box-shadow: inset 3px 0 0 var(--warn); }
-.row > .star, .row > .status, .row > .row-main { grid-row: 1; }
+.row > .star, .row > .status, .row > .row-main, .row > .more { grid-row: 1; }
 .row > .star { grid-column: 1; }
 .row > .row-main { grid-column: 2; }
 .row > .status { grid-column: 3; }
+.row > .more { grid-column: 4; }
 .row-main { min-width: 0; }
 .row-title {
   display: flex; align-items: baseline; gap: 8px;
@@ -231,6 +232,20 @@
 .star.on { color: var(--warn); }
 .group.pinned .group-head { color: var(--warn); }
 .pin-mark { color: var(--warn); }
+
+/* ---------- per-row overflow menu (#170) ---------- */
+/* The row's fourth grid column, reserved since #169/#231 for exactly this.
+   Same 22px-line-box reasoning as `.star`: it fills its column edge-to-edge
+   and centers its glyph so the kebab sits on the same first-line middle as
+   the star, the title and the pill beside it. Transparent until hovered or
+   opened, so a row with nothing to say about itself does not read as
+   decorated with a button nobody asked for. */
+.more {
+  background: none; border: 0; cursor: pointer; padding: 0;
+  width: 28px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1; color: var(--faint); border-radius: 6px;
+}
+.more:hover, .more[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
 
 /* ---------- devices panel ---------- */
 .devices .card { padding: 0; }
@@ -421,4 +436,41 @@
 .empty-local .cncmd { text-align: left; }
 .empty-local .empty-actions { flex-wrap: wrap; }
 .empty-local a { color: var(--accent); font-size: 12px; }
+
+/* ---------- Squad on ACA status card (#180) ---------- */
+/* A card under the device rail, matching the mockup's `.acacard`: a small
+   label/value row per fact rather than another device row, since none of
+   this is a device the rail's own list can represent.
+   STATUS PILLS: fully rounded, 22px tall, a tinted fill and a leading dot --
+   never a solid block and never clickable, per the ground rule for every
+   v0.7.0 status pill. Scoped to this card rather than retrofitted onto the
+   session list's own older `.status` (`.sessionbox .status` above), which
+   predates that rule and is a separate, larger change this issue does not
+   make. */
+.acacard { margin-top: 12px; padding: 12px 14px; }
+.acacard h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--text); }
+.acacard .r {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; min-height: 22px; font-size: 12px; padding: 3px 0; color: var(--dim);
+}
+.acacard .r b { color: var(--text); font-weight: 500; text-align: right; }
+.acacard .status {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px;
+  padding: 0 10px 0 8px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  line-height: 1; white-space: nowrap; cursor: default; flex: none;
+  color: var(--dim); background: var(--panel-2); border: 1px solid var(--line);
+}
+.acacard .status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.acacard .status.done { color: var(--ok); background: rgba(62, 207, 142, .12); border-color: rgba(62, 207, 142, .35); }
+.acacard .status.off { color: var(--faint); background: transparent; }
+/* "Checking" is a transient, unresolved state -- the dot pulses, same as the
+   rail's own `.dot.dispatching`, so neither reads as a dead end. */
+.acacard .status.stale { color: var(--faint); font-style: italic; }
+.acacard .status.stale::before { animation: dot-pulse 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .acacard .status.stale::before { animation: none; }
+}
+.acacard-note { margin: 2px 0 6px; font-size: 12px; color: var(--dim); }
+.acacard-link { color: var(--accent); font-size: 12px; text-decoration: none; }
+.acacard-link:hover { text-decoration: underline; }
 

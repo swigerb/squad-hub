@@ -152,6 +152,34 @@ const MUTATIONS = [
     mustFail: 'oversize metadata object is refused outright',
   },
   {
+    // #233: `role` is a closed vocabulary the "Squad on ACA" status card
+    // trusts as a VERIFIED identity claim -- an arbitrary string must be
+    // dropped the same as a malformed one, not displayed as the device's
+    // self-reported role.
+    name: 'an unrecognized role value is accepted instead of dropped',
+    file: 'src/device-meta.js',
+    find: `    if (field === 'role' && !ROLE_VALUES.includes(v)) continue;`,
+    replace: `    if (!process.env.MUTANT && field === 'role' && !ROLE_VALUES.includes(v)) continue; // MUTATION`,
+    mustFail: 'an unrecognized role value is dropped, not displayed verbatim',
+  },
+  {
+    // #233: "watch-only" is said ONLY for a VERIFIED `approvalMode: 'auto'`
+    // -- accepting any string here would let an unrecognized value be
+    // silently treated as verified by a caller who merely checks truthiness.
+    name: 'an unrecognized approvalMode value is accepted instead of dropped',
+    file: 'src/device-meta.js',
+    find: `    if (field === 'approvalMode' && !APPROVAL_MODE_VALUES.includes(v)) continue;`,
+    replace: `    if (!process.env.MUTANT && field === 'approvalMode' && !APPROVAL_MODE_VALUES.includes(v)) continue; // MUTATION`,
+    mustFail: 'an unrecognized approvalMode value is dropped, never treated as auto',
+  },
+  {
+    name: 'an unparseable lastSweepAt string is accepted instead of dropped',
+    file: 'src/device-meta.js',
+    find: `    if (field === 'lastSweepAt' && !Number.isFinite(Date.parse(v))) continue;`,
+    replace: `    if (!process.env.MUTANT && field === 'lastSweepAt' && !Number.isFinite(Date.parse(v))) continue; // MUTATION`,
+    mustFail: 'an unparseable lastSweepAt is dropped rather than displayed as a bogus date',
+  },
+  {
     // This mutation degrades the ERROR CODE but does not breach isolation: the
     // command still cannot reach another user's device, because connection
     // routing is also partitioned by subject. Defence in depth, recorded as
@@ -893,7 +921,7 @@ const MUTATIONS = [
     // dangling "squad" pill and an empty count in front of every session that
     // was never a Squad project.
     name: 'the web row renders an empty Squad slot for a non-Squad session',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const squadBits = sq ? \`      <div class="squadline">`,
     replace: `  const squadBits = (sq || process.env.MUTANT) ? \`      <div class="squadline"> <span class="MUTATION"></span>`,
     mustFail: 'a session in a non-Squad workspace shows no member and no empty slot on the web row',
@@ -905,7 +933,7 @@ const MUTATIONS = [
     // reintroduces exactly the bug the issue reported: an invented label
     // where the row should stay silent.
     name: 'the web row invents a name for the coordinator or an unknown active member',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const activeName = am && am.name ? am.name : '';`,
     replace: `  const activeName = process.env.MUTANT ? (am ? (am.name || 'Squad') : '') : (am && am.name ? am.name : ''); // MUTATION`,
     mustFail: 'the web row shows no member chip when the coordinator is acting',
@@ -1493,10 +1521,27 @@ const MUTATIONS = [
      * rather than by mutations of their own.
      */
     name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `esc(agentInfo.text)`,
     replace: `(process.env.MUTANT ? agentInfo.text : esc(agentInfo.text))`,
     mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
+  },
+  {
+    // #170: a custom name is as attacker-influenceable as any other field
+    // here -- it is round-tripped through `/api/prefs`, set by whoever is
+    // signed in, same trust level as an agent/model/branch value.
+    name: 'sessionRow renders a custom name unescaped (stored XSS)',
+    file: 'web/js/sessionrow.js',
+    find: `>\${esc(title)}</b>`,
+    replace: `>\${process.env.MUTANT ? title : esc(title)}</b>`,
+    mustFail: 'a malicious custom name renders as inert text, never a live tag',
+  },
+  {
+    name: 'the renamed-row tooltip carries the raw prompt unescaped (stored XSS)',
+    file: 'web/js/sessionrow.js',
+    find: `title="\${esc(s.prompt || s.id || '')}"`,
+    replace: `title="\${process.env.MUTANT ? (s.prompt || s.id || '') : esc(s.prompt || s.id || '')}"`,
+    mustFail: 'a malicious raw prompt in the renamed tooltip renders as inert text',
   },
   {
     name: 'agent-select stops validating agent/model names, letting an HTML-shaped .squad-hub.json value through',
@@ -1820,14 +1865,14 @@ const MUTATIONS = [
     // The classic stored-XSS shape, on the newest field to reach the DOM. git
     // will happily let you name a branch `<img src=x onerror=...>`.
     name: 'the branch is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${esc(git.branch)}</span>\` : '',`,
     replace: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
     mustFail: 'a malicious BRANCH name renders as inert escaped text',
   },
   {
     name: 'the repository is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
   const repoText = esc(repoRaw);`,
     replace: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
@@ -1836,7 +1881,7 @@ const MUTATIONS = [
   },
   {
     name: 'the activity line is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `          <span class="activity">\${esc(activityLine(s, device))}</span>`,
     replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s, device) : esc(activityLine(s, device))}</span>`,
     mustFail: 'a malicious ACTIVITY line renders as inert escaped text',
@@ -1984,7 +2029,7 @@ const MUTATIONS = [
   {
     // Decoration must never take the session list down.
     name: 'a session outside a checkout loses its location entirely',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);`,
     replace: `  const repoRaw = process.env.MUTANT ? (git && git.repository) : (git && git.repository ? git.repository : (sq ? sq.project : s.cwd)); // MUTATION`,
     mustFail: 'a session outside a checkout still shows its cwd',
@@ -2116,7 +2161,7 @@ const MUTATIONS = [
   },
   {
     name: 'a session key is interpolated into the star attribute unescaped',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     // Single-quoted on purpose: the anchor itself contains `${...}`, which a
     // template literal here would try to interpolate.
     find: 'data-star="${esc(sessionKey(s))}"',
@@ -2297,9 +2342,9 @@ const MUTATIONS = [
     // regression (a missing property, not an inverted condition).
     name: 'devices.css stops pinning .star/.status/.row-main to the same grid row, so the title drifts onto a second implicit row',
     file: 'web/css/devices.css',
-    find: `.row > .star, .row > .status, .row > .row-main { grid-row: 1; }\n`,
+    find: `.row > .star, .row > .status, .row > .row-main, .row > .more { grid-row: 1; }\n`,
     replace: '',
-    mustFail: 'devices.css pins .star, .status and .row-main to the same grid row (#169/#231)',
+    mustFail: 'devices.css pins .star, .status, .row-main and .more to the same grid row (#169/#231, extended by #170)',
   },
 
   // -------------------------------------------------------------------------
@@ -2522,6 +2567,251 @@ const MUTATIONS = [
     find: `    const mismatched = opts.hubVersion && d.version !== opts.hubVersion;`,
     replace: `    const mismatched = !process.env.MUTANT && opts.hubVersion && d.version !== opts.hubVersion; // MUTATION`,
     mustFail: "deviceDetailHtml warns when the device squad-hub version differs from the hub's own",
+  },
+
+  // -------------------------------------------------------------------------
+  // #180: Squad on ACA status card
+  // -------------------------------------------------------------------------
+  {
+    name: 'findAcaRoleDevice ignores devices outside kind: "aca", matching by name alone',
+    file: 'web/js/aca-status.js',
+    find: `  const pool = (devices || []).filter((d) => d && d.kind === 'aca');`,
+    replace: `  const pool = process.env.MUTANT ? (devices || []).filter(Boolean) : (devices || []).filter((d) => d && d.kind === 'aca'); // MUTATION`,
+    mustFail: 'findWatcherDevice ignores a non-ACA device even if its name matches the convention',
+  },
+  {
+    name: 'findAcaRoleDevice stops preferring an explicit, verified meta.role over the name fallback',
+    file: 'web/js/aca-status.js',
+    find: `  const metaMatches = pool.filter((d) => d.meta && d.meta.role === role);
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);`,
+    replace: `  const metaMatches = process.env.MUTANT ? [] : pool.filter((d) => d.meta && d.meta.role === role); // MUTATION
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);`,
+    mustFail: 'findWatcherDevice prefers an explicit, sanitized meta.role over any name match',
+  },
+  {
+    // #233's third review: a device that verifies itself as the OTHER role
+    // must never also be picked up by the opposite role's name fallback.
+    name: 'findAcaRoleDevice stops excluding a device that explicitly claims the OTHER role from the name fallback',
+    file: 'web/js/aca-status.js',
+    find: `    if (d.meta && d.meta.role && d.meta.role !== role) return false;`,
+    replace: `    if (!process.env.MUTANT && d.meta && d.meta.role && d.meta.role !== role) return false; // MUTATION`,
+    mustFail: 'a device explicitly self-reporting meta.role "watch" is never ALSO picked up as Ralph by name coincidence',
+  },
+  {
+    // The bug #233 exists to fix: a real production device name
+    // ("...squad-aca-watch--0000016-...") is never matched by a plain
+    // substring test for the word "watcher".
+    name: 'matchesAcaJobConvention reverts to a loose substring match, which misses the real production device name',
+    file: 'web/js/aca-status.js',
+    find: `function matchesAcaJobConvention(tokens, role) {
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `function matchesAcaJobConvention(tokens, role) {
+  if (process.env.MUTANT) return tokens.some((t) => t.includes(role === 'watch' ? 'watch' : 'ralph') || t === role); // MUTATION
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    mustFail: 'findWatcherDevice never matches an arbitrary implementation session containing "watcher"/"ralph" as a substring',
+  },
+  {
+    name: 'matchesAcaJobConvention stops requiring the role token immediately after "squad","aca", matching an arbitrary implementation session',
+    file: 'web/js/aca-status.js',
+    find: `  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;`,
+    replace: `  if ((process.env.MUTANT ? tokens[i + 2] !== role : tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role)) return false; // MUTATION`,
+    mustFail: 'findWatcherDevice requires the literal "squad","aca" tokens immediately before the role word, not merely the role word somewhere',
+  },
+  {
+    // #233's third review, finding 3: the token run must be ANCHORED to the
+    // real revision-suffix shape, not merely present anywhere in the name --
+    // otherwise a slug like "squad-aca-watch-extra" (the role run anchored to
+    // the START of the name, satisfying that anchor, but followed by the
+    // plain word "extra", never a revision number and never the end of the
+    // name) would still masquerade as the watcher.
+    name: 'matchesAcaJobConvention stops anchoring the role token to the end of the name or a numeric revision suffix',
+    file: 'web/js/aca-status.js',
+    find: `  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `  const next = tokens[i + 3];
+  return process.env.MUTANT || next === undefined || /^[0-9]+$/.test(next); // MUTATION
+}`,
+    mustFail: 'findWatcherDevice still requires the role token itself to be followed by nothing or a numeric revision, even at a known START position',
+  },
+  {
+    // A FOURTH Scout review (#233): anchoring only what the run is FOLLOWED
+    // by (a number or the end) still let the run be found at ANY token
+    // position -- an adversarial implementation-session slug could embed the
+    // real "squad","aca",role run in its middle and tack on a fabricated,
+    // revision-shaped numeric suffix to satisfy that check too. The real
+    // convention only ever has the run starting the whole name, or starting
+    // immediately after the real Azure-generated "aca","ca" prefix; these
+    // are the only two START positions now considered.
+    name: 'matchesAcaJobConvention stops anchoring the run to a known START position, scanning every token position for it again',
+    file: 'web/js/aca-status.js',
+    find: `  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `  if (process.env.MUTANT) { // MUTATION: the start-position anchor is gone, scanning resumes at every index
+    for (let j = 0; j <= tokens.length - 3; j += 1) {
+      if (tokens[j] === 'squad' && tokens[j + 1] === 'aca' && tokens[j + 2] === role) {
+        const n = tokens[j + 3];
+        if (n === undefined || /^[0-9]+$/.test(n)) return true;
+      }
+    }
+    return false;
+  }
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    mustFail: 'findWatcherDevice rejects an embedded canonical run padded with a fabricated revision-shaped suffix, anchored to known job identity only (#233 fourth review)',
+  },
+  {
+    // #233's third review, finding 2: the FIRST roster match is not
+    // necessarily the CURRENT one -- an old offline revision can precede a
+    // new online one in the array.
+    name: 'pickFreshestAcaDevice stops ranking by presence, returning the first candidate regardless of whether it is actually live',
+    file: 'web/js/aca-status.js',
+    find: `    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (curRank !== bestRank) return curRank > bestRank ? cur : best;`,
+    replace: `    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (!process.env.MUTANT && curRank !== bestRank) return curRank > bestRank ? cur : best; // MUTATION`,
+    mustFail: 'findWatcherDevice prefers presence over mere recency: an online-but-older record beats an offline-but-more-recently-seen one',
+  },
+  {
+    name: 'pickFreshestAcaDevice stops preferring the more recently seen device when presence ties',
+    file: 'web/js/aca-status.js',
+    find: `    return (cur.lastSeen || 0) > (best.lastSeen || 0) ? cur : best;`,
+    replace: `    return (process.env.MUTANT ? false : (cur.lastSeen || 0) > (best.lastSeen || 0)) ? cur : best; // MUTATION`,
+    mustFail: 'findWatcherDevice prefers the more recently seen record when both candidates are equally online',
+  },
+  {
+    name: 'the watcher row reports every presence as Online',
+    file: 'web/js/aca-status.js',
+    find: `  const presence = d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline';`,
+    replace: `  const presence = process.env.MUTANT ? 'Online' : d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline'; // MUTATION`,
+    mustFail: 'acaWatcherLine reports an offline watcher\'s presence correctly alongside a verified approvalMode',
+  },
+  {
+    // #233: "watch-only" must be invented from nothing -- it has to come
+    // from a VERIFIED, sanitized approvalMode of exactly "auto", never from
+    // presence or the device's role alone.
+    name: 'acaWatcherLine claims "watch-only" for every watcher found, regardless of approvalMode',
+    file: 'web/js/aca-status.js',
+    find: `  const mode = d.meta && d.meta.approvalMode;
+  return mode === 'auto' ? \`\${presence} \\u00b7 watch-only\` : presence;`,
+    replace: `  const mode = d.meta && d.meta.approvalMode;
+  return process.env.MUTANT ? \`\${presence} \\u00b7 watch-only\` : (mode === 'auto' ? \`\${presence} \\u00b7 watch-only\` : presence); // MUTATION`,
+    mustFail: 'acaWatcherLine reports plain presence with no approvalMode metadata at all (today\'s real record)',
+  },
+  {
+    name: 'acaWatcherLine treats any approvalMode string (not just the verified "auto") as watch-only',
+    file: 'web/js/aca-status.js',
+    find: `  return mode === 'auto' ? \`\${presence} \\u00b7 watch-only\` : presence;`,
+    replace: `  return (process.env.MUTANT ? mode : mode === 'auto') ? \`\${presence} \\u00b7 watch-only\` : presence; // MUTATION`,
+    mustFail: 'acaWatcherLine reports plain presence when approvalMode is explicitly "manual"',
+  },
+  {
+    // #233: a bare heartbeat (`lastSeen`) is not proof Ralph's triage sweep
+    // ever ran -- only a confirmed `meta.lastSweepAt` is.
+    name: 'acaRalphLine mislabels a bare heartbeat as a confirmed "Last sweep"',
+    file: 'web/js/aca-status.js',
+    find: `  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;
+  if (Number.isFinite(sweptAt)) return \`Last sweep \${ago(sweptAt)}\`;
+  if (!d.lastSeen) return 'Last seen unknown \\u00b7 no sweep confirmed';
+  return \`Last seen \${ago(d.lastSeen)} \\u00b7 no sweep confirmed\`;`,
+    replace: `  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;
+  if (Number.isFinite(sweptAt)) return \`Last sweep \${ago(sweptAt)}\`;
+  if (!d.lastSeen) return process.env.MUTANT ? 'Last sweep unknown ago' : 'Last seen unknown \\u00b7 no sweep confirmed'; // MUTATION
+  return process.env.MUTANT ? \`Last sweep \${ago(d.lastSeen)}\` : \`Last seen \${ago(d.lastSeen)} \\u00b7 no sweep confirmed\`; // MUTATION`,
+    mustFail: 'acaRalphLine reports "Last seen <ago> · no sweep confirmed" for a bare heartbeat (no lastSweepAt)',
+  },
+  {
+    name: 'acaRalphLine stops parsing a confirmed meta.lastSweepAt, falling back to the heartbeat instead',
+    file: 'web/js/aca-status.js',
+    find: `  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;`,
+    replace: `  const sweptAt = process.env.MUTANT ? NaN : (d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN); // MUTATION`,
+    mustFail: 'acaRalphLine reports "Last sweep <ago>" ONLY from a confirmed meta.lastSweepAt',
+  },
+  {
+    name: 'a non-success conclusion is reported as plain "completed", hiding the failure',
+    file: 'web/js/aca-status.js',
+    find: `    case 'completed': return s.conclusion && s.conclusion !== 'success' ? \`completed (\${s.conclusion})\` : 'completed';`,
+    replace: `    case 'completed': return (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) ? \`completed (\${s.conclusion})\` : 'completed'; // MUTATION`,
+    mustFail: 'acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"',
+  },
+  {
+    name: 'an error state drops its own reason text',
+    file: 'web/js/aca-status.js',
+    find: `    case 'error': return s.reason ? \`error: \${s.reason}\` : 'error';`,
+    replace: `    case 'error': return (s.reason && !process.env.MUTANT) ? \`error: \${s.reason}\` : 'error'; // MUTATION`,
+    mustFail: 'acaDispatchStatusLabel labels an error state with its reason',
+  },
+  {
+    // Security-sensitive: a dispatch's owner/repo is the same kind of
+    // untrusted metadata device names already are (src/device-meta.js), and
+    // an error's `reason` can carry upstream GitHub API text verbatim.
+    name: 'the last-dispatch line stops escaping owner/repo before rendering them',
+    file: 'web/js/aca-status.js',
+    find: `  return \`\${esc(d.owner)}/\${esc(d.repo)} \\u00b7 \${label}\`;`,
+    replace: `  return process.env.MUTANT ? \`\${d.owner}/\${d.repo} \\u00b7 \${label}\` : \`\${esc(d.owner)}/\${esc(d.repo)} \\u00b7 \${label}\`; // MUTATION`,
+    mustFail: 'acaLastDispatchLine escapes owner/repo, since device and dispatch metadata is untrusted',
+  },
+  {
+    name: 'the last-dispatch line stops escaping the status label (and its untrusted error reason)',
+    file: 'web/js/aca-status.js',
+    find: `  const label = esc(acaDispatchStatusLabel(d.status));`,
+    replace: `  const label = process.env.MUTANT ? acaDispatchStatusLabel(d.status) : esc(acaDispatchStatusLabel(d.status)); // MUTATION`,
+    mustFail: 'acaLastDispatchLine escapes an untrusted error reason carried in the status label',
+  },
+  {
+    name: 'a not-connected phase with no reason given claims the App IS configured',
+    file: 'web/js/aca-status.js',
+    find: `    return { phase: ACA_PHASE.NOT_CONNECTED, reason: reason || 'the GitHub App is not configured' };`,
+    replace: `    return { phase: ACA_PHASE.NOT_CONNECTED, reason: (process.env.MUTANT ? reason : reason || 'the GitHub App is not configured') }; // MUTATION`,
+    mustFail: 'acaStatusModel keeps NOT_CONNECTED and falls back to a default reason',
+  },
+  {
+    name: 'an absent/falsy phase stops defaulting the card to Checking',
+    file: 'web/js/aca-status.js',
+    find: `  if (phase === ACA_PHASE.CHECKING || !phase) return { phase: ACA_PHASE.CHECKING };`,
+    replace: `  if ((phase === ACA_PHASE.CHECKING || !phase) && !process.env.MUTANT) return { phase: ACA_PHASE.CHECKING }; // MUTATION`,
+    mustFail: 'acaStatusModel defaults to CHECKING with no phase given',
+  },
+  {
+    // The Not-connected note renders a reason string that can originate from
+    // `e.body.reason` -- an upstream error message, not UI-authored copy --
+    // so the HTML template itself must not trust it either.
+    name: 'the Not-connected card note stops escaping the reason text',
+    file: 'web/js/aca-status.js',
+    find: `        <p class="acacard-note">\${esc(model.reason)}.</p>`,
+    replace: `        <p class="acacard-note">\${process.env.MUTANT ? model.reason : esc(model.reason)}.</p> <!-- MUTATION -->`,
+    mustFail: 'acaStatusCardHtml escapes an untrusted reason string in the Not-connected note',
+  },
+  {
+    name: 'the Connected card drops its Retry link',
+    file: 'web/js/aca-status.js',
+    find: `        <a class="acacard-link" href="#" data-action="aca-retry">Retry</a> &middot;`,
+    replace: `        <a class="acacard-link" href="#"\${process.env.MUTANT ? '' : ' data-action="aca-retry"'}>Retry</a> &middot; <!-- MUTATION -->`,
+    mustFail: 'acaStatusCardHtml renders Connected with watcher/Ralph/last-dispatch rows and Retry/Learn more',
   },
 
   // -------------------------------------------------------------------------
@@ -2929,6 +3219,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
+  '/js/sessionrow.js',
+  '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
   '/js/cleanup.js',
@@ -2940,9 +3232,11 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',
+  '/js/prefs-sync.js',
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-match.js',
+  '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
@@ -2988,7 +3282,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v12';`,
+    find: `const CACHE = 'squad-hub-shell-v15';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3067,14 +3361,14 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the row hides an approval that expired unanswered',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `        \${outcome ? (outcome.kind === 'expired'`,
     replace: `        \${(outcome && !process.env.MUTANT) ? (outcome.kind === 'expired'`,
     mustFail: 'an expired approval is shown, not silently dropped',
   },
   {
     name: 'an expired approval title is interpolated without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
     replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
@@ -3240,9 +3534,23 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // name into a device log.
     name: 'forget takes its actor from the request body',
     file: 'src/service/hub-service.js',
-    find: `          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }`,
-    replace: `          : op === 'forget' ? { ...body, forgottenBy: (body && body.forgottenBy) || me.name || me.key } // MUTATION`,
+    find: `          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: me.name || me.key,`,
+    replace: `          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: (body && body.forgottenBy) || me.name || me.key, // MUTATION`,
     mustFail: 'a forged actor in the body does not reach the device',
+  },
+  {
+    // Without this, a reachable device's "Remove" for one row would forget
+    // every ended session it has, the same as the bulk Tidy sweep -- quietly
+    // widening a single click's blast radius.
+    name: "forget's sessionId is dropped on the reachable path (#170)",
+    file: 'src/service/hub-service.js',
+    find: `            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,`,
+    replace: `            sessionId: undefined, // MUTATION`,
+    mustFail: 'sessionId narrows the sweep to one row, even on a live (reachable) device (#170)',
   },
   {
     // A tidy-up that reached a device the caller does not own would let one
@@ -3293,7 +3601,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the answerer name is interpolated without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `— by \${esc(outcome.answeredBy)}</span>`,
     replace: `— by \${outcome.answeredBy}</span>`,
     mustFail: 'a malicious answerer name renders as inert escaped text',
@@ -4624,6 +4932,21 @@ if ($health.accessStore -ne 'durable') {`,
         return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
     mustFail: 'GET /api/aca/dispatches is rate-limited per signed-in user',
   },
+  {
+    // #233: GET /api/aca/status must always answer 200, with enabled:false
+    // when the App is not configured -- a flipped condition here would
+    // report enabled:true on an unconfigured hub, sending the web UI on to
+    // call GET /api/aca/repos, which would 501.
+    name: 'GET /api/aca/status reports enabled backwards',
+    file: 'src/service/hub-service.js',
+    find: `    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: this.githubApp.enabled, reason: this.githubApp.disabledReason() });
+    }`,
+    replace: `    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: process.env.MUTANT ? !this.githubApp.enabled : this.githubApp.enabled, reason: this.githubApp.disabledReason() }); // MUTATION
+    }`,
+    mustFail: 'GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured',
+  },
 
   {
     name: 'report-pr picks the earliest local session instead of the most recent',
@@ -5201,7 +5524,7 @@ if ($health.accessStore -ne 'durable') {`,
     // Without a title, a clipped device/repository/branch has nowhere to be
     // read in full -- the whole point of this change.
     name: 'the session row meta fields carry no title tooltip',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const meta = [
     deviceText ? \`<span class="meta-field" title="\${deviceText}">\${deviceText}</span>\` : '',
     repoText ? \`<span class="meta-field" title="\${repoText}">\${repoText}</span>\` : '',
@@ -6395,6 +6718,175 @@ if ($health.accessStore -ne 'durable') {`,
 
     <fieldset class="field cnopts">`,
     mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
+  },
+  {
+    // PR #236 review, finding 1: a failed initial prefs GET must retry as
+    // another GET. Routing it through the local-edit retry path instead means
+    // a fresh client, the moment it reconnects, PUTs its own empty defaults
+    // over whatever the hub actually had saved.
+    name: 'a failed initial prefs pull retries as a destructive PUT again (#236 finding 1)',
+    file: 'web/js/prefs-sync.js',
+    find: `  } catch {
+    schedulePullRetry();
+    return;
+  }`,
+    replace: `  } catch {
+    scheduleRetry(); // MUTATION
+    return;
+  }`,
+    mustFail: 'a failed initial GET schedules another GET, not a PUT of fresh-client defaults',
+  },
+  {
+    // PR #236 review, finding 2: a first-ever migration must adopt the
+    // server's saved view before its own first PUT, or that PUT ships the
+    // client's just-booted defaults and clobbers the view the hub had saved.
+    name: 'first-sync migration skips applying the saved server view before its own push (#236 finding 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (!urlHasView && server.view && !pendingViewChanged) {`,
+    replace: `  if (false) { // MUTATION (never reconciles the server's saved view before its own push)`,
+    mustFail: 'first sync ever applies the server’s saved view, and its own PUT uploads that view back, not the client default',
+  },
+  {
+    // PR #236 review, finding 3: a pin/rename/view change that lands while a
+    // pull is still in flight must survive that pull's own, now-stale,
+    // resolution -- the pull started reading before the edit happened.
+    name: 'a dirty GET/PUT race loses the local edit again (#236 finding 3)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const k of pendingPinAdds) favorites.add(k);`,
+    replace: `    // MUTATION (drops any pin added during the hydration gap)`,
+    mustFail: 'a pin added while the pull is still in flight survives that pull’s resolution',
+  },
+  {
+    // Scout's re-review of 1313f74 ("remaining prefs outbox ordering"),
+    // schedule 1a: a pin explicitly UNfavorited before hydration is a
+    // tombstone -- without it, the server's older (nonempty) copy of that
+    // pin resurrects it the instant hydration's merge runs.
+    name: 'a pin removed before hydration is resurrected by the server\u2019s older copy again (outbox-order 1a)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const k of pendingPinRemovals) favorites.delete(k);`,
+    replace: `    // MUTATION (ignores the removal tombstone)`,
+    mustFail: 'a pin REMOVED before hydration is not resurrected by the server’s older (nonempty) copy of it',
+  },
+  {
+    // Same schedule, for a cleared name instead of a removed pin.
+    name: 'a name cleared before hydration is resurrected by the server\u2019s older copy again (outbox-order 1b)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const k of pendingNameClears) delete names[k];`,
+    replace: `    // MUTATION (ignores the clear tombstone)`,
+    mustFail: 'a name CLEARED before hydration is not resurrected by the server’s older (nonempty) copy of it',
+  },
+  {
+    // Schedule 1c: a view edit that raced hydration must still beat the
+    // server's own (older) saved view -- without the `pendingViewChanged`
+    // guard, the server's stale view silently wins the race.
+    name: 'a view edit racing hydration is overwritten by the server\u2019s saved view again (outbox-order 1c)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (!urlHasView && server.view && !pendingViewChanged) {`,
+    replace: `  if (!urlHasView && server.view) { // MUTATION (ignores a view edit that raced the pull)`,
+    mustFail: 'a view edit before hydration beats the server’s (nonempty, older) saved view',
+  },
+  {
+    // Schedule 2: two edits in quick succession must never produce two
+    // concurrent PUTs -- without the in-flight guard, a second edit starts
+    // its own competing write instead of being coalesced into one follow-up.
+    name: 'a second edit starts a competing, concurrent PUT again instead of coalescing (outbox-order 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `function queuePush() {
+  if (writeInFlight) { writePending = true; return; }
+  writeInFlight = true;
+  pushPrefsNow();
+}`,
+    replace: `function queuePush() {
+  writeInFlight = true; // MUTATION (dropped the in-flight guard)
+  pushPrefsNow();
+}`,
+    mustFail: 'two edits in quick succession are serialized -- never two concurrent PUTs -- and the later edit is never lost',
+  },
+  {
+    // Schedule 3: a later edit that arrives while an EARLIER write is
+    // failing/retrying must go out immediately, not wait out that earlier
+    // write's own 15-second retry timer.
+    name: 'a later edit waits out an earlier failed write\u2019s retry timer again instead of going out immediately (outbox-order 3)',
+    file: 'web/js/prefs-sync.js',
+    find: `    if (writePending) { writePending = false; queuePush(); } // don't wait out the timer if there is already more to send`,
+    replace: `    // MUTATION (later edit now waits for the 15s retry timer instead)`,
+    mustFail: 'an edit that lands WHILE an earlier write is still failing is coalesced into an immediate retry, not dropped until the 15s timer',
+  },
+  {
+    // Scout's cache-versus-edits review of 476d2d1: once migrated, the
+    // server is the authoritative baseline -- spreading this client's own
+    // (possibly stale) cached pins back on top resurrects a pin unpinned on
+    // another device, even though THIS client made no edit at all.
+    name: 'a migrated client resurrects a remote unpin via its own stale local cache again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    state.favorites = favorites;`,
+    replace: `    state.favorites = new Set([...favorites, ...state.favorites]); // MUTATION (resurrects this client's stale cached pins)`,
+    mustFail: 'an already-migrated client with no local edits adopts a remote UNPIN, not its own stale cached pin',
+  },
+  {
+    // Same bug, for names: a plain spread of the stale local cache on top of
+    // the server's names masks a remote rename or clear.
+    name: 'a migrated client masks a remote rename/clear via its own stale local cache again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    state.names = names;`,
+    replace: `    state.names = { ...names, ...state.names }; // MUTATION (resurrects this client's stale cached names)`,
+    mustFail: 'an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name',
+  },
+  {
+    // An explicit NAME SET during the hydration gap must still reach the
+    // merged state once the migrated-authoritative-baseline branch is the
+    // one actually taken (NOT the legacy first-sync union branch, which the
+    // old "outbox-order" anchor pointed at before this review).
+    name: 'an explicit name set during the hydration gap is dropped against a nonempty remote record again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const [k, v] of pendingNameSets) names[k] = v;`,
+    replace: `    // MUTATION (drops any name explicitly set during the hydration gap)`,
+    mustFail: 'an explicit name SET during the hydration gap merges with a nonempty remote record, without resurrecting a stale unrelated name',
+  },
+  {
+    // PR #236 review, finding 4: `copyToClipboard` never throws -- it
+    // settles true/false instead -- so the only way to report a real
+    // failure truthfully is to read that return value. Toasting success
+    // unconditionally silently turns off the whole point of the check.
+    name: 'copylink toasts "Link copied" unconditionally again, even on a real clipboard failure (#236 finding 4)',
+    file: 'web/js/rowmenu.js',
+    find: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`);
+    toast(copied ? 'Link copied' : 'Could not copy the link');`,
+    replace: `    await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`); // MUTATION
+    toast('Link copied');`,
+    mustFail: 'copylink toasts an honest failure, never "Link copied", when the clipboard write really fails (PR #236 finding 4)',
+  },
+  {
+    // PR #236 review, finding 5: a daemon that never claims
+    // `capabilities.narrowedForget` must be refused a narrowed single-row
+    // forget outright -- old 0.6.0 daemons ignore `sessionId` and would
+    // bulk-forget every ended session on the device, not just the one row.
+    name: 'a reachable device without narrowedForget is forwarded a narrowed forget again (#236 finding 5)',
+    file: 'src/service/hub-service.js',
+    find: `&& !(device.capabilities && device.capabilities.narrowedForget === true)) {`,
+    replace: `&& false /* MUTATION */) {`,
+    mustFail: 'an old daemon (no capabilities reported) refuses a narrowed single-row forget with 409',
+  },
+  {
+    // PR #236 review, finding 5 (daemon side): the capability must be
+    // reported on every register/heartbeat, or the hub never has anything
+    // to gate on and the 409 refusal above can never fire for real daemons.
+    name: 'the daemon stops reporting narrowedForget, so the hub never knows a current daemon supports it (#236 finding 5)',
+    file: 'src/daemon.js',
+    find: `capabilities: { narrowedForget: true },`,
+    replace: `capabilities: undefined, // MUTATION`,
+    mustFail: 'a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)',
+  },
+  {
+    // PR #236 review, finding 5 (store side): deliberately NO fallback to
+    // the previous value, unlike version/cliVersion -- a daemon that stops
+    // claiming the capability (a downgrade/rollback) must lose it on its
+    // very next heartbeat, not keep benefiting from a stale claim.
+    name: 'a dropped narrowedForget capability falls back to the stale previous value instead of being revoked (#236 finding 5)',
+    file: 'src/service/store.js',
+    find: `capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,`,
+    replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
+    mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
   },
 ];
 

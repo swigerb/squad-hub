@@ -48,12 +48,14 @@ import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
-  registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
+  registerServiceWorker, refresh, loadView, saveView, syncControls,
   applyTheme, nextTheme, setRailCollapsed,
 } from './js/ws.js';
+import { loadPrefs, renameSession, toggleFavorite } from './js/prefs-sync.js';
 import {
   acaRepoName, acaSessionRepo, acaTitle, acaNewIssueLink, acaComment, acaIssueLink, openAca,
 } from './js/aca.js';
+import { refreshAcaStatus, ACA_POLL_MS } from './js/aca-status.js';
 import { peopleVisible, peopleRows, peopleSummary, openPeople } from './js/access.js';
 import { isInstalled, installSteps, showInstallHelp } from './js/install.js';
 import { urlBase64ToUint8Array, pushSupported } from './js/push.js';
@@ -61,6 +63,12 @@ import { openNew, openConnect } from './js/connect.js';
 import { wireFilters } from './js/filters.js';
 import { wire, showBanner } from './js/wiring.js';
 import { showSignIn } from './js/signin.js';
+// Not called directly from this file -- see the header comment above for
+// why app.js's own import list is also the module manifest
+// test/helpers/web-source.js reads to concatenate every pure-logic file for
+// the DOM-free unit tests (#170).
+import { rowMenuItems, rowMenuHtml } from './js/rowmenu.js';
+import { sessionRow, displayTitle } from './js/sessionrow.js';
 
 'use strict';
 
@@ -122,8 +130,7 @@ function runShortcut(id) {
     // A hub split across instances loses devices intermittently. Say so where
     // the user will notice it, not only in a log.
     if (state.me.warning) showBanner(state.me.warning);
-  } catch (e) {
-    // A token that no longer works should return you to sign-in, not to a dead
+  } catch (e) {    // A token that no longer works should return you to sign-in, not to a dead
     // end. Expired GitHub tokens are ordinary, not exceptional.
     if (e.status === 401 || e.status === 403) {
       localStorage.removeItem('squad-hub-token');
@@ -141,6 +148,11 @@ function runShortcut(id) {
     document.body.innerHTML = `<div class="empty"><h3>Could not sign in</h3><p>${esc(e.message)}</p></div>`;
     return undefined;
   }
+  // Best-effort and never awaited for the page's first paint: pins and names
+  // already on screen came from localStorage an instant ago, so a slow or
+  // failed `/api/prefs` fetch delays nothing a person can see, it just
+  // catches up (or retries) once it resolves (#170).
+  loadPrefs();
   await refresh();
 
   // A Teams card links here to answer an approval. Opening the hub's default
@@ -174,5 +186,14 @@ function runShortcut(id) {
 
   connect();
   setInterval(refresh, 15000);
+
+  // The "Squad on ACA" status card (#180): its own fetch, on its own slower
+  // interval -- independent of the 15s overview poll above, since it spends
+  // the GitHub App's own separately-budgeted read quota (`ACA_READ_RATE_
+  // LIMIT`, `src/service/hub-service.js`), not the hub's own in-memory
+  // store. Started right away rather than waiting a full interval, so the
+  // card never sits on "Checking…" longer than it has to.
+  refreshAcaStatus();
+  setInterval(refreshAcaStatus, ACA_POLL_MS);
   return undefined;
 }());

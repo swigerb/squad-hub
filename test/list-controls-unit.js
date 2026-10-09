@@ -38,7 +38,7 @@ module.exports = { esc, buildView, matchesFilters, withinWindow, sortSessions, s
   TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows, SCOPES, matchesScope, scopeCounts,
   activeFilterCount, viewStateToParams, paramsToViewState,
   sessionActivityAt, sessionName, isActionNeeded, presentStatuses, squadProject, NO_SQUAD_PROJECT,
-  matchesSidebarText, sidebarEntries, sidebarRow };`)(mod, mod.exports);
+  matchesSidebarText, sidebarEntries, sidebarRow, displayTitle, rowMenuItems, rowMenuHtml };`)(mod, mod.exports);
 
 const {
   esc, buildView, matchesFilters, withinWindow, sortSessions, sessionRepo,
@@ -46,7 +46,7 @@ const {
   TIME_WINDOWS, SORTS, GROUPINGS, sessionRow, skeletonRows, SCOPES, matchesScope, scopeCounts,
   activeFilterCount, viewStateToParams, paramsToViewState,
   sessionActivityAt, sessionName, isActionNeeded, presentStatuses, squadProject, NO_SQUAD_PROJECT,
-  matchesSidebarText, sidebarEntries, sidebarRow,
+  matchesSidebarText, sidebarEntries, sidebarRow, displayTitle, rowMenuItems, rowMenuHtml,
 } = mod.exports;
 
 const NOW = 1_700_000_000_000;
@@ -764,19 +764,166 @@ check('paramsToViewState ignores a stale or hand-edited value rather than applyi
   assert.deepStrictEqual(state, {}, 'an option that no longer exists must never reach the UI as if it were real');
 });
 
-check('devices.css pins .star, .status and .row-main to the same grid row (#169/#231)', () => {
-  // Markup order is .star, .status, .row-main (columns 1, 3, 2 -- see the
-  // comment above `.row` in devices.css). Without an explicit `grid-row`,
-  // sparse auto-placement walks that source order, and once `.status`
-  // claims column 3 the cursor is past column 2, so `.row-main` (column 2)
-  // is pushed onto a second implicit row -- the star/pill and the title
-  // drift 32px apart instead of sharing one 22px line. This is a plain
-  // text assertion, not a layout measurement: it only proves the pinning
-  // rule is still present in the stylesheet, not that a browser renders it
-  // correctly (see the real-Chromium check in browser-e2e-unit.js for that).
+check('devices.css pins .star, .status, .row-main and .more to the same grid row (#169/#231, extended by #170)', () => {
+  // Markup order is .star, .status, .row-main, .more (columns 1, 3, 2, 4 --
+  // see the comment above `.row` in devices.css). Without an explicit
+  // `grid-row`, sparse auto-placement walks that source order, and once
+  // `.status` claims column 3 the cursor is past column 2, so `.row-main`
+  // (column 2) is pushed onto a second implicit row -- the star/pill and the
+  // title drift 32px apart instead of sharing one 22px line. The ⋯ button
+  // (#170) is appended last in markup and in column 4, so it is equally at
+  // risk of the same drift and is pinned the same way. This is a plain text
+  // assertion, not a layout measurement: it only proves the pinning rule is
+  // still present in the stylesheet, not that a browser renders it correctly
+  // (see the real-Chromium check in browser-e2e-unit.js for that).
   const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'css', 'devices.css'), 'utf8');
-  const pinned = /\.row\s*>\s*\.star\s*,\s*\.row\s*>\s*\.status\s*,\s*\.row\s*>\s*\.row-main\s*\{\s*grid-row:\s*1;?\s*\}/.test(css);
-  assert.ok(pinned, '.row > .star, .row > .status, .row > .row-main { grid-row: 1; } is missing from devices.css -- the star/pill/title can drift onto separate grid rows again');
+  const pinned = /\.row\s*>\s*\.star\s*,\s*\.row\s*>\s*\.status\s*,\s*\.row\s*>\s*\.row-main\s*,\s*\.row\s*>\s*\.more\s*\{\s*grid-row:\s*1;?\s*\}/.test(css);
+  assert.ok(pinned, '.row > .star, .row > .status, .row > .row-main, .row > .more { grid-row: 1; } is missing from devices.css -- the star/pill/title/more button can drift onto separate grid rows again');
+});
+
+// ---------------------------------------------------------------------------
+// The per-row ⋯ menu: display names and menu contents (#170)
+// ---------------------------------------------------------------------------
+
+check('displayTitle falls back to the prompt when there is no custom name', () => {
+  assert.strictEqual(displayTitle(sess({ key: 'k1', prompt: 'do the thing' }), {}), 'do the thing');
+});
+
+check('displayTitle prefers a custom name, keyed by session key', () => {
+  const s = sess({ key: 'k2', prompt: 'do the thing' });
+  assert.strictEqual(displayTitle(s, { k2: 'release branch' }), 'release branch');
+});
+
+check('displayTitle ignores a blank or whitespace-only custom name', () => {
+  const s = sess({ key: 'k3', prompt: 'do the thing' });
+  assert.strictEqual(displayTitle(s, { k3: '   ' }), 'do the thing');
+});
+
+check('displayTitle falls back to the id when there is no prompt either', () => {
+  const s = sess({ key: 'k4', prompt: '', id: 'raw-id' });
+  assert.strictEqual(displayTitle(s, {}), 'raw-id');
+});
+
+check('a renamed row shows the custom name, with the raw prompt as its tooltip', () => {
+  const html = sessionRow(sess({ key: 'k5', prompt: 'do the thing' }), 'Dev', { names: { k5: 'release branch' } });
+  assert.match(html, /<b title="do the thing">release branch<\/b>/,
+    'the renamed title should carry a title attribute with the original prompt');
+});
+
+check('an un-renamed row carries no title on its title element', () => {
+  const html = sessionRow(sess({ key: 'k6', prompt: 'do the thing' }), 'Dev', {});
+  assert.match(html, /<b>do the thing<\/b>/);
+});
+
+check('a malicious custom name renders as inert text, never a live tag', () => {
+  const xss = '<img src=x onerror=alert(1)>';
+  const html = sessionRow(sess({ key: 'k6b', prompt: 'do the thing' }), 'Dev', { names: { k6b: xss } });
+  assert.ok(!html.includes(xss), 'the raw payload must not appear unescaped in the row');
+  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'), 'the escaped form of the custom name should still be there');
+});
+
+check('a malicious raw prompt in the renamed tooltip renders as inert text', () => {
+  const xss = '<img src=x onerror=alert(1)>';
+  const html = sessionRow(sess({ key: 'k6c', prompt: xss }), 'Dev', { names: { k6c: 'release branch' } });
+  assert.ok(!html.includes(`title="${xss}"`), 'the raw payload must not appear unescaped in the tooltip');
+  assert.ok(html.includes('title="&lt;img src=x onerror=alert(1)&gt;"'));
+});
+
+check('every row carries a ⋯ button keyed to its own session', () => {
+  const html = sessionRow(sess({ key: 'k7' }), 'Dev', {});
+  assert.match(html, /<button class="more" data-more="k7"/);
+});
+
+check('rowMenuItems always offers Open, Pin/Unpin, Rename… and Copy link', () => {
+  const items = rowMenuItems(sess({ status: 'ended' }), null, {});
+  const actions = items.filter((it) => !it.sep).map((it) => it.action);
+  assert.ok(actions.includes('open'));
+  assert.ok(actions.includes('pin'));
+  assert.ok(actions.includes('rename'));
+  assert.ok(actions.includes('copylink'));
+});
+
+check('rowMenuItems labels Pin as Unpin, with a filled star, once pinned', () => {
+  const items = rowMenuItems(sess(), null, { pinned: true });
+  const pin = items.find((it) => it.action === 'pin');
+  assert.strictEqual(pin.label, 'Unpin');
+  assert.strictEqual(pin.glyph, '★');
+});
+
+check('rowMenuItems offers Stop, never Remove, for a live session', () => {
+  const items = rowMenuItems(sess({ status: 'active' }), { presence: 'online' }, {});
+  const actions = items.filter((it) => !it.sep).map((it) => it.action);
+  assert.ok(actions.includes('stop'));
+  assert.ok(!actions.includes('remove'));
+});
+
+check('rowMenuItems offers Remove, never Stop, for an ended session', () => {
+  const items = rowMenuItems(sess({ status: 'ended' }), { presence: 'online' }, {});
+  const actions = items.filter((it) => !it.sep).map((it) => it.action);
+  assert.ok(actions.includes('remove'));
+  assert.ok(!actions.includes('stop'));
+});
+
+check('rowMenuItems disables Stop, with a reason, when the device is unreachable', () => {
+  const items = rowMenuItems(sess({ status: 'active' }), { presence: 'offline' }, {});
+  const stop = items.find((it) => it.action === 'stop');
+  assert.strictEqual(stop.disabled, true);
+  assert.ok(stop.title, 'a disabled Stop should still say WHY, not just sit greyed out');
+});
+
+check('rowMenuItems offers Run on ACA… only when the session has a GitHub checkout', () => {
+  const withRepo = rowMenuItems(sess({ git: { repository: 'acme/widgets', host: 'github.com' } }), null, {});
+  const withoutRepo = rowMenuItems(sess({ git: undefined, cwd: '' }), null, {});
+  assert.ok(withRepo.some((it) => it.action === 'aca'));
+  assert.ok(!withoutRepo.some((it) => it.action === 'aca'));
+});
+
+check('rowMenuItems offers Open pull request only when pullRequest is set', () => {
+  const withPr = rowMenuItems(sess({ pullRequest: { url: 'https://github.com/acme/widgets/pull/9', number: 9 } }), null, {});
+  const withoutPr = rowMenuItems(sess({ pullRequest: null }), null, {});
+  const pr = withPr.find((it) => it.action === 'pr');
+  assert.ok(pr);
+  assert.strictEqual(pr.href, 'https://github.com/acme/widgets/pull/9');
+  assert.ok(!withoutPr.some((it) => it.action === 'pr'));
+});
+
+check('rowMenuItems offers Open in Aspire only when aspireUrl is set', () => {
+  const withAspire = rowMenuItems(sess({ aspireUrl: 'https://aspire.example/dash' }), null, {});
+  const withoutAspire = rowMenuItems(sess({}), null, {});
+  assert.ok(withAspire.some((it) => it.action === 'aspire'));
+  assert.ok(!withoutAspire.some((it) => it.action === 'aspire'));
+});
+
+check('rowMenuItems only separates non-empty clusters with a divider', () => {
+  // No links cluster at all (no ACA repo, no PR, no Aspire URL): exactly one
+  // divider, between identity and lifecycle, never two in a row.
+  const items = rowMenuItems(sess({ status: 'active', git: undefined, cwd: '', pullRequest: null }), null, {});
+  const seps = items.filter((it) => it.sep).length;
+  assert.strictEqual(seps, 1, `expected exactly one divider, got ${seps}`);
+  assert.ok(!items[0].sep, 'the menu should never open on a divider');
+  assert.ok(!items[items.length - 1].sep, 'the menu should never end on a divider');
+});
+
+check('rowMenuHtml renders a button per item, with the glyph and label, and a divider as its own element', () => {
+  const html = rowMenuHtml([
+    { action: 'open', label: 'Open', glyph: '↗' },
+    { sep: true },
+    { action: 'stop', label: 'Stop session', glyph: '■', danger: true },
+  ]);
+  assert.match(html, /<button type="button" data-row-action="open"[^>]*>↗ Open<\/button>/);
+  assert.match(html, /<div class="menu-sep"><\/div>/);
+  assert.match(html, /<button type="button" data-row-action="stop" class="danger"/);
+});
+
+check('rowMenuHtml marks a disabled item disabled, with its title as the reason', () => {
+  const html = rowMenuHtml([{ action: 'stop', label: 'Stop session', glyph: '■', disabled: true, title: 'reason here' }]);
+  assert.match(html, /disabled/);
+  assert.match(html, /title="reason here"/);
+});
+
+check('a malicious pull-request URL cannot break out of the row menu\'s data-href attribute', () => {
+  const html = rowMenuHtml(rowMenuItems(sess({ pullRequest: { url: '"><img src=x onerror=alert(1)>', number: 1 } }), null, {}));
+  assert.ok(!html.includes('<img'), 'an attacker-controlled pullRequest.url escaped its attribute and became live markup');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

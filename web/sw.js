@@ -45,7 +45,16 @@
 // (the new /js/aca-match.js module, split out of aca-pending.js for size),
 // and bounded "Check again" polling exclusion once a pending row's outcome
 // is terminally resolved.
-const CACHE = 'squad-hub-shell-v12';
+// v13/v14: #180/#233's Squad on ACA status card (/js/aca-status.js), merged
+// separately on main.
+// v15: merges v12 (this branch) and v14 (main) -- #178's dispatch-attempt
+// proof fix (no more timing-proximity guess among ambiguous same-issue
+// siblings; see aca-match.js) and the bounded-offline-wait fix (resolving a
+// pending row's terminal state from already-known local evidence BEFORE any
+// network call, so an outage or a dropped dispatch record can never extend
+// how long this hub keeps polling; see aca-pending.js), landing alongside
+// #180/#233's status card.
+const CACHE = 'squad-hub-shell-v15';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -66,6 +75,8 @@ const SHELL = [
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
+  '/js/sessionrow.js',
+  '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
   '/js/cleanup.js',
@@ -77,9 +88,11 @@ const SHELL = [
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',
+  '/js/prefs-sync.js',
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-match.js',
+  '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',

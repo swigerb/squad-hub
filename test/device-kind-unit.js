@@ -255,6 +255,41 @@ check('empty metadata input returns null', () => {
 });
 
 // ---------------------------------------------------------------------------
+// role / approvalMode / lastSweepAt (#233): closed vocabularies, not free
+// text -- the "Squad on ACA" status card trusts these as VERIFIED facts, so
+// an unrecognized value must be dropped the same as a malformed one.
+// ---------------------------------------------------------------------------
+
+check('role is accepted only from its closed vocabulary ("watch"/"ralph")', () => {
+  assert.deepStrictEqual(sanitizeDeviceMeta({ role: 'watch' }), { role: 'watch' });
+  assert.deepStrictEqual(sanitizeDeviceMeta({ role: 'ralph' }), { role: 'ralph' });
+});
+
+check('an unrecognized role value is dropped, not displayed verbatim', () => {
+  assert.strictEqual(sanitizeDeviceMeta({ role: 'watcher' }), null);
+  assert.strictEqual(sanitizeDeviceMeta({ role: 'admin' }), null);
+});
+
+check('approvalMode is accepted only from its closed vocabulary ("auto"/"manual")', () => {
+  assert.deepStrictEqual(sanitizeDeviceMeta({ approvalMode: 'auto' }), { approvalMode: 'auto' });
+  assert.deepStrictEqual(sanitizeDeviceMeta({ approvalMode: 'manual' }), { approvalMode: 'manual' });
+});
+
+check('an unrecognized approvalMode value is dropped, never treated as auto', () => {
+  assert.strictEqual(sanitizeDeviceMeta({ approvalMode: 'automatic' }), null);
+  assert.strictEqual(sanitizeDeviceMeta({ approvalMode: '' }), null);
+});
+
+check('lastSweepAt is accepted only when it parses to a real instant', () => {
+  const iso = new Date('2026-01-01T00:00:00.000Z').toISOString();
+  assert.deepStrictEqual(sanitizeDeviceMeta({ lastSweepAt: iso }), { lastSweepAt: iso });
+});
+
+check('an unparseable lastSweepAt is dropped rather than displayed as a bogus date', () => {
+  assert.strictEqual(sanitizeDeviceMeta({ lastSweepAt: 'not a date' }), null);
+});
+
+// ---------------------------------------------------------------------------
 // Store end-to-end
 // ---------------------------------------------------------------------------
 

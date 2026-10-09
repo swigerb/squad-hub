@@ -3,8 +3,11 @@ import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
 import { syncAcaPending } from './aca-pending.js';
 import { renderTranscript } from './transcript.js';
-import { $ } from './util.js';
+import { $, VIEW_PARAM_KEYS } from './util.js';
 import { showSignIn } from './signin.js';
+import {
+  FAVORITES_KEY, loadNames, saveFavorites, pushPrefs,
+} from './prefs-sync.js';
 
 // ---------------------------------------------------------------------------
 // Live connection
@@ -274,7 +277,6 @@ export async function refresh() {
 }
 
 const VIEW_KEY = 'squad-hub-view';
-const FAVORITES_KEY = 'squad-hub-favorites';
 
 /** The view, as the shape both the URL and localStorage agree on (#168). */
 function currentViewParams() {
@@ -282,9 +284,6 @@ function currentViewParams() {
     scope: state.scope, filters: state.filters, groupBy: state.groupBy, sortBy: state.sortBy,
   });
 }
-
-/** Every key `viewStateToParams` can ever produce, for a clean rewrite. */
-const VIEW_PARAM_KEYS = ['scope', 'q', 'status', 'device', 'repo', 'org', 'window', 'view', 'sort'];
 
 /**
  * Keep the address bar in step with the view (#168): scope, every filter,
@@ -339,6 +338,7 @@ export function loadView() {
     const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]');
     if (Array.isArray(favs)) state.favorites = new Set(favs.filter((k) => typeof k === 'string'));
   } catch { /* same */ }
+  loadNames();
   try { state.railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch { /* same */ }
   state.theme = loadTheme();
   // Whatever was just restored -- from the URL or from localStorage -- is
@@ -351,19 +351,7 @@ export function saveView() {
   try { localStorage.setItem(VIEW_KEY, JSON.stringify(currentViewParams())); }
   catch { /* private browsing, quota, whatever -- never fatal */ }
   syncUrlFromState();
-}
-
-function saveFavorites() {
-  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify([...state.favorites])); }
-  catch { /* never fatal */ }
-}
-
-export function toggleFavorite(key) {
-  if (!key) return;
-  if (state.favorites.has(key)) state.favorites.delete(key);
-  else state.favorites.add(key);
-  saveFavorites();
-  render();
+  pushPrefs('view');
 }
 
 /** Fill the controls from the restored state, so the UI matches what it does. */

@@ -405,6 +405,13 @@
         <span class="availpill" id="deviceAvailable" hidden></span>
       </div>
       <div id="deviceList"></div>
+      <!--
+        The "Squad on ACA" status card (#180): whether this hub's GitHub App
+        is connected (#177), the issue watcher and Ralph devices, and the
+        last dispatch. Its own module (aca-status.js) owns everything inside
+        it; this is only the mount point, same as #deviceList above it.
+      -->
+      <div id="acaStatusCard"></div>
     </aside>
   </div>
 </main>
@@ -800,6 +807,16 @@
 </div>
 
 <div class="scrim" id="installHelp" hidden></div>
+
+<!--
+  The per-row ⋯ menu (#170): ONE shared, floating instance reused by every
+  row, positioned with JS against whichever `.more` button opened it, the
+  same shape the mockup itself uses (`#rowMenu`, repositioned per click)
+  rather than one copy per row. A copy per row would also survive a refresh
+  in a stale, already-open state, since `#groups` is fully rebuilt on every
+  `render()` -- this one is closed explicitly instead, by the same rebuild.
+-->
+<nav class="menu" id="rowMenu" hidden></nav>
 
 <div class="toast" id="toast" hidden></div>
 

@@ -842,6 +842,23 @@ class HubService {
     // normal state until the real App exists; the web UI's existing
     // "Review on GitHub..." / "Copy command" fallback (docs/security.md)
     // needs no changes to keep working in that case.
+
+    // `GET /api/aca/status` -- a cheap, always-200 discovery route (#233, a
+    // fix-up from #180's review): whether the App is configured at all, with
+    // its `disabledReason` when it is not. It spends no GitHub API call --
+    // `this.githubApp.enabled` is a boolean set once at construction (see
+    // github-app.js) -- so it needs no rate limit of its own and, crucially,
+    // never answers a non-2xx status. A normal page load on a hub with no
+    // GitHub App configured (every hub, until #177's App exists) would
+    // otherwise have the "Squad on ACA" status card call `GET /api/aca/repos`
+    // on mount and log a 501 as a browser console error on every load --
+    // exactly the failure this route exists to avoid. The web UI calls this
+    // FIRST and only calls `GET /api/aca/repos` / `GET /api/aca/dispatches`
+    // when it reports `enabled: true` (`web/js/aca-status.js`).
+    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: this.githubApp.enabled, reason: this.githubApp.disabledReason() });
+    }
+
     if (p === '/api/aca/repos' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
       // Rate-limited per signed-in user (#213): this walks every
@@ -1347,6 +1364,30 @@ class HubService {
         const deviceRemoved = left === 0 ? this.store.removeDevice(me.key, deviceId) : false;
         return send(200, { ...r, count: r.removed, offline: true, deviceRemoved });
       }
+      /**
+       * A single-row "Remove" (#170) narrows a REACHABLE device's `/forget`
+       * to one `sessionId`, forwarded live over the websocket to the daemon
+       * actually running it (`command()` below). That is only safe if this
+       * particular daemon is confirmed to understand `sessionId` at all --
+       * an older one simply does not recognize the field, reads none of the
+       * options it does not know about, and falls back to its only other
+       * behavior: forget every ended session it is carrying. That is a wide,
+       * silent bulk-forget hiding behind what looked like a single-row click,
+       * and the production ACA worker still runs squad-hub 0.6.0 (pre-#170)
+       * on devices for a while after this ships -- so this is refused
+       * outright, on an explicit capability the daemon itself reports
+       * (`store.js`'s `sanitizeCapabilities`), never guessed from a version
+       * string. The unreachable-device branch above needs no equivalent
+       * check: that path never reaches a daemon at all, so an old one's
+       * behavior around `sessionId` is irrelevant to it.
+       */
+      if (op === 'forget' && body && typeof body.sessionId === 'string' && body.sessionId
+        && !(device.capabilities && device.capabilities.narrowedForget === true)) {
+        return send(409, {
+          error: 'device does not support removing a single session; use the bulk tidy action instead',
+          code: 'narrowed-forget-unsupported',
+        });
+      }
       try {
         // Who is doing this travels with the command. An approval answered on
         // one surface has to show as answered on every other, and "resolved"
@@ -1386,7 +1427,16 @@ class HubService {
           }
         }
         const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
-          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }
+          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: me.name || me.key,
+            // Narrows the sweep to one row (#170's per-row "Remove") the same
+            // way it already does on the offline path (see `forget` above,
+            // `store.js`'s `forgetDeviceSessions`) -- a live device honors it
+            // too now, so the row menu's "Remove (ended only)" never has to
+            // guess whether its device happens to be reachable.
+            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,
+          }
             // Narrowed here as well as at the device. The daemon rebuilds this
             // op field by field anyway, so a smuggled `cwd` could never reach
             // the resolver -- but a hub that relays whatever it was handed is
