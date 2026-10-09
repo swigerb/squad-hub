@@ -390,14 +390,24 @@ function checkEscapeFocusWiring() {
   const name = 'run-tests.js still wires in the escape-focus child suite and invocation';
   check(name, () => {
     try {
-      const suiteStart = source.indexOf('async function suiteEscapeFocus() {');
+      // This function's own body quotes the same literals it searches for
+      // (so the check can describe what it looks for in its failure
+      // messages). Start every indexOf() AFTER this function's own
+      // definition, or the first match is always this self-reference, not
+      // the real wiring further down the file -- which would make the
+      // check pass or fail for the wrong reason no matter what run-tests.js
+      // actually does below.
+      const searchFrom = source.indexOf(
+        '// ---------------------------------------------------------------------------\n// CRITERION 2');
+      assert.ok(searchFrom !== -1, 'could not find a stable marker after checkEscapeFocusWiring() to search from');
+      const suiteStart = source.indexOf('async function suiteEscapeFocus() {', searchFrom);
       assert.ok(suiteStart !== -1, 'suiteEscapeFocus() is missing');
       const suiteEnd = source.indexOf('/**\n * Approval depth', suiteStart);
       assert.ok(suiteEnd !== -1, 'suiteEscapeFocus() no longer sits before suiteApprovalDepth()');
       const suiteSource = source.slice(suiteStart, suiteEnd);
       assert.ok(suiteSource.includes("runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');"),
         'run-tests.js no longer registers test/escape-focus-unit.js');
-      const orderStart = source.indexOf('  await suiteModuleLink();');
+      const orderStart = source.indexOf('  await suiteModuleLink();', searchFrom);
       assert.ok(orderStart !== -1, 'suiteModuleLink() is missing from the sequential run order');
       const orderEnd = source.indexOf('  await suiteApprovalDepth();', orderStart);
       assert.ok(orderEnd !== -1, 'suiteApprovalDepth() is missing from the sequential run order');
