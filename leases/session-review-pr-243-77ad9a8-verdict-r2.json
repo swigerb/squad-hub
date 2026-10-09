@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-review-pr-243-77ad9a8-verdict-r2",
+  "sessionId": "review-pr-243-77ad9a8-verdict-r2",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T16:37:37.500Z",
+  "lastHeartbeatAt": "2026-10-09T16:37:37.500Z",
+  "updatedAt": "2026-10-09T16:37:37.500Z",
+  "terminalReason": null,
+  "executionRef": null
+}
