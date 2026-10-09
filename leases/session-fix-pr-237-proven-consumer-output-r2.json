@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-237-proven-consumer-output-r2",
+  "sessionId": "fix-pr-237-proven-consumer-output-r2",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T23:43:26.157Z",
+  "lastHeartbeatAt": "2026-10-09T23:43:26.157Z",
+  "updatedAt": "2026-10-09T23:43:26.157Z",
+  "terminalReason": null,
+  "executionRef": null
+}
