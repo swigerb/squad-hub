@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-242-production-workflow-docs",
+  "sessionId": "hub-242-production-workflow-docs",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T03:48:05.291Z",
+  "lastHeartbeatAt": "2026-10-09T03:48:05.291Z",
+  "updatedAt": "2026-10-09T03:48:05.291Z",
+  "terminalReason": null,
+  "executionRef": null
+}
