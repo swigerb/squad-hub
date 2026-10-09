@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-237-attempt-proof-browser-gate",
+  "sessionId": "fix-pr-237-attempt-proof-browser-gate",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T07:41:29.266Z",
+  "lastHeartbeatAt": "2026-10-09T07:41:29.266Z",
+  "updatedAt": "2026-10-09T07:41:29.266Z",
+  "terminalReason": null,
+  "executionRef": null
+}
