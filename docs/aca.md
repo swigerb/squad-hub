@@ -264,10 +264,82 @@ can start a job, not a detail.
 Configured with `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` (see
 [commands.md](commands.md#the-service)); unset, the three `/api/aca/*` routes
 answer `501` and every repository works exactly as the first two directions
-above describe, which is the only state possible today — the App itself does
-not exist yet (swigerb/squad-on-aca#135 is the matching work on the workflow
-side, open and not yet implemented, which is why only `issue` and `prompt` are
-sent until it lands).
+above describe. Which inputs actually get sent for a given target repository
+still depends on that repository's own `squad-dispatch.yml` declaring them
+(the 422 refusal two paragraphs below) — `squad-on-aca`'s own copy of the
+workflow declares all seven as of its reviewed `main`, and this repository's
+own `.github/workflows/squad-dispatch.yml` (issue #242) declares all seven
+too, so a Hub App installed on either sends every field a caller supplies. A
+target repository that has not yet adopted a `squad-dispatch.yml` with the
+full input set still only accepts `issue`/`prompt`, and the hub's own 422
+check refuses the rest rather than guessing.
+
+### Setting up the dedicated dispatch App
+
+This is **setup guidance**, not a record that it has been done — registering
+the App, installing it, and configuring the identifiers below is a real,
+separate administrative action (tracked under #238/#239), never performed by
+this project's code at startup or from any workflow.
+
+**Register a dedicated, private App — never repurpose the existing worker
+control-plane App.** That control-plane App (the one squad-on-aca's own
+worker uses to push branches and open pull requests) already holds
+Contents/PR write and deliberately has no Actions permission at all; widening
+it to also call `workflow_dispatch` would hand a single credential two
+different trust levels it was never reviewed for. The dispatch App below is
+a second, independent App registration.
+
+| Permission | Level | Why |
+|---|---|---|
+| Actions | Read and write | `workflow_dispatch` itself, and reading a run's status back for `/api/aca/dispatches` |
+| Issues | Read and write | Creating the issue a `newIssue` dispatch targets, and reading/listing issues for `/api/aca/repos`-adjacent UI |
+| Contents | Read only | Reading `squad-dispatch.yml` off the target repository's default branch, to check declared inputs before dispatching (never writes — the App never pushes anything) |
+| Metadata | Read only | Mandatory on every GitHub App; lets the hub enumerate installed repositories |
+
+No other permission is needed, and none should be granted — in particular,
+**no** Contents write, **no** Pull requests permission, and **no**
+organization-level permission beyond what "selected repositories" already
+implies.
+
+1. **Create the App as private** ("Only on this account"), not public — see
+   below for why this matters.
+2. **Install it on selected repositories only** — explicitly choose which
+   repositories, never "All repositories". Every repository selected becomes
+   one where "any signed-in hub user can dispatch" (above) applies the moment
+   the App is configured on this hub.
+3. **Confirm `squad-dispatch.yml` is on each selected repository's default
+   branch** before expecting a dispatch to succeed there — `workflow_dispatch`
+   can only ever run a workflow file that already exists on that branch; there
+   is no way to supply the workflow content as part of the API call. The ref
+   the workflow actually runs from is always that repository's own current
+   default branch (never a caller-supplied `baseBranch` — see below).
+4. **Set `SQUAD_HUB_GH_APP_ID` and `SQUAD_HUB_GH_APP_PRIVATE_KEY`** on the hub
+   deployment (see [commands.md](commands.md#the-service)) — held only in
+   memory, never written to disk, never returned by any hub endpoint.
+5. **Confirm the OIDC/RBAC/lease prerequisites on the TARGET repository
+   itself are already in place** before relying on a dispatch to actually
+   start compute — the App above only gets GitHub as far as a successful
+   `workflow_dispatch` call; what that workflow run does once it starts is a
+   separate, target-repository-scoped concern: `AZURE_CLIENT_ID` /
+   `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` repository secrets bound to an
+   OIDC federation scoped to that repository and its default branch, an
+   Azure identity holding job-resource-scoped `Container Apps Jobs Operator`
+   (never broader), and `AZURE_RESOURCE_GROUP` / `ACA_SESSION_JOB_NAME`
+   repository variables naming the existing session job. None of these are
+   created, widened, or inferred by the App above, by `squad-dispatch.yml`,
+   or by this hub — a repository missing any of them fails the workflow's
+   own steps (Azure login, or the ACA REST calls), not a hub-side check.
+
+**Refusal and troubleshooting**, what each actually means:
+
+| Symptom | Meaning | Where it is decided |
+|---|---|---|
+| `POST /api/aca/dispatch` → `501` | `SQUAD_HUB_GH_APP_ID`/`SQUAD_HUB_GH_APP_PRIVATE_KEY` are unset on this hub | The hub itself, before any GitHub call |
+| `422` naming a field | That field is not one the target repository's own `squad-dispatch.yml` declares on its default branch | The hub, reading the workflow file, before `newIssue` or the dispatch call |
+| A repository is absent from `/api/aca/repos` | The App is not installed on it at all | GitHub's own installation list; this hub does not grant installation |
+| A repository is listed with `hasDispatchWorkflow: false` | The App is installed there, but it has no `squad-dispatch.yml` on its default branch yet | `listReposWithDispatchStatus()`, reading the repository's own default branch — not an installation fact |
+| Azure login step fails inside the run | The target repository's own OIDC federation/secrets are missing or scoped to the wrong repository/branch | `azure/login@v2`, inside the dispatched workflow run — not this hub |
+| The workflow's own lease-claim step reports `stand-down` | Another dispatch (Ralph, or a concurrent manual run) already holds the lease for that issue | The shared lease store, by design — this is a normal outcome, not a failure |
 
 **When registering the App on GitHub, set it to private ("Only on this
 account"), not public.** A public App can be installed by anyone who finds
@@ -384,13 +456,16 @@ The contract runs one way: **Squad Hub owns the device protocol and documents it
 here; squad-on-aca depends on it.** Never the reverse.
 
 The GitHub App dispatch path above is a THIRD, separate piece of scope, and is
-hub-side only: it calls `squad-dispatch.yml`'s `workflow_dispatch` trigger,
-which the workflow already supports for `issue`/`prompt` today. The additional
-inputs it can send (`model`, `base_branch`, `publish_pr`, `reviewer`,
-`watch_only`) are forward-compatible with swigerb/squad-on-aca#135, which is
-open and not yet implemented on the workflow side — sending them now does not
-block on that landing, because the hub reads the workflow's own declared
-inputs first and only ever sends the ones it actually declares, refusing the
-rest with a clear `422` rather than letting GitHub reject the whole call.
+hub-side only: it calls `squad-dispatch.yml`'s `workflow_dispatch` trigger.
+The additional inputs it can send (`model`, `base_branch`, `publish_pr`,
+`reviewer`, `watch_only`) landed on squad-on-aca's own workflow with
+swigerb/squad-on-aca#135 and are declared by this repository's own
+`.github/workflows/squad-dispatch.yml` too (issue #242) — sending them is
+still conditional, not assumed: the hub reads each target repository's own
+declared `workflow_dispatch` inputs first and only ever sends the ones it
+actually declares, refusing the rest with a clear `422` rather than letting
+GitHub reject the whole call. A target repository running an older
+`squad-dispatch.yml` that only declares `issue`/`prompt` is unaffected: it
+simply never receives the newer fields.
 
 

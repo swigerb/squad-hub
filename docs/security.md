@@ -524,6 +524,392 @@ pair once, out of band, and set both variables before deploying.
 "push is not configured on this hub" instead of offering a toggle that can
 never do anything.
 
+### Generating and deploying a key pair (#242)
+
+`src/service/web-push.js`'s `generateVapidKeys()` is the ONE reviewed
+generator — a fixed-width P-256 key pair (see the function's own comment for
+why the raw scalar must be left-zero-padded back to exactly 32 bytes, not
+left short the ~1-in-256 time Node's `getPrivateKey()` would otherwise return
+one). It is never called at hub startup and never exposed as a CLI command:
+unlike a device token's signing secret, a VAPID pair is meant to be stable
+across restarts, so nothing in this project generates or rotates one for you
+implicitly. An operator runs it deliberately, exactly once per deployment (or
+explicitly once per rotation — see below), typically with:
+
+**Do not print the private key.** It is tempting to sanity-check a freshly
+generated pair by piping `generateVapidKeys()` straight into `console.log`,
+but stdout is not memory-only: most terminals scroll output back into a log
+file, most CI runners capture every step's stdout into a durable job log, and
+most SSH/tmux sessions record scrollback by default. Printing the pair, even
+once, even "just to look at it", hands the private half to whatever captures
+that terminal's output next. The procedure below never does this: the pair
+is generated, checked, and written to the settings API entirely in this one
+process's memory, with nothing ever passed to `console.log`, `console.error`,
+a file, or a command-line argument.
+
+**A clipboard is not memory-only either, and the reviewed procedure no
+longer uses one.** An earlier revision of this doc recommended handing the
+private half to `pbcopy`/`xclip`/`clip`, then pasting it into the protected
+setting. That still leaks: a system clipboard is commonly synced to other
+signed-in devices, kept in a clipboard *history* application (several ship
+enabled by default on both desktop and mobile), and readable by any other
+app with clipboard-read permission while it sits there — and overwriting or
+"clearing" the current clipboard entry does **not** erase it from that
+history. No production key was ever exposed through this — these are held
+docs, not an incident — but "paste it in somewhere, then clear the
+clipboard" is not actually memory-only, so this section no longer
+recommends it.
+
+**The reviewed procedure instead captures the generated pair only in this
+one process's memory, proves the two halves actually correspond before ever
+writing anything, and hands the private half directly to the protected
+settings store's own API over HTTPS — never to stdout, a file, a
+command-line argument, or the clipboard.** Reading the current settings is
+Azure's [List Application Settings](https://learn.microsoft.com/en-us/rest/api/appservice/web-apps/list-application-settings)
+operation — a `POST` to `.../config/appsettings/list`, despite being a read
+— and writing is the separate [Update Application Settings](https://learn.microsoft.com/en-us/rest/api/appservice/web-apps/update-application-settings)
+operation, a `PUT` to `.../config/appsettings` with **no** `/list` suffix;
+there is no documented `GET` for this resource. The script below uses each
+verb and path for the right one, never interchanged. `APP_SERVICE_SETTINGS_HOST`
+and `APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT` exist only so this
+project's own test suite can run this exact script against a local stub
+instead of real Azure — both default to the real, production-safe behavior
+(`management.azure.com` over `https`) when unset, so copy-pasting this below
+does the right thing without touching either variable. **`APP_SERVICE_SETTINGS_HOST`
+has no effect at all unless `APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT`
+is also set to `'1'`** — a stray `APP_SERVICE_SETTINGS_HOST` left set in a
+real shell is silently ignored and the script still talks to
+`management.azure.com`, so the two variables can never be triggered
+independently by accident. **Never set either of those two in a real
+deployment.**
+
+```bash
+node -e "
+const { generateVapidKeys } = require('./src/service/web-push.js');
+const crypto = require('crypto');
+
+// The resource path and an access token come from this shell's environment
+// -- set them before running this, never as command-line arguments.
+// Neither is the VAPID private key, so env is fine for them:
+//   az account get-access-token --query accessToken -o tsv
+const resourcePath = process.env.APP_SERVICE_SETTINGS_PATH; // .../config/appsettings
+const token = process.env.AZ_ACCESS_TOKEN;
+if (!resourcePath || !token) {
+  console.error('Set APP_SERVICE_SETTINGS_PATH and AZ_ACCESS_TOKEN first.');
+  process.exit(1);
+}
+
+// Test-only seam -- both default to the real production behavior and must
+// never be set outside this project's own test suite.
+const insecureTestTransport = process.env.APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT === '1';
+const transport = insecureTestTransport ? require('http') : require('https');
+// APP_SERVICE_SETTINGS_HOST is only ever honored when the insecure test
+// transport is explicitly opted into -- a stray APP_SERVICE_SETTINGS_HOST
+// left set in a real shell must never redirect the bearer token and the
+// freshly written private key to some other host, even over HTTPS.
+const hostParts = ((insecureTestTransport && process.env.APP_SERVICE_SETTINGS_HOST) || 'management.azure.com').split(':');
+const apiHostname = hostParts[0];
+const apiPort = hostParts[1] ? Number(hostParts[1]) : (insecureTestTransport ? 80 : 443);
+
+// Azure's real read operation (List Application Settings) is a POST to
+// .../list despite being a read; the write operation (Update Application
+// Settings) is a PUT with no /list suffix. Never swap these.
+//
+// A peer that accepts the TCP connection but never finishes sending a
+// response must never hang the operator's shell forever with no feedback --
+// 15 seconds is comfortably above a normal Azure round trip but short
+// enough to fail fast and say so.
+const REQUEST_TIMEOUT_MS = 15000;
+function settingsRequest(method, body, timeoutPhase) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : undefined;
+    const reqPath = (method === 'POST' ? resourcePath + '/list' : resourcePath) + '?api-version=2022-03-01';
+    const req = transport.request({
+      hostname: apiHostname,
+      port: apiPort,
+      path: reqPath,
+      method,
+      headers: Object.assign(
+        { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        payload ? { 'Content-Length': Buffer.byteLength(payload) } : {},
+      ),
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        if (!data) { resolve({ status: res.statusCode, body: {} }); return; }
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch {
+          resolve({ status: res.statusCode, body: null, malformed: true });
+        }
+      });
+    });
+    req.on('error', reject);
+    // The timeout message must be chosen by PHASE, not by HTTP method --
+    // 'POST .../list' is a read both in step 1 (before any write -- safe to
+    // say nothing was written) and in step 4 (AFTER step 3's PUT already
+    // succeeded -- saying "no write happened" there would be false, the
+    // exact false-safety failure mode this whole script exists to avoid).
+    // 'PUT' is the write itself: the request body may already have reached
+    // the server before the response stalled, so that case must never claim
+    // "no write happened" either -- only that the outcome is unknown and
+    // must be investigated, same honesty already required of a step-4
+    // MISMATCH after a successful PUT (see below). Each call site below
+    // passes its own phase explicitly rather than relying on method alone.
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy();
+      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }
+    });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+// Shared by the initial read and the post-write readback -- never trust a
+// response shape that has not been checked. A malformed body or a missing
+// properties object must refuse loudly, never silently degrade to {} and
+// then write a settings object that has lost every real setting.
+function readProperties(res, label) {
+  if (res.malformed || res.body === null) {
+    console.error('Refusing: ' + label + ' was not valid JSON. Fix connectivity/access before trusting anything here.');
+    process.exit(1);
+  }
+  if (res.status !== 200) {
+    console.error('Refusing: could not ' + label + ' (HTTP ' + res.status + '). Fix access before generating anything.');
+    process.exit(1);
+  }
+  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {
+    console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
+    process.exit(1);
+  }
+  return res.body.properties;
+}
+
+(async () => {
+  // 1. FIRST inspect the existing pair. Never generate or replace blind.
+  const current = await settingsRequest('POST', undefined, 'read');
+  const existing = readProperties(current, 'read the current settings');
+  const hasPublic = Boolean(existing.SQUAD_HUB_VAPID_PUBLIC_KEY);
+  const hasPrivate = Boolean(existing.SQUAD_HUB_VAPID_PRIVATE_KEY);
+  if (hasPublic && hasPrivate) {
+    console.error('Refusing: a VAPID key pair is already configured. This procedure is initial setup only -- see Explicit rotation below for how to replace an existing pair deliberately; it is never run again just to get a fresh one.');
+    process.exit(1);
+  }
+  if (hasPublic !== hasPrivate) {
+    console.error('Refusing: only one half of a VAPID pair is currently set. Fix that by hand -- re-enter the missing half from wherever the original pair is backed up -- never by silently generating a replacement for just the missing half.');
+    process.exit(1);
+  }
+
+  // 2. Generate the new pair -- it lives only in this process's memory from
+  // here on -- then prove the two halves actually correspond BEFORE ever
+  // writing anything, using Node's own ECDH. This in-memory check is still
+  // valuable: it catches a buggy generator before any network call ever
+  // happens. But it is NOT a substitute for verifying what is actually
+  // stored after the write -- Azure's real List Application Settings
+  // operation DOES return the private value verbatim on a read, so step 4
+  // below reads it back and compares it, in memory only, never logging or
+  // printing it. This is the same check an earlier revision of this doc ran
+  // as a separate, paste-based manual step; it is now folded in here so the
+  // private half never leaves this one protected process at all.
+  const { publicKey, privateKey } = generateVapidKeys();
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'));
+  const derivedPublic = ecdh.getPublicKey(null, 'uncompressed').toString('base64url');
+  if (derivedPublic !== publicKey) {
+    console.error('Refusing: the freshly generated pair does not correspond (ECDH derivation mismatch). This would be a bug in generateVapidKeys, not a network problem -- do not write anything.');
+    process.exit(1);
+  }
+
+  // 3. The settings API replaces the whole settings object, it does not
+  // merge -- so every pre-existing setting is carried forward unchanged,
+  // and only the two VAPID keys are added.
+  const merged = Object.assign({}, existing, {
+    SQUAD_HUB_VAPID_PUBLIC_KEY: publicKey,
+    SQUAD_HUB_VAPID_PRIVATE_KEY: privateKey,
+  });
+  const write = await settingsRequest('PUT', { properties: merged }, 'write');
+  if (write.status !== 200) {
+    console.error('Refusing to confirm success: the settings API returned HTTP ' + write.status + '. Do not treat this pair as deployed.');
+    process.exit(1);
+  }
+
+  // 4. Read back and validate -- status, shape, BOTH halves of the pair,
+  // AND every pre-existing key by name and value. Azure's real List
+  // Application Settings operation returns the full StringDictionary,
+  // including the private value just written -- it is not redacted -- so
+  // this compares it too, in memory only, never logging or printing it:
+  // the in-memory ECDH check in step 2 only proves the freshly generated
+  // pair is internally self-consistent BEFORE the write; it proves nothing
+  // about what is actually now stored after the PUT. A PUT that silently
+  // drops, truncates, or corrupts the private value would otherwise still
+  // report success.
+  const readback = await settingsRequest('POST', undefined, 'readback');
+  const stored = readProperties(readback, 'read back the settings just written');
+  if (stored.SQUAD_HUB_VAPID_PUBLIC_KEY !== publicKey) {
+    console.error('MISMATCH -- the stored public key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }
+  if (stored.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey) {
+    console.error('MISMATCH -- the stored private key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }
+  for (const key of Object.keys(existing)) {
+    if (stored[key] !== existing[key]) {
+      console.error('Refusing to confirm success: pre-existing setting ' + key + ' was not preserved unchanged. Investigate before relying on this deployment.');
+      process.exit(1);
+    }
+  }
+  console.log('Pair stored and verified. Public key (not secret):');
+  console.log(publicKey);
+  console.log(Object.keys(existing).length + ' pre-existing setting(s) preserved unchanged.');
+})().catch((err) => {
+  console.error('Refusing: ' + (err && err.message || err));
+  process.exit(1);
+});
+"
+```
+
+- This procedure is **initial setup only** — run deliberately, once, by an
+  operator from an interactive session on a trusted machine. It is never
+  invoked by a worker, never run automatically on redeploy or at hub
+  startup, and never touches a running production pair that is already
+  configured: step 1's refusal is exactly what stops that from happening
+  by accident, and that refusal only ever fires after the response's status
+  and shape have themselves been validated — a malformed or unexpected
+  response is refused explicitly, never silently treated as "no settings".
+- `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout`, a log
+  captured anywhere durable, a file, a bare command-line argument, or a
+  system clipboard — the script above only ever places it in the HTTPS
+  request body sent directly to the settings API (step 3), after proving in
+  memory (step 2) that it actually corresponds to the generated public half,
+  and then reads it back for an in-memory-only comparison (step 4) — in
+  every case only the comparison's match/no-match result is ever printed,
+  never the value itself.
+- **Refuse to replace only one half of an existing pair**, and refuse to
+  regenerate when a complete pair is already configured (both enforced by
+  the script's own first step) — a public key paired with a private key
+  from a different generation is a new, different, untested pair, not a
+  smaller edit; see "no automatic mismatch guarantee" below for why that is
+  not caught for you.
+- Production keys for this deployment are already configured, once, by the
+  operator. **Never regenerate or rotate them from a worker, from this
+  workflow, or at any startup path** — doing so would silently orphan every
+  browser already subscribed (below).
+- **A `MISMATCH` (or any other) failure in step 4, after the PUT in step 3
+  already returned success, does not mean the pair was never stored.** The
+  write already landed; only the readback/verification failed. The pair is
+  now present in the live App Service settings despite this run reporting
+  failure. Re-running this same script will correctly refuse with "already
+  configured" (both halves are now present) — that refusal is not a bug,
+  but it also means simply re-running this script is **not** the recovery
+  path here. Use the "Explicit rotation" procedure below instead to
+  deliberately replace the pair that is now actually stored.
+- **A request timeout carries the same "do not assume" honesty, but the
+  message depends on which PHASE stalled, not merely on HTTP method.**
+  `settingsRequest()` bounds every call so a peer that accepts the
+  connection but never finishes responding cannot hang the operator's shell
+  forever. A timeout on the step-1 read safely reports that nothing has
+  been written yet, because it runs before any write in this script. A
+  timeout on the step-3 PUT cannot make that same claim — the request body
+  may already have reached the server before the response stalled — so that
+  message explicitly says the outcome is unknown and to investigate before
+  relying on it, never that "no write happened". A timeout on the step-4
+  readback is a third case, not the same as step 1 even though both are a
+  `POST .../list`: the step-3 PUT has already succeeded by the time step 4
+  runs, so a pair is already stored — that message says so explicitly and
+  never claims "no write has happened yet", while also not asserting the
+  stored pair is right or wrong, only that verification could not be
+  confirmed and must be investigated.
+
+**`SQUAD_HUB_PUBLIC_URL` must be `https:`.** The Push API itself refuses to
+register a subscription from an insecure context (`localhost` is the one
+browser-level exception, for local development only), and VAPID's own JWT
+`aud` claim is derived from the push service's own origin, not the hub's — so
+this requirement comes from the browser and the push service, not from a
+check this project added. Deploying behind anything other than a real `https:`
+origin means push silently never offers to enable, with no server-side
+misconfiguration to point at.
+
+**Stable keys, a configured readback — not an automatic derivation.**
+`/api/me`'s `push.publicKey` reports back whatever `SQUAD_HUB_VAPID_PUBLIC_KEY`
+is currently configured with: `WebPushSender` reads it directly from that
+environment variable, the exact same way it reads the private key — it is
+**not** re-derived from the private scalar via ECDH on every read, or ever.
+That matters because it means a public key that does not actually correspond
+to the configured private key is **not automatically caught**:
+`vapidPrivateKeyObject()` builds the Node `KeyObject` VAPID signs with from
+whatever `(x, y, d)` triple the two configured values provide, and Node's own
+JWK import does not verify that `d·G == (x, y)` — a mismatched pair imports
+without error. The practical effect of a mismatch is every *send* failing
+(the push service's own signature check on the JWT fails, because the `k`
+parameter advertises a public key the configured private key cannot actually
+sign for), not a failure at *subscribe* time — subscribing only ever hands
+the browser the public half, never the private one, so a mismatch is
+invisible until the first real send.
+
+**Verifying a pair actually corresponds, once, at initial setup — now step 2
+of the one script above, not a separate manual procedure.** An earlier
+revision of this doc ran this as its own copy-pasted example, with a comment
+telling the operator to paste the two candidate values into the shell's
+environment for a one-off check. That is exactly the kind of manual,
+by-hand handling of a private key this project otherwise refuses to
+recommend — a pasted secret can land in shell history, a terminal's
+scrollback, or a recorded session the same way a printed or clipped one can.
+There is nothing about this check that requires a separate process or a
+separate paste: step 2 above runs the identical ECDH derivation
+(`crypto.createECDH('prime256v1')`, `setPrivateKey`, `getPublicKey(null,
+'uncompressed')`, compared against the generated `publicKey`) on the pair
+the moment it is generated, inside the same protected, memory-only process,
+before that process ever makes a network call. If it fails, the script
+refuses (`console.error` plus `process.exit(1)`) before any write — exactly
+like every other refusal in this procedure. This check exists because
+Node's JWK import does not verify `d·G == (x, y)` on its own (below) — it is
+still a one-time, initial-setup-only check, never called at hub startup,
+never run automatically before a send, and never a substitute for the "set
+both together" rule above; it is just no longer a second, paste-based
+runnable example.
+
+**Backup and recovery.** The hub itself is not a backup for this pair — it
+holds the private key only in process memory (an environment variable), the
+same posture as every other secret in the table above. If the pair is lost
+with no copy in the operator's own secret store, there is no recovery path
+that preserves existing subscriptions: generate a new pair (same command
+above) and every existing browser subscription becomes orphaned (below). Keep
+the pair you generate in whatever secret manager already holds this
+deployment's other durable secrets, not only in the App Service setting.
+
+**Explicit rotation, and why it requires re-subscribing.** A browser's
+existing `PushSubscription` is bound to the public key it was handed at
+subscribe time — the push service itself enforces this, not this project —
+so rotating the pair (deliberately, out of band, never automatically)
+orphans every subscription made against the old public key. There is no
+migration path other than each person re-running "enable notifications" from
+the installed app after a rotation; this is an inherent property of the Web
+Push protocol, not a gap in `push-store.js`. Plan a rotation as a visible,
+communicated event, not a silent config change.
+
+**Browser and permission troubleshooting**, matching the reasons
+`web/js/push.js`'s `enablePush()` actually returns:
+
+| Reported reason | What it means | What to check |
+|---|---|---|
+| `unsupported` | `serviceWorker` or `PushManager` is not available in this browser/context | Needs a secure context (`https:`, or `localhost` for local dev) and a browser that implements the Push API; private/incognito modes in some browsers disable it entirely |
+| `not-configured` | The hub itself reports `push.enabled: false` | Both `SQUAD_HUB_VAPID_PUBLIC_KEY` and `SQUAD_HUB_VAPID_PRIVATE_KEY` must be set together — see above |
+| `denied` | The OS/browser notification permission is `denied` | Permanent until the person changes it in browser/OS settings; this hub never re-prompts once denied (`notifications.js` only ever asks on `default`) |
+| `dismissed` | The person closed the permission prompt without an explicit allow/deny | Retrying "enable notifications" re-prompts; nothing to fix server-side |
+
+iOS Safari additionally requires the PWA to be installed to the home screen
+(`display-mode: standalone`, or `navigator.standalone`, per `install.js`)
+before `PushManager` is available at all — a bare browser tab on iOS cannot
+subscribe regardless of server configuration.
+
 ### What the payload does and does not contain
 
 A push payload typically leaves the hub's custody for a while — queued by a
