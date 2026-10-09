@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-237-correlation-and-fallback",
+  "sessionId": "fix-pr-237-correlation-and-fallback",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T01:33:26.115Z",
+  "lastHeartbeatAt": "2026-10-09T01:33:26.115Z",
+  "updatedAt": "2026-10-09T01:33:26.115Z",
+  "terminalReason": null,
+  "executionRef": null
+}
