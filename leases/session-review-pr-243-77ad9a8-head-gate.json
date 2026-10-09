@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-review-pr-243-77ad9a8-head-gate",
+  "sessionId": "review-pr-243-77ad9a8-head-gate",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T14:24:37.239Z",
+  "lastHeartbeatAt": "2026-10-09T14:24:37.239Z",
+  "updatedAt": "2026-10-09T14:24:37.239Z",
+  "terminalReason": null,
+  "executionRef": null
+}
