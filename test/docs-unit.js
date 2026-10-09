@@ -439,9 +439,9 @@ check('security.md\'s VAPID transfer procedure reads back and validates the stor
 check('security.md\'s VAPID transfer procedure reads settings via POST .../list, never GET, and writes via plain PUT', () => {
   assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
   assert.match(recommendedScript, /resourcePath \+ '\/list'/, 'reads must be sent to resourcePath + \'/list\'');
-  assert.match(recommendedScript, /settingsRequest\('POST'\)/, 'the read calls must use POST, matching Azure\'s real List Application Settings operation');
-  assert.ok(!/settingsRequest\('GET'\)/.test(recommendedScript), 'the recommended script must never use GET to read settings -- Azure has no documented GET for this resource');
-  assert.match(recommendedScript, /settingsRequest\('PUT', \{ properties: merged \}\)/, 'the write must stay a PUT carrying the merged properties');
+  assert.match(recommendedScript, /settingsRequest\('POST', undefined, '\w+'\)/, 'the read calls must use POST, matching Azure\'s real List Application Settings operation');
+  assert.ok(!/settingsRequest\('GET'/.test(recommendedScript), 'the recommended script must never use GET to read settings -- Azure has no documented GET for this resource');
+  assert.match(recommendedScript, /settingsRequest\('PUT', \{ properties: merged \}, 'write'\)/, 'the write must stay a PUT carrying the merged properties');
   // The write's own path construction must never carry a /list suffix.
   const writePathLine = recommendedScript.match(/const reqPath = .*/);
   assert.ok(writePathLine, 'could not find the request path construction');
@@ -486,7 +486,7 @@ check('security.md\'s VAPID transfer procedure validates the readback\'s shape a
 // privateKey into the object being written, never compares it back.
 check('security.md\'s VAPID transfer procedure compares the stored private key against the generated one on readback, not just the public half', () => {
   assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
-  const readbackBlock = recommendedScript.slice(recommendedScript.indexOf("const readback = await settingsRequest('POST');"));
+  const readbackBlock = recommendedScript.slice(recommendedScript.indexOf("const readback = await settingsRequest('POST', undefined, 'readback');"));
   assert.match(readbackBlock, /stored\.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey/, 'the readback block must compare the stored private key against the freshly generated privateKey, not just the write-merge assignment');
   // The refusal message itself must never echo either actual key value --
   // only ever the fact that they did not match.
@@ -829,6 +829,18 @@ check('executable: a stalled initial read times out, refuses safely, and reports
   assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
   assert.match(combined, /no write has happened yet/, 'a stalled READ (before any write) may safely say no write has happened yet');
   assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when the very first read never completes');
+});
+
+check('executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened', () => {
+  const result = runVapidScenario({ initialProperties: {}, stallRead: true, stallReadCallIndex: 1, driverKillTimeoutMs: 20000 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit on a stalled readback');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /timed out/, 'expected an explicit timeout message, not a hang or crash');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
+  assert.ok(!/no write has happened yet/.test(combined), 'a stalled READBACK runs AFTER a successful PUT -- it must never reuse the step-1 "no write has happened yet" wording, that would be false-safety');
+  assert.match(combined, /write in step 3 already succeeded/, 'a stalled readback must explicitly acknowledge the write already succeeded');
+  assert.match(combined, /verification could not be confirmed/, 'a stalled readback must say verification could not be confirmed, not assert the stored pair is right or wrong');
+  assert.strictEqual(result.requests.writes.length, 1, 'the PUT in step 3 already succeeded before the step-4 readback stalled');
 });
 
 check('executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened', () => {

@@ -620,7 +620,7 @@ const apiPort = hostParts[1] ? Number(hostParts[1]) : (insecureTestTransport ? 8
 // 15 seconds is comfortably above a normal Azure round trip but short
 // enough to fail fast and say so.
 const REQUEST_TIMEOUT_MS = 15000;
-function settingsRequest(method, body) {
+function settingsRequest(method, body, timeoutPhase) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
     const reqPath = (method === 'POST' ? resourcePath + '/list' : resourcePath) + '?api-version=2022-03-01';
@@ -646,17 +646,23 @@ function settingsRequest(method, body) {
       });
     });
     req.on('error', reject);
-    // In this script, 'POST' is always a read (List Application Settings)
-    // and happens before any write in this call -- safe to say nothing was
-    // written by it. 'PUT' is the write itself: the request body may
-    // already have reached the server before the response stalled, so that
-    // case must never claim "no write happened" -- only that the outcome is
-    // unknown and must be investigated, same honesty already required of a
-    // step-4 MISMATCH after a successful PUT (see below).
+    // The timeout message must be chosen by PHASE, not by HTTP method --
+    // 'POST .../list' is a read both in step 1 (before any write -- safe to
+    // say nothing was written) and in step 4 (AFTER step 3's PUT already
+    // succeeded -- saying "no write happened" there would be false, the
+    // exact false-safety failure mode this whole script exists to avoid).
+    // 'PUT' is the write itself: the request body may already have reached
+    // the server before the response stalled, so that case must never claim
+    // "no write happened" either -- only that the outcome is unknown and
+    // must be investigated, same honesty already required of a step-4
+    // MISMATCH after a successful PUT (see below). Each call site below
+    // passes its own phase explicitly rather than relying on method alone.
     req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       req.destroy();
-      if (method === 'PUT') {
+      if (timeoutPhase === 'write') {
         reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
       } else {
         reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
       }
@@ -688,7 +694,7 @@ function readProperties(res, label) {
 
 (async () => {
   // 1. FIRST inspect the existing pair. Never generate or replace blind.
-  const current = await settingsRequest('POST');
+  const current = await settingsRequest('POST', undefined, 'read');
   const existing = readProperties(current, 'read the current settings');
   const hasPublic = Boolean(existing.SQUAD_HUB_VAPID_PUBLIC_KEY);
   const hasPrivate = Boolean(existing.SQUAD_HUB_VAPID_PRIVATE_KEY);
@@ -728,7 +734,7 @@ function readProperties(res, label) {
     SQUAD_HUB_VAPID_PUBLIC_KEY: publicKey,
     SQUAD_HUB_VAPID_PRIVATE_KEY: privateKey,
   });
-  const write = await settingsRequest('PUT', { properties: merged });
+  const write = await settingsRequest('PUT', { properties: merged }, 'write');
   if (write.status !== 200) {
     console.error('Refusing to confirm success: the settings API returned HTTP ' + write.status + '. Do not treat this pair as deployed.');
     process.exit(1);
@@ -744,7 +750,7 @@ function readProperties(res, label) {
   // about what is actually now stored after the PUT. A PUT that silently
   // drops, truncates, or corrupts the private value would otherwise still
   // report success.
-  const readback = await settingsRequest('POST');
+  const readback = await settingsRequest('POST', undefined, 'readback');
   const stored = readProperties(readback, 'read back the settings just written');
   if (stored.SQUAD_HUB_VAPID_PUBLIC_KEY !== publicKey) {
     console.error('MISMATCH -- the stored public key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
@@ -805,16 +811,22 @@ function readProperties(res, label) {
   but it also means simply re-running this script is **not** the recovery
   path here. Use the "Explicit rotation" procedure below instead to
   deliberately replace the pair that is now actually stored.
-- **A request timeout carries the same "do not assume" honesty, but for the
-  opposite reason when it is the PUT that stalls.** `settingsRequest()`
-  bounds every call so a peer that accepts the connection but never finishes
-  responding cannot hang the operator's shell forever. A timeout on a read
-  (steps 1 or 4) safely reports that nothing has been written by that call,
-  because reads never write. But a timeout on the step-3 PUT cannot make
-  that same claim — the request body may already have reached the server
-  before the response stalled — so that message explicitly says the outcome
-  is unknown and to investigate before relying on it, never that "no write
-  happened".
+- **A request timeout carries the same "do not assume" honesty, but the
+  message depends on which PHASE stalled, not merely on HTTP method.**
+  `settingsRequest()` bounds every call so a peer that accepts the
+  connection but never finishes responding cannot hang the operator's shell
+  forever. A timeout on the step-1 read safely reports that nothing has
+  been written yet, because it runs before any write in this script. A
+  timeout on the step-3 PUT cannot make that same claim — the request body
+  may already have reached the server before the response stalled — so that
+  message explicitly says the outcome is unknown and to investigate before
+  relying on it, never that "no write happened". A timeout on the step-4
+  readback is a third case, not the same as step 1 even though both are a
+  `POST .../list`: the step-3 PUT has already succeeded by the time step 4
+  runs, so a pair is already stored — that message says so explicitly and
+  never claims "no write has happened yet", while also not asserting the
+  stored pair is right or wrong, only that verification could not be
+  confirmed and must be investigated.
 
 **`SQUAD_HUB_PUBLIC_URL` must be `https:`.** The Push API itself refuses to
 register a subscription from an insecure context (`localhost` is the one

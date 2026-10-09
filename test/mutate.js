@@ -6556,8 +6556,8 @@ if ($health.accessStore -ne 'durable') {`,
     // factually-wrong REST shape the review flagged.
     name: 'the recommended VAPID transfer script reads settings with GET instead of the real POST .../list operation',
     file: 'docs/security.md',
-    find: `  const current = await settingsRequest('POST');`,
-    replace: `  const current = await settingsRequest('GET'); // MUTATION: Azure has no documented GET for this resource`,
+    find: `  const current = await settingsRequest('POST', undefined, 'read');`,
+    replace: `  const current = await settingsRequest('GET', undefined, 'read'); // MUTATION: Azure has no documented GET for this resource`,
     mustFail: 'executable: the recommended script reads via POST .../list (not GET) and writes via PUT (not /list)',
   },
   {
@@ -6643,8 +6643,10 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'docs/security.md',
     find: `    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       req.destroy();
-      if (method === 'PUT') {
+      if (timeoutPhase === 'write') {
         reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
       } else {
         reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
       }
@@ -6660,13 +6662,40 @@ if ($health.accessStore -ne 'durable') {`,
     // reproduces exactly the false safety claim the re-review flagged.
     name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled PUT, same as a stalled read',
     file: 'docs/security.md',
-    find: `      if (method === 'PUT') {
+    find: `      if (timeoutPhase === 'write') {
         reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
       } else {
         reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
       }`,
-    replace: `      reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: PUT timeout falsely claims no write happened, same as a read timeout`,
+    replace: `      reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: PUT/readback timeout falsely claims no write happened, same as a read timeout`,
     mustFail: 'executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened',
+  },
+  {
+    // Security review follow-up (#242): collapsing the step-4 readback
+    // timeout message back to the step-1 wording reproduces the exact
+    // false-safety bug the security reviewer flagged on commit ed0f2ba --
+    // claiming "no write has happened yet" for a readback timeout that runs
+    // AFTER step 3's PUT already succeeded. This mutation keeps the PUT
+    // branch distinct (so the PUT-timeout test above still passes) but
+    // collapses ONLY the readback branch into the step-1 wording, which
+    // must make the dedicated step-4-stall test fail.
+    name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled step-4 readback, same as a stalled step-1 read',
+    file: 'docs/security.md',
+    find: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }`,
+    replace: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: readback branch collapsed back into the step-1 wording
+      }`,
+    mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
   },
 ];
 
