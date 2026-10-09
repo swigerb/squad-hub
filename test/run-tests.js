@@ -1147,6 +1147,7 @@ async function suiteRetroEnforcement() {
 async function suiteRetroActionOnRedTests() {
   console.log('\n[RETRO-ACTION] a red Tests run on main/dev leaves a trace, and closure is provable');
   runChildSuite(path.join(__dirname, 'retro-action-workflow-unit.js'), 'retro-action-workflow');
+  runChildSuite(path.join(__dirname, 'tests-workflow-unit.js'), 'tests-workflow');
   runChildSuite(path.join(__dirname, 'retro-action-closure-unit.js'), 'retro-action-closure');
   runChildSuite(path.join(__dirname, 'sync-squad-labels-unit.js'), 'sync-squad-labels');
 }
