@@ -2294,9 +2294,28 @@ async function watchCsp(pg) {
     // `store.registerDevice` a real device socket calls, never by poking the
     // DOM or faking a fetch response -- and drives a real browser against the
     // resulting `/api/overview` to prove the rendered card tells the truth.
+    //
+    // A follow-up Scout review on 87f7f98 found this check itself broken on
+    // real CI (both node18 and node24): `svcAca2` was built with no
+    // `GitHubApp` at all, so `GET /api/aca/status` correctly answered
+    // `enabled: false` and the card never left the Not-connected phase --
+    // the Connected-only watcher/Ralph rows this check waits for can never
+    // appear on a hub that never reports itself connected. Fixed by reusing
+    // the SAME configured-`GitHubApp`-plus-local-fake-server fixture as the
+    // immediately preceding "Checking, then settles on Connected" check
+    // (`acaFakeGitHubServer`), rather than inventing a second way to fake
+    // discovery or skipping the assertion: the watcher/Ralph rows below are
+    // still driven by real `store.registerDevice`/`heartbeat` calls and a
+    // real rendered `#acaStatusCard`, only the App-connection half of the
+    // phase is now real too.
     await check('the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)', async () => {
+      const ghServer2 = acaFakeGitHubServer();
+      const ghPort2 = await listen(ghServer2);
+      const githubApp2 = new GitHubApp({
+        appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort2}`,
+      });
       const authAca2 = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca-2', deviceSecret: 'e2e-aca-2-dev' });
-      const svcAca2 = new HubService({ auth: authAca2, serveWeb: true });
+      const svcAca2 = new HubService({ auth: authAca2, serveWeb: true, githubApp: githubApp2 });
       const addrAca2 = await svcAca2.listen(0, '127.0.0.1');
       const originAca2 = `http://127.0.0.1:${addrAca2.port}`;
       const tokenAca2 = authAca2.mintDevToken('t-aca2', 'u-aca2', 'aca person 2');
@@ -2327,6 +2346,11 @@ async function watchCsp(pg) {
       try {
         await gotoSettled(pageAca2, `${originAca2}/?token=${tokenAca2}`);
         await pageAca2.waitForSelector('#acaStatusCard .acacard', { timeout: 10000 });
+
+        await until(async () => {
+          const t = await pageAca2.$eval('#acaStatusCard .status', (el) => el.textContent).catch(() => null);
+          return t && /^Connected$/.test(t.trim()) ? true : null;
+        }, 'the card to report Connected once the configured GitHub App answers');
 
         await until(async () => {
           const t = await pageAca2.textContent('#acaStatusCard').catch(() => null);
@@ -2368,6 +2392,7 @@ async function watchCsp(pg) {
       } finally {
         await pageAca2.close();
         await svcAca2.close();
+        ghServer2.close();
       }
     });
 

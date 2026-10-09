@@ -2582,9 +2582,20 @@ const MUTATIONS = [
   {
     name: 'findAcaRoleDevice stops preferring an explicit, verified meta.role over the name fallback',
     file: 'web/js/aca-status.js',
-    find: `  const byMeta = pool.find((d) => d.meta && d.meta.role === role);`,
-    replace: `  const byMeta = process.env.MUTANT ? null : pool.find((d) => d.meta && d.meta.role === role); // MUTATION`,
+    find: `  const metaMatches = pool.filter((d) => d.meta && d.meta.role === role);
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);`,
+    replace: `  const metaMatches = process.env.MUTANT ? [] : pool.filter((d) => d.meta && d.meta.role === role); // MUTATION
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);`,
     mustFail: 'findWatcherDevice prefers an explicit, sanitized meta.role over any name match',
+  },
+  {
+    // #233's third review: a device that verifies itself as the OTHER role
+    // must never also be picked up by the opposite role's name fallback.
+    name: 'findAcaRoleDevice stops excluding a device that explicitly claims the OTHER role from the name fallback',
+    file: 'web/js/aca-status.js',
+    find: `    if (d.meta && d.meta.role && d.meta.role !== role) return false;`,
+    replace: `    if (!process.env.MUTANT && d.meta && d.meta.role && d.meta.role !== role) return false; // MUTATION`,
+    mustFail: 'a device explicitly self-reporting meta.role "watch" is never ALSO picked up as Ralph by name coincidence',
   },
   {
     // The bug #233 exists to fix: a real production device name
@@ -2593,15 +2604,21 @@ const MUTATIONS = [
     name: 'matchesAcaJobConvention reverts to a loose substring match, which misses the real production device name',
     file: 'web/js/aca-status.js',
     find: `function matchesAcaJobConvention(tokens, role) {
-  for (let i = 0; i < tokens.length - 2; i += 1) {
-    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) return true;
+  for (let i = 0; i <= tokens.length - 3; i += 1) {
+    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {
+      const next = tokens[i + 3];
+      if (next === undefined || /^[0-9]+$/.test(next)) return true;
+    }
   }
   return false;
 }`,
     replace: `function matchesAcaJobConvention(tokens, role) {
   if (process.env.MUTANT) return tokens.some((t) => t.includes(role === 'watch' ? 'watch' : 'ralph') || t === role); // MUTATION
-  for (let i = 0; i < tokens.length - 2; i += 1) {
-    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) return true;
+  for (let i = 0; i <= tokens.length - 3; i += 1) {
+    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {
+      const next = tokens[i + 3];
+      if (next === undefined || /^[0-9]+$/.test(next)) return true;
+    }
   }
   return false;
 }`,
@@ -2610,9 +2627,44 @@ const MUTATIONS = [
   {
     name: 'matchesAcaJobConvention stops requiring the role token immediately after "squad","aca", matching an arbitrary implementation session',
     file: 'web/js/aca-status.js',
-    find: `    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) return true;`,
-    replace: `    if ((process.env.MUTANT ? tokens[i + 2] === role : tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role)) return true; // MUTATION`,
-    mustFail: 'findWatcherDevice never matches an arbitrary implementation session containing "watcher"/"ralph" as a substring',
+    find: `    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {`,
+    replace: `    if ((process.env.MUTANT ? tokens[i + 2] === role : tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role)) { // MUTATION`,
+    mustFail: 'findWatcherDevice requires the literal "squad","aca" tokens immediately before the role word, not merely the role word somewhere',
+  },
+  {
+    // #233's third review, finding 3: the token run must be ANCHORED to the
+    // real revision-suffix shape, not merely present anywhere in the name --
+    // otherwise a slug like "...-squad-aca-watch-card" (an implementation
+    // session that happens to contain the run, followed by an ordinary word)
+    // would still masquerade as the watcher.
+    name: 'matchesAcaJobConvention stops anchoring the role token to the end of the name or a numeric revision suffix',
+    file: 'web/js/aca-status.js',
+    find: `      const next = tokens[i + 3];
+      if (next === undefined || /^[0-9]+$/.test(next)) return true;`,
+    replace: `      const next = tokens[i + 3];
+      if (process.env.MUTANT || next === undefined || /^[0-9]+$/.test(next)) return true; // MUTATION`,
+    mustFail: 'findWatcherDevice rejects a job-identity token run embedded mid-slug, never anchored to a real revision suffix',
+  },
+  {
+    // #233's third review, finding 2: the FIRST roster match is not
+    // necessarily the CURRENT one -- an old offline revision can precede a
+    // new online one in the array.
+    name: 'pickFreshestAcaDevice stops ranking by presence, returning the first candidate regardless of whether it is actually live',
+    file: 'web/js/aca-status.js',
+    find: `    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (curRank !== bestRank) return curRank > bestRank ? cur : best;`,
+    replace: `    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (!process.env.MUTANT && curRank !== bestRank) return curRank > bestRank ? cur : best; // MUTATION`,
+    mustFail: 'findWatcherDevice prefers presence over mere recency: an online-but-older record beats an offline-but-more-recently-seen one',
+  },
+  {
+    name: 'pickFreshestAcaDevice stops preferring the more recently seen device when presence ties',
+    file: 'web/js/aca-status.js',
+    find: `    return (cur.lastSeen || 0) > (best.lastSeen || 0) ? cur : best;`,
+    replace: `    return (process.env.MUTANT ? false : (cur.lastSeen || 0) > (best.lastSeen || 0)) ? cur : best; // MUTATION`,
+    mustFail: 'findWatcherDevice prefers the more recently seen record when both candidates are equally online',
   },
   {
     name: 'the watcher row reports every presence as Online',

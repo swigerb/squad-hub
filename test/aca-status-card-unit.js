@@ -123,6 +123,99 @@ check('findRalphDevice returns null when no Ralph device exists', () => {
 });
 
 // ---------------------------------------------------------------------------
+// findWatcherDevice / findRalphDevice -- live/fresh selection, order-reversal
+// (#233's third review, finding 2)
+// ---------------------------------------------------------------------------
+
+check('findWatcherDevice prefers an online, fresh record over an older offline one, whichever order the roster lists them in', () => {
+  const stale = acaDev({ name: 'aca-ca-squad-aca-watch--1-old', presence: 'offline', lastSeen: Date.now() - 600000 });
+  const fresh = acaDev({ name: 'aca-ca-squad-aca-watch--2-new', presence: 'online', lastSeen: Date.now() });
+  assert.strictEqual(findWatcherDevice([stale, fresh]), fresh, 'old-offline-first order picked the stale record');
+  assert.strictEqual(findWatcherDevice([fresh, stale]), fresh, 'reversing roster order changed the winner');
+});
+
+check('findWatcherDevice prefers presence over mere recency: an online-but-older record beats an offline-but-more-recently-seen one', () => {
+  // Isolates the presence-ranking step from the lastSeen tie-break: the
+  // OFFLINE record here has the LATER lastSeen timestamp, so a selection
+  // that (incorrectly) fell straight through to comparing lastSeen without
+  // ranking presence first would pick the wrong one.
+  const offlineButRecentlySeen = acaDev({ name: 'aca-ca-squad-aca-watch--1-x', presence: 'offline', lastSeen: Date.now() });
+  const onlineButOlder = acaDev({ name: 'aca-ca-squad-aca-watch--2-y', presence: 'online', lastSeen: Date.now() - 500000 });
+  assert.strictEqual(findWatcherDevice([offlineButRecentlySeen, onlineButOlder]), onlineButOlder);
+  assert.strictEqual(findWatcherDevice([onlineButOlder, offlineButRecentlySeen]), onlineButOlder,
+    'reversing roster order changed the winner');
+});
+
+check('findWatcherDevice prefers the more recently seen record when both candidates are equally online', () => {
+  const older = acaDev({ name: 'aca-ca-squad-aca-watch--1-old', presence: 'online', lastSeen: Date.now() - 5000 });
+  const newer = acaDev({ name: 'aca-ca-squad-aca-watch--2-new', presence: 'online', lastSeen: Date.now() });
+  assert.strictEqual(findWatcherDevice([older, newer]), newer);
+  assert.strictEqual(findWatcherDevice([newer, older]), newer, 'reversing roster order changed the winner');
+});
+
+check('findWatcherDevice still honestly reports the only historical record as Offline when nothing newer is online', () => {
+  const onlyOld = acaDev({ name: 'aca-ca-squad-aca-watch--1-old', presence: 'offline', lastSeen: Date.now() - 600000 });
+  assert.strictEqual(findWatcherDevice([onlyOld]), onlyOld);
+  assert.strictEqual(acaWatcherLine([onlyOld]), 'Offline');
+});
+
+check('findRalphDevice applies the same live-over-offline selection as findWatcherDevice, order-reversed', () => {
+  const stale = acaDev({ name: 'aca-ca-squad-aca-ralph--1-old', presence: 'offline', lastSeen: Date.now() - 600000 });
+  const fresh = acaDev({ name: 'aca-ca-squad-aca-ralph--2-new', presence: 'online', lastSeen: Date.now() });
+  assert.strictEqual(findRalphDevice([stale, fresh]), fresh);
+  assert.strictEqual(findRalphDevice([fresh, stale]), fresh, 'reversing roster order changed the winner');
+});
+
+// ---------------------------------------------------------------------------
+// findWatcherDevice / findRalphDevice -- an explicit role excludes the OTHER
+// role's name-based fallback; canonical job identity, not a slug substring
+// (#233's third review, findings 3)
+// ---------------------------------------------------------------------------
+
+check('a device explicitly self-reporting meta.role "watch" is never ALSO picked up as Ralph by name coincidence', () => {
+  // Named exactly like the established Ralph job convention, but VERIFIED
+  // (meta.role) as the watcher. The explicit, recognized role is
+  // authoritative and exclusive: it must win the watcher role AND must
+  // exclude this same record from Ralph's own name-based fallback.
+  const d = acaDev({ name: 'aca-ca-squad-aca-ralph--1-abc', meta: { role: 'watch' } });
+  assert.strictEqual(findWatcherDevice([d]), d);
+  assert.strictEqual(findRalphDevice([d]), null);
+});
+
+check('a device explicitly self-reporting meta.role "ralph" is never ALSO picked up as the watcher by name coincidence', () => {
+  const d = acaDev({ name: 'aca-ca-squad-aca-watch--1-abc', meta: { role: 'ralph' } });
+  assert.strictEqual(findRalphDevice([d]), d);
+  assert.strictEqual(findWatcherDevice([d]), null);
+});
+
+check('findWatcherDevice rejects a job-identity token run embedded mid-slug, never anchored to a real revision suffix', () => {
+  // "squad", "aca", "watch" appear here consecutively purely because an
+  // implementation session's own slug happens to end
+  // "...-squad-aca-watch-card" -- immediately followed by a plain word, never
+  // a revision number and never the end of the name, which is what the real
+  // Container App Job convention always does. This is the exact slug Scout's
+  // review named: it must stay unknown, not masquerade as the watcher.
+  const d = acaDev({ name: 'aca-caj-squad-aca-session-repair-squad-aca-watch-card' });
+  assert.strictEqual(findWatcherDevice([d]), null);
+  assert.strictEqual(findRalphDevice([d]), null);
+});
+
+check('findWatcherDevice still matches the canonical convention when the role token is the very last token (no suffix)', () => {
+  const d = acaDev({ name: 'squad-aca-watch' });
+  assert.strictEqual(findWatcherDevice([d]), d);
+});
+
+check('findWatcherDevice requires the literal "squad","aca" tokens immediately before the role word, not merely the role word somewhere', () => {
+  // The role word alone, however well-anchored to the end of the name or a
+  // numeric suffix, is not the established convention -- "squad" and "aca"
+  // must immediately precede it. Without this, a name that merely ends in
+  // the role word (coincidentally, not because it IS the ACA job) would
+  // also match.
+  const d = acaDev({ name: 'random-op-watch' });
+  assert.strictEqual(findWatcherDevice([d]), null);
+});
+
+// ---------------------------------------------------------------------------
 // acaWatcherLine -- presence, and "watch-only" gated on VERIFIED approvalMode
 // ---------------------------------------------------------------------------
 

@@ -53,19 +53,57 @@ function nameTokens(name) {
  * The established squad-on-aca Container App Job naming convention for the
  * two persistent jobs this card looks for: `squad`, `aca`, then the role
  * word, as three CONSECUTIVE tokens -- matching the real production device
- * name above (`..., 'ca', 'squad', 'aca', 'watch', '0000016', ...`) -- with
- * whatever Azure-generated revision/replica suffix follows. Requiring the
- * exact token `role` immediately after `aca` immediately after `squad`,
- * rather than "the name mentions `watcher` somewhere", is what keeps an
- * arbitrary implementation session (dispatched under a name like
- * `squad-aca-session-<slug>`, never `squad-aca-<role>`) from masquerading as
- * the job it is not.
+ * name above (`..., 'ca', 'squad', 'aca', 'watch', '0000016', ...`) -- and
+ * ANCHORED to what actually follows a real Azure revision name: either
+ * nothing (a bare job name with no suffix at all) or a purely numeric
+ * revision token, never an arbitrary following word.
+ *
+ * That anchor is what tells apart a real Container App Job name from an
+ * implementation session's own slug that merely happens to CONTAIN the
+ * three-token run somewhere in the middle (#233's second review): a name
+ * like `aca-caj-squad-aca-session-repair-squad-aca-watch-card` contains the
+ * literal run `squad`, `aca`, `watch` -- but immediately followed by the
+ * plain word `card`, not a revision number and not the end of the name, so
+ * it is rejected here even though an unanchored substring/token search would
+ * have matched it. A real device's role token is always either the last
+ * token in the name or immediately followed by the Azure-generated numeric
+ * revision (`--0000016-...`), which is exactly the shape checked below.
  */
 function matchesAcaJobConvention(tokens, role) {
-  for (let i = 0; i < tokens.length - 2; i += 1) {
-    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) return true;
+  for (let i = 0; i <= tokens.length - 3; i += 1) {
+    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {
+      const next = tokens[i + 3];
+      if (next === undefined || /^[0-9]+$/.test(next)) return true;
+    }
   }
   return false;
+}
+
+/** `online` beats `stale` beats `offline`, for picking the live record among
+ * several candidates that otherwise all match the same role. */
+const ACA_PRESENCE_RANK = Object.freeze({ online: 2, stale: 1, offline: 0 });
+
+/**
+ * Among several devices that all match the same role, pick the one that is
+ * actually live right now, falling back to whichever was seen most recently.
+ *
+ * Without this, `findAcaRoleDevice` returning the FIRST roster match made
+ * the card's answer depend on roster ORDER rather than on which device is
+ * actually the current one (#233's third review): an old, offline revision
+ * of the watch job that precedes a new online revision in the roster array
+ * would otherwise make the card report Offline against a service that is, in
+ * truth, connected right now. Ranking by presence first, then recency,
+ * means the roster's array order never changes the answer -- only reversing
+ * which record is actually newer/more alive does.
+ */
+function pickFreshestAcaDevice(pool) {
+  return pool.reduce((best, cur) => {
+    if (!best) return cur;
+    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (curRank !== bestRank) return curRank > bestRank ? cur : best;
+    return (cur.lastSeen || 0) > (best.lastSeen || 0) ? cur : best;
+  }, null);
 }
 
 /**
@@ -76,12 +114,21 @@ function matchesAcaJobConvention(tokens, role) {
  * 1. `meta.role` sent by the device itself -- sanitized and restricted to
  *    `ROLE_VALUES` before it ever reaches the hub's store (#233), so a
  *    device that claims `watch` or `ralph` here is asserting its own job
- *    identity, not merely hoping its name parses that way.
+ *    identity, not merely hoping its name parses that way. When more than
+ *    one device claims the same role (an old revision still in the roster
+ *    alongside a new one), the live/freshest one wins -- see
+ *    `pickFreshestAcaDevice`.
  * 2. Failing that (today's real squad-on-aca deployments send no metadata
  *    at all -- `meta: null`), the established job-naming convention above,
  *    checked against `meta.jobName`, `meta.executionName` and the device's
  *    own `name`, in that order of how likely each is to BE the Container
- *    App Job name rather than an operator-chosen label.
+ *    App Job name rather than an operator-chosen label. A device that
+ *    EXPLICITLY claims a DIFFERENT role via a verified `meta.role` is
+ *    excluded from this name-based fallback for `role` entirely (#233's
+ *    third review): a device named like Ralph that has verified itself as
+ *    the watcher must never also be picked up as Ralph by name coincidence
+ *    -- an explicit, recognized role is authoritative and exclusive, not
+ *    merely a tie-breaker.
  *
  * Only `kind: 'aca'` devices are considered for either path: the watcher and
  * Ralph are categorically ACA jobs (`src/service/store.js`'s
@@ -90,12 +137,14 @@ function matchesAcaJobConvention(tokens, role) {
  */
 function findAcaRoleDevice(devices, role) {
   const pool = (devices || []).filter((d) => d && d.kind === 'aca');
-  const byMeta = pool.find((d) => d.meta && d.meta.role === role);
-  if (byMeta) return byMeta;
-  return pool.find((d) => {
+  const metaMatches = pool.filter((d) => d.meta && d.meta.role === role);
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);
+  const nameMatches = pool.filter((d) => {
+    if (d.meta && d.meta.role && d.meta.role !== role) return false;
     const candidates = [d.meta && d.meta.jobName, d.meta && d.meta.executionName, d.name];
     return candidates.some((c) => matchesAcaJobConvention(nameTokens(c), role));
-  }) || null;
+  });
+  return nameMatches.length ? pickFreshestAcaDevice(nameMatches) : null;
 }
 
 /** The persistent issue-watcher ACA job, found by `findAcaRoleDevice`. */

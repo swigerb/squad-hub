@@ -327,11 +327,27 @@ them, honestly:
   that — today's real squad-on-aca deployments send no metadata at all —
   the card falls back to the established Container App Job naming
   convention, requiring the literal tokens `squad`, `aca`, then the role
-  word, consecutively (matching a real production device name like
-  `aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5`). Only `kind: 'aca'`
-  devices are considered either way. Neither path ever matches an
-  implementation session merely because its own name happens to contain
-  the English words "watcher" or "ralph" as a substring.
+  word, consecutively, ANCHORED to what actually follows a real Azure
+  revision name: either nothing (a bare job name with no suffix) or a
+  purely numeric revision token (matching a real production device name
+  like `aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5`). A name that
+  merely contains the same three-token run somewhere in the middle,
+  followed by an ordinary word rather than a revision number or the end of
+  the name (for example an implementation session slug ending
+  `...-squad-aca-watch-card`), is rejected — the anchor is what tells a
+  real job name apart from a session slug that happens to embed it. Only
+  `kind: 'aca'` devices are considered either way. Neither path ever
+  matches an implementation session merely because its own name happens to
+  contain the English words "watcher" or "ralph" as a substring. A device
+  that EXPLICITLY claims one role via a verified `meta.role` is excluded
+  from the OTHER role's name-based fallback entirely — an explicit,
+  recognized role is authoritative and exclusive, never merely a
+  tie-breaker. When more than one device matches the same role (an old
+  revision still in the roster alongside a new one), the card selects the
+  one that is actually live right now (ranked `online` > `stale` >
+  `offline`, then most recently seen), so the roster's own array order
+  never changes which device is reported — only which one is truly current
+  does.
 - **"watch-only."** Said about the issue watcher ONLY when `meta.approvalMode`
   is the verified value `auto`. A watcher can exist under manual approval
   too, and presence alone proves nothing about its approval mode — with no
