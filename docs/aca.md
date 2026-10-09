@@ -386,13 +386,62 @@ actually runs the workflow from. See
 [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
 for why that distinction matters.
 
+### The status card's issue-watcher and Ralph rows (#180, #233)
+
+The devices panel's "Squad on ACA" status card identifies the persistent
+issue-watcher and Ralph (triage sweep) jobs, and reports two facts about
+them, honestly:
+
+- **Role.** Preferred source: an explicit, sanitized `meta.role` of
+  `watch` or `ralph` the device itself reports (see
+  `SQUAD_HUB_DEVICE_META_JSON` in [commands.md](commands.md)). Failing
+  that — today's real squad-on-aca deployments send no metadata at all —
+  the card falls back to the established Container App Job naming
+  convention, requiring the literal tokens `squad`, `aca`, then the role
+  word, consecutively, ANCHORED to what actually follows a real Azure
+  revision name: either nothing (a bare job name with no suffix) or a
+  purely numeric revision token (matching a real production device name
+  like `aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5`). A name that
+  merely contains the same three-token run somewhere in the middle,
+  followed by an ordinary word rather than a revision number or the end of
+  the name (for example an implementation session slug ending
+  `...-squad-aca-watch-card`), is rejected — the anchor is what tells a
+  real job name apart from a session slug that happens to embed it. Only
+  `kind: 'aca'` devices are considered either way. Neither path ever
+  matches an implementation session merely because its own name happens to
+  contain the English words "watcher" or "ralph" as a substring. A device
+  that EXPLICITLY claims one role via a verified `meta.role` is excluded
+  from the OTHER role's name-based fallback entirely — an explicit,
+  recognized role is authoritative and exclusive, never merely a
+  tie-breaker. When more than one device matches the same role (an old
+  revision still in the roster alongside a new one), the card selects the
+  one that is actually live right now (ranked `online` > `stale` >
+  `offline`, then most recently seen), so the roster's own array order
+  never changes which device is reported — only which one is truly current
+  does.
+- **"watch-only."** Said about the issue watcher ONLY when `meta.approvalMode`
+  is the verified value `auto`. A watcher can exist under manual approval
+  too, and presence alone proves nothing about its approval mode — with no
+  `approvalMode` reported (today's real shape), the row shows plain
+  presence instead of a guessed label.
+- **"Last sweep."** Said about Ralph ONLY from a confirmed `meta.lastSweepAt`.
+  `lastSeen` is a wire-protocol heartbeat every device reports merely by
+  staying connected — proof the process is alive, not that a triage sweep
+  ever completed. With no `lastSweepAt` reported, the row says "Last seen
+  `<ago>` · no sweep confirmed" instead.
+
+None of `role`, `approvalMode` or `lastSweepAt` is required. A device that
+never sends them is reported as unknown or plain presence, never guessed —
+the hub never polls Azure or holds Azure credentials to find out on its own
+(see [security.md](security.md)).
+
 ## Scope
 
 Both halves are implemented and proven.
 
 | | |
 |---|---|
-| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, and `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy. |
+| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy — and the devices panel's "Squad on ACA" status card (#180, honest role/approval/sweep reporting per #233), the first UI to read `GET /api/aca/repos` / `GET /api/aca/dispatches`. |
 | **In squad-on-aca** | `worker/lib/squad-hub.sh`, the `hub-argv-json` policy variant, and the `-SquadHubUrl` / `-SquadHubToken` deploy parameters. See its [docs/squad-hub.md][aca-doc]. |
 
 [aca-doc]: https://github.com/swigerb/squad-on-aca/blob/main/docs/squad-hub.md
