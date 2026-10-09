@@ -575,8 +575,13 @@ and `APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT` exist only so this
 project's own test suite can run this exact script against a local stub
 instead of real Azure — both default to the real, production-safe behavior
 (`management.azure.com` over `https`) when unset, so copy-pasting this below
-does the right thing without touching either variable. **Never set either of
-those two in a real deployment.**
+does the right thing without touching either variable. **`APP_SERVICE_SETTINGS_HOST`
+has no effect at all unless `APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT`
+is also set to `'1'`** — a stray `APP_SERVICE_SETTINGS_HOST` left set in a
+real shell is silently ignored and the script still talks to
+`management.azure.com`, so the two variables can never be triggered
+independently by accident. **Never set either of those two in a real
+deployment.**
 
 ```bash
 node -e "
@@ -598,7 +603,11 @@ if (!resourcePath || !token) {
 // never be set outside this project's own test suite.
 const insecureTestTransport = process.env.APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT === '1';
 const transport = insecureTestTransport ? require('http') : require('https');
-const hostParts = (process.env.APP_SERVICE_SETTINGS_HOST || 'management.azure.com').split(':');
+// APP_SERVICE_SETTINGS_HOST is only ever honored when the insecure test
+// transport is explicitly opted into -- a stray APP_SERVICE_SETTINGS_HOST
+// left set in a real shell must never redirect the bearer token and the
+// freshly written private key to some other host, even over HTTPS.
+const hostParts = ((insecureTestTransport && process.env.APP_SERVICE_SETTINGS_HOST) || 'management.azure.com').split(':');
 const apiHostname = hostParts[0];
 const apiPort = hostParts[1] ? Number(hostParts[1]) : (insecureTestTransport ? 80 : 443);
 
@@ -649,7 +658,7 @@ function readProperties(res, label) {
     console.error('Refusing: could not ' + label + ' (HTTP ' + res.status + '). Fix access before generating anything.');
     process.exit(1);
   }
-  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') {
+  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {
     console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
     process.exit(1);
   }
@@ -750,6 +759,15 @@ function readProperties(res, label) {
   operator. **Never regenerate or rotate them from a worker, from this
   workflow, or at any startup path** — doing so would silently orphan every
   browser already subscribed (below).
+- **A `MISMATCH` (or any other) failure in step 4, after the PUT in step 3
+  already returned success, does not mean the pair was never stored.** The
+  write already landed; only the readback/verification failed. The pair is
+  now present in the live App Service settings despite this run reporting
+  failure. Re-running this same script will correctly refuse with "already
+  configured" (both halves are now present) — that refusal is not a bug,
+  but it also means simply re-running this script is **not** the recovery
+  path here. Use the "Explicit rotation" procedure below instead to
+  deliberately replace the pair that is now actually stored.
 
 **`SQUAD_HUB_PUBLIC_URL` must be `https:`.** The Push API itself refuses to
 register a subscription from an insecure context (`localhost` is the one

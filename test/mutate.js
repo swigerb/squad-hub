@@ -6568,7 +6568,7 @@ if ($health.accessStore -ne 'durable') {`,
     // reproduces exactly that silent-data-loss bug.
     name: 'the recommended VAPID transfer script silently treats a malformed settings response as empty instead of refusing',
     file: 'docs/security.md',
-    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') {
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {
     console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
     process.exit(1);
   }
@@ -6587,6 +6587,32 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  if (derivedPublic !== publicKey) {`,
     replace: `  if (false) { // MUTATION: correspondence check disabled`,
     mustFail: 'security.md folds the ECDH correspondence check into the one recommended script, with no separate paste-based example',
+  },
+  {
+    // Security review follow-up to #244 (N1): APP_SERVICE_SETTINGS_HOST must
+    // never be honored unless the insecure test-transport flag is also
+    // explicitly set to '1' -- otherwise a stray APP_SERVICE_SETTINGS_HOST
+    // left set in a real shell silently redirects the bearer token and the
+    // freshly written private key to a different host, still over HTTPS.
+    // Reverting to honoring the host override unconditionally reproduces
+    // exactly that.
+    name: 'the recommended VAPID transfer script honors APP_SERVICE_SETTINGS_HOST even without the insecure test-transport flag',
+    file: 'docs/security.md',
+    find: `const hostParts = ((insecureTestTransport && process.env.APP_SERVICE_SETTINGS_HOST) || 'management.azure.com').split(':');`,
+    replace: `const hostParts = (process.env.APP_SERVICE_SETTINGS_HOST || 'management.azure.com').split(':'); // MUTATION: host override honored unconditionally`,
+    mustFail: 'executable: APP_SERVICE_SETTINGS_HOST alone, without the insecure test-transport flag, is ignored -- the real hostname and port are used',
+  },
+  {
+    // Security review follow-up to #244 (N2): `typeof res.body.properties
+    // !== 'object'` alone is also true for an array (`typeof [] ===
+    // 'object'`), so a `properties: []` response would otherwise pass this
+    // shape check and proceed into the write path. Dropping the explicit
+    // Array.isArray rejection reproduces exactly that gap.
+    name: 'the recommended VAPID transfer script treats properties: [] as a valid shape instead of refusing',
+    file: 'docs/security.md',
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {`,
+    replace: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') { // MUTATION: array shape rejection removed`,
+    mustFail: 'executable: the script refuses safely, with no write, when properties is an array instead of an object',
   },
 ];
 

@@ -545,6 +545,11 @@ const { spawn } = require('child_process');
             res.end(JSON.stringify({ notProperties: true }));
             return;
           }
+          if (scenario.arrayProperties && callIdx === 0) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: [] }));
+            return;
+          }
           if (scenario.listStatus && scenario.listStatus !== 200 && callIdx === 0) {
             res.writeHead(scenario.listStatus, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ properties: storedProperties }));
@@ -693,6 +698,62 @@ check('executable: the script detects and reports a readback public-key mismatch
   assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit after detecting the mismatch');
   assert.match(result.stdout + result.stderr, /MISMATCH/, 'expected the script to report MISMATCH');
   assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the mismatch');
+});
+
+// Security review follow-up (N2): `typeof res.body.properties !== 'object'`
+// alone is true for a plain object AND for an array (`typeof [] ===
+// 'object'`), so a `properties: []` response -- not a shape Azure's real API
+// returns, but also not one this script should ever trust -- must be
+// refused the same explicit way as any other wrong shape, never silently
+// accepted into the pre-existing/write logic.
+check('executable: the script refuses safely, with no write, when properties is an array instead of an object', () => {
+  const result = runVapidScenario({ arrayProperties: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /Refusing/, 'expected an explicit safe refusal, not a silent pass');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when properties is an array');
+});
+
+// Security review follow-up (N1): APP_SERVICE_SETTINGS_HOST must have no
+// effect at all unless APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT is also
+// set to '1' -- otherwise a stray APP_SERVICE_SETTINGS_HOST left set in a
+// real shell would silently redirect the bearer token and the freshly
+// written private key to a different host (still over HTTPS, but not
+// Azure). This cannot be proven with the full `runVapidScenario` harness
+// without actually dialing a real or non-existent host over HTTPS, so this
+// extracts just the host/port resolution logic verbatim from the recommended
+// script and runs it on its own -- it never calls `.request()`, so no
+// network I/O happens either way.
+function extractHostResolutionSnippet() {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  const match = recommendedScript.match(
+    /const insecureTestTransport[\s\S]*?const apiPort = hostParts\[1\] \? Number\(hostParts\[1\]\) : \(insecureTestTransport \? 80 : 443\);/,
+  );
+  assert.ok(match, 'could not find the host/transport resolution block in the recommended script');
+  return match[0];
+}
+
+function runHostResolution(overrides) {
+  const snippet = extractHostResolutionSnippet() + "\nconsole.log(JSON.stringify({ insecureTestTransport, apiHostname, apiPort }));";
+  const env = Object.assign({}, process.env);
+  delete env.APP_SERVICE_SETTINGS_HOST;
+  delete env.APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT;
+  Object.assign(env, overrides);
+  const r = spawnSync(process.execPath, ['-e', snippet], { encoding: 'utf8', timeout: 5000, env });
+  assert.strictEqual(r.status, 0, 'the extracted host-resolution snippet must run without error; stderr=' + r.stderr);
+  return JSON.parse(r.stdout.trim());
+}
+
+check('executable: APP_SERVICE_SETTINGS_HOST alone, without the insecure test-transport flag, is ignored -- the real hostname and port are used', () => {
+  const result = runHostResolution({ APP_SERVICE_SETTINGS_HOST: 'evil.example:9999' });
+  assert.strictEqual(result.insecureTestTransport, false, 'the insecure test transport flag must be false when not set to the literal string \'1\'');
+  assert.strictEqual(result.apiHostname, 'management.azure.com', 'a stray APP_SERVICE_SETTINGS_HOST must never override the real hostname unless the insecure test transport is explicitly set to \'1\'');
+  assert.strictEqual(result.apiPort, 443, 'the real production port must be used when the insecure test transport flag is not set');
+});
+
+check('executable: APP_SERVICE_SETTINGS_HOST is honored only together with the insecure test-transport flag', () => {
+  const result = runHostResolution({ APP_SERVICE_SETTINGS_HOST: '127.0.0.1:9999', APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT: '1' });
+  assert.strictEqual(result.apiHostname, '127.0.0.1', 'with the insecure test transport flag set, the overridden host must be honored');
+  assert.strictEqual(result.apiPort, 9999, 'with the insecure test transport flag set, the overridden port must be honored');
 });
 
 // PR #244 review: security.md claimed /api/me's push.publicKey is derived
