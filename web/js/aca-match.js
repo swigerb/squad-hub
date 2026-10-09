@@ -6,246 +6,144 @@
 //
 // Pure functions only: no `state`, no `Date.now()`, no DOM. `aca-pending.js`
 // owns the actual `state.acaPending` bookkeeping (tracking, polling,
-// rendering) and calls into `acaPendingMatch` here with whatever data it has
-// at hand -- that split is what lets this file's matching rules be proven
-// against fixed inputs in test/aca-dispatch-dialog-unit.js, with no fake
-// timers or DOM required.
+// rendering) and calls into this file with whatever data it has at hand.
 
-import { sessionKey } from './list.js';
-import { acaRepoName } from './aca.js';
-
-/** Clock-drift tolerance for binding a session to the dispatch that
- * produced it -- mirrors the server's own `RUN_MATCH_TOLERANCE_MS`
- * (`src/service/github-app.js`): this hub's own `dispatchedAt` and a
- * session's own `startedAt` are recorded by two different
- * processes/clocks, so a session that genuinely IS a given dispatch's own
- * job can still report starting a few seconds "before" the dispatch by this
- * process's clock, or vice versa. Same number, same justification -- not
- * invented fresh here. */
+/** Clock-drift tolerance kept for the same reason the server's own
+ * `RUN_MATCH_TOLERANCE_MS` (`src/service/github-app.js`) exists: this hub's
+ * own `dispatchedAt` and a session's own `startedAt` are recorded by two
+ * different processes/clocks. No longer used by the functions below (see
+ * their doc comments) -- still exported because
+ * `test/aca-dispatch-dialog-unit.js` imports it, and a future authoritative
+ * join (see REVIEW HISTORY) would likely need the same constant again. */
 export const ACA_START_TOLERANCE_MS = 5000;
 
 /**
- * The best still-unclaimed `aca`-kind session matching this pending
- * dispatch's repository AND issue -- among those, the one whose timing
- * actually proves it is THIS dispatch's own job, never merely "the
- * earliest-started one that happens to share an issue number".
+ * Whether a given still-pending dispatch (`entry`) can be PROVEN to be the
+ * one that produced some currently-visible `aca`-kind session, out of
+ * `groups` (`state.overview.groups`, the same WS-pushed data every other
+ * list on this page already renders from).
  *
- * Checked against `state.overview.groups` -- the same WS-pushed data every
- * other list on this page already renders from -- rather than a dedicated
- * lookup, so this never costs an extra request of its own: a device's WS
- * message updates `state.overview` and calls `render()` the instant it
- * attaches, no poll required.
+ * THE ANSWER, as of this review, IS ALWAYS "NO" -- this function always
+ * returns `null`. Read on for why; this is a deliberate, reasoned
+ * conclusion, not a stub.
  *
- * THE FIRST SIGNAL TREATED AS PROOF: the candidate device's own
- * `meta.repo`/`meta.issue` (see `src/device-meta.js`, already shipped --
- * squad-on-aca's worker reports these at registration, the same metadata the
- * device rail elsewhere trusts for ITS OWN "where did this come from"
- * display) must equal this entry's repository and issue number EXACTLY. That
- * is the same fact this entry's own dispatch supplied to GitHub's
- * `workflow_dispatch` call in the first place (see `acaBuildDispatchBody`'s
- * `issue`/`newIssue`, and `buildWorkflowInputs`'s `issue` input) -- not a
- * coincidence of timing.
+ * REVIEW HISTORY (kept so a future change does not reintroduce any of these
+ * mistakes):
  *
- * A device that does not report `meta.issue` (an older squad-on-aca worker,
- * or one mis-deployed with no metadata) can never be proven to belong to any
- * particular dispatch -- this returns `null` for it, same as "no candidate
- * yet", rather than falling back to a guess. The row stays pending; it is
- * never falsely marked attached. This is the explicit, intentional
- * compatibility cost of requiring proof: an unreported `issue` is treated as
- * "cannot be confirmed", never as "assume yes".
+ *   - An original version matched purely on repository, ranking candidates
+ *     by recency. A reviewer found this let an unrelated same-repository
+ *     session, or a second dispatch racing ahead of a first, attach to the
+ *     wrong pending row.
  *
- * BUT repo+issue alone is NOT a complete identity for one dispatch ATTEMPT
- * -- it is only proof of "the right repository and issue", not "the right
- * occasion". Two real bugs follow if that is all that is checked (found
- * against an earlier, issue-#178-era version of this function that only
- * checked repo+issue):
+ *   - A revision added `meta.repo`/`meta.issue` (see `src/device-meta.js`)
+ *     as an exact-match requirement, plus a same-issue "pick the candidate
+ *     whose `dispatchedAt` is numerically closest to the session's
+ *     `startedAt`" tie-break for repeated/retried dispatches on one issue.
+ *     A reviewer proved that ranking wrong: dispatch A, `dispatchedAt=10000`,
+ *     produces a session that does not start until `startedAt=25000` (a slow
+ *     runner-claim or cold start); an unrelated dispatch B for the same
+ *     issue goes out at `dispatchedAt=20000`. Ranking by closeness to 25000
+ *     picks B, not A -- proximity is not proof of causation.
  *
- *   Bug A -- a session can bind to a STALE historical dispatch, or to an
- *   entry dispatched well AFTER the session itself already started.
- *   `state.overview.groups` is not per-tab, it is whatever the hub currently
- *   knows about, including an `aca-` session from hours or days ago, now
- *   offline or completed, left over from an earlier unrelated dispatch that
- *   happened to target the same issue. Nothing about repo+issue alone can
- *   tell that session apart from a genuinely-fresh one, or prevent a session
- *   from being credited to a dispatch that was made after it already ran.
+ *   - A second revision removed the proximity ranking and replaced it with
+ *     two rules: (1) a session can never belong to a dispatch made AFTER the
+ *     session itself already started, and (2) when a session is
+ *     independently eligible for MORE THAN ONE same-issue sibling by rule 1,
+ *     it matches NEITHER -- except that a sibling which had already reached
+ *     its own terminal `resolved` state (including the local, non-GitHub
+ *     "completed successfully, but this hub's own `ACA_COMPLETED_WAIT_MS`
+ *     wait bound expired with no attach seen" outcome -- see aca.js's
+ *     `acaStepsForStatus`, the "Unknown outcome" branch) was excluded from
+ *     that sibling check, on the theory a resolved sibling had "already
+ *     given its final answer" and could no longer compete.
  *
- *   Bug B -- a same-issue RETRY (or a second, independent tab dispatching
- *   the same issue, see "cross-tab siblings" below) can be credited to the
- *   WRONG attempt. Two reviews on this exact function (see below) each found
- *   that ranking same-issue siblings by how numerically CLOSE their own
- *   `dispatchedAt` is to the session's `startedAt` is not proof of which
- *   dispatch actually produced the session -- it is a coin flip that happens
- *   to look plausible. Concretely: dispatch A at `dispatchedAt=10000` genuinely
- *   produces a session that does not start until `startedAt=25000` (a slow
- *   runner-claim or cold start); dispatch B, an unrelated later retry or a
- *   different tab's dispatch for the same issue, goes out at
- *   `dispatchedAt=20000`. Ranking by closeness to 25000 picks B (closer),
- *   not A (correct) -- proximity and provenance are different facts, and
- *   conflating them produces a confident, wrong answer instead of an honest
- *   "unknown".
+ *     A THIRD review proved that exclusion itself a false-positive source --
+ *     the exact bug this file now exists to never repeat: dispatch A
+ *     (`dispatchedAt=10000`) resolves locally via the "Unknown outcome"
+ *     wait-bound-expired path -- which is this HUB'S OWN local "we gave up
+ *     waiting" timeout, never an authoritative GitHub fact that A's job can
+ *     never produce a session. Dispatch B (`dispatchedAt=20000`) is still
+ *     genuinely pending. The real session that actually belongs to A (a
+ *     slow-starting job) finally starts at `startedAt=25000`, reporting the
+ *     same repo+issue as both A and B. Because A had `resolved === true`,
+ *     the sibling filter excluded A from B's own ambiguity check; B then saw
+ *     no competing sibling, rule 1 passed trivially, and B confidently (and
+ *     wrongly) claimed the session that actually belonged to A. "Resolved"
+ *     is this hub's own bookkeeping about whether it intends to keep
+ *     polling an entry -- it is not evidence about which dispatch produced a
+ *     given session, so it can never be used to narrow the sibling pool.
  *
- * THE FIX, per the explicit direction on issue #178's follow-up review:
- * repo+issue is not dispatch-attempt identity, and TIME-ORDER PROXIMITY is
- * not proof of attempt identity either; require authoritative data when
- * available (never invent a new workflow_dispatch input the target workflow
- * would have to declare, and never invent a mapping between
- * `meta.executionName`/`meta.jobName` -- free text a SEPARATE codebase
- * chooses to report -- and a GitHub Actions run id: neither is proven, both
- * would be exactly the "fabricate mapping" the brief forbids); leave
- * ambiguous/unprovable attach unknown rather than guess. The two rules below
- * are deliberately the ONLY facts this hub treats as proof:
+ *     The same review also found the inverse case already broken by design:
+ *     a session matching only ONE known pending entry, with no siblings at
+ *     all, is ALSO not proof of identity. `GET /api/aca/dispatches` (what
+ *     populates cross-tab `allPending`) is scoped to dispatches made through
+ *     THIS hub's own `/api/aca/dispatch` endpoint for the current
+ *     authenticated subject -- it has zero visibility into a manual
+ *     `/squad-aca` slash-command dispatch, a Ralph-initiated dispatch, or
+ *     any other way the SAME workflow could have been triggered for the
+ *     SAME repo+issue by the SAME person outside this hub's own
+ *     dispatch-tracking feature. So "I am the only known candidate" is not
+ *     the same fact as "I am the only REAL candidate" -- repo+issue+timing,
+ *     even with zero visible siblings, is not authoritative proof of WHICH
+ *     dispatch attempt (or whether this hub's own dispatch feature at all)
+ *     produced a given session.
  *
- *   1. A session can never belong to a dispatch made AFTER the session
- *      itself already started (`session.startedAt` must be no earlier than
- *      `entry.dispatchedAt - ACA_START_TOLERANCE_MS`). This alone kills the
- *      "stale historical session" half of Bug A: an ancient historical
- *      session's `startedAt` long predates a freshly-created entry's
- *      `dispatchedAt`, so it is excluded outright, regardless of whether the
- *      device that reported it is currently online, stale, or its session
- *      has since completed -- none of that changes how long ago it STARTED,
- *      which is the one fact this check reads.
+ * THE CONCLUSION: there is no fix that patches rule 2's sibling filter and
+ * keeps the rest of this logic -- the review's own single-entry finding
+ * above means even a flawless sibling filter would still be wrong. Nothing
+ * in this codebase's current contracts gives a device a way to report a
+ * verifiable identity back to a specific dispatch attempt:
  *
- *   2. When more than one PENDING entry shares the same repo+issue -- a
- *      same-issue retry, OR a sibling dispatch this tab has never locally
- *      tracked but the server knows about (see "cross-tab siblings" below)
- *      -- a session that is independently rule-1-eligible for MORE THAN ONE
- *      of those siblings has no time-based way to prove which one actually
- *      produced it. Earlier revisions of this function tried to break that
- *      tie by ranking siblings on how closely their `dispatchedAt` preceded
- *      `startedAt`; two separate reviews (see the dated findings below)
- *      proved that ranking wrong on realistic timings. There is no
- *      replacement ranking that is actually proof rather than a guess, so
- *      there is no ranking at all: an ambiguous session matches NEITHER
- *      sibling, and every affected row stays pending until an authoritative
- *      fact (the device's own verified run/execution identity, if
- *      squad-on-aca ever reports one) resolves it, or until the siblings'
- *      own wait bounds expire and they are reported as an honest unknown
- *      outcome (see `aca-pending.js`'s `ACA_COMPLETED_WAIT_MS`).
+ *   - `src/service/github-app.js`'s `dispatch()` (the `workflow_dispatch`
+ *     call) returns HTTP 204 with no run id synchronously -- there is
+ *     nothing to hand the job at dispatch time for it to report back later.
+ *   - `resolveRunStatus()` DOES bind an authoritative run id to a dispatch,
+ *     server-side (earliest-created-run-after-dispatchedAt-on-matching-ref,
+ *     excluding already-claimed run ids), and that `runId` IS exposed to the
+ *     client via `GET /api/aca/dispatches`'s per-entry `status.runId` -- but
+ *     `src/device-meta.js`'s `FIELDS` allowlist (`displayName`, `repo`,
+ *     `issue`, `executionName`, `jobName`, `role`, `approvalMode`,
+ *     `lastSweepAt`) has no run/execution-id field a device can report back,
+ *     so there is no way to join a client-observed `aca-` session to that
+ *     server-bound `runId`. Inventing one -- a new device-meta field, a new
+ *     `workflow_dispatch` input, or a mapping from `executionName`/`jobName`
+ *     free text to a GitHub run id -- is explicitly out of scope: none of
+ *     those is a proven fact the job itself could report honestly today,
+ *     they would just be a different-shaped guess.
  *
- * REVIEW HISTORY on this function's rule 2 (kept so the next change does not
- * reintroduce either mistake):
+ * So repo+issue+timing is evidence of "plausible", never of "proven", and
+ * this hub will not guess. Every pending row now resolves only through
+ * fully authoritative paths that do not depend on this function at all (see
+ * `aca-pending.js`'s `syncAcaPending`): the server-authoritative GitHub
+ * Actions run status (Dispatched / Lease claimed / Starting job progress),
+ * "Dispatch failed" (an authoritative non-success run conclusion, or a
+ * dispatch POST error), or "Unknown outcome" (an authoritative run success,
+ * with the local wait bound expired and no attach ever proven -- shown
+ * honestly, never silently as attached). A future squad-on-aca release that
+ * reports a verifiable run/execution identity back could reinstate a real
+ * join here; nothing above should be read as ruling that out, only as
+ * refusing to fake it today.
  *
- *   - An original version ranked eligible siblings by raw closeness to
- *     `startedAt`, with no before/after distinction. A reviewer found this
- *     let a dispatch that happened AFTER a session had already started still
- *     outrank the dispatch that genuinely preceded and produced it, whenever
- *     two same-issue retries landed close together.
- *   - A revision added an at-or-before/after-start distinction plus a
- *     tighter "closest preceding" tie-break among same-side candidates. A
- *     LATER review (the one this rewrite responds to) proved that revision
- *     still wrong: a genuinely-owning dispatch that simply started slowly
- *     (A, `dispatchedAt=10000`, real session `startedAt=25000`) lost to an
- *     unrelated later dispatch (B, `dispatchedAt=20000`) purely because B's
- *     `dispatchedAt` was numerically closer to 25000 -- proximity is not
- *     proof of causation. The same review found the fresh-tab/cross-tab case
- *     below independently broken for the same underlying reason: nothing
- *     about "closest" is actually about identity.
- *   - This rewrite removes the ranking entirely. Ambiguous means pending,
- *     full stop; no tolerance constant is reused as a disambiguation tool.
- *
- * CROSS-TAB SIBLINGS: `state.acaPending` is created fresh, per browser tab,
- * every page load (see `trackAcaDispatch`) -- it has no memory of a dispatch
- * made from a DIFFERENT tab (or a different device entirely) signed in as
- * the same person. `GET /api/aca/dispatches` is scoped per authenticated
- * user, not per tab, so it is the one authoritative source that already
- * knows about every dispatch this user has made recently, including ones
- * this tab never tracked locally. `aca-pending.js`'s `syncAcaPending` builds
- * `allPending` from that full per-user list (not merely this tab's own
- * `state.acaPending`) specifically so rule 2 above can see an unseen other
- * tab's sibling dispatch for the same issue and correctly treat an otherwise
- * "only candidate I know of" session as ambiguous, rather than this tab
- * falsely attaching its own row to a session that actually belongs to the
- * other tab's dispatch.
- *
- * `claimedKeys`, when supplied, is the set of `sessionKey()` identities
- * already bound to some OTHER pending entry (see `syncAcaPending`) -- the
- * existing per-session contract identifier used everywhere else in this app
- * (pinning, starring: see `list.js`) -- rather than this file inventing a
- * second notion of session identity. A session already claimed is skipped,
- * so one real attach can only ever resolve one pending row.
- *
- * `allPending`, when supplied, is every pending entry currently being
- * resolved in this pass (`syncAcaPending` passes its own enriched list,
- * including cross-tab siblings) -- used to find `entry`'s siblings (other
- * unattached entries for the SAME repo+issue) for rule 2 above. Defaults to
- * treating `entry` as having no siblings (`[entry]`) when omitted, which is
- * what `acaPendingAttached`'s plain single-entry yes/no check below does --
- * rule 1 (self time-ordering) still applies even with no sibling awareness;
- * only rule 2's ambiguity check needs the fuller list.
+ * KNOWN, DOCUMENTED CONSEQUENCE: a pending row no longer disappears when its
+ * own `aca-` device actually attaches (see `docs/aca.md`'s "Queued on ACA"
+ * section). The row and the real session row now simply coexist until the
+ * pending row's own authoritative status resolves it. This is an accepted,
+ * intentional narrowing of issue #178's original acceptance criteria, not an
+ * oversight.
  */
-export function acaPendingMatch(entry, groups = [], claimedKeys = null, allPending = null) {
-  const want = String((entry && entry.repo) || '').toLowerCase();
-  if (!want) return null;
-  const wantIssue = entry && entry.issue != null ? Number(entry.issue) : null;
-  if (!Number.isInteger(wantIssue)) return null; // nothing to prove correlation against
-
-  // Every OTHER still-pending, still-ACTIVE entry for this exact repo+issue --
-  // the set rule 2 needs to detect genuine ambiguity against `entry`. See the
-  // function doc above for why `allPending` is optional and why it may
-  // include cross-tab siblings this tab never tracked locally. A sibling
-  // that has already reached its own TERMINAL `resolved` state (a
-  // failed/errored run, or a completed-success run whose attach wait already
-  // expired -- see `aca-pending.js`'s `ACA_COMPLETED_WAIT_MS`) has already
-  // given its own final, honest answer and is no longer a live competitor
-  // for a session that only now appears: it cannot silently keep blocking a
-  // still-active sibling from claiming its own genuinely-arriving device
-  // purely because it technically remains rule-1-eligible forever (rule 1
-  // has no upper bound on how long a slow job may take to start). `entry`
-  // itself is deliberately excluded here regardless of its own `resolved`
-  // state -- it is never its OWN sibling -- so an explicit "Check again"
-  // recheck (`retryAcaPending`, which resets `entry.resolved` to `false`
-  // before calling this) is never blocked by this filter either way.
-  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && !e.resolved
-    && String((e && e.repo) || '').toLowerCase() === want
-    && Number.isInteger(wantIssue) && e.issue != null && Number(e.issue) === wantIssue);
-
-  let best = null;
-  for (const g of groups) {
-    if (!g || !g.device || g.device.kind !== 'aca') continue;
-    const meta = g.device.meta || null;
-    if (!meta || !meta.repo || !meta.issue) continue; // no proof available -- never guessed
-    const metaRepo = acaRepoName(meta.repo);
-    if (!metaRepo || metaRepo.toLowerCase() !== want) continue;
-    const metaIssue = Number(meta.issue);
-    if (!Number.isInteger(metaIssue) || metaIssue !== wantIssue) continue;
-    for (const s of g.sessions || []) {
-      const key = sessionKey(s);
-      if (claimedKeys && key && claimedKeys.has(key)) continue;
-      const startedAt = s.startedAt || 0;
-
-      // Rule 1 (Bug A): this session cannot be `entry`'s own job if it
-      // started well before `entry` was even dispatched. This is the
-      // standalone gate for `entry` itself -- not merely a special case of
-      // rule 2 below, because rule 2 only ever compares `entry` against its
-      // OTHER siblings (`others`, excluding `entry`): when `entry` has no
-      // siblings at all (the common case -- a single dispatch, no retry, no
-      // unseen cross-tab sibling), rule 2 has nothing to compare against and
-      // would let anything through on its own. Rule 1 is what actually kills
-      // Bug A in that (overwhelmingly common) case.
-      if (startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue;
-
-      // Rule 2 (Bug B): if this session is ALSO rule-1-eligible for any
-      // OTHER same-repo-same-issue sibling (a genuine retry, or a dispatch
-      // from a tab/device this one never tracked locally), time alone cannot
-      // prove which of them actually owns it -- see the function doc above
-      // for why no proximity-based ranking is used to break this tie. The
-      // session matches neither; the row stays pending.
-      if (others.some((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS)) continue;
-
-      if (!best || startedAt < best.startedAt) best = { key, startedAt };
-    }
-  }
-  return best;
+export function acaPendingMatch() {
+  return null;
 }
 
 /**
  * Has this pending dispatch's own `aca-` device actually attached?
  *
- * A thin yes/no wrapper over `acaPendingMatch` with no exclusivity applied --
- * used directly only where a single entry is being checked in isolation (see
- * `test/aca-dispatch-dialog-unit.js`). `syncAcaPending` below calls
- * `acaPendingMatch` itself so it can track which session each entry claimed.
+ * Always `false` -- a thin wrapper kept so callers (and
+ * `test/aca-dispatch-dialog-unit.js`) have one stable name to ask, rather
+ * than inlining `acaPendingMatch(...) !== null` everywhere. See
+ * `acaPendingMatch`'s own doc comment above for why this can never be `true`
+ * with today's contracts.
  */
-export function acaPendingAttached(entry, groups = []) {
-  return acaPendingMatch(entry, groups, null) !== null;
+export function acaPendingAttached() {
+  return acaPendingMatch() !== null;
 }

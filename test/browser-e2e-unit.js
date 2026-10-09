@@ -2314,7 +2314,7 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       }
     });
 
-    await check('a dispatched ACA job shows a Queued-on-ACA row, polls for its run, and drops out once its device attaches (#178)', async () => {
+    await check('a dispatched ACA job shows a Queued-on-ACA row that survives a same-repo/issue aca- device registering (#178)', async () => {
       // A hub with the GitHub App configured, on its own HubService/browser
       // so it cannot interfere with the no-App assertions the main `svc`
       // above makes. `fakeInlineGithubApp` stands in for `GitHubApp` itself
@@ -2333,7 +2333,7 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       const pageAca = await browser.newPage();
       const dispatchCalls = [];
       await pageAca.route(`${originAca}/api/aca/**`, (route) => {
-        dispatchCalls.push(route.request().url());
+        dispatchCalls.push({ method: route.request().method(), url: route.request().url() });
         route.continue();
       });
       const errorsAca = [];
@@ -2343,17 +2343,47 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         await gotoSettled(pageAca, `${originAca}/?token=${tokenAca}`);
         await pageAca.waitForSelector('#who', { timeout: 15000 });
 
-        // Nothing is pending yet -- an ordinary load of an ENABLED hub must
-        // still cost zero /api/aca/* calls, the same #233 invariant that
-        // matters most on a DISABLED hub (covered above): `openAca()` is the
-        // only deliberate trigger, and nobody has opened the dialog yet.
-        assert.deepStrictEqual(dispatchCalls, [],
-          `/api/aca/* was called before the dialog was ever opened: ${dispatchCalls.join(', ')}`);
+        // Nothing is pending yet, and nobody has opened the dialog -- but
+        // this is an ENABLED hub (a configured GitHub App, via
+        // `fakeInlineGithubApp`), so the "Squad on ACA" status card's own
+        // mount-time `refreshAcaStatus()` (#233, wired from devices.js/
+        // app.js on every page load) has ALREADY made its one-time,
+        // read-only discovery burst by now: GET /api/aca/status (always),
+        // then GET /api/aca/repos and GET /api/aca/dispatches (since status
+        // answered enabled: true). That is real, intentional, already-
+        // accepted behavior, not a regression -- the invariant that
+        // actually matters here is narrower than "zero calls": no POST
+        // (i.e. no dispatch) and no route OTHER than those three read-only
+        // discovery endpoints may happen before the user's own deliberate
+        // click opens the dialog. (The true "zero /api/aca/* calls at all"
+        // invariant belongs to a DISABLED hub with no GitHub App, which
+        // never reports enabled: true and so never has anything to
+        // discover -- see the "Not connected" status-card check above.)
+        const ALLOWED_PREOPEN_ACA_PATHS = ['/api/aca/status', '/api/aca/repos', '/api/aca/dispatches'];
+        const preOpenCalls = dispatchCalls.slice();
+        const illegalPreOpen = preOpenCalls.filter((c) => (
+          c.method !== 'GET' || !ALLOWED_PREOPEN_ACA_PATHS.some((p) => c.url.endsWith(p))
+        ));
+        assert.deepStrictEqual(illegalPreOpen, [],
+          `only read-only status-card discovery GETs may happen before the dialog opens: ${JSON.stringify(illegalPreOpen)}`);
 
         await pageAca.click('#newMoreBtn');
         await pageAca.click('[data-new="aca"]');
         await pageAca.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
         await pageAca.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+
+        // Opening the dialog must not itself retrigger the status card's
+        // own discovery GET -- the real invariant this check still proves.
+        const statusCallsAfterOpen = dispatchCalls.filter((c) => c.method === 'GET' && c.url.endsWith('/api/aca/status'));
+        assert.strictEqual(statusCallsAfterOpen.length, 1,
+          `opening the dialog retriggered /api/aca/status: ${JSON.stringify(dispatchCalls)}`);
+
+        // Nobody has clicked Start yet -- the actual dispatch POST must not
+        // have happened, no matter how much read-only discovery preceded it.
+        const dispatchPostsBeforeStart = dispatchCalls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/aca/dispatch'));
+        assert.deepStrictEqual(dispatchPostsBeforeStart, [],
+          `/api/aca/dispatch was POSTed before #acaStart was ever clicked: ${JSON.stringify(dispatchPostsBeforeStart)}`);
+
         await pageAca.fill('#acaRepo', 'acme/widgets');
         await pageAca.fill('#acaPrompt', 'Update the docs and open a pull request');
         await pageAca.click('#acaStart');
@@ -2368,6 +2398,18 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         // Container Apps job. `refresh()`'s own `GET /api/overview` call
         // (triggered below) reads this straight from the store, so no WS
         // broadcast is needed to make the new device/session visible.
+        //
+        // A third Scout review found this hub has no authoritative way to
+        // join this device/session back to the specific dispatch above --
+        // GitHub's workflow_dispatch API returns no run id synchronously,
+        // `resolveRunStatus()`'s server-bound runId never reaches the
+        // device, and device-meta.js's FIELDS allowlist has no run/
+        // execution-id field a device could report back. repo+issue+timing
+        // alone was proven to produce false positives (see aca-match.js's
+        // REVIEW HISTORY), so `acaPendingMatch` now never guesses: this row
+        // MUST stay "Queued on ACA" even once a same-repo/issue aca- device
+        // and session show up, and the real session must appear separately
+        // in the roster, not replace the pending row.
         svcAca.store.registerDevice(subject, {
           deviceId: 'aca-test-1', name: 'aca job', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '42' },
         });
@@ -2379,20 +2421,19 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         // `syncAcaPending` is only ever called from `refresh()` (ws.js) or
         // the `ACA_POLL_MS` interval -- never from the WS 'overview' handler
         // itself (see ws.js's `onmessage`, which only calls `render()`). The
-        // real path for this attach to be noticed is either that 15-second
-        // timer or the next explicit `refresh()` -- and this suite has a
-        // whole-file time budget (`test/run-tests.js`'s `runChildSuite`), so
-        // waiting out a real 15s tick here is not affordable. A status-filter
-        // change is a real, ordinary `refresh()` trigger (filters.js) that
-        // fires `syncAcaPending` immediately, which is exactly what proves
-        // the row-clearing logic without inventing a test-only hook for it.
+        // real path for this registration to be noticed is either that
+        // 15-second timer or the next explicit `refresh()` -- and this suite
+        // has a whole-file time budget (`test/run-tests.js`'s
+        // `runChildSuite`), so waiting out a real 15s tick here is not
+        // affordable. A status-filter change is a real, ordinary
+        // `refresh()` trigger (filters.js) that fires `syncAcaPending`
+        // immediately, which is exactly what proves the row's honest
+        // survival without inventing a test-only hook for it.
         await pageAca.selectOption('#statusFilter', 'action');
         await pageAca.selectOption('#statusFilter', '');
-        await pageAca.waitForSelector('.row:has-text("Queued on ACA")', { state: 'detached', timeout: 10000 });
-        // The pending row's removal and the roster's re-render for the now-
-        // attached session are two separate render() passes -- poll instead
-        // of reading #groups the instant the row disappears, or a slow tick
-        // between the two passes reads as a missing session.
+        // The real session's roster re-render and the pending row's own
+        // (non-)removal are two separate render() passes -- poll for the
+        // real session to show up rather than reading #groups immediately.
         const list = await until(
           async () => {
             const text = await pageAca.textContent('#groups');
@@ -2401,7 +2442,15 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
           'the attached session to appear in the list',
           5000,
         );
-        assert.match(list, /acme\/widgets/, 'the attached session never appeared in the list');
+        assert.match(list, /acme\/widgets/, 'the registered session never appeared in the list');
+        // The honest, conservative contract: the pending row is NEVER
+        // silently cleared by this heuristic. It still exists, side by side
+        // with the real session row, until an authoritative GitHub Actions
+        // run-status transition (Dispatch failed / Unknown outcome / etc.)
+        // resolves it -- which `fakeInlineGithubApp`'s default `runState:
+        // 'queued'` deliberately never reaches, so it is still here.
+        assert.ok(await pageAca.$('.row:has-text("Queued on ACA")'),
+          'the pending row was cleared by a same-repo/issue device registering -- that is exactly the false-positive this fix removes');
 
         const broken = errorsAca.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
@@ -2412,13 +2461,24 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
     });
 
 
-    await check('two dispatches on the SAME repository, plus an unrelated/pre-existing aca device, only resolve the matching pending row (#178)', async () => {
-      // The bug this guards against: matching a pending dispatch's device
-      // purely by REPOSITORY, with no notion of "which issue each dispatch
-      // actually targeted", would let one real aca- device attach and
-      // incorrectly clear BOTH pending rows at once (or clear the wrong
-      // one), or let an unrelated/older job on the same repository be
-      // mistaken for a brand-new dispatch's own attach.
+    await check('two dispatches on the SAME repository, plus an unrelated/pre-existing aca device, never falsely resolve either pending row (#178)', async () => {
+      // The bug this ONCE guarded against (the old contract): matching a
+      // pending dispatch's device purely by REPOSITORY+issue+timing would
+      // let one real aca- device attach and incorrectly clear BOTH pending
+      // rows at once (or clear the wrong one), or let an unrelated/older
+      // job on the same repository be mistaken for a brand-new dispatch's
+      // own attach.
+      //
+      // A third Scout review proved repo+issue+timing is ALSO wrong even
+      // when the reporting issue number matches exactly: no authoritative
+      // join from a device/session back to a specific dispatch's GitHub
+      // Actions run exists in this hub's contracts (see aca-match.js's
+      // REVIEW HISTORY for the concrete counter-example), so
+      // `acaPendingMatch` now never guesses identity at all. This check now
+      // proves the honest consequence: BOTH pending rows survive a device
+      // registering, even one that reports the exact same repo+issue as one
+      // of them, because this hub correctly refuses to assume which (if
+      // either) dispatch actually produced it.
       const authTwo = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-two', deviceSecret: 'aca-two-dev' });
       const githubAppTwo = fakeInlineGithubApp();
       const svcTwo = new HubService({ auth: authTwo, serveWeb: true, githubApp: githubAppTwo });
@@ -2437,10 +2497,9 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         await pageTwo.waitForSelector('#who', { timeout: 15000 });
 
         // An unrelated/pre-existing aca- device already running against the
-        // SAME repository but reporting a DIFFERENT issue -- must never be
-        // mistaken for either dispatch's own attach, regardless of when it
-        // started (fakeInlineGithubApp mints issues 42 and 43 below; 999
-        // is neither).
+        // SAME repository but reporting a DIFFERENT issue -- never relevant
+        // to either dispatch below (fakeInlineGithubApp mints issues 42 and
+        // 43 below; 999 is neither).
         svcTwo.store.registerDevice(subject, {
           deviceId: 'aca-preexisting', name: 'aca job (old)', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '999' },
         });
@@ -2475,8 +2534,10 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         const titlesBefore = await pageTwo.$$eval('.row.aca-pending .row-title b', (els) => els.map((e) => e.textContent));
         assert.strictEqual(titlesBefore.length, 2, 'both dispatches on this repository should show their own pending row');
 
-        // Exactly ONE real aca- device attaches, reporting the FIRST
-        // dispatch's own issue (42) -- so only that entry may resolve.
+        // One real aca- device registers, reporting the FIRST dispatch's own
+        // issue (42) exactly -- under the old heuristic this would have
+        // resolved that row; under the new honest contract it must not,
+        // because repo+issue+timing is never authoritative proof.
         svcTwo.store.registerDevice(subject, {
           deviceId: 'aca-real-1', name: 'aca job', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '42' },
         });
@@ -2490,29 +2551,27 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         // the real 15-second poll.
         await pageTwo.selectOption('#statusFilter', 'action');
         await pageTwo.selectOption('#statusFilter', '');
-        await pageTwo.waitForFunction(() => document.querySelectorAll('.row.aca-pending').length === 1, null, { timeout: 10000 });
 
         // Same two-pass render gap as the single-dispatch test above: poll
-        // rather than read #groups on the instant the pending count settles.
+        // rather than read #groups on the instant the registered device's
+        // session appears.
         const list = await until(
           async () => {
             const text = await pageTwo.textContent('#groups');
             return /acme\/widgets/.test(text) ? text : null;
           },
-          'the attached session to appear in the list',
+          'the registered session to appear in the list',
           5000,
         );
-        assert.match(list, /acme\/widgets/, 'the attached session never appeared in the list');
+        assert.match(list, /acme\/widgets/, 'the registered session never appeared in the list');
 
-        // The repository-matching-alone bug this test guards against would
-        // either clear both rows for one attach, or clear the wrong one.
-        // Exactly one must remain -- the SECOND (newer) dispatch, issue 43,
-        // since the attaching device reported issue 42, which identifies it
-        // as the FIRST dispatch's own job, not a guess based on timing.
+        // The honest, conservative contract: BOTH pending rows survive,
+        // unchanged -- neither is silently resolved by a same-repo/issue
+        // device registering, because this hub cannot prove which (if
+        // either) dispatch actually produced it.
         const titlesAfter = await pageTwo.$$eval('.row.aca-pending .row-title b', (els) => els.map((e) => e.textContent));
-        assert.strictEqual(titlesAfter.length, 1, 'exactly one pending dispatch should remain after only one device attached');
-        assert.strictEqual(titlesAfter[0], titlesBefore[1],
-          'the surviving pending row should be the SECOND (newer) dispatch, not re-use of the first dispatch\'s already-claimed device');
+        assert.deepStrictEqual(titlesAfter, titlesBefore,
+          'a pending row was resolved by a same-repo/issue device registering -- that is exactly the false-positive this fix removes');
 
         const broken = errorsTwo.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
@@ -2552,15 +2611,18 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       }
     });
 
-    await check('two overlapping refreshes while one aca- device is attaching resolve the pending row exactly once (#178)', async () => {
-      // syncAcaPending's own exclusivity bookkeeping (claimedKeys/matchedKey)
-      // is entirely synchronous ahead of its one `await api(...)` -- see the
-      // comment in aca-pending.js. This proves that holds under a REAL
-      // overlapping pair of calls, not just by reading the code: two
-      // `refresh()`-triggering actions fired back-to-back, with the second
-      // one started before the first's own promise has settled, must still
-      // leave exactly one pending row resolved (never a duplicated session
-      // row, never a thrown error from double-claiming the same key).
+    await check('two overlapping refreshes while a same-repo/issue aca- device registers never corrupt pending-row state (#178)', async () => {
+      // `syncAcaPending` used to need its own exclusivity bookkeeping
+      // (claimedKeys/matchedKey) purely to arbitrate WHICH of several
+      // pending rows a single ambiguous repo+issue+timing match should
+      // claim -- see aca-match.js's REVIEW HISTORY. Now that
+      // `acaPendingMatch` never claims anything, that bookkeeping is gone
+      // (there is nothing left to race over), but two overlapping
+      // `syncAcaPending` calls (driven by two refresh-triggering actions
+      // fired back-to-back, the second started before the first's own
+      // promise has settled) must still be safe: never a duplicated
+      // pending row, never a duplicated session row, never a thrown error
+      // from touching the same `state.acaPending` entries twice at once.
       const authOverlap = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-overlap', deviceSecret: 'aca-overlap-dev' });
       const githubAppOverlap = fakeInlineGithubApp();
       const svcOverlap = new HubService({ auth: authOverlap, serveWeb: true, githubApp: githubAppOverlap });
@@ -2603,19 +2665,24 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
           pageOverlap.selectOption('#statusFilter', 'action'),
           pageOverlap.selectOption('#statusFilter', ''),
         ]);
-        await pageOverlap.waitForSelector('.row:has-text("Queued on ACA")', { state: 'detached', timeout: 10000 });
 
         const list = await until(
           async () => {
             const text = await pageOverlap.textContent('#groups');
             return /acme\/widgets/.test(text) ? text : null;
           },
-          'the attached session to appear in the list',
+          'the registered session to appear in the list',
           5000,
         );
+        assert.match(list, /acme\/widgets/, 'the registered session never appeared in the list');
+
+        // Exactly one real session row for the one registered device/
+        // session, and the pending row survives (never attached), and
+        // critically, never DUPLICATED by the overlap.
         const sessionRowCount = await pageOverlap.$$eval('.row:has-text("acme/widgets"):not(.aca-pending)', (els) => els.length);
         assert.strictEqual(sessionRowCount, 1, `the overlapping refreshes produced ${sessionRowCount} rows for one real session`);
-        assert.match(list, /acme\/widgets/, 'the attached session never appeared in the list');
+        const pendingRowCount = await pageOverlap.$$eval('.row.aca-pending', (els) => els.length);
+        assert.strictEqual(pendingRowCount, 1, `the overlapping refreshes produced ${pendingRowCount} pending rows for one dispatch`);
 
         const broken = errorsOverlap.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `overlapping refreshes logged console errors: ${broken.join(' | ')}`);

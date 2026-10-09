@@ -1,5 +1,5 @@
-// The "Queued on ACA" pending-row tracking, matching and rendering, split out
-// of aca.js (#178) to stay under the per-module size budget (see
+// The "Queued on ACA" pending-row tracking and rendering, split out of
+// aca.js (#178) to stay under the per-module size budget (see
 // test/package-unit.js's "no web/js file is anywhere near the old
 // single-file size") -- the same reason #235 split device-detail.js out of
 // devices.js.
@@ -99,9 +99,12 @@ let acaLocalIdSeq = 0;
 function nextAcaLocalId() { acaLocalIdSeq += 1; return `aca-local-${Date.now()}-${acaLocalIdSeq}`; }
 
 /** Begin tracking a dispatch this browser tab just made, so it can show as a
- * "Queued on ACA" row until its own device attaches (#178). In-memory only
- * and per-tab, same durability posture `DispatchTracker` itself documents --
- * a reload loses the row, not the dispatch, which the hub still knows about.
+ * "Queued on ACA" row until its own authoritative GitHub Actions run status
+ * resolves it (#178; see `aca-match.js`'s `acaPendingMatch` doc comment for
+ * why this row no longer clears on a device "attach" heuristic). In-memory
+ * only and per-tab, same durability posture `DispatchTracker` itself
+ * documents -- a reload loses the row, not the dispatch, which the hub still
+ * knows about.
  *
  * `trackerId` is this hub's own stable identity for the dispatch, straight
  * from the `POST /api/aca/dispatch` response (`hub-service.js`'s
@@ -127,12 +130,6 @@ export function trackAcaDispatch({
     // than `completed` again (a status flap), so the window always measures
     // from the most recent completion.
     completedAt: null,
-    // The sessionKey() of whichever aca- session this entry resolved to,
-    // once acaPendingMatch finds one -- kept even after attached so a LATER
-    // still-pending entry (a second dispatch on the same repository) can
-    // never claim the same already-attached session for itself too, see
-    // syncAcaPending below.
-    matchedKey: null,
     // Set by syncAcaPending once this entry's outcome is TERMINAL (a failed
     // dispatch, a non-success conclusion, or a completed-success run whose
     // attach wait expired -- see acaStepsForStatus's `resolved` field, the
@@ -183,39 +180,28 @@ export function trackAcaDispatch({
  */
 export async function syncAcaPending() {
   state.acaPending = state.acaPending || [];
-  const groups = (state.overview && state.overview.groups) || [];
 
   for (const entry of state.acaPending) {
     if (entry.attached || entry.forceRecheck) continue;
     entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;
   }
 
-  // Every session already bound to an entry -- including entries resolved on
-  // an earlier call to this function -- so a session can never be claimed
-  // twice: not by two pending entries in the same pass, and not by a LATER
-  // pending entry on a later pass either, once something else has already
-  // claimed it. This loop, and `acaPendingMatch` underneath it, is entirely
-  // synchronous -- so two "overlapping" calls to this function (the 15s
-  // interval firing while an earlier call is still awaiting
-  // `GET /api/aca/dispatches` below) can never both claim the same session:
-  // whichever call's synchronous portion runs first finishes marking
-  // entries `attached` before yielding control at its own `await`, so the
-  // second call always sees the up-to-date `matchedKey` set.
-  const claimedKeys = new Set(
-    state.acaPending.filter((e) => e.matchedKey).map((e) => e.matchedKey),
-  );
-  const order = [...state.acaPending].filter((e) => !e.attached)
-    .sort((a, b) => (a.dispatchedAt || 0) - (b.dispatchedAt || 0));
+  // `entry.attached` can never become `true` below: `acaPendingMatch`
+  // (aca-match.js) always returns `null` now -- repo+issue+timing is never
+  // treated as proof of dispatch-attempt identity, see that function's own
+  // doc comment for the full review history and why. The call is kept (not
+  // merely removed) so a future squad-on-aca release that reports a
+  // verifiable run/execution identity can reinstate this join by changing
+  // aca-match.js alone, with nothing here to rewire. Every entry's outward
+  // progress is therefore driven solely by the authoritative GitHub Actions
+  // run status fetched below (Dispatched / Lease claimed / Starting job),
+  // or by its own `resolved` terminal outcome (Dispatch failed / Unknown
+  // outcome, see `acaStepsForStatus` in aca.js).
+  for (const entry of state.acaPending) {
+    if (entry.attached) continue;
+    if (acaPendingMatch()) entry.attached = true; // never true today, see above
+  }
 
-  // Fetch BEFORE matching (not after), whenever anything here could still
-  // usefully change: `acaPendingMatch`'s ambiguity check (see that module's
-  // own doc comment) is only as good as the sibling pool it is given, and a
-  // fresh tab's OWN `state.acaPending` can never see another tab's dispatch
-  // for the very same issue. Matching first and enriching the sibling pool
-  // second would let that other tab's dispatch attach HERE before its own
-  // real competing dispatch was ever known about -- exactly the fresh-tab
-  // false-attach this closes (see acaPendingMatch's own doc comment on
-  // "cross-tab siblings").
   const pendingBeforeFetch = state.acaPending.filter((e) => !e.attached && !e.resolved);
   let dispatches = null;
   let fetchFailed = false;
@@ -224,39 +210,10 @@ export async function syncAcaPending() {
       ({ dispatches } = await api('/api/aca/dispatches'));
     } catch {
       // A 429, a dropped connection, or (once a hub's App is de-configured
-      // mid-session) a 501: handled below, after the (local-only) matching
-      // loop runs -- never silently swallowed, and never left to leave an
-      // already-expired entry stuck re-polling forever (see this
-      // function's own doc comment above).
+      // mid-session) a 501: handled below, never silently swallowed, and
+      // never left to leave an already-expired entry stuck re-polling
+      // forever (see this function's own doc comment above).
       fetchFailed = true;
-    }
-  }
-
-  // Every OTHER tab's own in-flight dispatch for the SAME repo+issue, built
-  // from the full per-user list this hub already returns -- never invented,
-  // never guessed: only records this fetch itself reported, and only ones
-  // this tab does not already track by its own stable `trackerId` (see
-  // `trackAcaDispatch`). A record missing any field `acaPendingMatch` needs
-  // is skipped outright rather than passed through half-formed.
-  let allPending = order;
-  if (dispatches && dispatches.length) {
-    const knownIds = new Set(state.acaPending.map((e) => e.trackerId).filter(Boolean));
-    const foreign = dispatches
-      .filter((d) => d && d.id && !knownIds.has(d.id)
-        && d.owner && d.repo && Number.isFinite(d.issue) && Number.isFinite(d.dispatchedAt))
-      .map((d) => ({
-        repo: `${d.owner}/${d.repo}`, issue: d.issue, dispatchedAt: d.dispatchedAt,
-        attached: false, resolved: false,
-      }));
-    if (foreign.length) allPending = order.concat(foreign);
-  }
-
-  for (const entry of order) {
-    const match = acaPendingMatch(entry, groups, claimedKeys, allPending);
-    if (match) {
-      entry.attached = true;
-      entry.matchedKey = match.key;
-      if (match.key) claimedKeys.add(match.key);
     }
   }
 

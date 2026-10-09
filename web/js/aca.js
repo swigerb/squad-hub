@@ -171,7 +171,12 @@ export function acaBuildDispatchBody(form = {}) {
  * renders into, and the acceptance criteria on issue #178. The hub can only
  * ever observe the first three through GitHub Actions' own run status
  * (`pending` -> `queued` -> `in_progress`); "Attached" is never read off a
- * run at all, it is reported once `acaPendingAttached` finds the session. */
+ * run at all, and is never actually reached in production anymore --
+ * `acaPendingAttached` (aca-match.js) always returns `false` as of a later
+ * review (see that function's own doc comment for why no join this hub can
+ * perform ever proves a device belongs to a specific dispatch). The
+ * `attached` parameter below is kept for callers/tests that still want to
+ * exercise this branch directly. */
 export const ACA_DISPATCH_STEPS = ['Dispatched', 'Lease claimed', 'Starting job', 'Attached'];
 
 /**
@@ -185,9 +190,10 @@ export const ACA_DISPATCH_STEPS = ['Dispatched', 'Lease claimed', 'Starting job'
  * mutation in it actually has somewhere to bite.
  *
  * ONLY TWO THINGS ARE EVER MARKED `done`: "Dispatched" (the `POST` itself
- * already succeeded, or this view would never be reached) and, once
- * `attached` is true, every step including "Attached" (a real session was
- * actually found, see `acaPendingMatch`). GitHub Actions' own `queued` /
+ * already succeeded, or this view would never be reached) and, if `attached`
+ * is ever true, every step including "Attached" -- in production `attached`
+ * is always `false` (see `ACA_DISPATCH_STEPS`'s own doc comment above).
+ * GitHub Actions' own `queued` /
  * `in_progress` states are evidence that A RUN EXISTS AND IS PROGRESSING --
  * they are not evidence that this hub's dispatch lease was claimed, or that
  * the ACA job itself has started: a runner can sit `queued` for reasons that

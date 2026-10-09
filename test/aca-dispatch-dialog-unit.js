@@ -209,52 +209,112 @@ check('a run that completed successfully but never attached within the bound wai
   assert.ok(/no ACA session attached/.test(v.failureReason));
 });
 
-// --- acaPendingAttached / acaPendingMatch: authoritative device.meta -------
+// --- acaPendingAttached / acaPendingMatch: never claims identity from
+// repo+issue+timing alone (third review, see aca-match.js's own doc comment
+// for the full REVIEW HISTORY) -------------------------------------------
 //
-// #178's release-gate review: repository-and-recency alone is a guess, not a
-// correlation -- an unrelated same-repo session, a second dispatch racing
-// ahead of a first, and two dispatches on the SAME issue all broke it. The
-// only thing actually proving an attached `aca-` device belongs to THIS
-// dispatch is its own reported `meta.repo`/`meta.issue` (src/device-meta.js,
-// already shipped -- the squad-on-aca worker reports its own identity, this
-// is not invented here), matched against the entry's OWN repo/issue -- the
-// same issue its POST was dispatched against in the first place.
+// Two earlier review rounds already removed proximity-based ranking between
+// same-issue siblings. A THIRD review round proved the revision that
+// replaced it -- "a sibling that has already reached its own terminal
+// `resolved` state stops counting as a live competitor" -- was ITSELF a
+// false-positive source: `resolved` can mean "this hub's own local
+// `ACA_COMPLETED_WAIT_MS` wait bound expired with no attach seen", which is
+// this hub giving up waiting, never an authoritative GitHub fact that the
+// dispatch can no longer produce a session. The same review also found the
+// single-entry, no-known-sibling case was ALSO never proof of identity:
+// `GET /api/aca/dispatches` only knows about dispatches made through THIS
+// hub's own feature, so "no visible sibling" is not "no real sibling"
+// either (a manual `/squad-aca` slash command, a Ralph-initiated dispatch,
+// or any other way of triggering the same workflow for the same repo+issue
+// is invisible to it).
+//
+// `acaPendingMatch` therefore now always returns `null`, and
+// `acaPendingAttached` always returns `false` -- every test below proves
+// that holds for every input shape the earlier (now-removed) rule-1/rule-2
+// logic used to treat as a legitimate match, including the exact
+// counter-example that proved the previous revision wrong.
 
 const acaGroup = (overrides) => ({
   device: { kind: 'aca', ...(overrides && overrides.device) },
   sessions: (overrides && overrides.sessions) || [],
 });
-check('matches an aca-kind device whose meta reports the same repository and issue', () => {
+
+check('acaPendingMatch never returns a match for an exact repo+issue+timing fit -- no authoritative join exists for it (see aca-match.js doc comment)', () => {
+  // This is EXACTLY the shape earlier revisions treated as proof: an
+  // aca-kind device reporting the same repo+issue as the entry, with its
+  // session's startedAt safely after dispatchedAt. It still resolves to
+  // null -- repo+issue+timing is evidence, never proof.
   const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const groups = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
-  assert.strictEqual(acaPendingAttached(entry, groups), true);
+  const groups = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [{ id: 's1', startedAt: 2000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
+  assert.strictEqual(acaPendingAttached(entry, groups), false);
 });
 
-check('is case-insensitive about the repository name', () => {
+check('acaPendingAttached never returns true, repository case folding included', () => {
   const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
   const groups = [acaGroup({ device: { meta: { repo: REPO.toUpperCase(), issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
-  assert.strictEqual(acaPendingAttached(entry, groups), true);
+  assert.strictEqual(acaPendingAttached(entry, groups), false);
 });
 
-check('a near-time session on the SAME repository but a DIFFERENT issue never matches', () => {
-  // The exact case repository-and-recency guessing could not tell apart:
-  // an unrelated dispatch (or a pre-existing/manually-started job) on the
-  // same repository, whose device attached mere seconds apart from this
-  // entry's own dispatch. Only the issue number proves which is which.
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 100000 };
+check('an empty, undefined, or malformed group list never throws and never matches', () => {
+  assert.strictEqual(acaPendingAttached({ repo: REPO, issue: 42, dispatchedAt: 1000 }, []), false);
+  assert.strictEqual(acaPendingAttached({ repo: REPO, issue: 42, dispatchedAt: 1000 }, undefined), false);
+  assert.strictEqual(acaPendingMatch(undefined, undefined, undefined, undefined), null);
+  assert.strictEqual(acaPendingMatch({}, [{}], new Set(), [{}]), null);
+});
+
+check('the Scout-review counter-example: a resolved sibling (local wait-bound expiry, not an authoritative GitHub fact) must never let an unrelated later dispatch claim its session -- and now it simply can\'t, because nothing can', () => {
+  // Dispatch A: dispatchedAt=10000. A's own run eventually resolves locally
+  // via the "completed success, but ACA_COMPLETED_WAIT_MS expired with no
+  // attach seen" path (aca.js's acaStepsForStatus, "Unknown outcome") --
+  // entry.resolved = true. This is NOT proof A's job can never produce a
+  // session; the real device can still attach late.
+  const dispatchA = { repo: REPO, issue: 42, dispatchedAt: 10000, resolved: true };
+  // Dispatch B: dispatchedAt=20000, still genuinely pending.
+  const dispatchB = { repo: REPO, issue: 42, dispatchedAt: 20000, resolved: false };
+  // The REAL session that actually belongs to A (a slow-starting job)
+  // finally starts at startedAt=25000, reporting the same repo+issue as
+  // both A and B. A prior revision's sibling filter excluded A (because
+  // `!e.resolved` filtered it out of B's ambiguity check), so B saw no
+  // competing sibling and confidently (and wrongly) claimed A's own session.
+  const session = { id: 'the-session', startedAt: 25000 };
+  const groups = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [session] })];
+  const allPending = [dispatchA, dispatchB];
+
+  assert.strictEqual(acaPendingMatch(dispatchB, groups, new Set(), allPending), null,
+    'B must never claim a session purely because its only known sibling (A) happened to be locally resolved -- that proves nothing about which dispatch produced the session');
+  assert.strictEqual(acaPendingMatch(dispatchA, groups, new Set(), allPending), null,
+    'A itself must not claim it either -- no entry is ever matched by this heuristic anymore, resolved or not');
+});
+
+check('the single-entry, no-known-sibling case is also never proof -- GET /api/aca/dispatches has no visibility into a manual/Ralph/other-origin dispatch for the same repo+issue', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  // No sibling at all, not even in allPending -- the case a prior revision
+  // treated as the easy, unambiguous win.
+  const groups = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [{ id: 'only-candidate', startedAt: 2000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set(), [entry]), null);
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null, 'omitting allPending entirely must not change the answer either');
+});
+
+check('a device whose meta reports the exact same repo+issue, with a session started well within the old clock-drift tolerance, still never matches', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
   const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 999 } },
-    sessions: [{ startedAt: 100000 + 1000 }],
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'within-tolerance', startedAt: entry.dispatchedAt - (ACA_START_TOLERANCE_MS - 1) }],
   })];
   assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
 });
 
-check('a device whose meta omits repo/issue is never treated as a match (no proof, no guess)', () => {
+check('a candidate with no meta.repo/meta.issue at all, a non-aca device, or a different repository all equally never match (all were already null before this review; still null after)', () => {
   const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
   const noMeta = [acaGroup({ sessions: [{ startedAt: 2000 }] })];
   assert.strictEqual(acaPendingMatch(entry, noMeta, new Set()), null);
   const partialMeta = [acaGroup({ device: { meta: { repo: REPO } }, sessions: [{ startedAt: 2000 }] })];
   assert.strictEqual(acaPendingMatch(entry, partialMeta, new Set()), null);
+  const nonAca = [{ device: { kind: 'cloud', meta: { repo: REPO, issue: 42 } }, sessions: [{ startedAt: 2000 }] }];
+  assert.strictEqual(acaPendingAttached(entry, nonAca), false);
+  const differentRepo = [acaGroup({ device: { meta: { repo: 'someone/else', issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
+  assert.strictEqual(acaPendingAttached(entry, differentRepo), false);
 });
 
 check('an entry with no issue number never matches anything, proof or not', () => {
@@ -263,393 +323,20 @@ check('an entry with no issue number never matches anything, proof or not', () =
   assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
 });
 
-check('does not match a non-aca device, even with matching meta', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const groups = [{ device: { kind: 'cloud', meta: { repo: REPO, issue: 42 } }, sessions: [{ startedAt: 2000 }] }];
-  assert.strictEqual(acaPendingAttached(entry, groups), false);
-});
-
-check('does not match a different repository', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const groups = [acaGroup({ device: { meta: { repo: 'someone/else', issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
-  assert.strictEqual(acaPendingAttached(entry, groups), false);
-});
-
-check('an empty group list never matches, and never throws', () => {
-  assert.strictEqual(acaPendingAttached({ repo: REPO, issue: 42, dispatchedAt: 1000 }, []), false);
-  assert.strictEqual(acaPendingAttached({ repo: REPO, issue: 42, dispatchedAt: 1000 }, undefined), false);
-});
-
-// --- acaPendingMatch: repeated/same-issue exclusivity ----------------------
-//
-// The bug this guards against: two pending dispatches on the SAME
-// repository+issue (a re-dispatch after an earlier one appeared to stall),
-// or an unrelated/pre-existing `aca-` session reporting that same identity,
-// must never let one real session resolve more than one pending row.
-
-check('a single matching session only ever satisfies ONE of two repeated-same-issue pending entries', () => {
-  // REWRITTEN by a Scout review on commit 23a1af5: a PRIOR revision of this
-  // function broke the tie between two same-issue siblings by picking
-  // whichever one's `dispatchedAt` was numerically CLOSEST to the
-  // candidate session's `startedAt`. That review proved closeness is not
-  // proof of provenance (see acaPendingMatch's own doc comment's "REVIEW
-  // HISTORY" section for the concrete counter-example: a genuinely slow-
-  // starting older dispatch loses to an unrelated, merely-closer newer
-  // one). There is no safe ranking to replace it with, so there is none:
-  // when BOTH `older` and `newer` are independently rule-1-eligible for the
-  // one real session, this hub cannot prove which of them actually owns it
-  // -- the match resolves to NEITHER, and the row stays pending rather than
-  // guessing. This is the exclusivity guarantee this test exists for, by a
-  // safer mechanism than before: nobody is ever WRONGLY marked attached.
+check('claimedKeys and multiple same-issue siblings never change the outcome -- there is no code path left that reads them toward a match', () => {
   const older = { repo: REPO, issue: 42, dispatchedAt: 1000 };
   const newer = { repo: REPO, issue: 42, dispatchedAt: 5000 };
   const groups = [acaGroup({
     device: { meta: { repo: REPO, issue: 42 } },
     sessions: [{ id: 's1', startedAt: 6000 }],
   })];
-
-  // Unclaimed, and with no sibling awareness (acaPendingAttached's plain
-  // yes/no, by design -- see its own doc comment): each independently sees
-  // the one session, since rule 1 alone has no way to rule either out.
-  // Ambiguity is only ever detected through acaPendingMatch's own
-  // `allPending` sibling-awareness, never through the plain wrapper.
-  assert.strictEqual(acaPendingAttached(older, groups), true);
-  assert.strictEqual(acaPendingAttached(newer, groups), true);
-
   const allPending = [older, newer];
-  assert.strictEqual(acaPendingMatch(older, groups, new Set(), allPending), null,
-    'older is also rule-1-eligible for newer\'s only candidate session, so this must stay ambiguous rather than guess');
-  assert.strictEqual(acaPendingMatch(newer, groups, new Set(), allPending), null,
-    'newer is also rule-1-eligible for older\'s only candidate session, so this must stay ambiguous rather than guess');
-
-  // Once `older` has reached its own TERMINAL resolved state (its run
-  // errored upstream, say), it stops competing: it already gave its own
-  // final, honest answer and can no longer silently block `newer` from
-  // claiming a session that genuinely is its own.
-  const olderResolved = { ...older, resolved: true };
-  const stillAmbiguous = [olderResolved, newer];
-  const matchNewer = acaPendingMatch(newer, groups, new Set(), stillAmbiguous);
-  assert.strictEqual(matchNewer && matchNewer.key, 's1',
-    'once the sibling has reached its own terminal resolved state, it must stop blocking the still-active entry');
-  assert.strictEqual(acaPendingMatch(olderResolved, groups, new Set(), stillAmbiguous), null,
-    'a resolved entry keeps whatever its own terminal answer already was -- it is not re-matched just because a sibling resolved');
-
-  // `claimedKeys` enforces the OTHER half of this entry's exclusivity
-  // guarantee: once a session has already been claimed by some other
-  // pending entry this pass, nobody else -- not even an otherwise
-  // unambiguous, genuinely-matching entry -- may also claim it.
-  const alreadyClaimed = new Set(['s1']);
-  assert.strictEqual(acaPendingMatch(newer, groups, alreadyClaimed, stillAmbiguous), null,
-    'a session already claimed by another entry this pass can never ALSO satisfy this one, even once it is otherwise unambiguous');
+  assert.strictEqual(acaPendingMatch(older, groups, new Set(), allPending), null);
+  assert.strictEqual(acaPendingMatch(newer, groups, new Set(), allPending), null);
+  assert.strictEqual(acaPendingMatch(newer, groups, new Set(['s1']), allPending), null);
+  assert.strictEqual(acaPendingMatch(older, groups, new Set(['s1']), allPending), null);
 });
 
-check('a closely-spaced same-issue retry stays pending for both siblings rather than guessing which one a session belongs to (Scout review on 23a1af5)', () => {
-  // A Scout review on commit 23a1af5 found an EARLIER fix for this same
-  // scenario still wrong: it let same-issue siblings be ranked by whether
-  // their own `dispatchedAt` fell before or after the candidate session's
-  // `startedAt`, with the closest at-or-before dispatch declared the
-  // winner. That is still a proximity-based guess, just a more elaborate
-  // one -- and the review's own counter-example proves it wrong: dispatch A
-  // goes out, genuinely stalls, and its own real job does not start until
-  // WELL AFTER dispatch B (an unrelated later retry of the same issue) has
-  // also gone out. Ranking "closest preceding dispatch wins" then hands the
-  // session to B, not A, even though it is genuinely A's own late-starting
-  // job. Time-order proximity is not proof of attempt identity in EITHER
-  // direction (not "closest", not "closest at-or-before, else least-late").
-  //
-  // older dispatched at t=0; newer dispatched only 4s later (t=4000), still
-  // inside the 5s ACA_START_TOLERANCE_MS window. The one real session
-  // started at t=500. Both are independently rule-1-eligible for it
-  // (`older` trivially -- 500 is after its own dispatch; `newer` through
-  // the cross-clock drift allowance, since there is no upper bound on how
-  // late a session may legitimately start after ITS OWN dispatch, and
-  // nothing here can tell "newer's own job, somehow already running
-  // 3.5s before newer was dispatched" apart from "older's own job,
-  // running normally" using time alone). The honest answer is: stays
-  // pending for both, not a guess in either direction.
-  const older = { repo: REPO, issue: 1, dispatchedAt: 0, attached: false };
-  const newer = { repo: REPO, issue: 1, dispatchedAt: 4000, attached: false };
-  const sessionOlder = { id: 'sessionOlder', startedAt: 500 };
-  const groupsPass1 = [acaGroup({
-    device: { meta: { repo: REPO, issue: 1 } },
-    sessions: [sessionOlder],
-  })];
-  const allPending = [older, newer];
-
-  assert.strictEqual(acaPendingMatch(older, groupsPass1, new Set(), allPending), null,
-    'newer is also rule-1-eligible for sessionOlder (no upper bound on how late a session may start), so this must stay ambiguous');
-  assert.strictEqual(acaPendingMatch(newer, groupsPass1, new Set(), allPending), null,
-    'older is also rule-1-eligible for sessionOlder, so newer must not win it either -- neither guesses');
-
-  // Once a genuinely SEPARATE session for `newer` later attaches, it is
-  // claimed through `claimedKeys` exclusivity (not through this function's
-  // ambiguity logic) -- proving the remaining ambiguity is scoped to
-  // `sessionOlder` only, not a global deadlock between the two entries.
-  const claimedKeys = new Set(['sessionNewer']);
-  const sessionNewer = { id: 'sessionNewer', startedAt: 4500 };
-  const groupsPass2 = [acaGroup({
-    device: { meta: { repo: REPO, issue: 1 } },
-    sessions: [sessionOlder, sessionNewer],
-  })];
-  assert.strictEqual(acaPendingMatch(newer, groupsPass2, claimedKeys, allPending), null,
-    'sessionNewer is already claimed, and sessionOlder is still genuinely ambiguous between both siblings');
-  assert.strictEqual(acaPendingMatch(older, groupsPass2, claimedKeys, allPending), null,
-    'sessionOlder remains ambiguous for older too, for the same reason');
-});
-
-check('an unrelated same-issue sibling does not tighten the candidate entry\'s own eligibility window', () => {
-  const a = { repo: REPO, issue: 42, dispatchedAt: 1_000_000, attached: false };
-  const b = { repo: REPO, issue: 42, dispatchedAt: 1_100_000, attached: false }; // unrelated retry, 100s later
-  const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'sessionA', startedAt: 997_000 }], // A's own job, with 3s of acceptable cross-process drift
-  })];
-
-  const matchWithoutSibling = acaPendingMatch(a, groups, new Set(), [a]);
-  assert.strictEqual(matchWithoutSibling && matchWithoutSibling.key, 'sessionA',
-    'without any sibling, A should match its own session inside ACA_START_TOLERANCE_MS');
-
-  const allPending = [a, b];
-  const matchWithSibling = acaPendingMatch(a, groups, new Set(), allPending);
-  assert.strictEqual(matchWithSibling && matchWithSibling.key, 'sessionA',
-    'adding an unrelated same-issue sibling must not re-check A under the tighter retry-precedence window');
-  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null,
-    'the unrelated retry is far outside its own normal eligibility window for sessionA and must not claim it');
-});
-
-check('three same-issue siblings all stay pending -- no ranking decides a winner among rule-1-eligible candidates (ground-truth delayed-A regression)', () => {
-  // The exact shape of the brief's ground-truth repro: dispatch A goes out,
-  // then stalls/waits; dispatch B (an unrelated retry of the same issue)
-  // goes out later; the one real session that eventually appears is
-  // GENUINELY A's own job, just slow to start -- but is numerically closer
-  // in time to B's own `dispatchedAt`. A PRIOR fix ranked siblings by
-  // "closest real preceding dispatch, else least-late after-start
-  // candidate" and would have confidently (and wrongly) awarded this
-  // session to B. There is no safe ranking that gets this right in every
-  // case, because the hub genuinely cannot tell these two stories apart
-  // from timing alone -- so now NOBODY wins: all three same-issue siblings
-  // stay pending rather than any of them guessing.
-  const a = { repo: REPO, issue: 42, dispatchedAt: 0, attached: false };
-  const b = { repo: REPO, issue: 42, dispatchedAt: 800, attached: false };
-  const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
-  const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'sessionB', startedAt: 900 }],
-  })];
-  const allPending = [a, b, c];
-
-  assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null,
-    'A is rule-1-eligible (it dispatched before the session started) but so are B and C -- ambiguous, not a loss to a "closer" sibling');
-  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null,
-    'B is no longer declared the winner merely for being the closest real preceding dispatch -- A might genuinely be the slow starter');
-  assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null,
-    'C is only drift-excused after-start, and remains ineligible to win against two other genuinely-competing siblings');
-});
-
-check('four same-issue siblings all stay pending when every candidate is only drift-excused after-start', () => {
-  const a = { repo: REPO, issue: 42, dispatchedAt: 1_300, attached: false };
-  const b = { repo: REPO, issue: 42, dispatchedAt: 1_500, attached: false };
-  const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
-  const d = { repo: REPO, issue: 42, dispatchedAt: 1_900, attached: false };
-  const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'least-late', startedAt: 1_200 }],
-  })];
-  const allPending = [a, b, c, d];
-
-  // A PRIOR fix fell back to "the least-late eligible dispatch wins" when
-  // every candidate was only drift-excused after-start. That fallback is
-  // just as much a proximity guess as the primary ranking it backstopped --
-  // removed for the same reason. All four stay genuinely ambiguous.
-  assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null);
-  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null);
-  assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null);
-  assert.strictEqual(acaPendingMatch(d, groups, new Set(), allPending), null);
-});
-
-check('a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)', () => {
-  // The genuinely ambiguous case the brief's "leave unknown, do not
-  // fabricate" instruction is actually about: two sibling entries whose
-  // dispatchedAt are EQUALLY the closest preceding value for one candidate
-  // session -- there is no time-based way to prefer one over the other, so
-  // this must resolve to NEITHER rather than guess (unlike the test above,
-  // where `newer` is unambiguously closer).
-  const a = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const b = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'tied-session', startedAt: 2000 }],
-  })];
-  const allPending = [a, b];
-  assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null);
-  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null);
-});
-
-check('a pre-existing/unrelated aca- session reporting a different issue does not steal a different pending entry\'s claim', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 10000 };
-  // A session on the SAME repo but a DIFFERENT issue -- the two-minute
-  // clock-drift floor this replaced would have let this through purely on
-  // timing; issue-based matching rejects it regardless of when it started.
-  const preExisting = [acaGroup({
-    device: { meta: { repo: REPO, issue: 7 } },
-    sessions: [{ id: 'old-session', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
-  })];
-  assert.strictEqual(acaPendingMatch(entry, preExisting, new Set()), null);
-
-  // A genuinely unrelated device on a DIFFERENT repository, running
-  // concurrently, must never match either.
-  const unrelated = [acaGroup({
-    device: { meta: { repo: 'someone/else', issue: 42 } },
-    sessions: [{ id: 'other-device', startedAt: entry.dispatchedAt + 1000 }],
-  })];
-  assert.strictEqual(acaPendingMatch(entry, unrelated, new Set()), null);
-});
-
-check('a newer job attaching before an older one still only ever resolves its OWN issue\'s entry', () => {
-  // Out-of-order attach: the job for a LATER dispatch (issue 43) reports in
-  // before the job for an EARLIER dispatch (issue 42) does. Repository-only
-  // matching had no way to tell these apart except array/time order; issue
-  // identity makes the order irrelevant to correctness.
-  const earlierEntry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const laterEntry = { repo: REPO, issue: 43, dispatchedAt: 2000 };
-  const groups = [
-    acaGroup({ device: { meta: { repo: REPO, issue: 43 } }, sessions: [{ id: 'later-job', startedAt: 2500 }] }),
-  ];
-  assert.strictEqual(acaPendingMatch(earlierEntry, groups, new Set()), null);
-  const match = acaPendingMatch(laterEntry, groups, new Set());
-  assert.strictEqual(match && match.key, 'later-job');
-});
-
-check('acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
-  const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [
-      { id: 'later', startedAt: 9000 },
-      { id: 'earlier', startedAt: 2000 },
-    ],
-  })];
-  const match = acaPendingMatch(entry, groups, new Set());
-  assert.strictEqual(match && match.key, 'earlier');
-});
-
-// --- acaPendingMatch: time-ordering is dispatch-ATTEMPT identity -----------
-//
-// Repo+issue alone proves "the right repository and issue", never "the
-// right OCCASION" -- see acaPendingMatch's own doc comment for the two real
-// bugs this closes (Bug A: a fresh tab binding to a stale historical
-// session; Bug B: a same-issue retry swapping with its own predecessor).
-
-check('a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
-  // An "aca-" session from ten minutes before this dispatch was even made --
-  // left over from an earlier, unrelated run against the same issue. Its
-  // own device is reported ONLINE and its own session has no particular
-  // "finished" marker; only its startedAt is implicated here, which is
-  // exactly the point -- presence/online-ness tells this rule nothing.
-  const groups = [acaGroup({
-    device: { presence: 'online', meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'ancient-online', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
-  })];
-  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
-});
-
-check('a fresh tab does not bind to a historical same-issue session whose device has since gone offline (Bug A)', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
-  const groups = [acaGroup({
-    device: { presence: 'offline', meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'ancient-offline', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
-  })];
-  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
-});
-
-check('a fresh tab does not bind to a historical same-issue session that has since completed (Bug A)', () => {
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
-  const groups = [acaGroup({
-    device: { presence: 'online', meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'ancient-completed', status: 'completed', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
-  })];
-  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
-});
-
-check('a session that started just within the clock-drift tolerance before the dispatch still matches', () => {
-  // The flip side of Bug A's fix: ACA_START_TOLERANCE_MS exists precisely so
-  // a session that genuinely IS this dispatch's own job, but whose own
-  // clock reports starting a few seconds "before" this hub believes it
-  // dispatched, is not rejected by the same rule that excludes Bug A.
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
-  const groups = [acaGroup({
-    device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'within-tolerance', startedAt: entry.dispatchedAt - (ACA_START_TOLERANCE_MS - 1) }],
-  })];
-  const match = acaPendingMatch(entry, groups, new Set());
-  assert.strictEqual(match && match.key, 'within-tolerance');
-});
-
-check('a candidate with no meta.repo/meta.issue at all is never treated as a match, colocated with the time-ordering tests above', () => {
-  // Explicit coverage of the "no proof" case alongside the new time-ordering
-  // tests, per the brief -- this already passed before this fix (see the
-  // original "a device whose meta omits repo/issue..." test above) and must
-  // continue to, unaffected by the new rules.
-  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
-  const groups = [acaGroup({ device: {}, sessions: [{ id: 'no-meta', startedAt: entry.dispatchedAt + 1000 }] })];
-  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
-});
-
-check('a same-issue retry resolves correctly once ambiguity clears, and never swaps which entry claims which session (Bug B, out-of-order attach)', () => {
-  // dispatch A stalls; the same issue is dispatched again as B 100s later.
-  // Both real sessions eventually exist, but GitHub/Azure timing can attach
-  // them in EITHER order, and -- per the ground-truth delayed-A repro above
-  // -- this hub cannot assume A's own job failed to start just because B's
-  // dispatch is closer in time to whichever session shows up first. This
-  // simulates sessionB (B's own job) attaching FIRST, across several
-  // resolution passes, proving: (1) while both entries are still live,
-  // competing candidates, the match stays honestly ambiguous rather than
-  // guessing; (2) once A's OWN run is independently known to have failed
-  // (the authoritative, non-timing fact that actually resolves this), B can
-  // then correctly claim its own session; (3) A's own session can still
-  // later correctly attach to A -- no swap, in either direction.
-  const entryA = { repo: REPO, issue: 42, dispatchedAt: 1_000_000, attached: false, resolved: false };
-  const entryB = { repo: REPO, issue: 42, dispatchedAt: 1_100_000, attached: false, resolved: false }; // a genuine retry, 100s later
-  const sessionA = { id: 'sessionA', startedAt: 1_001_000 }; // really A's own job
-  const sessionB = { id: 'sessionB', startedAt: 1_101_000 }; // really B's own job
-
-  // Pass 1: only sessionB has attached so far. A remains a live, unresolved
-  // sibling, so -- per the ground-truth delayed-A repro -- this hub cannot
-  // tell whether sessionB is genuinely B's prompt job or A's own slow one.
-  const groupsPass1 = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [sessionB] })];
-  const allPending = [entryA, entryB];
-  const claimedKeys = new Set();
-
-  assert.strictEqual(acaPendingMatch(entryA, groupsPass1, claimedKeys, allPending), null,
-    'A remains a live competing sibling for sessionB -- but ambiguous, not a confident (and possibly wrong) win for A either');
-  assert.strictEqual(acaPendingMatch(entryB, groupsPass1, claimedKeys, allPending), null,
-    'B must not confidently claim sessionB while A is still a live, unresolved competing sibling -- that is exactly the unsafe guess being removed');
-
-  // A's own run is independently found to have failed upstream (a real,
-  // authoritative fact unrelated to timing proximity) -- syncAcaPending
-  // would set this from the GitHub Actions run status it already polls.
-  // A no longer competes: it already gave its own final, honest answer.
-  entryA.resolved = true;
-
-  const matchB = acaPendingMatch(entryB, groupsPass1, claimedKeys, allPending);
-  assert.strictEqual(matchB && matchB.key, 'sessionB',
-    'once A has reached its own terminal resolved state, it stops blocking B from claiming its own genuinely-arriving session');
-
-  // Simulate what syncAcaPending does once a match is found.
-  entryB.attached = true;
-  claimedKeys.add('sessionB');
-
-  // Pass 2: sessionA has now also attached. B is already attached (excluded
-  // from the sibling pool by acaPendingMatch itself, since it is no longer
-  // pending), and A -- despite its OWN resolved flag -- is still allowed to
-  // claim its own session once nothing else competes for it: `resolved`
-  // only stops an entry from blocking OTHER siblings, it never stops the
-  // entry itself from correctly reconnecting to its own real device.
-  const groupsPass2 = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [sessionA, sessionB] })];
-  const matchA = acaPendingMatch(entryA, groupsPass2, claimedKeys, allPending);
-  assert.strictEqual(matchA && matchA.key, 'sessionA', 'entry A should still correctly claim ITS OWN session once unambiguous -- no swap');
-});
 
 
 
@@ -847,7 +534,6 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
           status: null,
           attached: false,
           completedAt: null,
-          matchedKey: null,
           resolved: false,
         }];
         state.overview = { groups: [] };
@@ -901,7 +587,6 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
           status: { state: 'completed', conclusion: 'success' },
           completedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 1000),
           attached: false,
-          matchedKey: null,
           resolved: false, // not yet locally re-evaluated -- exactly the state an old tab left open across an outage would be in
         }];
         state.overview = { groups: [] };
@@ -940,7 +625,6 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
           status: { state: 'completed', conclusion: 'success' },
           completedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 1000),
           attached: false,
-          matchedKey: null,
           resolved: true, // already closed out by an earlier (successful) poll
         };
         // A second, genuinely-still-live entry must be entirely unaffected by
@@ -955,7 +639,6 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
           status: null,
           completedAt: null,
           attached: false,
-          matchedKey: null,
           resolved: false,
         };
         state.acaPending = [recheckEntry, liveEntry];
@@ -996,11 +679,14 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       state.acaPending = [];
     }
 
-    // --- cross-tab siblings: an unseen OTHER tab's dispatch for the same
-    // issue must prevent a false attach here too (ground-truth regression,
-    // repro 3) --------------------------------------------------------------
+    // --- cross-tab siblings: `syncAcaPending` never attaches via the
+    // repo+issue+timing heuristic at all anymore, regardless of whether an
+    // unseen other tab's dispatch for the same issue exists (follow-up
+    // review on top of the Scout review on 23a1af5 that originally added
+    // this cross-tab coverage; see `acaPendingMatch`'s own doc comment in
+    // aca-match.js for why) -------------------------------------------------
     {
-      await checkAsync('a fresh tab does not falsely attach to a session when another, unseen tab\'s dispatch for the same issue is equally eligible (Scout review on 23a1af5)', async () => {
+      await checkAsync('a fresh tab never attaches via syncAcaPending, same-issue cross-tab sibling or not -- repo+issue+timing is never proof', async () => {
         const [owner, name] = REPO.split('/');
         global.fetch = async () => ({
           ok: true,
@@ -1022,22 +708,23 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
           status: null,
           completedAt: null,
           attached: false,
-          matchedKey: null,
           resolved: false,
         };
         state.acaPending = [localEntry];
-        // The one real session: genuinely ambiguous between this tab's own
-        // entry (dispatchedAt 10,000) and the other tab's unseen dispatch
-        // (dispatchedAt 20,000) -- both are rule-1-eligible for startedAt
-        // 25,000, and nothing about timing alone can prove which produced it.
+        // A session reporting the same repo+issue as this entry, started
+        // comfortably after its own dispatchedAt -- exactly the shape an
+        // earlier revision of acaPendingMatch would have attached, cross-tab
+        // sibling or not. It still must never attach: this hub no longer
+        // treats repo+issue+timing as proof of identity, so the presence or
+        // absence of a competing cross-tab dispatch no longer changes the
+        // answer either way.
         state.overview = {
           groups: [acaGroup({ device: { meta: { repo: REPO, issue: 5 } }, sessions: [{ id: 'cross-session', startedAt: 25_000 }] })],
         };
 
         await syncAcaPending();
         assert.strictEqual(localEntry.attached, false,
-          'this tab\'s own entry must NOT falsely attach -- the other tab\'s unseen same-issue dispatch makes this genuinely ambiguous');
-        assert.strictEqual(localEntry.matchedKey, null);
+          'this tab\'s own entry must never attach via the repo+issue+timing heuristic, regardless of cross-tab siblings');
       });
 
       state.acaPending = [];

@@ -767,8 +767,13 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // independently bumped to v14 merging #180/#233's ACA status card branch
   // (web/js/aca-status.js) with #236. Both sides bumped off an earlier
   // shared base, so this merge needs a value neither side ever used: v15.
+  // Bumped again to v16: a third #178 review found repo+issue+timing is
+  // never authoritative proof of dispatch-attempt identity --
+  // acaPendingMatch/acaPendingAttached now always return null/false (see
+  // aca-match.js's own doc comment), and aca-pending.js's syncAcaPending was
+  // simplified to match -- both cached files' real behavior changed.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v16';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

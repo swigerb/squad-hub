@@ -3282,7 +3282,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v15';`,
+    find: `const CACHE = 'squad-hub-shell-v16';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6461,129 +6461,36 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a completed-success row with no attach past the bounded wait reports an honest unknown outcome, not a lie about success',
   },
   {
-    name: 'acaPendingMatch stops requiring an aca-kind device',
+    // The core fix of this review: acaPendingMatch must never claim a match
+    // from repo+issue+timing alone (see its own doc comment in aca-match.js
+    // for the full review history and the authoritative-join investigation
+    // that led here). A stray non-null return is exactly the false-positive
+    // class this review closes -- proving a mutation that reinstates one
+    // still gets caught is the single most load-bearing mutation left for
+    // this file.
+    name: 'acaPendingMatch stops always returning null',
     file: 'web/js/aca-match.js',
-    find: `    if (!g || !g.device || g.device.kind !== 'aca') continue;`,
-    replace: `    if (!g || !g.device || (!process.env.MUTANT && g.device.kind !== 'aca')) continue; // MUTATION`,
-    mustFail: 'does not match a non-aca device, even with matching meta',
+    find: `export function acaPendingMatch() {
+  return null;
+}`,
+    replace: `export function acaPendingMatch() {
+  return process.env.MUTANT ? { key: 'mutant-session' } : null; // MUTATION
+}`,
+    mustFail: 'acaPendingMatch never returns a match for an exact repo+issue+timing fit -- no authoritative join exists for it (see aca-match.js doc comment)',
   },
   {
-    // #178's release-gate review, Gate 2: the ONLY proof an attached device
-    // belongs to a dispatch is its own reported meta (src/device-meta.js),
-    // never a guess -- a device that omits repo/issue must be skipped
-    // entirely, not treated as an automatic match.
-    name: 'acaPendingMatch stops requiring the candidate device to report meta at all',
+    // `acaPendingAttached` must keep reading `acaPendingMatch`'s own result
+    // -- not report a stray `true` independently of it -- or the two
+    // functions could silently disagree the moment one of them changes.
+    name: 'acaPendingAttached stops deferring to acaPendingMatch',
     file: 'web/js/aca-match.js',
-    find: `    const meta = g.device.meta || null;
-    if (!meta || !meta.repo || !meta.issue) continue; // no proof available -- never guessed`,
-    replace: `    const meta = g.device.meta || null; // MUTATION: proof requirement removed below
-    if (process.env.MUTANT ? false : (!meta || !meta.repo || !meta.issue)) continue;`,
-    mustFail: 'a device whose meta omits repo/issue is never treated as a match (no proof, no guess)',
-  },
-  {
-    name: 'acaPendingMatch stops requiring the repository to match',
-    file: 'web/js/aca-match.js',
-    find: `    if (!metaRepo || metaRepo.toLowerCase() !== want) continue;`,
-    replace: `    if (!metaRepo || (!process.env.MUTANT && metaRepo.toLowerCase() !== want)) continue; // MUTATION`,
-    mustFail: 'does not match a different repository',
-  },
-  {
-    // The core correlation fix this PR adds: repository alone is not proof
-    // -- an unrelated (or re-dispatched) session reporting the SAME
-    // repository but a DIFFERENT issue must never match either.
-    name: 'acaPendingMatch stops requiring the issue number to match',
-    file: 'web/js/aca-match.js',
-    find: `    const metaIssue = Number(meta.issue);
-    if (!Number.isInteger(metaIssue) || metaIssue !== wantIssue) continue;`,
-    replace: `    const metaIssue = Number(meta.issue);
-    if (process.env.MUTANT ? false : (!Number.isInteger(metaIssue) || metaIssue !== wantIssue)) continue; // MUTATION`,
-    mustFail: 'a near-time session on the SAME repository but a DIFFERENT issue never matches',
-  },
-  {
-    // The core fix this PR adds: matching repository alone must not let a
-    // second pending entry on the same repository (or an unrelated session)
-    // consume an already-claimed session too.
-    name: 'acaPendingMatch stops excluding an already-claimed session',
-    file: 'web/js/aca-match.js',
-    find: `      if (claimedKeys && key && claimedKeys.has(key)) continue;`,
-    replace: `      if (!process.env.MUTANT && claimedKeys && key && claimedKeys.has(key)) continue; // MUTATION`,
-    mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
-  },
-  {
-    // Picking the EARLIEST eligible session (not merely "the first one found
-    // in iteration order") is what keeps this consistent with
-    // DispatchTracker's own oldest-first binding rule server-side.
-    name: 'acaPendingMatch stops preferring the earliest-started session',
-    file: 'web/js/aca-match.js',
-    find: `      if (!best || startedAt < best.startedAt) best = { key, startedAt };`,
-    replace: `      if (!best || (!process.env.MUTANT && startedAt < best.startedAt)) best = { key, startedAt }; // MUTATION`,
-    mustFail: 'acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule',
-  },
-  {
-    // The follow-up fix's Bug A: a fresh tab's brand-new entry must never
-    // bind to a session that started long before it was even dispatched --
-    // without this, an ancient/offline/completed historical session on the
-    // same issue would falsely satisfy a fresh dispatch.
-    name: 'acaPendingMatch stops requiring the session to have started at or after the dispatch (Bug A)',
-    file: 'web/js/aca-match.js',
-    find: `      if (startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue;`,
-    replace: `      if (!process.env.MUTANT && startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue; // MUTATION`,
-    mustFail: 'a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)',
-  },
-  {
-    // Rule 2's sibling filter must exclude an entry's already-TERMINAL
-    // (resolved) same-issue siblings, or an ancient/never-resolving sibling
-    // would permanently block a still-active one from ever attaching, since
-    // rule 1 deliberately has no upper time bound on a slow job's start.
-    name: 'acaPendingMatch stops excluding resolved siblings from the ambiguity check',
-    file: 'web/js/aca-match.js',
-    find: `  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && !e.resolved`,
-    replace: `  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && (process.env.MUTANT || !e.resolved) // MUTATION`,
-    mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
-  },
-  {
-    // Ground-truth regression: there is no safe ranking among rule-1-eligible
-    // same-issue siblings. If rule 2 is weakened to let `entry` win merely
-    // because IT started closer (or any other proximity-based tie-break),
-    // the delayed-A-vs-unrelated-B repro (A dispatched 10000, waits; B
-    // dispatched 20000; the real session -- A's own, just slow -- starts
-    // 25000) is wrongly awarded to B again.
-    name: 'acaPendingMatch stops treating a rule-1-eligible sibling as disqualifying (ground-truth delayed-A regression)',
-    file: 'web/js/aca-match.js',
-    find: `      if (others.some((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS)) continue;`,
-    replace: `      if (!process.env.MUTANT && others.some((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS)) continue; // MUTATION`,
-    mustFail: 'three same-issue siblings all stay pending -- no ranking decides a winner among rule-1-eligible candidates (ground-truth delayed-A regression)',
-  },
-  {
-    // Rule 1 is the standalone gate that keeps a session from binding to a
-    // dispatch made AFTER it already started -- it must apply regardless of
-    // whether `entry` has any siblings at all (the common, no-retry case).
-    name: 'acaPendingMatch stops requiring the session to have started at or after the dispatch for a sibling-free entry',
-    file: 'web/js/aca-match.js',
-    find: `      if (startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue;`,
-    replace: `      if (!process.env.MUTANT && startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue; // MUTATION`,
-    mustFail: 'a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)',
-  },
-  {
-    // `entry` must never be compared against ITSELF as though it were a
-    // competing sibling: it is always rule-1-eligible for its own candidate
-    // session (that is how it got this far), so without this exclusion
-    // EVERY match would be permanently "ambiguous" against itself.
-    name: 'acaPendingMatch stops excluding entry itself from its own sibling-ambiguity check',
-    file: 'web/js/aca-match.js',
-    find: `  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && !e.resolved`,
-    replace: `  const others = (allPending || []).filter((e) => e && (process.env.MUTANT || e !== entry) && !e.attached && !e.resolved // MUTATION`,
-    mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
-  },
-  {
-    // The earliest-started eligible, unclaimed session must still win among
-    // genuine ties for a SINGLE candidate entry with no competing siblings --
-    // rule 2's ambiguity check must never fire when `others` is empty.
-    name: 'acaPendingMatch stops picking the earliest-started session among genuine ties',
-    file: 'web/js/aca-match.js',
-    find: `      if (!best || startedAt < best.startedAt) best = { key, startedAt };`,
-    replace: `      if (!best || (process.env.MUTANT ? startedAt > best.startedAt : startedAt < best.startedAt)) best = { key, startedAt }; // MUTATION`,
-    mustFail: 'acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule',
+    find: `export function acaPendingAttached() {
+  return acaPendingMatch() !== null;
+}`,
+    replace: `export function acaPendingAttached() {
+  return !!process.env.MUTANT || acaPendingMatch() !== null; // MUTATION
+}`,
+    mustFail: 'acaPendingMatch never returns a match for an exact repo+issue+timing fit -- no authoritative join exists for it (see aca-match.js doc comment)',
   },
   {
     // #178's release-gate review, Gate 3: a completed-success Actions run
@@ -6752,17 +6659,6 @@ if ($health.accessStore -ne 'durable') {`,
     if (!process.env.MUTANT) entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved; // MUTATION
   }`,
     mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
-  },
-  {
-    // Cross-tab siblings: an unseen OTHER tab's own in-flight dispatch for
-    // the SAME repo+issue must be folded into the sibling pool BEFORE
-    // matching runs, or a fresh tab can falsely attach to a session that
-    // genuinely belongs to that other tab's dispatch (ground-truth repro 3).
-    name: 'syncAcaPending stops enriching the sibling pool with cross-tab dispatches',
-    file: 'web/js/aca-pending.js',
-    find: `    if (foreign.length) allPending = order.concat(foreign);`,
-    replace: `    if (!process.env.MUTANT && foreign.length) allPending = order.concat(foreign); // MUTATION`,
-    mustFail: 'a fresh tab does not falsely attach to a session when another, unseen tab\'s dispatch for the same issue is equally eligible (Scout review on 23a1af5)',
   },
   {
     // retryAcaPending's entire purpose is the "Check again" affordance: it
