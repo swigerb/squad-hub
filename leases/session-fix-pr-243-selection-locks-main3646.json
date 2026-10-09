@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-243-selection-locks-main3646",
+  "sessionId": "fix-pr-243-selection-locks-main3646",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T07:18:09.708Z",
+  "lastHeartbeatAt": "2026-10-09T07:18:09.708Z",
+  "updatedAt": "2026-10-09T07:18:09.708Z",
+  "terminalReason": null,
+  "executionRef": null
+}
