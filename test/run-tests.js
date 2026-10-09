@@ -936,6 +936,17 @@ async function suiteControlVerification() {
 }
 
 /**
+ * The detail header's control-check verification guard and the Sync session
+ * in-flight guard (web/js/detail-control.js), fixed for PR #243's Scout
+ * review of 53e6a18: stable-selection vs. object-identity for a live
+ * snapshot refresh mid-verification, and one in-flight resync per target.
+ */
+async function suiteDetailControl() {
+  console.log('\n[DETAIL CONTROL] a live-snapshot refresh mid-verification cannot drop a valid result, and Sync session cannot double-fire');
+  runChildSuite(path.join(__dirname, 'detail-control-unit.js'), 'detail-control');
+}
+
+/**
  * Approval depth and the composer's agent/model selection. Reading a file and
  * rewriting a directory are not the same decision, and a standing permission
  * that does not say what it makes standing is a blank cheque.
@@ -1198,6 +1209,7 @@ async function suitePush() {
   await suiteReportPr();
   await suiteDeviceRoster();
   await suiteControlVerification();
+  await suiteDetailControl();
   await suiteApprovalDepth();
   await suiteForget();
   await suiteNarrowedForget();

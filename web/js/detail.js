@@ -1,14 +1,17 @@
 import { state, api } from './api.js';
 import {
   esc, num, truncateWords, statusLabel, statusPillClass,
-  isStaleSession, isDeviceUnreachable, cleanupControls, $,
+  isStaleSession, cleanupControls, $,
 } from './util.js';
-import { controlBanner, canSync, composerReduce } from './composer.js';
+import { controlBanner, composerReduce } from './composer.js';
 import { refresh, resolveDeepLink } from './ws.js';
 import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
 import { displayTitle } from './sessionrow.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
+// Circular import, same pattern rowmenu.js/wiring.js already use: see
+// detail-control.js's own top-of-file comment for why this is safe.
+import { verifyControl, syncSession, detailSyncMenuItem } from './detail-control.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -330,81 +333,6 @@ export async function forgetStaleSession() {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Forget stale session'; }
   }
-}
-
-/** How long to wait for the device to answer before saying so. */
-const CONTROL_TIMEOUT_MS = 8000;
-
-/**
- * Ask the device whether it can take a control command for this session.
- *
- * The answer comes from the machine running the agent, not from the hub. The
- * hub is a cache: it knowing about a session proves only that a heartbeat once
- * mentioned it.
- */
-async function verifyControl() {
-  const current = state.currentSession;
-  if (!current) return;
-  state.composer = composerReduce(state.composer, { type: 'verify-start' });
-  renderControl();
-
-  const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), CONTROL_TIMEOUT_MS));
-  const ask = api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/control-check`, {
-    method: 'POST', body: { sessionId: current.session.id },
-  }).catch((e) => ({ error: e.message }));
-
-  const outcome = await Promise.race([ask, timeout]);
-
-  // The detail panel may have been closed, or moved to another session, while
-  // this was in flight. Applying a stale answer would enable the composer for
-  // a session nobody verified.
-  if (state.currentSession !== current) return;
-
-  state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
-  renderControl();
-}
-
-/**
- * `Sync session` -- restart the engine, keeping the session id, then re-check.
- *
- * Re-verifying alone would be a button that asks the same question twice and
- * expects a different answer. When the device has said the agent process is
- * gone, nothing changes until something restarts it.
- *
- * The id survives on purpose: it is what the row, the Teams card and anyone's
- * terminal history all refer to. A "sync" that produced a new session would
- * quietly orphan every one of those references.
- */
-export async function syncSession() {
-  const current = state.currentSession;
-  if (!current) return;
-  try {
-    await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/resync`, {
-      method: 'POST', body: { sessionId: current.session.id },
-    });
-    await refresh();
-  } catch (e) {
-    state.composer = composerReduce(state.composer, { type: 'verify-result', outcome: { error: e.message } });
-    renderControl();
-    return;
-  }
-  // Only now is the question worth asking again.
-  await verifyControl();
-}
-
-/**
- * Whether the detail header's ⋯ menu should also offer "Sync session"
- * (#181 part 2): the exact same condition the detail controls already expose
- * (`canSync` AND the device is reachable), read from the one place it is
- * computed. The list row's own ⋯ menu never calls this -- it has no
- * composer/control-check state for a session that is not open -- so it can
- * never gain an item nothing can act on.
- */
-export function detailSyncMenuItem() {
-  const current = state.currentSession;
-  if (!current) return null;
-  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;
-  return { action: 'sync', label: 'Sync session', glyph: '↻' };
 }
 
 export function renderControl() {

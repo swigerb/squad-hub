@@ -82,9 +82,12 @@ function runShortcut(id) {
   // Test hook (documented, no secrets, no new capability): now that app.js is
   // an ES module, its top-level `const`/`function` bindings are module-scoped
   // rather than bare globals, so test/browser-e2e-unit.js's page.evaluate()
-  // calls can no longer reach `state`, `setConn` or `renderTranscript` by
-  // name. This exposes exactly those three bindings -- already reachable
-  // through the UI -- for that test harness to read and call directly.
+  // calls can no longer reach `state`, `setConn`, `renderTranscript` or
+  // `refresh` by name. This exposes exactly those bindings -- each already
+  // reachable through the UI (`refresh` is the exact function `setInterval`
+  // already calls every 15s) -- for that test harness to read and call
+  // directly, so it can force an immediate heartbeat/overview refresh instead
+  // of waiting out the real interval.
   //
   // `setUndoDelayForTest` shortens the Undo window below (real deployments
   // keep the full 5 seconds). It changes no behavior a person could not
@@ -92,7 +95,7 @@ function runShortcut(id) {
   // only makes that window short enough for a test suite to wait out without
   // every click costing five real seconds.
   window.__squadHubTest = {
-    state, setConn, renderTranscript, setUndoDelayForTest,
+    state, setConn, renderTranscript, setUndoDelayForTest, refresh,
   };
 
   // Before the sign-in gate: the shell is public, and someone installing the

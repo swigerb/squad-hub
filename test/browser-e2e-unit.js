@@ -2055,6 +2055,151 @@ async function watchCsp(pg) {
       assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the detail header ⋯ button');
     });
 
+    await check('a live-snapshot refresh arriving mid-verification does not leave "Checking control…" stuck forever (#243 Scout review fix for 53e6a18)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await until(async () => {
+        const label = await page.textContent('#dtControlLabel');
+        return label && label !== 'Checking control…' ? label.trim() : null;
+      }, 'the initial detail control check to settle');
+
+      // Hold the NEXT control-check request open so this test controls
+      // exactly when it answers -- the real regression needed a
+      // heartbeat/refresh to land while the request was still in flight,
+      // which real network timing cannot reproduce deterministically.
+      let release;
+      const held = new Promise((r) => { release = r; });
+      let intercepted = false;
+      await page.route('**/control-check', async (route) => {
+        intercepted = true;
+        await held;
+        await route.continue();
+      });
+
+      try {
+        // Reopen the SAME session -- back to the list, then the same row --
+        // to start a fresh `verifyControl`, the exact navigation a person
+        // closing and reopening a session performs.
+        await page.click('#dtBack');
+        await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await page.click(`[data-session="${CSS.escape(firstSessionKey)}"]`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Checking control…' ? true : null),
+          'the reopened session to start a fresh control check');
+
+        // The exact regression: `syncDetailHeader` reassigns
+        // `state.currentSession` to a NEW wrapper for the SAME device/session
+        // on every refresh, even while this request is still in flight.
+        // Force two of those, same as a couple of heartbeats landing
+        // mid-check, through the real `/api/overview` endpoint -- only
+        // `control-check` above is intercepted.
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        await page.evaluate(() => window.__squadHubTest.refresh());
+
+        assert.ok(intercepted, 'the reopened session never issued a control-check request to intercept');
+        release();
+
+        const settled = await until(async () => {
+          const label = await page.textContent('#dtControlLabel');
+          return label && label !== 'Checking control…' ? label.trim() : null;
+        }, 'the detail control check to settle after a live-snapshot refresh landed mid-flight', 8000);
+        assert.notStrictEqual(settled, "Control couldn't be verified",
+          'the check only "settled" because the 8s timeout fired -- the race silently discarded the real answer instead of applying it');
+      } finally {
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
+    await check('Sync session guards one in-flight resync per target; a reopened menu shows it disabled until it resolves, with no extra request (#243 Scout review fix for 53e6a18)', async () => {
+      // Forced to Not-synced regardless of the real daemon's actual answer --
+      // isolates the FRONTEND resync guard under test from real daemon/agent
+      // lifecycle, which control-verification-unit.js already covers.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'the agent process is gone' }),
+      }));
+      let resyncCalls = 0;
+      let releaseResync;
+      const resyncHeld = new Promise((r) => { releaseResync = r; });
+      await page.route('**/resync', async (route) => {
+        resyncCalls += 1;
+        await resyncHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: firstSessionKey, pid: 1, cwd: '/', resyncCount: resyncCalls }),
+        });
+      });
+
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render');
+
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const firstOpen = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { present: true, disabled: b.disabled, label: b.textContent.trim() } : { present: false };
+        });
+        assert.ok(firstOpen.present, 'Sync session is not offered for a Not-synced, reachable device');
+        assert.strictEqual(firstOpen.disabled, false, 'Sync session should not start disabled');
+
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await page.waitForSelector('#rowMenu[hidden]', { state: 'attached', timeout: 5000 });
+
+        // Reopen the menu WHILE the resync is still held open -- the exact
+        // regression: the old dedicated #dtSync button disabled ITSELF here;
+        // the shared menu item has to too, or a second click restarts the
+        // same agent.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const reopened = await until(async () => {
+          const s = await page.evaluate(() => {
+            const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+            return b ? { disabled: b.disabled, label: b.textContent.trim() } : null;
+          });
+          return s && s.disabled ? s : null;
+        }, 'the reopened menu to show Sync session disabled while a resync is pending');
+        assert.ok(reopened.label.includes('Syncing'), `the pending label does not say so: ${reopened.label}`);
+
+        // A click on a genuinely disabled button is a no-op in a real
+        // browser, proving the guard end-to-end rather than just reading
+        // the attribute.
+        await page.click('#rowMenu [data-row-action="sync"]', { force: true }).catch(() => {});
+        assert.strictEqual(resyncCalls, 1, 'reopening the menu mid-resync issued a SECOND resync request to the device');
+
+        await page.keyboard.press('Escape');
+        const afterEsc = await page.evaluate(() => document.activeElement?.id === 'dtMoreBtn');
+        assert.strictEqual(afterEsc, true, 'Escape did not return focus to the detail header ⋯ button while Sync was pending');
+
+        releaseResync();
+        await until(async () => {
+          const label = await page.textContent('#dtControlLabel');
+          return label && label !== 'Checking control…' ? label.trim() : null;
+        }, 'the re-verification after the resync settled to finish');
+
+        assert.strictEqual(resyncCalls, 1, 'more than one resync request reached the device for one target');
+
+        // Success recovery: the guard cleared, so a later, genuine click is
+        // offered again rather than being stuck disabled forever.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const afterSettle = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { disabled: b.disabled, label: b.textContent.trim() } : { present: false };
+        });
+        assert.strictEqual(afterSettle.disabled, false,
+          'Sync session is still disabled after its resync settled -- the in-flight guard was never cleared');
+        await page.keyboard.press('Escape');
+      } finally {
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
     await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
       await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
       await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });

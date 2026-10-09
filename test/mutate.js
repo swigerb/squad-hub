@@ -925,10 +925,71 @@ const MUTATIONS = [
   },
   {
     name: 'the detail header menu always offers Sync session again, even when the session is already synced (#181 part 2)',
-    file: 'web/js/detail.js',
+    file: 'web/js/detail-control.js',
     find: `  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;`,
     replace: `  if (!isDeviceUnreachable(current.device) && !process.env.MUTANT && !canSync(state.composer.control)) return null; // MUTATION`,
     mustFail: 'the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)',
+  },
+  {
+    // The real-browser CI regression this whole fix addresses: comparing by
+    // OBJECT REFERENCE instead of session key discards a valid control-check
+    // answer any time `syncDetailHeader` reassigns `state.currentSession` to
+    // a freshly-`findSession`'d wrapper for the SAME device/session, which it
+    // does on every overview refresh/WebSocket push. Reverting the guard to
+    // reference equality must bring that hang straight back.
+    name: 'verifyControl compares by object reference again, discarding a result after any same-session refresh',
+    file: 'web/js/detail-control.js',
+    find: `  const stillSameSelection = state.currentSession && sessionKey(state.currentSession.session) === key;`,
+    replace: `  const stillSameSelection = process.env.MUTANT ? state.currentSession === current : (state.currentSession && sessionKey(state.currentSession.session) === key); // MUTATION`,
+    mustFail: 'a same-session live-snapshot refresh mid-verification does not drop the valid result (stable selection, not object identity)',
+  },
+  {
+    // The OTHER half of the same guard: `sessionKey` equality alone is not
+    // enough, because a second `verifyControl` call for the SAME session
+    // (a reopen, or `syncSession`'s own re-check) must still win over an
+    // earlier call's late reply. Dropping `controlToken` from the guard
+    // re-admits that stale, superseded answer.
+    name: 'verifyControl drops the controlToken check, so a superseded verification can still apply its late reply',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken) return;`,
+    replace: `  if (!stillSameSelection || (!process.env.MUTANT && token !== controlToken)) return; // MUTATION`,
+    mustFail: 'a second verifyControl call for the same session supersedes the first; its late reply is rejected',
+  },
+  {
+    // The Sync regression: moving "Sync session" into the shared row menu
+    // (rebuilt fresh on every open) dropped the old dedicated button's
+    // self-disabling in-flight guard. Removing this early return re-admits a
+    // second resync for a target already being resynced.
+    name: 'syncSession drops its one-in-flight-per-target guard, allowing a reopened menu to restart the same resync',
+    file: 'web/js/detail-control.js',
+    find: `  if (syncInFlightKey === key) return;`,
+    replace: `  if (!process.env.MUTANT && syncInFlightKey === key) return; // MUTATION`,
+    mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
+  },
+  {
+    // Without clearing the flag, a target that fails to resync (or whose
+    // request throws) would be stuck permanently "Syncing…" and never
+    // offered again -- proving the guard actually recovers, not just blocks.
+    name: 'syncSession never clears its in-flight flag, so a target gets permanently stuck disabled after one resync',
+    file: 'web/js/detail-control.js',
+    find: `  } finally {
+    if (syncInFlightKey === key) syncInFlightKey = null;
+  }`,
+    replace: `  } finally {
+    if (!process.env.MUTANT && syncInFlightKey === key) syncInFlightKey = null; // MUTATION
+  }`,
+    mustFail: 'a resync failure for the STILL-open session reports the error on its own composer',
+  },
+  {
+    // The disabled flag is what stops the reopened menu from re-firing
+    // (wiring.js's click handler bails on `b.disabled`); if the item never
+    // reports pending, that protection is gone even though the in-flight
+    // flag itself is still tracked correctly.
+    name: 'detailSyncMenuItem never reports Sync session as pending/disabled while a resync is in flight',
+    file: 'web/js/detail-control.js',
+    find: `  const pending = syncInFlightKey === sessionKey(current.session);`,
+    replace: `  const pending = !process.env.MUTANT && syncInFlightKey === sessionKey(current.session); // MUTATION`,
+    mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
   },
   {
     // The OUTER catch in readSquad is unreachable while every inner reader is
@@ -2971,6 +3032,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/devices.js',
   '/js/device-detail.js',
   '/js/detail.js',
+  '/js/detail-control.js',
   '/js/transcript.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
@@ -3020,7 +3082,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v13';`,
+    find: `const CACHE = 'squad-hub-shell-v14';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },

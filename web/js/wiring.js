@@ -20,8 +20,9 @@ import {
 } from './notifications.js';
 import { render } from './devices.js';
 import {
-  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession, detailSyncMenuItem,
+  openDetail, closeDetail, initDetailRouting, renderControl, openSquadDoc, forgetStaleSession,
 } from './detail.js';
+import { syncSession, detailSyncMenuItem } from './detail-control.js';
 import { sessionKey } from './list.js';
 import {
   setRailCollapsed, applyTheme, nextTheme, saveView, refresh,

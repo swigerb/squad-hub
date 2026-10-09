@@ -763,16 +763,13 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped to v13 for Scout's cache-versus-edits review of 476d2d1:
-  // `/js/prefs-sync.js`'s `loadPrefs()` now treats the server as the
-  // authoritative baseline on an already-migrated client (overlaying only
-  // this hydration gap's explicit pending edits), instead of always
-  // spreading the client's entire local cache back on top -- the previous
-  // v12 shell cached the pre-fix file content, which could resurrect a
-  // remote unpin or mask a remote rename/clear on a client with no local
-  // edits of its own.
+  // Bumped to v14 for the fix to PR #243's Scout review: `web/js/detail.js`'s
+  // `verifyControl`/`syncSession`/`detailSyncMenuItem` moved into a new
+  // `web/js/detail-control.js` (kept detail.js under the size budget), so
+  // the shell's cached file SET changed shape -- the previous v13 shell never
+  // cached that new file at all.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v13';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v14';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
