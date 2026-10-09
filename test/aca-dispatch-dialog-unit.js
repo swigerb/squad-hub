@@ -405,23 +405,45 @@ check('an unrelated same-issue sibling does not tighten the candidate entry\'s o
     'the unrelated retry is far outside its own normal eligibility window for sessionA and must not claim it');
 });
 
-check('three same-issue siblings still prefer the latest tightly preceding eligible dispatch', () => {
+check('three same-issue siblings prefer the closest real preceding dispatch over a drift-excused after-start sibling', () => {
   const a = { repo: REPO, issue: 42, dispatchedAt: 0, attached: false };
   const b = { repo: REPO, issue: 42, dispatchedAt: 800, attached: false };
   const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
   const groups = [acaGroup({
     device: { meta: { repo: REPO, issue: 42 } },
-    sessions: [{ id: 'sessionB', startedAt: 650 }],
+    sessions: [{ id: 'sessionB', startedAt: 900 }],
   })];
   const allPending = [a, b, c];
 
   assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null,
-    'A loses because B is the later tightly preceding eligible dispatch');
+    'A loses because B is the closer real preceding dispatch for this session');
   const matchB = acaPendingMatch(b, groups, new Set(), allPending);
   assert.strictEqual(matchB && matchB.key, 'sessionB',
-    'B should win among three siblings: it is the latest dispatch inside the tight precedence window');
+    'B should win among three siblings: it genuinely dispatched before sessionB started, only 100ms earlier');
   assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null,
-    'C dispatched too far after sessionB started to outrank B under the tight sibling-precedence refinement');
+    'C is only drift-excused after-start and must not outrank B merely because its raw dispatchedAt is larger');
+});
+
+check('four same-issue siblings fall back to the least-late eligible retry when every candidate is after-start', () => {
+  const a = { repo: REPO, issue: 42, dispatchedAt: 1_300, attached: false };
+  const b = { repo: REPO, issue: 42, dispatchedAt: 1_500, attached: false };
+  const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
+  const d = { repo: REPO, issue: 42, dispatchedAt: 1_900, attached: false };
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'least-late', startedAt: 1_200 }],
+  })];
+  const allPending = [a, b, c, d];
+
+  const matchA = acaPendingMatch(a, groups, new Set(), allPending);
+  assert.strictEqual(matchA && matchA.key, 'least-late',
+    'when no candidate genuinely precedes the session, the least-late eligible dispatch should win the fallback comparison');
+  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null,
+    'B is later after-start than A, so it must lose the fallback comparison');
+  assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null,
+    'C is even later after-start than B and must also lose');
+  assert.strictEqual(acaPendingMatch(d, groups, new Set(), allPending), null,
+    'D is the latest after-start retry and must not win merely for having the largest raw dispatchedAt');
 });
 
 check('a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)', () => {

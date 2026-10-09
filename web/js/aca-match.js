@@ -126,47 +126,52 @@ export const ACA_RETRY_PRECEDENCE_TOLERANCE_MS = 1000;
  *      EACH candidate independently: every candidate whose own
  *      `dispatchedAt` is within `ACA_START_TOLERANCE_MS` of the session's
  *      `startedAt` stays in play. Among those already-eligible siblings, a
- *      tighter refinement then prefers the CLOSEST PRECEDING dispatch -- the
- *      largest `dispatchedAt` that is still
- *      `<= session.startedAt + ACA_RETRY_PRECEDENCE_TOLERANCE_MS` -- if any
- *      such siblings exist at all. If none do, the match falls back to the
- *      ordinary rule-1-eligible set rather than silently tightening an
- *      otherwise-valid candidate's OWN admission window merely because some
- *      sibling exists. Walking Bug B through this rule: sessionB
- *      (`startedAt` ~5500) is eligible against BOTH A (`dispatchedAt` 1000)
- *      and B (`dispatchedAt` 5000), and both satisfy the tighter
- *      "preceding" refinement too, so B is the closer/later preceding
+ *      tighter refinement then first looks at candidates whose
+ *      `dispatchedAt` is still within
+ *      `ACA_RETRY_PRECEDENCE_TOLERANCE_MS` after the session started. Within
+ *      that tighter subset, entries whose dispatch genuinely happened AT OR
+ *      BEFORE the session's own `startedAt` ALWAYS outrank entries whose
+ *      dispatch happened AFTER the session started and are only still in play
+ *      because cross-clock drift could excuse them. Within the at-or-before
+ *      group, the winner is the largest `dispatchedAt` (the closest real
+ *      preceding cause). If every tighter-subset candidate is after-start,
+ *      the winner is instead the smallest `dispatchedAt` (the least-late,
+ *      closest drift-excused candidate). If nobody satisfies that tighter
+ *      window at all, the match falls back to the ordinary rule-1-eligible
+ *      set using that SAME before/after-aware ranking rather than silently
+ *      tightening an otherwise-valid candidate's OWN admission window merely
+ *      because some sibling exists. Walking Bug B through this rule:
+ *      sessionB (`startedAt` ~5500) is eligible against BOTH A
+ *      (`dispatchedAt` 1000) and B (`dispatchedAt` 5000), and both satisfy
+ *      the tighter refinement too, so B is the closer/later real preceding
  *      dispatch and sessionB binds to B on the very first poll, independent
  *      of processing order. When sessionA (`startedAt` ~1200) later appears,
  *      B (`dispatchedAt` 5000) remains loosely eligible only because of the
- *      cross-clock drift allowance from rule 1 -- but it fails the tighter
- *      sibling refinement, while A passes it, so A correctly claims
- *      sessionA. No swap.
+ *      cross-clock drift allowance from rule 1 -- but A is genuinely
+ *      before-start while B is only drift-excused after-start, so A
+ *      correctly claims sessionA. No swap.
  *
  *      A CLOSELY-SPACED retry (the reviewer-found regression this tighter
  *      refinement fixes): if B is instead dispatched only, say, 4 seconds
  *      after A (still inside `ACA_START_TOLERANCE_MS`'s 5-second window),
  *      and a session genuinely started 500ms after A's own dispatch -- i.e.
- *      BEFORE B was even dispatched -- the OLD code let B's larger
+ *      BEFORE B was even dispatched -- the OLD code let B's larger raw
  *      `dispatchedAt` win the sibling comparison even though B's dispatch
  *      had not happened yet when the session started. That session could
  *      only ever have been A's own job. The fix: B remains rule-1-eligible
  *      (cross-clock drift can still explain a session beginning a few
- *      seconds "early"), but B fails the tighter sibling refinement while A
- *      passes it, so A -- the best eligible PRECEDING candidate --
- *      correctly wins.
+ *      seconds "early"), but after-start candidates can never outrank an
+ *      at-or-before candidate, so A correctly wins.
  *
- *      Ties -- two sibling entries whose `dispatchedAt` are equally the
- *      closest preceding value for one candidate session -- are the
- *      genuinely ambiguous case the brief's "leave unknown, do not
- *      fabricate" instruction is actually about: there is no time-based
- *      way to prefer one over the other, so the session resolves to
- *      NEITHER of them (the `maxOtherDispatchedAt >= entryDispatchedAt`
- *      exclusion below makes tied siblings reject each other symmetrically)
- *      rather than guessing. This is DIFFERENT from "two entries exist" (the
- *      ordinary retry case above, where one is unambiguously closer) --
- *      it only applies when neither sibling is a strictly better match
- *      than the other for this specific session.
+ *      Ties -- two sibling entries whose before/after-aware ranking tuple is
+ *      genuinely identical for one candidate session -- are the genuinely
+ *      ambiguous case the brief's "leave unknown, do not fabricate"
+ *      instruction is actually about: there is no time-based way to prefer
+ *      one over the other, so the session resolves to NEITHER of them rather
+ *      than guessing. This is DIFFERENT from "two entries exist" (the
+ *      ordinary retry case above, where one is unambiguously better) -- it
+ *      only applies when neither sibling is a strictly better match than the
+ *      other for this specific session.
  *
  * ON THE PRE-EXISTING "single ambiguous session, two same-issue entries"
  * TEST (`test/aca-dispatch-dialog-unit.js`): that test's ORIGINAL assertion
@@ -246,35 +251,42 @@ export function acaPendingMatch(entry, groups = [], claimedKeys = null, allPendi
 
       // Rule 2 (Bug B): among `entry`'s OTHER same-repo-same-issue pending
       // siblings (a genuine retry), this session binds to whichever
-      // already-rule-1-eligible entry is the CLOSEST PRECEDING dispatch --
-      // not to `entry` merely because `entry` happens to be who is asking.
-      // The tighter `ACA_RETRY_PRECEDENCE_TOLERANCE_MS` window is ONLY a
-      // sibling-ranking refinement: if it identifies any candidate(s), they
-      // outrank siblings that are merely rule-1-eligible through the looser
-      // cross-process drift allowance. If nobody satisfies the tighter
-      // refinement, rule 2 falls back to the normal rule-1-eligible set
-      // rather than re-checking `entry` itself under a stricter window just
-      // because siblings exist. If another sibling is a strictly closer
-      // (later, but still tightly preceding) dispatch than `entry`, `entry`
-      // loses this session to that sibling (handled the next time THAT
-      // sibling is resolved, see `syncAcaPending`). If another sibling ties
-      // `entry` exactly (equally the closest preceding dispatch --
-      // genuinely ambiguous, no time-based way to prefer one over the
-      // other), this session resolves to NEITHER: no fabricated guess, see
-      // the function doc above.
+      // already-rule-1-eligible entry has the BEST before/after-aware timing
+      // rank -- not to `entry` merely because `entry` happens to be who is
+      // asking. The tighter `ACA_RETRY_PRECEDENCE_TOLERANCE_MS` window is
+      // ONLY a sibling-ranking refinement: if it identifies any candidate(s),
+      // they outrank siblings that are merely rule-1-eligible through the
+      // looser cross-process drift allowance. Within whichever candidate set
+      // is active, a dispatch at-or-before `startedAt` ALWAYS outranks one
+      // that is only drift-excused after `startedAt`; ties remain ambiguous
+      // and resolve to neither. If nobody satisfies the tighter refinement,
+      // rule 2 falls back to the normal rule-1-eligible set rather than
+      // re-checking `entry` itself under a stricter window just because
+      // siblings exist.
       const others = siblings.filter((e) => e !== entry);
       if (others.length) {
         const eligible = (e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS;
         const precedes = (e) => (e.dispatchedAt || 0) <= startedAt + ACA_RETRY_PRECEDENCE_TOLERANCE_MS;
-        const entryDispatchedAt = entry.dispatchedAt || 0;
+        const compareTimingRank = (a, b) => {
+          const rank = (e) => {
+            const dispatchedAt = (e.dispatchedAt || 0);
+            const isAfterStart = dispatchedAt > startedAt;
+            return [isAfterStart ? 1 : 0, isAfterStart ? dispatchedAt : -dispatchedAt];
+          };
+          const aRank = rank(a);
+          const bRank = rank(b);
+          return (aRank[0] - bRank[0]) || (aRank[1] - bRank[1]);
+        };
         const otherEligible = others.filter(eligible);
         const otherPreceding = otherEligible.filter(precedes);
         const entryPrecedes = precedes(entry);
         const competing = (otherPreceding.length || entryPrecedes) ? otherPreceding : otherEligible;
         if ((otherPreceding.length || entryPrecedes) && !entryPrecedes) continue;
-        const maxOtherDispatchedAt = competing.length
-          ? Math.max(...competing.map((e) => e.dispatchedAt || 0)) : -Infinity;
-        if (maxOtherDispatchedAt >= entryDispatchedAt) continue; // a closer-or-tied sibling wins instead
+        let bestOther = null;
+        for (const other of competing) {
+          if (!bestOther || compareTimingRank(other, bestOther) < 0) bestOther = other;
+        }
+        if (bestOther && compareTimingRank(bestOther, entry) <= 0) continue; // a better-or-tied sibling wins instead
       }
 
       if (!best || startedAt < best.startedAt) best = { key, startedAt };

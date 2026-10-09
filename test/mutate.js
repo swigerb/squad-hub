@@ -6220,18 +6220,6 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)',
   },
   {
-    // If a tighter-preceding sibling exists, an entry that does NOT satisfy
-    // that tighter refinement must lose immediately. Disabling that exclusion
-    // recreates the close-retry-gap bug: a retry dispatched after the
-    // session started can still claim it merely because rule 1's looser
-    // cross-clock tolerance left it nominally eligible.
-    name: 'acaPendingMatch stops excluding entry when its own dispatch happened after the session already started',
-    file: 'web/js/aca-match.js',
-    find: `if ((otherPreceding.length || entryPrecedes) && !entryPrecedes) continue;`,
-    replace: `if (!process.env.MUTANT && (otherPreceding.length || entryPrecedes) && !entryPrecedes) continue; // MUTATION`,
-    mustFail: 'a closely-spaced same-issue retry does not let the newer dispatch steal the older dispatch\'s own session (reviewer-found regression)',
-  },
-  {
     // A same-issue sibling must not make `entry` itself re-pass the tighter
     // retry-precedence refinement. If the "use the tighter rule 2 window"
     // branch runs merely because SOME sibling exists, an otherwise-eligible
@@ -6245,14 +6233,33 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an unrelated same-issue sibling does not tighten the candidate entry\'s own eligibility window',
   },
   {
-    // A genuine tie between two siblings (neither is a strictly closer
-    // preceding dispatch) must resolve to NEITHER -- not silently let
-    // `entry` win just because it happens to be the one asking. This is the
-    // deliberate "leave ambiguous/unprovable attach unknown" case.
-    name: 'acaPendingMatch stops leaving a genuine closest-preceding tie unresolved',
+    // A drift-excused after-start retry must never outrank a candidate whose
+    // dispatch genuinely happened before the session started. Flipping that
+    // primary rank reintroduces the 3-sibling regression where a larger raw
+    // dispatchedAt steals the session.
+    name: 'acaPendingMatch starts preferring drift-excused after-start retries over real preceding ones',
     file: 'web/js/aca-match.js',
-    find: `        if (maxOtherDispatchedAt >= entryDispatchedAt) continue; // a closer-or-tied sibling wins instead`,
-    replace: `        if (process.env.MUTANT ? maxOtherDispatchedAt > entryDispatchedAt : maxOtherDispatchedAt >= entryDispatchedAt) continue; // MUTATION: ties no longer excluded`,
+    find: `            return [isAfterStart ? 1 : 0, isAfterStart ? dispatchedAt : -dispatchedAt];`,
+    replace: `            return [isAfterStart ? 0 : 1, isAfterStart ? dispatchedAt : -dispatchedAt]; // MUTATION`,
+    mustFail: 'three same-issue siblings prefer the closest real preceding dispatch over a drift-excused after-start sibling',
+  },
+  {
+    // When every eligible sibling is after-start, the fallback comparison must
+    // pick the least-late dispatch, not the latest raw dispatchedAt.
+    name: 'acaPendingMatch stops preferring the least-late after-start retry in fallback mode',
+    file: 'web/js/aca-match.js',
+    find: `            return [isAfterStart ? 1 : 0, isAfterStart ? dispatchedAt : -dispatchedAt];`,
+    replace: `            return [isAfterStart ? 1 : 0, isAfterStart ? -dispatchedAt : -dispatchedAt]; // MUTATION`,
+    mustFail: 'four same-issue siblings fall back to the least-late eligible retry when every candidate is after-start',
+  },
+  {
+    // A genuine tie between two siblings (neither has a strictly better
+    // before/after-aware timing rank) must resolve to NEITHER -- not silently
+    // let `entry` win just because it happens to be the one asking.
+    name: 'acaPendingMatch stops leaving a genuine timing-rank tie unresolved',
+    file: 'web/js/aca-match.js',
+    find: `        if (bestOther && compareTimingRank(bestOther, entry) <= 0) continue; // a better-or-tied sibling wins instead`,
+    replace: `        if (bestOther && (process.env.MUTANT ? compareTimingRank(bestOther, entry) < 0 : compareTimingRank(bestOther, entry) <= 0)) continue; // MUTATION: ties no longer excluded`,
     mustFail: 'a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)',
   },
   {

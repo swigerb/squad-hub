@@ -289,22 +289,28 @@ guess, combining two independent proofs:
    to *each* entry independently: if the session is within the normal 5s
    cross-process clock-drift window for an entry, that entry stays in play.
    Only *after* that does ACA apply a tighter same-process refinement among
-   siblings, preferring the *closest preceding* `dispatchedAt` when any
-   sibling satisfies that narrower window. This is what prevents a retry
-   dispatched a few seconds later from stealing a session that had already
-   begun before the retry was even dispatched, while still preserving the
-   normal 5s entry-vs-session tolerance for a candidate's own eligibility.
-   Put differently: the tighter retry-precedence tolerance is used only to
-   rank already-eligible same-issue siblings, never to re-check a
-   candidate's own admission just because some unrelated sibling exists.
-   This is what keeps two same-issue retries from being able to swap with
-   each other when their own jobs attach out of order, including when they
-   are dispatched close together: repository and issue proof alone is
-   identical for both of them by construction, so only time ordering can
-   tell a retry's own session apart from its predecessor's. A session
-   already claimed by another pending entry (`claimedKeys`) is never
-   claimed twice; a genuine ambiguity (two sibling entries that tie
-   exactly on "closest preceding") resolves to *neither*, rather than
+   siblings. If any candidate is still within the 1s retry-precedence window,
+   ACA ranks that tighter subset first; otherwise it falls back to the full
+   rule-1-eligible set. In either case, a dispatch that happened at-or-before
+   the session's own `startedAt` always outranks one that happened after the
+   session started and is only still eligible because clock drift could excuse
+   it. Within the at-or-before group ACA prefers the latest `dispatchedAt`
+   (closest real preceding cause); if every candidate is after-start, ACA
+   prefers the earliest `dispatchedAt` (the least-late drift-excused fit).
+   This is what prevents a retry dispatched a few seconds later from stealing
+   a session that had already begun before the retry was even dispatched,
+   while still preserving the normal 5s entry-vs-session tolerance for a
+   candidate's own eligibility. Put differently: the tighter
+   retry-precedence tolerance is used only to rank already-eligible same-issue
+   siblings, never to re-check a candidate's own admission just because some
+   unrelated sibling exists. This is what keeps two same-issue retries from
+   being able to swap with each other when their own jobs attach out of
+   order, including when they are dispatched close together: repository and
+   issue proof alone is identical for both of them by construction, so only
+   time ordering can tell a retry's own session apart from its predecessor's.
+   A session already claimed by another pending entry (`claimedKeys`) is never
+   claimed twice; a genuine ambiguity (two sibling entries that tie exactly on
+   that before/after-aware ranking) resolves to *neither*, rather than
    fabricate a guess either way. See `aca-match.js`'s
    own doc comment above `acaPendingMatch` for the full worked-through
    scenarios, and `test/aca-dispatch-dialog-unit.js` /
