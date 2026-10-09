@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-233-live-heartbeats-canonical-role",
+  "sessionId": "fix-pr-233-live-heartbeats-canonical-role",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T04:36:01.345Z",
+  "lastHeartbeatAt": "2026-10-09T04:36:01.345Z",
+  "updatedAt": "2026-10-09T04:36:01.345Z",
+  "terminalReason": null,
+  "executionRef": null
+}
