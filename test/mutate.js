@@ -3488,7 +3488,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v15';`,
+    find: `const CACHE = 'squad-hub-shell-v17';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6953,17 +6953,17 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     // #243/#181: reverts the phone-width header fix to its pre-fix shape --
-    // the right-side actions share the title's single-line flex row instead
-    // of getting their own line box, and the buttons lose their
-    // nowrap/flex-shrink:0 guard -- reproducing the exact regression the
-    // real CI screenshots on this PR caught: at 390px, "Run on ACA…" wraps
-    // its label across lines inside a 32px button and Stop/⋯ are pushed past
-    // the right edge of the viewport.
+    // the right-side actions get no line box of their own, and lose the
+    // `justify-content: flex-end` that right-aligns them -- reproducing the
+    // exact regression the real CI screenshots on this PR caught: at 390px,
+    // "Run on ACA…" wraps its label across lines inside a 32px button and
+    // Stop/⋯ are pushed past the right edge of the viewport.
     name: 'at 390px, the detail header right-side actions wrap onto multiple lines and are pushed off the right edge of the viewport',
     file: 'web/css/detail.css',
-    find: `  .detail-head-line { flex-wrap: wrap; row-gap: 6px; }
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }
   .detail-head-line .spacer { display: none; }
-  .detail-head-line .detail-actions { flex: 1 1 100%; justify-content: flex-end; }
+  .detail-head-titlerow { flex-wrap: nowrap; }
+  .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; }
 }`,
     replace: `  /* MUTATION: phone-width second-line-box fix removed */
 }`,
@@ -6984,6 +6984,33 @@ if ($health.accessStore -ne 'durable') {`,
   height: 32px; box-sizing: border-box; /* MUTATION: white-space/flex-shrink guard removed */
 }`,
     mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
+  {
+    // #243 real regression (CI run 37998832767): the whole `.detail-head-line`
+    // wrapping (rather than just the actions getting their own row) let the
+    // title row's OWN items split across two lines at 390px -- this restores
+    // that exact shape by deleting the atomic, `nowrap` title-row grouping and
+    // letting the line wrap as a single flex row again, which must make the
+    // shared-line-box assertion (checked at 1280/900/390px) fail at 390px,
+    // the same width and the same way the real run did.
+    name: 'at 390px, the title row wraps internally instead of staying an atomic non-wrapping line box (#243 real regression)',
+    file: 'web/css/detail.css',
+    find: `.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }`,
+    replace: `.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; } @media (max-width: 900px) { .detail-head-line { flex-wrap: wrap !important; } .detail-head-titlerow { flex-wrap: wrap !important; } } /* MUTATION: title row allowed to wrap internally again */`,
+    mustFail: 'the header items share one vertical line box at 1280, 900 and 390px',
+  },
+  {
+    // The phone layout's `height: auto` override is what lets the actions'
+    // real second row take up real space instead of being clipped by (or
+    // overlapping) the metadata line underneath a header still pinned to the
+    // desktop 32px. Reverting to the fixed height must reproduce that
+    // overlap, which the new no-spatial-overlap assertion below exists to
+    // catch.
+    name: 'at 390px, the header stays clipped to a fixed 32px line box instead of growing for the actions\' second row, risking metadata overlap',
+    file: 'web/css/detail.css',
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }`,
+    replace: `  .detail-head-line { flex-direction: column; align-items: stretch; height: 32px; overflow: hidden; row-gap: 6px; } /* MUTATION: height pinned back to 32px */`,
+    mustFail: 'at 390px, the detail header controls do not spatially overlap the metadata line underneath them',
   },
 ];
 

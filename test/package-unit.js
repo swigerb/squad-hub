@@ -774,8 +774,16 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // commits' own history for why each needed a fresh shell). A same-numbered
   // coincidence between two branches is not the same cache: the merge needs
   // a value NEITHER side ever used, so this stays pinned to v15, not v14.
+  //
+  // Bumped again to v17 for the #243 390px header-alignment fix: no file was
+  // added to or removed from SHELL, but `detail.css`/`index.html`'s cached
+  // CONTENT changed behavior (the `.detail-head-titlerow` wrapper and the
+  // real two-row phone layout replacing whole-line `flex-wrap`), and an
+  // offline install must not keep serving the old misaligned pair out of its
+  // cache. v16 is already spent by the sibling `squad/hub-178-aca-job-dialog`
+  // branch, so this is v17, not v16, to avoid a cross-PR cache collision.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v17';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

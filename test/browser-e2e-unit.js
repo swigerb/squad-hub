@@ -2359,6 +2359,101 @@ async function watchCsp(pg) {
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
+    // #243 real regression (CI run 37998832767): the two checks above proved
+    // the RIGHT-side actions stay on-screen and on one line, but neither one
+    // actually measured the FIRST row (back/star/title/pencil/pill) itself --
+    // the root cause was `flex-wrap` applied to the whole `.detail-head-line`,
+    // which let the first row's own items (not just the actions) spill onto a
+    // second line while the header kept a fixed 32px height. This measures
+    // every first-row control's own rendered geometry at 390px, the same way
+    // the actions were already checked: inside the viewport, unclipped, and a
+    // single ~32px line each -- which a height-only check on the header
+    // container cannot tell apart from "32px tall but two of these items are
+    // on a wrapped second line that overflows it".
+    await check('at 390px, every first-row header control (back/star/title/pencil/pill) stays inside the viewport, unclipped and on one line', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const bounds = await page.evaluate(() => {
+        const vw = document.documentElement.clientWidth;
+        const rectOf = (id) => {
+          const el = document.getElementById(id);
+          if (!el || el.offsetParent === null) return null;
+          const r = el.getBoundingClientRect();
+          return { left: r.left, right: r.right, width: r.width, height: r.height };
+        };
+        return {
+          vw,
+          back: rectOf('dtBackPhone'),
+          star: rectOf('dtStar'),
+          title: rectOf('dtTitle'),
+          rename: rectOf('dtRename'),
+          pill: rectOf('dtStatusPill'),
+        };
+      });
+      for (const [label, rect] of [
+        ['the back arrow', bounds.back],
+        ['the pin star', bounds.star],
+        ['the title', bounds.title],
+        ['the rename pencil', bounds.rename],
+        ['the status pill', bounds.pill],
+      ]) {
+        assert.ok(rect, `${label} is not visible at 390px`);
+        assert.ok(rect.width > 0, `${label} has no rendered width at 390px`);
+        assert.ok(rect.left >= -0.5 && rect.right <= bounds.vw + 0.5,
+          `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
+        assert.ok(rect.height <= 34,
+          `${label} wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // #243 real regression: the old fix pinned `.detail-head-line` to a fixed
+    // 32px line box and relied on `flex-wrap` to push overflow onto a SECOND
+    // line that the fixed-height box never actually grew to accommodate --
+    // the row-height check above (`rect.height <= 34`) cannot catch this,
+    // because it only measures a single BUTTON's own box, not whether that
+    // button's row collided with unrelated content underneath it.
+    //
+    // This measures every CONTROL's own rendered rectangle (not the shared
+    // `.detail-head-line` container's rect) against the metadata line below
+    // it. Measuring the container itself is a false-safe check: a container
+    // with a fixed `height` (the old, broken design, or a regression back to
+    // it) always reports its own `bottom` at exactly that fixed height, which
+    // trivially stays above the metadata line even while its own children
+    // overflow past it -- `overflow` only clips what is PAINTED, it never
+    // moves the overflowing children's own boxes, so measuring the controls
+    // themselves is what actually catches the collision. Checked at every
+    // width the header's row count changes (two rows at 390px/900px, one row
+    // at 1280px).
+    await check('at 390px, the detail header controls do not spatially overlap the metadata line underneath them', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      for (const width of [1280, 900, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+        const result = await page.evaluate(() => {
+          const ids = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+          const bottoms = ids.map((id) => {
+            const el = document.getElementById(id);
+            if (!el || el.offsetParent === null) return null;
+            return el.getBoundingClientRect().bottom;
+          }).filter((v) => v !== null);
+          const meta = document.getElementById('dtMeta');
+          return {
+            maxControlBottom: bottoms.length ? Math.max(...bottoms) : null,
+            metaTop: meta ? meta.getBoundingClientRect().top : null,
+          };
+        });
+        assert.ok(result.maxControlBottom !== null, `at ${width}px, no header control was visible to measure`);
+        assert.ok(result.metaTop !== null, `at ${width}px, the metadata line could not be measured`);
+        assert.ok(result.maxControlBottom <= result.metaTop + 0.5,
+          `at ${width}px, a header control (bottom=${result.maxControlBottom}) overlaps the metadata line underneath it (top=${result.metaTop})`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
     // Evidence capture for CI: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.
     await check('the session detail page renders and is captured at desktop and phone widths, dark and light', async () => {
       const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
