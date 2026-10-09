@@ -893,7 +893,7 @@ const MUTATIONS = [
     // dangling "squad" pill and an empty count in front of every session that
     // was never a Squad project.
     name: 'the web row renders an empty Squad slot for a non-Squad session',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const squadBits = sq ? \`      <div class="squadline">`,
     replace: `  const squadBits = (sq || process.env.MUTANT) ? \`      <div class="squadline"> <span class="MUTATION"></span>`,
     mustFail: 'a session in a non-Squad workspace shows no member and no empty slot on the web row',
@@ -905,7 +905,7 @@ const MUTATIONS = [
     // reintroduces exactly the bug the issue reported: an invented label
     // where the row should stay silent.
     name: 'the web row invents a name for the coordinator or an unknown active member',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const activeName = am && am.name ? am.name : '';`,
     replace: `  const activeName = process.env.MUTANT ? (am ? (am.name || 'Squad') : '') : (am && am.name ? am.name : ''); // MUTATION`,
     mustFail: 'the web row shows no member chip when the coordinator is acting',
@@ -1493,10 +1493,27 @@ const MUTATIONS = [
      * rather than by mutations of their own.
      */
     name: 'sessionRow renders agentSelection.agent unescaped (stored XSS)',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `esc(agentInfo.text)`,
     replace: `(process.env.MUTANT ? agentInfo.text : esc(agentInfo.text))`,
     mustFail: 'a malicious agentSelection.agent renders as inert escaped text, never a live <img>',
+  },
+  {
+    // #170: a custom name is as attacker-influenceable as any other field
+    // here -- it is round-tripped through `/api/prefs`, set by whoever is
+    // signed in, same trust level as an agent/model/branch value.
+    name: 'sessionRow renders a custom name unescaped (stored XSS)',
+    file: 'web/js/sessionrow.js',
+    find: `>\${esc(title)}</b>`,
+    replace: `>\${process.env.MUTANT ? title : esc(title)}</b>`,
+    mustFail: 'a malicious custom name renders as inert text, never a live tag',
+  },
+  {
+    name: 'the renamed-row tooltip carries the raw prompt unescaped (stored XSS)',
+    file: 'web/js/sessionrow.js',
+    find: `title="\${esc(s.prompt || s.id || '')}"`,
+    replace: `title="\${process.env.MUTANT ? (s.prompt || s.id || '') : esc(s.prompt || s.id || '')}"`,
+    mustFail: 'a malicious raw prompt in the renamed tooltip renders as inert text',
   },
   {
     name: 'agent-select stops validating agent/model names, letting an HTML-shaped .squad-hub.json value through',
@@ -1820,14 +1837,14 @@ const MUTATIONS = [
     // The classic stored-XSS shape, on the newest field to reach the DOM. git
     // will happily let you name a branch `<img src=x onerror=...>`.
     name: 'the branch is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${esc(git.branch)}</span>\` : '',`,
     replace: `    git && git.branch ? \`<span class="branch" title="\${esc(git.branch)}">\${process.env.MUTANT ? git.branch : esc(git.branch)}</span>\` : '', // MUTATION`,
     mustFail: 'a malicious BRANCH name renders as inert escaped text',
   },
   {
     name: 'the repository is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
   const repoText = esc(repoRaw);`,
     replace: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);
@@ -1836,7 +1853,7 @@ const MUTATIONS = [
   },
   {
     name: 'the activity line is interpolated into the row without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `          <span class="activity">\${esc(activityLine(s, device))}</span>`,
     replace: `          <span class="activity">\${process.env.MUTANT ? activityLine(s, device) : esc(activityLine(s, device))}</span>`,
     mustFail: 'a malicious ACTIVITY line renders as inert escaped text',
@@ -1984,7 +2001,7 @@ const MUTATIONS = [
   {
     // Decoration must never take the session list down.
     name: 'a session outside a checkout loses its location entirely',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const repoRaw = git && git.repository ? git.repository : (sq ? sq.project : s.cwd);`,
     replace: `  const repoRaw = process.env.MUTANT ? (git && git.repository) : (git && git.repository ? git.repository : (sq ? sq.project : s.cwd)); // MUTATION`,
     mustFail: 'a session outside a checkout still shows its cwd',
@@ -2116,7 +2133,7 @@ const MUTATIONS = [
   },
   {
     name: 'a session key is interpolated into the star attribute unescaped',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     // Single-quoted on purpose: the anchor itself contains `${...}`, which a
     // template literal here would try to interpolate.
     find: 'data-star="${esc(sessionKey(s))}"',
@@ -2297,9 +2314,9 @@ const MUTATIONS = [
     // regression (a missing property, not an inverted condition).
     name: 'devices.css stops pinning .star/.status/.row-main to the same grid row, so the title drifts onto a second implicit row',
     file: 'web/css/devices.css',
-    find: `.row > .star, .row > .status, .row > .row-main { grid-row: 1; }\n`,
+    find: `.row > .star, .row > .status, .row > .row-main, .row > .more { grid-row: 1; }\n`,
     replace: '',
-    mustFail: 'devices.css pins .star, .status and .row-main to the same grid row (#169/#231)',
+    mustFail: 'devices.css pins .star, .status, .row-main and .more to the same grid row (#169/#231, extended by #170)',
   },
 
   // -------------------------------------------------------------------------
@@ -2929,6 +2946,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
+  '/js/sessionrow.js',
+  '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
   '/js/cleanup.js',
@@ -2940,6 +2959,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',
+  '/js/prefs-sync.js',
   '/js/aca.js',
   '/js/access.js',
   '/js/install.js',
@@ -2986,7 +3006,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v9';`,
+    find: `const CACHE = 'squad-hub-shell-v13';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3065,14 +3085,14 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the row hides an approval that expired unanswered',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `        \${outcome ? (outcome.kind === 'expired'`,
     replace: `        \${(outcome && !process.env.MUTANT) ? (outcome.kind === 'expired'`,
     mustFail: 'an expired approval is shown, not silently dropped',
   },
   {
     name: 'an expired approval title is interpolated without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
     replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
@@ -3238,9 +3258,23 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // name into a device log.
     name: 'forget takes its actor from the request body',
     file: 'src/service/hub-service.js',
-    find: `          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }`,
-    replace: `          : op === 'forget' ? { ...body, forgottenBy: (body && body.forgottenBy) || me.name || me.key } // MUTATION`,
+    find: `          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: me.name || me.key,`,
+    replace: `          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: (body && body.forgottenBy) || me.name || me.key, // MUTATION`,
     mustFail: 'a forged actor in the body does not reach the device',
+  },
+  {
+    // Without this, a reachable device's "Remove" for one row would forget
+    // every ended session it has, the same as the bulk Tidy sweep -- quietly
+    // widening a single click's blast radius.
+    name: "forget's sessionId is dropped on the reachable path (#170)",
+    file: 'src/service/hub-service.js',
+    find: `            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,`,
+    replace: `            sessionId: undefined, // MUTATION`,
+    mustFail: 'sessionId narrows the sweep to one row, even on a live (reachable) device (#170)',
   },
   {
     // A tidy-up that reached a device the caller does not own would let one
@@ -3291,7 +3325,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   },
   {
     name: 'the answerer name is interpolated without escaping',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `— by \${esc(outcome.answeredBy)}</span>`,
     replace: `— by \${outcome.answeredBy}</span>`,
     mustFail: 'a malicious answerer name renders as inert escaped text',
@@ -5158,7 +5192,7 @@ if ($health.accessStore -ne 'durable') {`,
     // Without a title, a clipped device/repository/branch has nowhere to be
     // read in full -- the whole point of this change.
     name: 'the session row meta fields carry no title tooltip',
-    file: 'web/js/list.js',
+    file: 'web/js/sessionrow.js',
     find: `  const meta = [
     deviceText ? \`<span class="meta-field" title="\${deviceText}">\${deviceText}</span>\` : '',
     repoText ? \`<span class="meta-field" title="\${repoText}">\${repoText}</span>\` : '',
@@ -5978,6 +6012,175 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  if (authBuf.length !== AUTH_SECRET_LEN) {`,
     replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
     mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
+  },
+  {
+    // PR #236 review, finding 1: a failed initial prefs GET must retry as
+    // another GET. Routing it through the local-edit retry path instead means
+    // a fresh client, the moment it reconnects, PUTs its own empty defaults
+    // over whatever the hub actually had saved.
+    name: 'a failed initial prefs pull retries as a destructive PUT again (#236 finding 1)',
+    file: 'web/js/prefs-sync.js',
+    find: `  } catch {
+    schedulePullRetry();
+    return;
+  }`,
+    replace: `  } catch {
+    scheduleRetry(); // MUTATION
+    return;
+  }`,
+    mustFail: 'a failed initial GET schedules another GET, not a PUT of fresh-client defaults',
+  },
+  {
+    // PR #236 review, finding 2: a first-ever migration must adopt the
+    // server's saved view before its own first PUT, or that PUT ships the
+    // client's just-booted defaults and clobbers the view the hub had saved.
+    name: 'first-sync migration skips applying the saved server view before its own push (#236 finding 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (!urlHasView && server.view && !pendingViewChanged) {`,
+    replace: `  if (false) { // MUTATION (never reconciles the server's saved view before its own push)`,
+    mustFail: 'first sync ever applies the server’s saved view, and its own PUT uploads that view back, not the client default',
+  },
+  {
+    // PR #236 review, finding 3: a pin/rename/view change that lands while a
+    // pull is still in flight must survive that pull's own, now-stale,
+    // resolution -- the pull started reading before the edit happened.
+    name: 'a dirty GET/PUT race loses the local edit again (#236 finding 3)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const k of pendingPinAdds) favorites.add(k);`,
+    replace: `    // MUTATION (drops any pin added during the hydration gap)`,
+    mustFail: 'a pin added while the pull is still in flight survives that pull’s resolution',
+  },
+  {
+    // Scout's re-review of 1313f74 ("remaining prefs outbox ordering"),
+    // schedule 1a: a pin explicitly UNfavorited before hydration is a
+    // tombstone -- without it, the server's older (nonempty) copy of that
+    // pin resurrects it the instant hydration's merge runs.
+    name: 'a pin removed before hydration is resurrected by the server\u2019s older copy again (outbox-order 1a)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const k of pendingPinRemovals) favorites.delete(k);`,
+    replace: `    // MUTATION (ignores the removal tombstone)`,
+    mustFail: 'a pin REMOVED before hydration is not resurrected by the server’s older (nonempty) copy of it',
+  },
+  {
+    // Same schedule, for a cleared name instead of a removed pin.
+    name: 'a name cleared before hydration is resurrected by the server\u2019s older copy again (outbox-order 1b)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const k of pendingNameClears) delete names[k];`,
+    replace: `    // MUTATION (ignores the clear tombstone)`,
+    mustFail: 'a name CLEARED before hydration is not resurrected by the server’s older (nonempty) copy of it',
+  },
+  {
+    // Schedule 1c: a view edit that raced hydration must still beat the
+    // server's own (older) saved view -- without the `pendingViewChanged`
+    // guard, the server's stale view silently wins the race.
+    name: 'a view edit racing hydration is overwritten by the server\u2019s saved view again (outbox-order 1c)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (!urlHasView && server.view && !pendingViewChanged) {`,
+    replace: `  if (!urlHasView && server.view) { // MUTATION (ignores a view edit that raced the pull)`,
+    mustFail: 'a view edit before hydration beats the server’s (nonempty, older) saved view',
+  },
+  {
+    // Schedule 2: two edits in quick succession must never produce two
+    // concurrent PUTs -- without the in-flight guard, a second edit starts
+    // its own competing write instead of being coalesced into one follow-up.
+    name: 'a second edit starts a competing, concurrent PUT again instead of coalescing (outbox-order 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `function queuePush() {
+  if (writeInFlight) { writePending = true; return; }
+  writeInFlight = true;
+  pushPrefsNow();
+}`,
+    replace: `function queuePush() {
+  writeInFlight = true; // MUTATION (dropped the in-flight guard)
+  pushPrefsNow();
+}`,
+    mustFail: 'two edits in quick succession are serialized -- never two concurrent PUTs -- and the later edit is never lost',
+  },
+  {
+    // Schedule 3: a later edit that arrives while an EARLIER write is
+    // failing/retrying must go out immediately, not wait out that earlier
+    // write's own 15-second retry timer.
+    name: 'a later edit waits out an earlier failed write\u2019s retry timer again instead of going out immediately (outbox-order 3)',
+    file: 'web/js/prefs-sync.js',
+    find: `    if (writePending) { writePending = false; queuePush(); } // don't wait out the timer if there is already more to send`,
+    replace: `    // MUTATION (later edit now waits for the 15s retry timer instead)`,
+    mustFail: 'an edit that lands WHILE an earlier write is still failing is coalesced into an immediate retry, not dropped until the 15s timer',
+  },
+  {
+    // Scout's cache-versus-edits review of 476d2d1: once migrated, the
+    // server is the authoritative baseline -- spreading this client's own
+    // (possibly stale) cached pins back on top resurrects a pin unpinned on
+    // another device, even though THIS client made no edit at all.
+    name: 'a migrated client resurrects a remote unpin via its own stale local cache again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    state.favorites = favorites;`,
+    replace: `    state.favorites = new Set([...favorites, ...state.favorites]); // MUTATION (resurrects this client's stale cached pins)`,
+    mustFail: 'an already-migrated client with no local edits adopts a remote UNPIN, not its own stale cached pin',
+  },
+  {
+    // Same bug, for names: a plain spread of the stale local cache on top of
+    // the server's names masks a remote rename or clear.
+    name: 'a migrated client masks a remote rename/clear via its own stale local cache again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    state.names = names;`,
+    replace: `    state.names = { ...names, ...state.names }; // MUTATION (resurrects this client's stale cached names)`,
+    mustFail: 'an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name',
+  },
+  {
+    // An explicit NAME SET during the hydration gap must still reach the
+    // merged state once the migrated-authoritative-baseline branch is the
+    // one actually taken (NOT the legacy first-sync union branch, which the
+    // old "outbox-order" anchor pointed at before this review).
+    name: 'an explicit name set during the hydration gap is dropped against a nonempty remote record again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const [k, v] of pendingNameSets) names[k] = v;`,
+    replace: `    // MUTATION (drops any name explicitly set during the hydration gap)`,
+    mustFail: 'an explicit name SET during the hydration gap merges with a nonempty remote record, without resurrecting a stale unrelated name',
+  },
+  {
+    // PR #236 review, finding 4: `copyToClipboard` never throws -- it
+    // settles true/false instead -- so the only way to report a real
+    // failure truthfully is to read that return value. Toasting success
+    // unconditionally silently turns off the whole point of the check.
+    name: 'copylink toasts "Link copied" unconditionally again, even on a real clipboard failure (#236 finding 4)',
+    file: 'web/js/rowmenu.js',
+    find: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`);
+    toast(copied ? 'Link copied' : 'Could not copy the link');`,
+    replace: `    await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`); // MUTATION
+    toast('Link copied');`,
+    mustFail: 'copylink toasts an honest failure, never "Link copied", when the clipboard write really fails (PR #236 finding 4)',
+  },
+  {
+    // PR #236 review, finding 5: a daemon that never claims
+    // `capabilities.narrowedForget` must be refused a narrowed single-row
+    // forget outright -- old 0.6.0 daemons ignore `sessionId` and would
+    // bulk-forget every ended session on the device, not just the one row.
+    name: 'a reachable device without narrowedForget is forwarded a narrowed forget again (#236 finding 5)',
+    file: 'src/service/hub-service.js',
+    find: `&& !(device.capabilities && device.capabilities.narrowedForget === true)) {`,
+    replace: `&& false /* MUTATION */) {`,
+    mustFail: 'an old daemon (no capabilities reported) refuses a narrowed single-row forget with 409',
+  },
+  {
+    // PR #236 review, finding 5 (daemon side): the capability must be
+    // reported on every register/heartbeat, or the hub never has anything
+    // to gate on and the 409 refusal above can never fire for real daemons.
+    name: 'the daemon stops reporting narrowedForget, so the hub never knows a current daemon supports it (#236 finding 5)',
+    file: 'src/daemon.js',
+    find: `capabilities: { narrowedForget: true },`,
+    replace: `capabilities: undefined, // MUTATION`,
+    mustFail: 'a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)',
+  },
+  {
+    // PR #236 review, finding 5 (store side): deliberately NO fallback to
+    // the previous value, unlike version/cliVersion -- a daemon that stops
+    // claiming the capability (a downgrade/rollback) must lose it on its
+    // very next heartbeat, not keep benefiting from a stale claim.
+    name: 'a dropped narrowedForget capability falls back to the stale previous value instead of being revoked (#236 finding 5)',
+    file: 'src/service/store.js',
+    find: `capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,`,
+    replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
+    mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
   },
 ];
 

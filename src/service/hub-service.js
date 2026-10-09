@@ -1339,6 +1339,30 @@ class HubService {
         const deviceRemoved = left === 0 ? this.store.removeDevice(me.key, deviceId) : false;
         return send(200, { ...r, count: r.removed, offline: true, deviceRemoved });
       }
+      /**
+       * A single-row "Remove" (#170) narrows a REACHABLE device's `/forget`
+       * to one `sessionId`, forwarded live over the websocket to the daemon
+       * actually running it (`command()` below). That is only safe if this
+       * particular daemon is confirmed to understand `sessionId` at all --
+       * an older one simply does not recognize the field, reads none of the
+       * options it does not know about, and falls back to its only other
+       * behavior: forget every ended session it is carrying. That is a wide,
+       * silent bulk-forget hiding behind what looked like a single-row click,
+       * and the production ACA worker still runs squad-hub 0.6.0 (pre-#170)
+       * on devices for a while after this ships -- so this is refused
+       * outright, on an explicit capability the daemon itself reports
+       * (`store.js`'s `sanitizeCapabilities`), never guessed from a version
+       * string. The unreachable-device branch above needs no equivalent
+       * check: that path never reaches a daemon at all, so an old one's
+       * behavior around `sessionId` is irrelevant to it.
+       */
+      if (op === 'forget' && body && typeof body.sessionId === 'string' && body.sessionId
+        && !(device.capabilities && device.capabilities.narrowedForget === true)) {
+        return send(409, {
+          error: 'device does not support removing a single session; use the bulk tidy action instead',
+          code: 'narrowed-forget-unsupported',
+        });
+      }
       try {
         // Who is doing this travels with the command. An approval answered on
         // one surface has to show as answered on every other, and "resolved"
@@ -1378,7 +1402,16 @@ class HubService {
           }
         }
         const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
-          : op === 'forget' ? { olderThanMs: body ? body.olderThanMs : undefined, forgottenBy: me.name || me.key }
+          : op === 'forget' ? {
+            olderThanMs: body ? body.olderThanMs : undefined,
+            forgottenBy: me.name || me.key,
+            // Narrows the sweep to one row (#170's per-row "Remove") the same
+            // way it already does on the offline path (see `forget` above,
+            // `store.js`'s `forgetDeviceSessions`) -- a live device honors it
+            // too now, so the row menu's "Remove (ended only)" never has to
+            // guess whether its device happens to be reachable.
+            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,
+          }
             // Narrowed here as well as at the device. The daemon rebuilds this
             // op field by field anyway, so a smuggled `cwd` could never reach
             // the resolver -- but a hub that relays whatever it was handed is

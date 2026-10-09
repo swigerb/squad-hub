@@ -756,10 +756,16 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped to v9 merging #173 (/js/device-detail.js) with #175 (/js/push.js):
-  // both independently bumped to v8, so the merge needs a fresh value.
+  // Bumped to v13 for Scout's cache-versus-edits review of 476d2d1:
+  // `/js/prefs-sync.js`'s `loadPrefs()` now treats the server as the
+  // authoritative baseline on an already-migrated client (overlaying only
+  // this hydration gap's explicit pending edits), instead of always
+  // spreading the client's entire local cache back on top -- the previous
+  // v12 shell cached the pre-fix file content, which could resurrect a
+  // remote unpin or mask a remote rename/clear on a client with no local
+  // edits of its own.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v9';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v13';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

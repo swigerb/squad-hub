@@ -279,7 +279,7 @@ reach is that they are not named here.
 | Status | Meaning |
 |---|---|
 | `404` | No such device **or** not yours — the difference is not disclosed |
-| `409` | The device is offline |
+| `409` | The device is offline, **or** (`forget` with `sessionId`, see below) reachable but not confirmed to support a narrowed forget |
 | `502` | The device is connected but did not answer |
 
 ```bash
@@ -316,12 +316,45 @@ device rather than to the hub because the hub replaces a device's session list
 from whatever that device reports — anything removed only at the hub would
 return on the next heartbeat.
 
-**`force` and `sessionId` — the offline exception.** The rule above assumes
-the device can be asked. When it cannot (`409`, offline), `force: true` lets
-the hub drop a session that still shows as running anyway, and `sessionId`
-narrows the sweep to that one session instead of every ended one the device
-is carrying. This is what the web app's **Forget stale session** button in
-the detail view calls:
+**`sessionId`** narrows the sweep to that one session instead of every ended
+one the device is carrying — this is what the per-row **Remove** item in the
+list's ⋯ menu calls (#170), for a single ended session:
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/forget" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"..."}'
+```
+
+An **unreachable** device is always safe to narrow this way: the hub handles
+the whole removal itself, off its own stored session list, and never asks the
+offline daemon anything. A **reachable** device forwards the request live to
+its own daemon instead — and an old daemon (anything predating #170) simply
+does not recognize `sessionId` at all, reads none of the options it does not
+know about, and falls back to its only other behavior: forgetting *every*
+ended session it carries. A single-row click would then silently become a
+device-wide wipe.
+
+To prevent that, a reachable device's record must carry an explicit
+`capabilities.narrowedForget: true` — reported by the daemon itself on every
+register/heartbeat, never inferred from its `version` string (a rollout can
+leave an old build running on a device for a long time after a newer one
+ships elsewhere). A `sessionId`-narrowed `forget` sent to a reachable device
+that has not confirmed this capability is refused with `409`:
+
+```json
+{ "error": "device does not support removing a single session; use the bulk tidy action instead", "code": "narrowed-forget-unsupported" }
+```
+
+The web app's row menu checks this up front and, for a device that cannot
+confirm support, asks for explicit consent to the wider device-wide sweep
+instead of silently failing or silently guessing.
+
+**`force` — the offline exception.** The rule above assumes the device can be
+asked. When it cannot (`409`, offline), `force: true` lets the hub drop a
+session that still shows as running anyway. This is what the web app's
+**Forget stale session** button in the detail view calls, combined with
+`sessionId` so only that one stuck card is cleared:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/forget" \

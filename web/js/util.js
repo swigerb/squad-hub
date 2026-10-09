@@ -259,6 +259,31 @@ export function isDeviceUnreachable(device) {
 }
 
 /**
+ * Whether a REACHABLE device's own daemon is confirmed to honor a
+ * `sessionId`-narrowed forget, rather than ignoring it and sweeping every
+ * ended session it carries (PR #236 review finding 5).
+ *
+ * An explicit capability flag the daemon reports, never a version guess: the
+ * production ACA worker still installs squad-hub 0.6.0 until after this
+ * change is published, so a device can be running code that predates this
+ * capability while still reporting a `version` string that looks current (or
+ * no version at all, for one that predates `version` reporting too). Only a
+ * device that actually says "I support this" is trusted with it; everything
+ * else gets the safe, clearly-explained fallback in `onRowMenuAction`.
+ */
+export function deviceSupportsNarrowedForget(device) {
+  return !!(device && device.capabilities && device.capabilities.narrowedForget === true);
+}
+
+/**
+ * Every query-string key `viewStateToParams` (list.js) can ever produce, for
+ * a clean rewrite of the address bar (#168) and for recognizing whether a
+ * link already asked for a view (prefs-sync.js's migration/pull precedence,
+ * #170).
+ */
+export const VIEW_PARAM_KEYS = ['scope', 'q', 'status', 'device', 'repo', 'org', 'window', 'view', 'sort'];
+
+/**
  * A session that LOOKS like it needs a person, but whose device cannot be
  * asked anything -- not "is this done", not "can you take input", nothing.
  *

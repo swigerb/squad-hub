@@ -48,9 +48,10 @@ import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
-  registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
+  registerServiceWorker, refresh, loadView, saveView, syncControls,
   applyTheme, nextTheme, setRailCollapsed,
 } from './js/ws.js';
+import { loadPrefs, renameSession, toggleFavorite } from './js/prefs-sync.js';
 import {
   acaRepoName, acaSessionRepo, acaTitle, acaNewIssueLink, acaComment, acaIssueLink, openAca,
 } from './js/aca.js';
@@ -61,6 +62,12 @@ import { openNew, openConnect } from './js/connect.js';
 import { wireFilters } from './js/filters.js';
 import { wire, showBanner } from './js/wiring.js';
 import { showSignIn } from './js/signin.js';
+// Not called directly from this file -- see the header comment above for
+// why app.js's own import list is also the module manifest
+// test/helpers/web-source.js reads to concatenate every pure-logic file for
+// the DOM-free unit tests (#170).
+import { rowMenuItems, rowMenuHtml } from './js/rowmenu.js';
+import { sessionRow, displayTitle } from './js/sessionrow.js';
 
 'use strict';
 
@@ -122,8 +129,7 @@ function runShortcut(id) {
     // A hub split across instances loses devices intermittently. Say so where
     // the user will notice it, not only in a log.
     if (state.me.warning) showBanner(state.me.warning);
-  } catch (e) {
-    // A token that no longer works should return you to sign-in, not to a dead
+  } catch (e) {    // A token that no longer works should return you to sign-in, not to a dead
     // end. Expired GitHub tokens are ordinary, not exceptional.
     if (e.status === 401 || e.status === 403) {
       localStorage.removeItem('squad-hub-token');
@@ -141,6 +147,11 @@ function runShortcut(id) {
     document.body.innerHTML = `<div class="empty"><h3>Could not sign in</h3><p>${esc(e.message)}</p></div>`;
     return undefined;
   }
+  // Best-effort and never awaited for the page's first paint: pins and names
+  // already on screen came from localStorage an instant ago, so a slow or
+  // failed `/api/prefs` fetch delays nothing a person can see, it just
+  // catches up (or retries) once it resolves (#170).
+  loadPrefs();
   await refresh();
 
   // A Teams card links here to answer an approval. Opening the hub's default
