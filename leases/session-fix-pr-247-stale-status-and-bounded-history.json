@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-247-stale-status-and-bounded-history",
+  "sessionId": "fix-pr-247-stale-status-and-bounded-history",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T22:01:03.393Z",
+  "lastHeartbeatAt": "2026-10-09T22:01:03.393Z",
+  "updatedAt": "2026-10-09T22:01:03.393Z",
+  "terminalReason": null,
+  "executionRef": null
+}
