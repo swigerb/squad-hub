@@ -89,6 +89,17 @@ check('every input the hub can send is declared by this workflow', () => {
   }
 });
 
+check('hub_correlation_id is declared as an internal workflow_dispatch input', () => {
+  const onBlock = src.slice(src.indexOf('workflow_dispatch:\n    inputs:'), src.indexOf('\npermissions:'));
+  assert.match(onBlock, /\n {6}hub_correlation_id:\n/);
+  assert.match(onBlock, /Hub-issued per-attempt correlation token \(internal\)/);
+});
+
+check('run-name surfaces the hub correlation id through github.event.inputs.hub_correlation_id', () => {
+  assert.match(src, /^run-name: .*\bgithub\.event\.inputs\.hub_correlation_id\b/m);
+  assert.match(src, /Squad dispatch \[corr:\{0\}\]/);
+});
+
 check('the dispatch core is pinned to a 40-character commit SHA, not a branch or tag', () => {
   const m = src.match(/SQUAD_ACA_CORE_REF:\s*([^\s#]+)/);
   assert.ok(m, 'SQUAD_ACA_CORE_REF is not set');
@@ -165,6 +176,16 @@ check('input validation carries a GH_TOKEN so its gh api base-branch check is au
   assert.match(block, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
 });
 
+check('hub_correlation_id validation rejects a malformed token before Azure is touched', () => {
+  const idx = src.indexOf('Validate hub_correlation_id format');
+  assert.ok(idx !== -1, 'no "Validate hub_correlation_id format" step found');
+  const block = src.slice(idx, src.indexOf('Azure login via OIDC'));
+  assert.match(block, /INPUT_HUB_CORRELATION_ID: \$\{\{ github\.event\.inputs\.hub_correlation_id \|\| '' \}\}/);
+  assert.match(block, /grep -Eq '\^\[A-Za-z0-9\]\{8,64\}\$'/);
+  assert.match(block, /::error::hub_correlation_id must match \^\[A-Za-z0-9\]\{8,64\}\$ when provided\./);
+  assert.match(block, /exit 1/);
+});
+
 check('a claimed lease with no resulting execution is a hard failure, not a quiet success', () => {
   const idx = src.indexOf('A claimed lease MUST have produced an execution');
   assert.ok(idx !== -1);
@@ -172,6 +193,38 @@ check('a claimed lease with no resulting execution is a hard failure, not a quie
   assert.match(block, /if: steps\.lease\.outputs\.action == 'start'/);
   assert.match(block, /\[ -z "\$\{EXEC\}" \]/);
   assert.match(block, /exit 1/);
+});
+
+check('a confirmed-execution receipt artifact is published, gated on a confirmed start, with a validated name', () => {
+  const gate = "if: steps.lease.outputs.action == 'start' && steps.start.outputs.exec != ''";
+  const stepBlock = (title) => {
+    const idx = src.indexOf(`- name: ${title}`);
+    assert.ok(idx !== -1, `missing step: ${title}`);
+    const next = src.indexOf('\n      - name:', idx + 1);
+    return src.slice(idx, next === -1 ? undefined : next);
+  };
+  const validate = stepBlock('Validate ACA execution name format');
+  assert.ok(validate.includes(gate));
+  assert.match(validate, /grep -Eq '\^\[A-Za-z0-9\]\(\[A-Za-z0-9-\]\{0,126\}\[A-Za-z0-9\]\)\?\$'/);
+  assert.match(validate, /::error::/);
+  assert.match(validate, /exit 1/);
+  const publish = stepBlock('Publish confirmed ACA execution receipt');
+  assert.ok(publish.includes(gate));
+  assert.match(publish, /uses: actions\/upload-artifact@v4/);
+  assert.ok(publish.includes('name: aca-exec-attempt${{ github.run_attempt }}-${{ steps.start.outputs.exec }}'));
+  assert.match(publish, /retention-days: 1\b/);
+  assert.match(publish, /if-no-files-found: error/);
+  assert.ok(src.indexOf('Start the ACA session job') < src.indexOf('Validate ACA execution name format'));
+  assert.ok(src.indexOf('Validate ACA execution name format') < src.indexOf('Publish confirmed ACA execution receipt'));
+  assert.ok(src.indexOf('Publish confirmed ACA execution receipt') < src.indexOf('A claimed lease MUST have produced an execution'));
+});
+
+check('the receipt step adds no permission scope: the job keeps exactly id-token, contents and issues', () => {
+  const jobIdx = src.indexOf('jobs:');
+  const permsBlock = src.slice(jobIdx, src.indexOf('steps:', jobIdx));
+  const scopes = [...permsBlock.matchAll(/^\s{6}([a-z-]+): (read|write)/gm)].map((m) => m[1]).sort();
+  assert.deepStrictEqual(scopes, ['contents', 'id-token', 'issues']);
+  assert.match(src, /\npermissions: \{\}/);
 });
 
 check('the dispatched ref is always the repository default branch read from the event, never a raw caller override', () => {

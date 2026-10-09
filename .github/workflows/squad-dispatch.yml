@@ -63,6 +63,11 @@ on:
         type: boolean
         required: false
         default: false
+      hub_correlation_id:
+        description: Hub-issued per-attempt correlation token (internal)
+        required: false
+
+run-name: ${{ github.event.inputs.hub_correlation_id && format('Squad dispatch [corr:{0}]', github.event.inputs.hub_correlation_id) || format('Squad dispatch (run {0})', github.run_id) }}
 
 permissions: {}          # nothing by default; the one job asks for exactly what it needs
 
@@ -163,6 +168,18 @@ jobs:
         run: |
           echo "Not dispatching. Reason: ${{ steps.decide.outputs.reason }}"
           echo "This is a normal outcome and is NOT a failure."
+
+      - name: Validate hub_correlation_id format
+        if: steps.decide.outputs.dispatch == 'true'
+        env:
+          INPUT_HUB_CORRELATION_ID: ${{ github.event.inputs.hub_correlation_id || '' }}
+        run: |
+          set -euo pipefail
+          token="${INPUT_HUB_CORRELATION_ID}"
+          if [ -n "$token" ] && ! printf '%s' "$token" | grep -Eq '^[A-Za-z0-9]{8,64}$'; then
+            echo "::error::hub_correlation_id must match ^[A-Za-z0-9]{8,64}$ when provided."
+            exit 1
+          fi
 
       - name: Validate workflow_dispatch inputs
         id: manual_inputs
@@ -464,6 +481,40 @@ jobs:
           trap - ERR
           echo "Started ACA execution: ${exec_name}"
           echo "The control plane is now Azure. This workflow's job is done."
+
+      - name: Validate ACA execution name format
+        if: steps.lease.outputs.action == 'start' && steps.start.outputs.exec != ''
+        env:
+          EXEC: ${{ steps.start.outputs.exec }}
+        run: |
+          set -euo pipefail
+          # The execution name becomes part of an artifact name below, which
+          # the Hub reads back as a receipt. Refuse anything but a plain
+          # DNS-label-like name rather than let an unexpected ARM response
+          # reach that name.
+          if ! printf '%s' "$EXEC" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,126}[A-Za-z0-9])?$'; then
+            echo "::error::The ARM execution name is not a plain DNS-label-like name; refusing to publish it."
+            exit 1
+          fi
+
+      - name: Write ACA execution receipt
+        if: steps.lease.outputs.action == 'start' && steps.start.outputs.exec != ''
+        env:
+          EXEC: ${{ steps.start.outputs.exec }}
+        run: |
+          set -euo pipefail
+          # Content is informational only; the artifact NAME is what the Hub
+          # reads (Artifacts List API), so no artifact download is ever needed.
+          printf '%s\n' "$EXEC" > "$RUNNER_TEMP/aca-exec-receipt.txt"
+
+      - name: Publish confirmed ACA execution receipt
+        if: steps.lease.outputs.action == 'start' && steps.start.outputs.exec != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: aca-exec-attempt${{ github.run_attempt }}-${{ steps.start.outputs.exec }}
+          path: ${{ runner.temp }}/aca-exec-receipt.txt
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Mark the issue as dispatched
         if: steps.lease.outputs.action == 'start' && steps.start.outputs.exec != ''
