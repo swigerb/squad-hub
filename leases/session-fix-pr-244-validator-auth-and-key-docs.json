@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-244-validator-auth-and-key-docs",
+  "sessionId": "fix-pr-244-validator-auth-and-key-docs",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T06:16:03.611Z",
+  "lastHeartbeatAt": "2026-10-09T06:16:03.611Z",
+  "updatedAt": "2026-10-09T06:16:03.611Z",
+  "terminalReason": null,
+  "executionRef": null
+}
