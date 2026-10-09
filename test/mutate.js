@@ -5026,9 +5026,9 @@ if ($health.accessStore -ne 'durable') {`,
     // Once set, executionName never flip-flops.
     name: 'a cached executionName is looked up again on every poll',
     file: 'src/service/dispatch-tracker.js',
-    find: `    if (r.executionName == null) {
+    find: `    if (r.executionName == null || r.executionAttempt !== attempt) {
       try {`,
-    replace: `    if (process.env.MUTANT || r.executionName == null) { // MUTATION
+    replace: `    if (process.env.MUTANT || r.executionName == null || r.executionAttempt !== attempt) { // MUTATION
       try {`,
     mustFail: 'tracker caches executionName and never re-resolves it on a later poll',
   },
@@ -5044,16 +5044,31 @@ if ($health.accessStore -ne 'durable') {`,
     // Re-check after the await, as boundRunId does.
     name: 'a slower receipt lookup overwrites an executionName a concurrent poll already cached',
     file: 'src/service/dispatch-tracker.js',
-    find: `        if (receipt && r.executionName == null) {`,
-    replace: `        if (receipt && (process.env.MUTANT || r.executionName == null)) { // MUTATION`,
+    find: `        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {`,
+    replace: `        if (receipt && attempt === r._attemptFence && (process.env.MUTANT || !alreadyCurrent)) { // MUTATION`,
     mustFail: 'a concurrent poll that already cached executionName is never overwritten by a slower lookup',
+  },
+  {
+    // A lookup for an attempt a later poll has already superseded must not
+    // be allowed to commit its (stale) result to the cache.
+    name: 'a stale attempt lookup commits its result even after a newer attempt is observed',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {`,
+    replace: `        if (receipt && (process.env.MUTANT || attempt === r._attemptFence) && !alreadyCurrent) { // MUTATION`,
+    mustFail: 'cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt',
   },
   {
     // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
     name: 'a cached executionName is trusted across a rerun attempt change',
     file: 'src/service/dispatch-tracker.js',
-    find: `    if (status && status.runAttempt != null && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {`,
-    replace: `    if (!process.env.MUTANT && status && status.runAttempt != null && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) { // MUTATION`,
+    find: `      if (r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {
+        r.executionName = null;
+        r.executionAttempt = null;
+      }`,
+    replace: `      if (!process.env.MUTANT && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) { // MUTATION
+        r.executionName = null;
+        r.executionAttempt = null;
+      }`,
     mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
   },
   {

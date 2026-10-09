@@ -623,13 +623,26 @@ class GitHubApp {
       throw this._err(upstreamStatus(res.status), `could not read Actions runs for ${owner}/${repo} (GitHub returned ${res.status})`);
     }
     const titleRe = correlationTitleRe(correlationId);
-    const runs = (res.json.workflow_runs || [])
+    const fetched = res.json.workflow_runs || [];
+    const runs = fetched
       .filter((r) => !ref || r.head_branch === ref)
       .filter((r) => !excludeRunIds || !excludeRunIds.has(r.id))
       .filter((r) => titleRe.test(String(r.display_title || '')));
     if (!runs.length) return { state: 'pending', reason: 'no run has appeared yet' };
     if (runs.length > 1) {
       return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }
+    // This lookup is bounded to the newest `per_page=20` runs (see docs/aca.md
+    // and docs/security.md): a false NEGATIVE from that bound (a legitimate
+    // run just outside the newest 20) is an acceptable honest "pending", but a
+    // false claim of UNIQUENESS is not. If GitHub reports more runs exist than
+    // this one page fetched, a second, still-unfetched run could carry the
+    // same correlation id -- so a single match found here must not be trusted
+    // as proof of uniqueness; fail closed exactly as the real `runs.length > 1`
+    // case above does, rather than silently returning this run's status.
+    const totalCount = typeof res.json.total_count === 'number' ? res.json.total_count : fetched.length;
+    if (totalCount > fetched.length) {
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
     }
     const run = runs[0];
     return {
@@ -661,8 +674,9 @@ class GitHubApp {
     if (res.status !== 200) {
       throw this._err(upstreamStatus(res.status), `could not read artifacts for Actions run ${runId} in ${owner}/${repo} (GitHub returned ${res.status})`);
     }
+    const fetched = (res.json && res.json.artifacts) || [];
     const matches = [];
-    for (const a of (res.json && res.json.artifacts) || []) {
+    for (const a of fetched) {
       if (a.expired) continue;
       const m = EXEC_RECEIPT_NAME_RE.exec(String(a.name || ''));
       if (!m || Number(m[1]) !== Number(runAttempt)) continue;
@@ -670,6 +684,16 @@ class GitHubApp {
     }
     if (!matches.length) return null;
     if (matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess');
+    // Same bounded-pagination reasoning as `resolveRunStatus`: this lookup
+    // only fetches the newest `per_page=100` artifacts for the run. A single
+    // match found here is not provably unique if GitHub reports more
+    // artifacts exist beyond this one page -- a second current-attempt
+    // receipt could be sitting unfetched on the next page. Fail closed
+    // rather than silently trusting this page's apparent uniqueness.
+    const totalCount = typeof res.json.total_count === 'number' ? res.json.total_count : fetched.length;
+    if (totalCount > fetched.length) {
+      throw this._err(502, 'more artifacts exist than this bounded lookup fetched; refusing to assume this receipt match is unique');
+    }
     return matches[0];
   }
 }

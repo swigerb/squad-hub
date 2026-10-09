@@ -55,12 +55,13 @@ class DispatchTracker {
    */
   record(userKey, rec) {
     const list = this._byUser.get(userKey) || [];
+    const id = crypto.randomUUID();
     list.push({
       ...rec,
       dispatchedAt: rec.dispatchedAt != null ? rec.dispatchedAt : this._now(),
       correlationId: rec.correlationId != null ? rec.correlationId : null,
       correlationSupported: rec.correlationSupported === true,
-      id: crypto.randomUUID(),
+      id,
       /** Once a run is matched for this record, its id is kept here so a
        * later poll never re-runs the matching search (and so never risks
        * handing the same run to a different record, or flipping to a
@@ -80,9 +81,24 @@ class DispatchTracker {
        * each query GitHub. Never exposed. */
       _receiptLookup: null,
       _receiptLookupAttempt: null,
+      /** The highest run attempt ever observed for this record (see
+       * `_withExecutionReceipt`). Monotonic -- never moves backward -- so a
+       * receipt lookup started for an attempt that a later poll has already
+       * superseded can tell, when it finally resolves, that its own result
+       * is stale and must not be written to the cache (and must not count
+       * as "already resolved" either, since that would block the newer
+       * attempt's own lookup from ever recording its result). */
+      _attemptFence: null,
     });
     while (list.length > MAX_PER_USER) list.shift();
     this._byUser.set(userKey, list);
+    // Returned so the caller (the `POST /api/aca/dispatch` handler) can hand
+    // this hub-generated, opaque id back to the browser as `trackerId` --
+    // the one stable, authoritative identifier that both the POST response
+    // and every later `GET /api/aca/dispatches` row agree on, so a client can
+    // bind its own pending UI to the right record without guessing from
+    // timestamp or issue number (see docs/api.md).
+    return id;
   }
 
   /** The caller's own dispatches, newest first. A copy -- nothing returned
@@ -94,6 +110,12 @@ class DispatchTracker {
 
   _publicRecord(rec, status) {
     return {
+      // The same opaque id `record()` returned as `trackerId` from
+      // `POST /api/aca/dispatch` -- the one stable identifier a client can
+      // bind its own pending row to, instead of re-guessing from timestamp
+      // or issue number. Internal-only fields (`correlationId`,
+      // `installationId`, artifact ids) are still never exposed here.
+      id: rec.id,
       owner: rec.owner,
       repo: rec.repo,
       ref: rec.ref,
@@ -202,25 +224,54 @@ class DispatchTracker {
    * landed first. No receipt yet is `executionName: null`, not an error; a
    * failed lookup only appends to `status.reason` so the run's own status, and
    * every other row, are unaffected.
+   *
+   * Overlapping polls can observe the SAME run at different attempts: one
+   * poll's `_getRun`/`resolveRunStatus` call can still be in flight (and so
+   * still reading an older attempt) when a second, later poll observes that a
+   * rerun has already bumped the attempt. If the older poll's receipt lookup
+   * is merely allowed to race the newer one, whichever happens to resolve
+   * LAST wins -- which can mean the newer poll's own, correct, freshly
+   * resolved attempt either gets silently discarded (if it loses the race) or
+   * the OLDER attempt's stale name gets written over the newer one (if the
+   * older lookup resolves last). Either way, the current attempt's own poll
+   * can come back with `executionName: null` despite having just resolved the
+   * correct name itself (see the cross-attempt overlap reproduction in
+   * test/github-app-unit.js).
+   *
+   * `r._attemptFence` fixes this: it is the highest run attempt this record
+   * has ever observed, updated synchronously (never inside an `await`) the
+   * instant a status for this record is computed, so it always reflects the
+   * most current knowledge regardless of which lookup happens to finish
+   * first. A receipt result is only ever committed to the cache if its own
+   * attempt still equals the fence at the moment it resolves -- i.e. no newer
+   * attempt was observed while it was in flight. A result that fails that
+   * check is simply discarded (not retried here; the next poll for the
+   * current attempt starts its own fresh lookup), so a stale lookup can
+   * neither clobber a newer attempt's cached name nor block that newer
+   * attempt's own lookup from ever recording its result.
    */
   async _withExecutionReceipt(r, status, githubApp) {
-    // Drop a previous attempt's cache before any early return, so a rerun that
-    // is still queued/pending/errored never keeps the old name. A status with
-    // no runAttempt cannot be compared and leaves the cache alone;
-    // _publicRecord still withholds the name for it.
-    if (status && status.runAttempt != null && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {
-      r.executionName = null;
-      r.executionAttempt = null;
-    }
-    if (status && status.runAttempt != null && r._receiptLookup && r._receiptLookupAttempt !== status.runAttempt) {
-      r._receiptLookup = null;
-      r._receiptLookupAttempt = null;
+    if (status && status.runAttempt != null) {
+      r._attemptFence = r._attemptFence == null
+        ? status.runAttempt : Math.max(r._attemptFence, status.runAttempt);
+      // Drop a previous attempt's cache before any early return, so a rerun
+      // that is still queued/pending/errored never keeps the old name. A
+      // status with no runAttempt cannot be compared and leaves the cache
+      // alone; _publicRecord still withholds the name for it.
+      if (r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {
+        r.executionName = null;
+        r.executionAttempt = null;
+      }
+      if (r._receiptLookup && r._receiptLookupAttempt !== status.runAttempt) {
+        r._receiptLookup = null;
+        r._receiptLookupAttempt = null;
+      }
     }
     if (!status || status.runId == null || r.boundRunId == null) return status;
     if (status.state !== 'in_progress' && status.state !== 'completed') return status;
-    if (r.executionName == null) {
+    const attempt = status.runAttempt;
+    if (r.executionName == null || r.executionAttempt !== attempt) {
       try {
-        const attempt = status.runAttempt;
         if (!r._receiptLookup || r._receiptLookupAttempt !== attempt) {
           const lookup = githubApp.resolveExecutionReceipt({
             owner: r.owner,
@@ -234,8 +285,16 @@ class DispatchTracker {
           r._receiptLookup = lookup;
           r._receiptLookupAttempt = attempt;
         }
-        const receipt = await r._receiptLookup;
-        if (receipt && r.executionName == null) {
+        const pending = r._receiptLookup;
+        const receipt = await pending;
+        // Fencing: only commit this result if (a) no newer attempt has been
+        // observed for this record since this lookup started (`r._attemptFence`),
+        // and (b) nothing already cached is at least as current -- a sibling
+        // overlapping lookup for this same attempt that resolved first (or,
+        // belt-and-braces, an already-cached attempt newer than this one).
+        const alreadyCurrent = r.executionAttempt != null
+          && (attempt < r.executionAttempt || (attempt === r.executionAttempt && r.executionName != null));
+        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {
           r.executionName = receipt.executionName;
           r.executionAttempt = attempt;
         }

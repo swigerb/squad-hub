@@ -399,6 +399,30 @@ more than one current-attempt receipt is refused rather than guessed. The name
 is a join key only: it never creates or authenticates a device or session,
 which still requires the existing `aca-<execution>` registration.
 
+Both lookups are deliberately bounded — the newest 20 `workflow_dispatch` runs,
+the first 100 artifacts on a matched run — rather than paging through every
+run or artifact a repository has ever produced, which would turn one status
+poll into unbounded GitHub traffic. A match outside that bound is an honest
+`pending`/`null`, never an error. A match found *inside* the bound is only
+trusted when GitHub also reports that the page it came from was not truncated;
+if more runs (or artifacts) exist than the page fetched, the hub cannot rule
+out a same-looking match sitting on a page it never fetched, so it fails
+closed the same way a genuine on-page duplicate does, rather than treating an
+unverifiable single match as proof of uniqueness (see docs/api.md and
+docs/security.md).
+
+Each dispatch also gets a second, unrelated id: `DispatchTracker.record()`
+mints its own opaque `crypto.randomUUID()` the moment the dispatch is
+recorded, returned to the browser as `trackerId` from `POST /api/aca/dispatch`
+and exposed again as `.id` on every row `GET /api/aca/dispatches` returns.
+Unlike `hub_correlation_id` (used only internally, server-side, to match the
+Actions run and never sent to a browser), this id is meant to be handed back:
+it is the one stable, authoritative handle a client has for "the dispatch I
+just made", so a pending-row UI (#178) can bind to its own record directly
+instead of re-guessing which row is "its" dispatch from timestamp, issue
+number, or repo+ref proximity once more than one dispatch against the same
+repository is in flight at once.
+
 The dispatch always runs on the repository's own **default branch** — never on
 a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
 **input** above (itself subject to the declared-input check), so the workflow

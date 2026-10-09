@@ -117,8 +117,10 @@ function fakeGitHubApp({
   installationsStatus = 200,
   runsStatus = 200,
   runs = null,
+  runsTotalCount = null,
   artifacts = [],
   artifactsStatus = 200,
+  artifactsTotalCount = null,
   now = () => Date.now(),
 } = {}) {
   const calls = { total: 0, byPath: {} };
@@ -192,7 +194,10 @@ function fakeGitHubApp({
       if (artifactsMatch && req.method === 'GET') {
         if (artifactsStatus !== 200) return json(artifactsStatus, { message: 'artifact listing refused in fake' });
         const list = typeof artifacts === 'function' ? artifacts(Number(artifactsMatch[3])) : artifacts;
-        return json(200, { total_count: list.length, artifacts: list });
+        return json(200, {
+          total_count: artifactsTotalCount != null ? artifactsTotalCount : list.length,
+          artifacts: list,
+        });
       }
 
       const singleRunMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)$/);
@@ -241,6 +246,7 @@ function fakeGitHubApp({
         if (runsStatus !== 200) return json(runsStatus, { message: 'run listing refused in fake' });
         const list = runs || defaultRuns();
         return json(200, {
+          total_count: runsTotalCount != null ? runsTotalCount : list.length,
           workflow_runs: list.map((r) => ({
             id: r.id,
             status: r.status,
@@ -612,8 +618,6 @@ function apiRequest(port, path, token, opts = {}) {
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 42, prompt: 'do the thing', model: 'claude', publishPr: true },
     });
-    await svc.close();
-    server.close();
     assert.strictEqual(r.status, 200, JSON.stringify(r));
     assert.strictEqual(r.body.issue.number, 42);
     assert.strictEqual(r.body.runUrl, 'https://github.com/acme/widgets/actions/workflows/squad-dispatch.yml');
@@ -627,6 +631,43 @@ function apiRequest(port, path, token, opts = {}) {
     const stored = [...svc.dispatchTracker._byUser.values()][0][0];
     assert.strictEqual(stored.correlationId, state.dispatches[0].inputs.hub_correlation_id);
     assert.strictEqual(stored.correlationSupported, true);
+    // trackerId: the hub's own stable, opaque identifier for this dispatch --
+    // distinct from the internal correlationId used to match the Actions run
+    // (never returned here) -- and the SAME id a later GET /api/aca/dispatches
+    // exposes as `.id`, so a client can bind its own pending row to this
+    // exact record (see #245's foundation for #178/#237's trackAcaDispatch).
+    assert.match(r.body.trackerId, /^[0-9a-f-]{36}$/, 'trackerId is a stable opaque id');
+    assert.strictEqual(r.body.trackerId, stored.id);
+    const getR = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    await svc.close();
+    server.close();
+    assert.strictEqual(getR.status, 200, JSON.stringify(getR));
+    assert.strictEqual(getR.body.dispatches[0].id, r.body.trackerId, 'GET /api/aca/dispatches rows carry the same id the POST returned');
+  });
+
+  await checkAsync('two concurrent same-repo same-issue POST dispatches each get a distinct trackerId, correctly mapped by GET', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const [r1, r2] = await Promise.all([
+      apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'acme/widgets', issue: 7, prompt: 'first' } }),
+      apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'acme/widgets', issue: 7, prompt: 'second' } }),
+    ]);
+    assert.strictEqual(r1.status, 200, JSON.stringify(r1));
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2));
+    assert.notStrictEqual(r1.body.trackerId, r2.body.trackerId, 'two concurrent dispatches must never share a trackerId');
+    const getR = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    await svc.close();
+    server.close();
+    assert.strictEqual(getR.status, 200, JSON.stringify(getR));
+    const ids = getR.body.dispatches.map((d) => d.id).sort();
+    assert.deepStrictEqual(ids, [r1.body.trackerId, r2.body.trackerId].sort(), 'GET maps each distinct id back to exactly one dispatch');
   });
 
   await checkAsync('a newIssue request creates the issue first, then dispatches against its number', async () => {
@@ -1297,6 +1338,42 @@ function apiRequest(port, path, token, opts = {}) {
     assert.match(status.reason, /ambiguous correlation match/);
   });
 
+  await checkAsync('a single matching run found on a truncated (bounded) run-list page fails closed instead of claiming uniqueness', async () => {
+    const corr = '59595959595959595959595959595959';
+    const runs = [
+      { id: 962, status: 'in_progress', conclusion: null, head_branch: 'main', display_title: correlationTitle(corr) },
+    ];
+    // GitHub reports more runs exist in total than this one bounded
+    // `per_page=20` page fetched -- a second, unfetched run could carry the
+    // same correlation id, so a single match on this page is not provably
+    // unique.
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs, runsTotalCount: 25 });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, correlationId: corr, correlationSupported: true, ref: 'main',
+    });
+    server.close();
+    assert.strictEqual(status.state, 'error', 'truncation must fail closed, not silently trust the single match');
+    assert.match(status.reason, /refusing to assume this match is unique/);
+  });
+
+  await checkAsync('zero matches on a truncated run-list page stays an honest pending, not an error', async () => {
+    // Truncation with NO match found yet is the acceptable "unknown" case
+    // (the run may simply be on a page this bounded lookup did not fetch):
+    // claiming uniqueness is the thing that must fail closed, not every
+    // truncated page.
+    const corr = '58585858585858585858585858585858';
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs: [], runsTotalCount: 30 });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, correlationId: corr, correlationSupported: true, ref: 'main',
+    });
+    server.close();
+    assert.strictEqual(status.state, 'pending');
+  });
+
   await checkAsync('resolveRunStatus never binds a run id already bound to another recorded dispatch', async () => {
     const corrA = '66666666666666666666666666666666';
     const corrB = '77777777777777777777777777777777';
@@ -1504,6 +1581,28 @@ function apiRequest(port, path, token, opts = {}) {
     server.close();
     assert.ok(err, `expected an error, got ${JSON.stringify(r)}`);
     assert.ok(/ambiguous execution receipt/.test(err.message), err.message);
+  });
+
+  await checkAsync('a single matching artifact on a truncated (bounded) artifact-list page fails closed instead of claiming uniqueness', async () => {
+    const { app, server } = await newReceiptApp({
+      artifacts: [art('aca-exec-attempt1-job-abc123', { id: 4711 })],
+      artifactsTotalCount: 150,
+    });
+    let err = null; let r;
+    try { r = await app.resolveExecutionReceipt(receiptArgs(1)); } catch (e) { err = e; }
+    server.close();
+    assert.ok(err, `expected an error, got ${JSON.stringify(r)}`);
+    assert.ok(/refusing to assume this receipt match is unique/.test(err.message), err.message);
+  });
+
+  await checkAsync('no matching artifact on a truncated artifact-list page is still an honest null', async () => {
+    const { app, server } = await newReceiptApp({
+      artifacts: [art('unrelated-artifact')],
+      artifactsTotalCount: 150,
+    });
+    const r = await app.resolveExecutionReceipt(receiptArgs(1));
+    server.close();
+    assert.strictEqual(r, null);
   });
 
   await checkAsync('resolveExecutionReceipt ignores a receipt left by a prior attempt after a rerun', async () => {
@@ -1715,6 +1814,83 @@ function apiRequest(port, path, token, opts = {}) {
     const bob = await tracker.listWithStatus('bob', fakeReceiptApp(null, calls));
     assert.strictEqual(bob.length, 1);
     assert.strictEqual(bob[0].executionName, null);
+  });
+
+  await checkAsync('cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt', async () => {
+    // Exact reproduction of the #245/#247 overlapping-refresh race: poll A
+    // observes attempt 1 and starts its own receipt lookup; before that
+    // lookup resolves, poll B observes the SAME run has already rerun to
+    // attempt 2 and starts its own lookup. Poll A's (now stale) lookup is
+    // made to resolve FIRST, then poll B's resolves.
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main',
+      correlationId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', correlationSupported: true, dispatchedAt: Date.now() - 1000,
+    });
+    const receiptCalls = [];
+    const resolvers = [];
+    const app = {
+      resolveRunStatus: async () => ({ state: 'in_progress', runId: 42, runAttempt: 1, htmlUrl: 'https://example.invalid/r' }),
+      _getRun: async () => ({ state: 'in_progress', runId: 42, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+      resolveExecutionReceipt: (args) => {
+        receiptCalls.push(args);
+        return new Promise((resolve) => { resolvers.push(resolve); });
+      },
+    };
+
+    const p1 = tracker.listWithStatus('alice', app);
+    // Let p1 run past resolveRunStatus and reach its own (still-pending)
+    // receipt lookup before poll B starts.
+    await new Promise((r) => setTimeout(r, 0));
+    const p2 = tracker.listWithStatus('alice', app);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.strictEqual(receiptCalls.length, 2, 'both the stale attempt-1 and current attempt-2 lookups were started');
+    assert.strictEqual(receiptCalls[0].runAttempt, 1);
+    assert.strictEqual(receiptCalls[1].runAttempt, 2);
+
+    // The attempt-1 lookup resolves FIRST, well after poll B already
+    // observed attempt 2.
+    resolvers[0]({ executionName: 'synthetic-attempt-one', artifactId: 1 });
+    const list1 = await p1;
+    resolvers[1]({ executionName: 'synthetic-attempt-two', artifactId: 2 });
+    const list2 = await p2;
+
+    assert.strictEqual(list1[0].executionName, null, 'the superseded attempt-1 lookup must be discarded, not published as current');
+    assert.strictEqual(list2[0].executionName, 'synthetic-attempt-two', 'the current attempt-2 poll must get its own correct name, not null and not the stale one');
+    assert.strictEqual(list2[0].status.runAttempt, 2);
+
+    // A later poll for the same (still current) attempt must see the
+    // correct cached name and must not re-resolve it.
+    const list3 = await tracker.listWithStatus('alice', {
+      ...app,
+      resolveExecutionReceipt: () => { throw new Error('must not be called again: already cached for this attempt'); },
+    });
+    assert.strictEqual(list3[0].executionName, 'synthetic-attempt-two');
+  });
+
+  await checkAsync('cross-attempt overlapping receipt lookups: reversed completion order (newer attempt resolves first) is also fenced correctly', async () => {
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main',
+      correlationId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', correlationSupported: true, dispatchedAt: Date.now() - 1000,
+    });
+    const resolvers = [];
+    const app = {
+      resolveRunStatus: async () => ({ state: 'in_progress', runId: 43, runAttempt: 1, htmlUrl: 'https://example.invalid/r' }),
+      _getRun: async () => ({ state: 'in_progress', runId: 43, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+      resolveExecutionReceipt: () => new Promise((resolve) => { resolvers.push(resolve); }),
+    };
+    const p1 = tracker.listWithStatus('alice', app);
+    await new Promise((r) => setTimeout(r, 0));
+    const p2 = tracker.listWithStatus('alice', app);
+    await new Promise((r) => setTimeout(r, 0));
+    // Newer attempt (2) resolves FIRST this time, older attempt (1) resolves after.
+    resolvers[1]({ executionName: 'synthetic-newer', artifactId: 2 });
+    const list2 = await p2;
+    resolvers[0]({ executionName: 'synthetic-older', artifactId: 1 });
+    const list1 = await p1;
+    assert.strictEqual(list2[0].executionName, 'synthetic-newer');
+    assert.strictEqual(list1[0].executionName, null, 'the stale attempt-1 result must not overwrite the already-cached newer attempt');
   });
 
   await checkAsync('a minted installation token for a dispatch is scoped to just the target repository', async () => {

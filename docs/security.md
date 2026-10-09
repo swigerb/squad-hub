@@ -215,6 +215,32 @@ sanitized join key to the canonical `aca-<execution>` identity and is never
 trusted as device or session identity by itself — that registration check is
 unchanged.
 
+**Bounded lookups fail closed on truncation, not just on-page duplicates.**
+Both the run-status match and the execution receipt read one bounded page each
+(the newest 20 `workflow_dispatch` runs; the first 100 artifacts on a matched
+run) rather than paging through everything a repository has produced, so a
+status poll can never turn into unbounded GitHub API traffic or a permission
+widening. Finding zero matches within that bound is an honest unknown, not an
+error. But a *single* match within the bound is trusted as proof only when
+GitHub also reports that page was not truncated (`total_count` no greater than
+what was actually fetched); if more runs or artifacts exist than this one page
+returned, a second, unfetched item could carry the same correlation id or
+attempt, so the lookup refuses to assume uniqueness and fails closed exactly as
+it does for a genuine same-page duplicate, rather than silently trusting a
+partial read.
+
+**Two opaque, unrelated ids, not one.** `hub_correlation_id` is the internal
+token used solely to match a dispatch to its Actions run; it is minted
+per-dispatch, lives only in the authenticated user's in-memory tracker
+partition, and is never returned in any API response. Separately,
+`DispatchTracker.record()` mints its own `crypto.randomUUID()` for every
+dispatch and returns it as `trackerId` from `POST /api/aca/dispatch`, echoing
+it back as `.id` on the matching row from `GET /api/aca/dispatches`. That
+second id is deliberately *not* secret — it carries no GitHub permission and
+proves nothing to GitHub — it exists only so a client can bind its own pending
+UI row to the exact dispatch it just made, per-user scoped the same way every
+other tracked-dispatch field is.
+
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
 a repository's issue tracker through this endpoint. `GET /api/aca/repos` and

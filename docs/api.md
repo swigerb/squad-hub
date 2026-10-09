@@ -507,12 +507,23 @@ against GitHub Actions for its current run status:
 ```json
 {
   "dispatches": [{
+    "id": "4b6e0f2a-1c3d-4a9e-9f0b-2a7c5d8e1f3b",
     "owner": "me", "repo": "my-repo", "ref": "main", "dispatchedAt": 1730000000000,
     "executionName": "my-job-abc123",
     "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123", "executionName": "my-job-abc123" }
   }]
 }
 ```
+
+`id` is this hub's own stable, opaque identifier for the dispatch — a
+`crypto.randomUUID()` minted once by `DispatchTracker.record()`, the same one
+`POST /api/aca/dispatch` returns as `trackerId` (below). It is the one id both
+responses agree on, so a client can bind its own pending row to the exact
+record it just created instead of re-guessing from timestamp, issue number, or
+repo+ref proximity (see #245/#178). It is per-user partitioned like every
+other field here and carries no GitHub meaning of its own — it is distinct
+from, and never derived from, the internal `hub_correlation_id` used to match
+the Actions run (that id is never exposed to a browser).
 
 `executionName` is the ACA execution the workflow confirmed through the ARM
 `/start` response, or `null` if that is not (yet) known. The hub reads it from
@@ -525,6 +536,21 @@ re-resolved. It matches a DNS-label charset only. It is a join key to the
 canonical `aca-<execution>` device identity, not proof of that identity by
 itself. A failed receipt lookup keeps the run's `state` and adds a note to
 `status.reason`.
+
+Both the correlation match (`resolveRunStatus`) and the execution receipt
+(`resolveExecutionReceipt`) are deliberately **bounded** lookups: the newest 20
+`workflow_dispatch` runs, and the first 100 artifacts on a matched run (GitHub
+API pagination). A match that both lookups never find within those bounds is
+an honest `pending`/`null` — the run or receipt may simply be outside the
+window this hub fetched, not proof that it does not exist. A match that IS
+found, however, is only trusted as proof when the page it came from was not
+itself truncated: if GitHub reports more runs (or artifacts) exist than this
+one bounded page returned, a same-looking match elsewhere on an unfetched page
+cannot be ruled out, so the hub fails closed exactly as it does for a genuine
+on-page duplicate (`state: 'error'` / a thrown receipt error) rather than
+silently trusting a single match that is not provably unique. This never
+causes extra GitHub traffic — it never fetches a second page — it only refuses
+to call a possibly-incomplete single page conclusive.
 
 `GET /api/aca/repos` and `GET /api/aca/dispatches` share one read-only rate
 limit, per signed-in user (#213): **30 requests/minute**. Each spends the
@@ -563,7 +589,10 @@ always runs on the repository's default branch.
   entire allow-list: not a per-person collaborator check.
 - `422` — a requested option is not one the workflow declares.
 - `429` — too many dispatches from this account; retry after `retryAfterMs`.
-- Success returns `{ "issue": {...}, "runUrl": "..." }`. `workflow_dispatch`
+- Success returns `{ "issue": {...}, "runUrl": "...", "trackerId": "..." }`.
+  `trackerId` is the same opaque, hub-generated id `GET /api/aca/dispatches`
+  exposes as `.id` for this exact record — the one stable identifier a client
+  can use to bind its own pending UI to this dispatch. `workflow_dispatch`
   itself replies with no run id, so `runUrl` is the workflow's own Actions
   page until `/api/aca/dispatches` proves which run it produced. When the
   target workflow declares `hub_correlation_id`, the hub generates an internal
