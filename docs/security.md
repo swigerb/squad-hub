@@ -74,9 +74,10 @@ Two paths exist. Which one a repository gets depends on whether its operator
 installed the hub's GitHub App on it — see "The GitHub App path" below for
 that one. Absent an installation, this is what happens:
 
-**+ New → Start a new ACA job…**, or the same button on a session, opens a
-prefilled new issue on GitHub. You press Create; the label triggers the
-workflow, which starts the job.
+**+ New → New ACA job…**, or the same button on a session, opens the dialog
+described in [aca.md](aca.md#queued-on-aca-issue-178). Without the GitHub App
+installed, the dialog itself falls back to a prefilled new issue on GitHub:
+you press Create; the label triggers the workflow, which starts the job.
 
 - The hub emits a link. Your own GitHub session creates the issue.
 - No credential reaches the hub. The workflow runs with a federated short-lived

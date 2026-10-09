@@ -162,6 +162,34 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* ---------- "Queued on ACA" pending rows (#178) ---------- */
+/* A dispatch the hub made through POST /api/aca/dispatch, before its `aca-`
+   device has attached -- see web/js/aca.js's `acaPendingRowHtml`. Not a real
+   session (there is no device yet), so it reuses the SAME `.row`/`.status`
+   shapes a session row uses rather than inventing a second look for "a thing
+   in this list", and is replaced outright once the real session appears. */
+.status.q {
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent); border-style: dashed;
+}
+.status.q::before { animation: acaPulse 1.2s infinite; }
+@keyframes acaPulse { 50% { opacity: .3; } }
+.aca-steps { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; color: var(--faint); }
+.aca-steps .aca-step {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: 4px; border: 1px solid var(--line); line-height: 1;
+}
+.aca-steps .aca-step.done { color: var(--ok); border-color: var(--ok); }
+.aca-steps .aca-step.now { color: var(--accent); border-color: var(--accent); }
+.aca-fail { color: var(--bad); margin-top: 4px; }
+/* The "Check again" button on a terminally-resolved (failed/unknown-outcome)
+   pending row (#178's follow-up fix) -- forces one more
+   `GET /api/aca/dispatches` re-check without starting a second real job
+   (`retryAcaPending`, aca-pending.js). Small and secondary: it is a rare
+   recovery action on a row that is otherwise done changing, not a primary
+   call to action. */
+.aca-retry { margin-top: 6px; height: 24px; padding: 0 10px; font-size: 12px; }
+
 /* ---------- loading skeletons ---------- */
 /* Rows and cards the shape of what is about to arrive, shown only until the
    first real overview, device list or transcript replaces them. A lone

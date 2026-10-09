@@ -31,7 +31,40 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v14';
+//
+// v10: merges two independent v9 bumps -- #178 (the New ACA job dialog and
+// "Queued on ACA" pending rows, split across web/js/aca.js and the new
+// /js/aca-pending.js module, plus devices.js and ws.js's own logic, not just
+// their styling) and #173 (the new /js/device-detail.js split module). Either
+// alone would have been v9; both landing together need a fresh value so an
+// aeroplane device does not keep serving a stale copy of either change.
+// v11: #178's release-gate fix (trackerId-based dispatch binding,
+// device.meta-based attach correlation, honest step evidence, and the
+// restored no-App existing-issue/command-preview fallback).
+// v12: #178's follow-up fix -- time-ordering-based dispatch-attempt identity
+// (the new /js/aca-match.js module, split out of aca-pending.js for size),
+// and bounded "Check again" polling exclusion once a pending row's outcome
+// is terminally resolved.
+// v13/v14: #180/#233's Squad on ACA status card (/js/aca-status.js), merged
+// separately on main.
+// v15: merges v12 (this branch) and v14 (main) -- #178's dispatch-attempt
+// proof fix (no more timing-proximity guess among ambiguous same-issue
+// siblings; see aca-match.js) and the bounded-offline-wait fix (resolving a
+// pending row's terminal state from already-known local evidence BEFORE any
+// network call, so an outage or a dropped dispatch record can never extend
+// how long this hub keeps polling; see aca-pending.js), landing alongside
+// #180/#233's status card.
+// v16: a third #178 review found repo+issue+timing is NEVER authoritative
+// proof of dispatch-attempt identity (not even the single-candidate,
+// no-known-sibling case) -- no verifiable device-to-run/execution join
+// exists in this hub's current contracts (see aca-match.js's own doc
+// comment for the full account). `acaPendingMatch`/`acaPendingAttached` now
+// always return null/false, so a "Queued on ACA" row never silently
+// disappears via this heuristic; aca-pending.js's syncAcaPending was
+// simplified to match. A returning client with a stale v15 copy of
+// aca-match.js/aca-pending.js would keep guessing identity, so this needs
+// its own fresh value.
+const CACHE = 'squad-hub-shell-v16';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -67,6 +100,8 @@ const SHELL = [
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
+  '/js/aca-match.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',

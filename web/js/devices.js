@@ -13,6 +13,7 @@ import { syncDetailHeader } from './detail.js';
 import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
 import { openAca } from './aca.js';
+import { acaPendingSectionHtml } from './aca-pending.js';
 import { renderAcaStatus } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
@@ -395,9 +396,11 @@ export function render() {
     : ''}
     </div>`).join('');
 
-  $('groups').innerHTML = html;
+  const pendingAca = (state.acaPending || []).filter((p) => !p.attached);
+
+  $('groups').innerHTML = acaPendingSectionHtml(state.acaPending, state.scope) + html;
   closeRowMenu();
-  $('empty').hidden = (counts.sessions || 0) > 0;
+  $('empty').hidden = (counts.sessions || 0) > 0 || (pendingAca.length > 0 && state.scope !== 'local');
 
   // With no device online there is nothing + New could do, so say what to do
   // first rather than leaving a live button that opens a dialog with an empty

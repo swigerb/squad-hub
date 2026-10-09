@@ -57,7 +57,14 @@ export async function api(path, opts = {}) {
   let body = null;
   try { body = await res.json(); } catch { /* empty */ }
   if (!res.ok) {
-    const e = new Error((body && body.error) || `HTTP ${res.status}`);
+    // Most routes answer a non-2xx with `{ error }`, but the ACA
+    // GitHub-App-not-configured 501s (hub-service.js's `/api/aca/repos` and
+    // `/api/aca/dispatches`) deliberately answer `{ reason }` instead, since
+    // that is the expected normal state rather than a genuine error -- see
+    // the big comment above those handlers. Either shape must surface here,
+    // or callers that render `e.message` (aca.js's disabled-form note, #178)
+    // fall back to the bare, unhelpful "HTTP 501".
+    const e = new Error((body && (body.error || body.reason)) || `HTTP ${res.status}`);
     e.status = res.status;
     // A route that answers with `reason` instead of `error` -- every
     // `/api/aca/*` route does this for its 501 "not configured" case (#177)

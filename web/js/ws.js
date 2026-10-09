@@ -1,6 +1,7 @@
 import { state, api } from './api.js';
 import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
+import { syncAcaPending } from './aca-pending.js';
 import { renderTranscript } from './transcript.js';
 import { $, VIEW_PARAM_KEYS } from './util.js';
 import { showSignIn } from './signin.js';
@@ -266,6 +267,12 @@ export async function refresh() {
   if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);
   if (state.filters.device) params.set('device', state.filters.device);
   state.overview = await api(`/api/overview?${params}`);
+  // Only hits `/api/aca/dispatches` when a dispatch this tab made is still
+  // unresolved (#178) -- an ordinary load has nothing pending and never
+  // calls it, which is what keeps a hub with no GitHub App configured from
+  // ever seeing that 501 on a routine refresh (the failure mode #233 broke
+  // CI with).
+  await syncAcaPending();
   render();
 }
 

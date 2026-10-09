@@ -756,14 +756,24 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped to v14 merging #180/#233's ACA status card branch (last bumped
-  // to v10 for /js/aca-status.js) with main's #236 (bumped to v13 for
-  // /js/sessionrow.js, /js/rowmenu.js and /js/prefs-sync.js, see that
-  // commit's own history for why each of those needed a fresh shell). Both
-  // independently bumped off an earlier shared base, so the merge needs a
-  // value neither side ever used.
+  // Bumped to v11 for #178's release-gate fix (trackerId-based dispatch
+  // binding, device.meta-based attach correlation, honest step evidence,
+  // and the restored no-App existing-issue/command-preview fallback --
+  // web/js/aca.js, web/js/aca-pending.js, web/index.html), and again to v12
+  // for #178's follow-up fix (time-ordering-based dispatch-attempt identity
+  // in acaPendingMatch/aca-match.js, bounded "Check again" polling exclusion
+  // once an entry is terminally resolved -- web/js/aca.js,
+  // web/js/aca-pending.js, web/js/aca-match.js, web/index.html). Main
+  // independently bumped to v14 merging #180/#233's ACA status card branch
+  // (web/js/aca-status.js) with #236. Both sides bumped off an earlier
+  // shared base, so this merge needs a value neither side ever used: v15.
+  // Bumped again to v16: a third #178 review found repo+issue+timing is
+  // never authoritative proof of dispatch-attempt identity --
+  // acaPendingMatch/acaPendingAttached now always return null/false (see
+  // aca-match.js's own doc comment), and aca-pending.js's syncAcaPending was
+  // simplified to match -- both cached files' real behavior changed.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v14';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v16';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
