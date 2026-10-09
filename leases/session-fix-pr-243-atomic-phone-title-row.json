@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-243-atomic-phone-title-row",
+  "sessionId": "fix-pr-243-atomic-phone-title-row",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T22:34:16.879Z",
+  "lastHeartbeatAt": "2026-10-09T22:34:16.879Z",
+  "updatedAt": "2026-10-09T22:34:16.879Z",
+  "terminalReason": null,
+  "executionRef": null
+}
