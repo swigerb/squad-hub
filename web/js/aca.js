@@ -3,7 +3,7 @@
 // original so the mutations in test/mutate.js that target it still match.
 
 import { state, api } from './api.js';
-import { $, esc, toast } from './util.js';
+import { $, esc, toast, copyToClipboard } from './util.js';
 // Circular by necessity, the same way devices.js's own import of wiring.js is
 // (see the comment there), and the same way aca-pending.js's own import of
 // this file is: `submitAcaDispatch`/`wireAca` below need `trackAcaDispatch`/
@@ -177,12 +177,31 @@ export const ACA_DISPATCH_STEPS = ['Dispatched', 'Lease claimed', 'Starting job'
 /**
  * What to show for one pending dispatch: the status pill, the step row, and
  * a failure reason when there is one. Pure -- given a `status` (as returned
- * by `GET /api/aca/dispatches`, or `null` before the first poll resolves one)
- * and whether a real session has already attached, with no DOM and no
- * `Date.now()` -- so the step mapping below can be proven in Node and a
+ * by `GET /api/aca/dispatches`, or `null` before the first poll resolves one),
+ * whether a real session has already attached, and whether a
+ * completed-successfully-but-unattached wait has run past its bound (see
+ * `ACA_COMPLETED_WAIT_MS` in aca-pending.js) -- with no DOM and no
+ * `Date.now()` here -- so the step mapping below can be proven in Node and a
  * mutation in it actually has somewhere to bite.
+ *
+ * ONLY TWO THINGS ARE EVER MARKED `done`: "Dispatched" (the `POST` itself
+ * already succeeded, or this view would never be reached) and, once
+ * `attached` is true, every step including "Attached" (a real session was
+ * actually found, see `acaPendingMatch`). GitHub Actions' own `queued` /
+ * `in_progress` states are evidence that A RUN EXISTS AND IS PROGRESSING --
+ * they are not evidence that this hub's dispatch lease was claimed, or that
+ * the ACA job itself has started: a runner can sit `queued` for reasons that
+ * have nothing to do with a lease, and a `squad-dispatch.yml` run can go
+ * `in_progress` and finish `completed`/`success` while SKIPPING the ACA job
+ * entirely because the lease was already held elsewhere (see docs/aca.md).
+ * A prior version of this function marked "Lease claimed" done the instant
+ * GitHub reported `queued`, and "Starting job" done at `in_progress` --
+ * asserting facts about ACA (not Actions) that Actions' own state can never
+ * prove. Issue #178's release-gate review caught this. So `queued` and
+ * `in_progress` only ever move which step is shown as `current` ("probably
+ * in flight"); neither ever marks a prior step `done`.
  */
-export function acaStepsForStatus(status, attached = false) {
+export function acaStepsForStatus(status, attached = false, completedWaitExpired = false) {
   const stepsThrough = (doneCount, currentIndex) => ACA_DISPATCH_STEPS.map((label, i) => ({
     label, done: i < doneCount, current: i === currentIndex,
   }));
@@ -204,29 +223,53 @@ export function acaStepsForStatus(status, attached = false) {
 
   if (st === 'completed') {
     const ok = (status && status.conclusion) === 'success';
+    if (ok && completedWaitExpired) {
+      // The one terminal state this hub genuinely cannot resolve on its
+      // own: the Actions run finished reporting success, but no `aca-`
+      // device ever registered with a matching repository/issue within the
+      // bound wait. That could mean the ACA job itself failed after the
+      // workflow's own steps succeeded, a slow or never-started device, or
+      // a squad-on-aca worker too old to report the `issue` metadata this
+      // hub now requires to prove an attach (see acaPendingMatch). Shown as
+      // an honest "do not know", never silently left reading "Queued on
+      // ACA" forever, and never asserted as a failure this hub has no
+      // evidence for.
+      return {
+        pillLabel: 'Unknown outcome', pillClass: 'stale', failed: false,
+        failureReason: 'the Actions run finished successfully, but no ACA session attached in time -- check the run directly',
+        steps: stepsThrough(1, -1),
+      };
+    }
     return {
       pillLabel: ok ? 'Queued on ACA' : 'Dispatch failed',
       pillClass: ok ? 'q' : 'failed',
       failed: !ok,
       failureReason: ok ? null : `the Actions run finished (${(status && status.conclusion) || 'no conclusion'}) without the job attaching`,
-      steps: stepsThrough(ok ? 3 : 1, ok ? 3 : -1),
+      // Still only "Dispatched" done -- a successful Actions conclusion is
+      // not proof the ACA job itself ran, only that the workflow's own
+      // steps did. "Starting job" is shown as the current best guess while
+      // the wait above has not yet expired.
+      steps: stepsThrough(1, ok ? 2 : -1),
     };
   }
 
   if (st === 'in_progress') {
-    // The Actions run is executing, which is the ACA job starting up -- by
-    // the time it reports in_progress "Starting job" is done; what is left
-    // is only the attach this hub has not seen yet.
+    // The Actions run is executing -- real evidence that SOMETHING is
+    // happening, never evidence that the lease was claimed or the ACA job
+    // itself has started (see the function doc above). Shown as "Starting
+    // job" in flight; nothing before it is marked done.
     return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(3, 3),
+      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 2),
     };
   }
 
   if (st === 'queued') {
-    // A run exists and is bound to this dispatch (the lease is claimed);
-    // GitHub Actions just has not started it yet.
+    // A run exists and is bound to this dispatch -- GitHub Actions has
+    // accepted it but not yet started executing it. This is NOT evidence the
+    // lease was claimed (that happens inside the job, which has not run
+    // yet); shown as "Lease claimed" merely in flight.
     return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(2, 2),
+      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 1),
     };
   }
 
@@ -285,6 +328,24 @@ function setAcaIssueMode(mode) {
   $('acaExistingIssueFields').hidden = mode !== 'existing';
 }
 
+/**
+ * The visible, selectable `/squad-aca <prompt>` command preview restored by
+ * #178's release-gate review: the pre-#178 dialog this one replaced showed
+ * the exact command about to be copied, in a `<pre>` a person could select
+ * by hand if `acaCopyLink`'s clipboard write failed or was never permitted
+ * (the same `.cncmd` pattern `connect.js`'s Connect-a-device dialog already
+ * uses for the same reason -- see `acaCmdPreview` in index.html). The
+ * redesigned dialog this file originally shipped copied the command on
+ * click with NOTHING shown beforehand -- a silent action with no way to
+ * recover from a denied clipboard permission short of guessing the syntax
+ * from memory. Kept live via an `oninput` on `acaPrompt` (wireAca below),
+ * independent of `acaRepo`'s own hint `oninput`.
+ */
+function updateAcaCmdPreview() {
+  const cmd = acaComment($('acaPrompt').value);
+  $('acaCmdPreview').textContent = cmd || '/squad-aca \u2026';
+}
+
 export function openAca() {
   const cur = state.currentSession;
   $('acaErr').hidden = true;
@@ -301,6 +362,7 @@ export function openAca() {
   $('acaPrompt').value = (cur && cur.session.prompt) || '';
   $('acaRepoHint').textContent = '';
   $('acaScrim').hidden = false;
+  updateAcaCmdPreview();
   // Enabled until proven otherwise, the same posture the rest of the hub
   // takes before its first `/api/me` answers: a form that defaults to the
   // disabled note would flash it on every single open, including the
@@ -348,7 +410,9 @@ async function submitAcaDispatch() {
   $('acaStart').textContent = 'Starting\u2026';
   try {
     const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
-    trackAcaDispatch({ repo: built.value.repo, issue: r.issue && r.issue.number, runUrl: r.runUrl });
+    trackAcaDispatch({
+      repo: built.value.repo, issue: r.issue && r.issue.number, runUrl: r.runUrl, trackerId: r.trackerId,
+    });
     $('acaScrim').hidden = true;
     toast(`Dispatched: #${r.issue && r.issue.number} is queued on ACA. It appears under Cloud until its job attaches.`);
     render();
@@ -370,6 +434,7 @@ export function wireAca() {
   $('acaIssueModeNew').onchange = () => setAcaIssueMode('new');
   $('acaIssueModeExisting').onchange = () => setAcaIssueMode('existing');
   $('acaRepo').oninput = () => updateAcaRepoHint(state.acaRepos);
+  $('acaPrompt').oninput = updateAcaCmdPreview;
   $('acaStart').onclick = submitAcaDispatch;
 
   // The two fallback links (#178): kept exactly as capable as the dialog
@@ -378,9 +443,20 @@ export function wireAca() {
   // form, so switching to the fallback never means re-typing anything.
   $('acaReviewLink').onclick = (e) => {
     e.preventDefault();
-    const url = acaNewIssueLink($('acaRepo').value, $('acaPrompt').value);
+    // Existing-issue mode opens THAT issue (so the `/squad-aca` command
+    // below can be pasted as a comment on it); new-issue mode opens a
+    // prefilled new issue, same as always. Restored by #178's release-gate
+    // review: the redesigned dialog dropped the existing-issue radio's
+    // effect on this link entirely, always opening a new issue even when
+    // "Existing issue" was selected and a number was typed in.
+    const existing = $('acaIssueModeExisting').checked;
+    const url = existing
+      ? acaIssueLink($('acaRepo').value, $('acaIssueNumber').value)
+      : acaNewIssueLink($('acaRepo').value, $('acaPrompt').value);
     if (!url) {
-      $('acaErr').textContent = 'Enter a repository as owner/repo, and what it should do.';
+      $('acaErr').textContent = existing
+        ? 'Enter a repository as owner/repo, and the existing issue number.'
+        : 'Enter a repository as owner/repo, and what it should do.';
       $('acaErr').hidden = false;
       return;
     }
@@ -397,9 +473,14 @@ export function wireAca() {
       $('acaErr').hidden = false;
       return;
     }
-    try {
-      await navigator.clipboard.writeText(cmd);
-      toast('Command copied — paste it as a comment on the issue');
-    } catch { toast('Could not copy; select the command and copy it'); }
+    // The existing boolean-returning helper (util.js), shared with
+    // connect.js's Connect-a-device dialog -- restored here rather than the
+    // bare `navigator.clipboard.writeText` this dialog's redesign used
+    // directly, which left a denied/never-granted clipboard permission
+    // looking identical to a successful copy (no visible command, no
+    // distinct failure toast wording). `copyToClipboard`'s own textarea
+    // fallback plus the honest success/failure toast below is the same
+    // recovery path `acaCmdPreview`'s visible text offers by hand.
+    toast(await copyToClipboard(cmd) ? 'Command copied' : 'Select and copy the command above');
   };
 }

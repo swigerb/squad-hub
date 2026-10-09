@@ -888,7 +888,7 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', model: 'x'.repeat(65) }).ok, false);
   });
 
-  check('reviewer must be a valid GitHub username', () => {
+  check('reviewer must be a valid identifier (the Squad member id, not an arbitrary GitHub username)', () => {
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: 'octocat' }).ok, true);
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: 'oct-o-cat' }).ok, true);
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: '-bad' }).ok, false);
@@ -1043,6 +1043,45 @@ function apiRequest(port, path, token, opts = {}) {
     server.close();
     assert.strictEqual(aliceList.length, 1);
     assert.strictEqual(bobList.length, 1);
+  });
+
+  check('record() returns the stored record, with its own stable id and the issue number', () => {
+    // #178's release-gate review: the browser's own pending row must bind to
+    // THIS exact record from the moment it is created, not re-guess which
+    // server-side record is its own by repository and recency on every poll.
+    const tracker = new DispatchTracker();
+    const stored = tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', issue: 42, installationId: 1, workflowFile: 'squad-dispatch.yml',
+    });
+    assert.ok(stored.id, 'record() did not return an id');
+    assert.strictEqual(stored.issue, 42);
+    const [listed] = tracker.list('alice');
+    assert.strictEqual(listed.id, stored.id, 'the id returned from record() must be the same one list() reports back');
+  });
+
+  await checkAsync('POST /api/aca/dispatch returns a trackerId that correlates to GET /api/aca/dispatches', async () => {
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 7, prompt: 'go' },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r));
+    assert.ok(r.body.trackerId, 'the dispatch response carries no trackerId');
+    const listed = await apiRequest(addr.port, '/api/aca/dispatches', token);
+    await svc.close();
+    server.close();
+    assert.strictEqual(listed.status, 200, JSON.stringify(listed));
+    const match = listed.body.dispatches.find((d) => d.id === r.body.trackerId);
+    assert.ok(match, 'GET /api/aca/dispatches has no record whose id matches the dispatch response\'s trackerId');
+    assert.strictEqual(match.issue, 7, 'the tracked record must carry the dispatch\'s own issue number, for device.meta-based attach correlation');
+    assert.strictEqual(match.issue, 7, 'the tracked record does not carry the issue number back for client-side correlation');
   });
 
   await checkAsync('resolveRunStatus matches the run created at-or-after the dispatch timestamp', async () => {

@@ -639,8 +639,17 @@
          they are also what the two fallback links below read from, so a hub
          with no GitHub App configured still lets you fill them in before
          falling back -- only the fields below that mean nothing without a
-         direct dispatch (branch, issue picker, model, reviewer, checkboxes,
-         the route note) hide with the rest of #acaForm. -->
+         direct dispatch (branch, model, reviewer, checkboxes, the route
+         note) hide with the rest of #acaForm.
+
+         Issue is ALSO outside #acaForm, restored here by #178's release-gate
+         review: the redesign that split this dialog moved the new/existing
+         issue picker INSIDE #acaForm, so a hub with no GitHub App configured
+         lost the "Existing issue" option -- and with it, acaReviewLink's
+         only way to open the issue you actually meant instead of always
+         creating a new one. The picker means something with or without a
+         direct dispatch: both fallback links below read `acaIssueNumber`
+         when "Existing issue" is selected. -->
     <label class="field">
       <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
         title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
@@ -648,6 +657,35 @@
       <datalist id="acaRepoList"></datalist>
       <small id="acaRepoHint"></small>
     </label>
+
+    <fieldset class="field cnopts">
+      <legend>Issue <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Issue"
+        title="Every ACA job is tied to an issue: it holds the lease that stops a second job starting for the same work, and it is where the session reports back. &#10;&#10;New issue: one is created from your instructions. Existing issue: the job works that issue, and its body and comments are added to the brief.">i</button></legend>
+      <label class="check">
+        <input type="radio" name="acaIssueMode" id="acaIssueModeNew" value="new" checked>
+        <span>New issue
+          <small>Created from the instructions below.</small>
+        </span>
+      </label>
+      <div id="acaNewIssueFields">
+        <label class="field">
+          <span>Issue title</span>
+          <input id="acaNewIssueTitle" placeholder="(first line of the instructions)" maxlength="200">
+        </label>
+      </div>
+      <label class="check">
+        <input type="radio" name="acaIssueMode" id="acaIssueModeExisting" value="existing">
+        <span>Existing issue
+          <small>Its body and comments are added to the session's brief.</small>
+        </span>
+      </label>
+      <div id="acaExistingIssueFields" hidden>
+        <label class="field">
+          <span>Issue number</span>
+          <input id="acaIssueNumber" inputmode="numeric" placeholder="e.g. 72">
+        </label>
+      </div>
+    </fieldset>
 
     <!-- Shown once GET /api/aca/repos answers (issue #178, backend #177/#213).
          Hidden by default so a hub with no GitHub App configured never shows a
@@ -660,35 +698,6 @@
         <small>The pull request targets this branch.</small>
       </label>
 
-      <fieldset class="field cnopts">
-        <legend>Issue <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Issue"
-          title="Every ACA job is tied to an issue: it holds the lease that stops a second job starting for the same work, and it is where the session reports back. &#10;&#10;New issue: one is created from your instructions. Existing issue: the job works that issue, and its body and comments are added to the brief.">i</button></legend>
-        <label class="check">
-          <input type="radio" name="acaIssueMode" id="acaIssueModeNew" value="new" checked>
-          <span>New issue
-            <small>Created from the instructions below.</small>
-          </span>
-        </label>
-        <div id="acaNewIssueFields">
-          <label class="field">
-            <span>Issue title</span>
-            <input id="acaNewIssueTitle" placeholder="(first line of the instructions)" maxlength="200">
-          </label>
-        </div>
-        <label class="check">
-          <input type="radio" name="acaIssueMode" id="acaIssueModeExisting" value="existing">
-          <span>Existing issue
-            <small>Its body and comments are added to the session's brief.</small>
-          </span>
-        </label>
-        <div id="acaExistingIssueFields" hidden>
-          <label class="field">
-            <span>Issue number</span>
-            <input id="acaIssueNumber" inputmode="numeric" placeholder="e.g. 72">
-          </label>
-        </div>
-      </fieldset>
-
       <label class="field">
         <span>Model <button type="button" class="hint-btn" aria-label="About Model"
           title="Leave blank and each squad member uses the model its charter and .squad config assign. &#10;&#10;Set one to override it for this job only -- the squad's cost policy still applies.">i</button></span>
@@ -697,7 +706,7 @@
 
       <label class="field">
         <span>Required reviewer <button type="button" class="hint-btn" aria-label="About Required reviewer"
-          title="The GitHub username who must review the pull request before it can merge. &#10;&#10;Leave blank for the squad's own default reviewer, so no ACA job ships unreviewed.">i</button></span>
+          title="The Squad member id who must review the pull request before it can merge -- the same member id used throughout this Squad's own config and roster, not a GitHub username. &#10;&#10;Leave blank for the squad's own default reviewer, so no ACA job ships unreviewed.">i</button></span>
         <input id="acaReviewer" placeholder="Squad default" autocapitalize="off" spellcheck="false">
       </label>
 
@@ -733,6 +742,14 @@
          case is the two fallback links below, which stay links either way. -->
     <p class="modal-sub" id="acaDisabledNote" hidden></p>
 
+    <!-- The visible, selectable /squad-aca command (issue #178's
+         release-gate review): restored to the same `.cncmd` look
+         connect.js's Connect-a-device dialog already uses (see
+         web/css/modals.css), so a denied/never-granted clipboard
+         permission still leaves something to select and copy by hand --
+         updated live by aca.js's updateAcaCmdPreview(). -->
+    <pre id="acaCmdPreview" class="cncmd">/squad-aca &hellip;</pre>
+
     <div class="modal-actions">
       <span class="aca-alt-links" id="acaFallbackLinks">
         <a class="lnk" href="#" id="acaReviewLink">Review on GitHub instead…</a>
@@ -745,6 +762,7 @@
     <p class="err" id="acaErr" hidden></p>
   </div>
 </div>
+
 
 <div class="scrim" id="peopleScrim" hidden>
   <div class="modal people" role="dialog" aria-modal="true" aria-labelledby="pplTitle">

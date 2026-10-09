@@ -10,10 +10,17 @@
  * feeds is an acceptable gap for a status convenience feature, not a safety
  * property. A durable version of this is #178, a different issue.
  *
- * Holds no secret: `owner`, `repo`, `installationId` (a number, not a
- * credential) and a timestamp -- never a token. `installationId` is kept so
+ * Holds no secret: `owner`, `repo`, `issue` (a number, when the dispatch
+ * targeted or created one), `installationId` (a number, not a credential) and
+ * a timestamp -- never a token. `installationId` is kept so
  * `GitHubApp.resolveRunStatus` can mint whichever installation token it needs
- * without re-running the allow-list lookup for every status poll.
+ * without re-running the allow-list lookup for every status poll. `issue` is
+ * kept so the browser's own pending row -- which already knows which issue
+ * ITS dispatch targeted, from the same `POST /api/aca/dispatch` response --
+ * can correlate an attached `aca-` session's reported `issue`/`repo` device
+ * metadata (see `src/device-meta.js`) against the right record, instead of
+ * guessing from repository and recency alone (issue #178's release-gate
+ * review).
  */
 
 const crypto = require('crypto');
@@ -53,10 +60,20 @@ class DispatchTracker {
    * noticeably later (after the HTTP round trip) and risk excluding the very
    * run this dispatch produced. `this._now()` is only a fallback for a
    * caller that does not supply one.
+   *
+   * Returns the record just stored, `id` included -- `hub-service.js` hands
+   * that `id` back to the caller as `trackerId` in the `POST
+   * /api/aca/dispatch` response, so the browser can bind its own local
+   * pending row to THIS exact record from then on (see `aca-pending.js`'s
+   * `trackAcaDispatch`/`syncAcaPending`), rather than re-guessing which
+   * server-side record is "its own" by repository and recency every poll --
+   * the bug issue #178's release-gate review found: two same-repo dispatches
+   * racing a `GET /api/aca/dispatches` could swap which browser row saw
+   * which record's status.
    */
   record(userKey, rec) {
     const list = this._byUser.get(userKey) || [];
-    list.push({
+    const stored = {
       ...rec,
       dispatchedAt: rec.dispatchedAt != null ? rec.dispatchedAt : this._now(),
       id: crypto.randomUUID(),
@@ -65,9 +82,11 @@ class DispatchTracker {
        * handing the same run to a different record, or flipping to a
        * different run on a borderline match). */
       boundRunId: null,
-    });
+    };
+    list.push(stored);
     while (list.length > MAX_PER_USER) list.shift();
     this._byUser.set(userKey, list);
+    return stored;
   }
 
   /** The caller's own dispatches, newest first. A copy -- nothing returned

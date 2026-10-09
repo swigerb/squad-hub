@@ -918,15 +918,23 @@ class HubService {
         const result = await this.githubApp.dispatch({
           ...validated.value, owner, repo: repoName, installationId: installation.installationId,
         });
-        this.dispatchTracker.record(me.key, {
+        const record = this.dispatchTracker.record(me.key, {
           owner,
           repo: repoName,
+          issue: (result.issue && result.issue.number) || null,
           installationId: installation.installationId,
           workflowFile: result.workflowFile,
           ref: result.ref,
           dispatchedAt: result.dispatchedAt,
         });
-        return send(200, { issue: result.issue, runUrl: result.runUrl });
+        // `trackerId` is this hub's own stable identity for the dispatch
+        // (see `DispatchTracker.record`) -- the caller's local "Queued on
+        // ACA" row binds to it from here on (`aca-pending.js`'s
+        // `trackAcaDispatch`), rather than re-matching "the newest record on
+        // this repository" on every `GET /api/aca/dispatches` poll, which
+        // could bind to a DIFFERENT concurrent dispatch's record (#178's
+        // release-gate review).
+        return send(200, { issue: result.issue, runUrl: result.runUrl, trackerId: record.id });
       } catch (e) {
         const errBody = { error: e.message };
         // A dispatch that failed AFTER creating an issue for `newIssue` must

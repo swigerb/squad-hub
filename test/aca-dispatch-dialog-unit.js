@@ -31,11 +31,11 @@ const src = readWebSource();
 const browser = { exports: {} };
 new Function('module', `${src}\nmodule.exports = {
   acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
-  acaPendingSectionHtml, ACA_DISPATCH_STEPS, api,
+  acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, api,
 };`)(browser);
 const {
   acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
-  acaPendingSectionHtml, ACA_DISPATCH_STEPS, api,
+  acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, api,
 } = browser.exports;
 
 const REPO = 'swigerb/squad-on-aca';
@@ -129,18 +129,25 @@ check('no status yet (just dispatched) shows "Dispatched" done and "Lease claime
   assert.strictEqual(v.steps[1].current, true);
 });
 
-check('a queued run shows "Starting job" current, with Dispatched and Lease claimed done', () => {
+check('a queued run shows "Lease claimed" current, with only Dispatched proven done -- Actions queued is not lease proof', () => {
   const v = acaStepsForStatus({ state: 'queued' }, false);
   assert.strictEqual(v.steps[0].done, true);
-  assert.strictEqual(v.steps[1].done, true);
-  assert.strictEqual(v.steps[2].current, true);
+  // #178's release-gate review: a bare `queued` Actions state is never
+  // treated as proof the dispatch lease was claimed -- only "Dispatched"
+  // (the POST that already succeeded) is ever marked done here.
+  assert.strictEqual(v.steps[1].done, false);
+  assert.strictEqual(v.steps[1].current, true);
   assert.strictEqual(v.failed, false);
 });
 
-check('an in_progress run shows "Attached" current, with everything up to Starting job done', () => {
+check('an in_progress run shows "Starting job" current, with only Dispatched proven done -- Actions in_progress is not job-start proof', () => {
   const v = acaStepsForStatus({ state: 'in_progress' }, false);
-  assert.strictEqual(v.steps[2].done, true);
-  assert.strictEqual(v.steps[3].current, true);
+  assert.strictEqual(v.steps[0].done, true);
+  // Likewise: `in_progress` only proves the Actions run itself is executing,
+  // never that the ACA job it may or may not launch has actually started.
+  assert.strictEqual(v.steps[1].done, false);
+  assert.strictEqual(v.steps[2].done, false);
+  assert.strictEqual(v.steps[2].current, true);
 });
 
 check('attached is reported once the session shows up, regardless of the last known run status', () => {
@@ -163,67 +170,109 @@ check('a run that completed without ever attaching is reported as failed', () =>
   assert.ok(/failure/.test(v.failureReason));
 });
 
-check('a run that completed successfully, but the session has not attached yet, is NOT reported failed', () => {
-  const v = acaStepsForStatus({ state: 'completed', conclusion: 'success' }, false);
+check('a run that completed successfully, but the session has not attached yet, is NOT reported failed before the wait expires', () => {
+  const v = acaStepsForStatus({ state: 'completed', conclusion: 'success' }, false, false);
   assert.strictEqual(v.failed, false);
+  assert.strictEqual(v.pillLabel, 'Queued on ACA');
+  // Still only "Dispatched" is proven; a successful Actions conclusion is
+  // not proof the ACA job itself ran (#178's release-gate review).
+  assert.strictEqual(v.steps[0].done, true);
+  assert.strictEqual(v.steps[1].done, false);
 });
 
-// --- acaPendingAttached --------------------------------------------------------
+check('a run that completed successfully but never attached within the bound wait reports an honest unknown outcome, not a failure', () => {
+  const v = acaStepsForStatus({ state: 'completed', conclusion: 'success' }, false, true);
+  assert.strictEqual(v.failed, false, 'this hub has no evidence the job failed -- only that it cannot prove it attached');
+  assert.strictEqual(v.pillLabel, 'Unknown outcome');
+  assert.strictEqual(v.pillClass, 'stale');
+  assert.ok(/no ACA session attached/.test(v.failureReason));
+});
+
+// --- acaPendingAttached / acaPendingMatch: authoritative device.meta -------
+//
+// #178's release-gate review: repository-and-recency alone is a guess, not a
+// correlation -- an unrelated same-repo session, a second dispatch racing
+// ahead of a first, and two dispatches on the SAME issue all broke it. The
+// only thing actually proving an attached `aca-` device belongs to THIS
+// dispatch is its own reported `meta.repo`/`meta.issue` (src/device-meta.js,
+// already shipped -- the squad-on-aca worker reports its own identity, this
+// is not invented here), matched against the entry's OWN repo/issue -- the
+// same issue its POST was dispatched against in the first place.
 
 const acaGroup = (overrides) => ({
   device: { kind: 'aca', ...(overrides && overrides.device) },
   sessions: (overrides && overrides.sessions) || [],
 });
-
-check('matches an aca-kind device whose session checked out the same repository, started after the dispatch', () => {
-  const entry = { repo: REPO, dispatchedAt: 1000 };
-  const groups = [acaGroup({ sessions: [{ git: { repository: REPO }, startedAt: 2000 }] })];
+check('matches an aca-kind device whose meta reports the same repository and issue', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const groups = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
   assert.strictEqual(acaPendingAttached(entry, groups), true);
 });
 
 check('is case-insensitive about the repository name', () => {
-  const entry = { repo: REPO, dispatchedAt: 1000 };
-  const groups = [acaGroup({ sessions: [{ git: { repository: REPO.toUpperCase() }, startedAt: 2000 }] })];
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const groups = [acaGroup({ device: { meta: { repo: REPO.toUpperCase(), issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
   assert.strictEqual(acaPendingAttached(entry, groups), true);
 });
 
-check('tolerates up to two minutes of clock drift, but not more', () => {
-  const entry = { repo: REPO, dispatchedAt: 100000 };
-  const withinSlack = [acaGroup({ sessions: [{ git: { repository: REPO }, startedAt: 100000 - 60000 }] })];
-  assert.strictEqual(acaPendingAttached(entry, withinSlack), true);
-  const tooEarly = [acaGroup({ sessions: [{ git: { repository: REPO }, startedAt: 100000 - (3 * 60 * 1000) }] })];
-  assert.strictEqual(acaPendingAttached(entry, tooEarly), false);
+check('a near-time session on the SAME repository but a DIFFERENT issue never matches', () => {
+  // The exact case repository-and-recency guessing could not tell apart:
+  // an unrelated dispatch (or a pre-existing/manually-started job) on the
+  // same repository, whose device attached mere seconds apart from this
+  // entry's own dispatch. Only the issue number proves which is which.
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 100000 };
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 999 } },
+    sessions: [{ startedAt: 100000 + 1000 }],
+  })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
 });
 
-check('does not match a non-aca device, even with the same repository', () => {
+check('a device whose meta omits repo/issue is never treated as a match (no proof, no guess)', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const noMeta = [acaGroup({ sessions: [{ startedAt: 2000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, noMeta, new Set()), null);
+  const partialMeta = [acaGroup({ device: { meta: { repo: REPO } }, sessions: [{ startedAt: 2000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, partialMeta, new Set()), null);
+});
+
+check('an entry with no issue number never matches anything, proof or not', () => {
   const entry = { repo: REPO, dispatchedAt: 1000 };
-  const groups = [{ device: { kind: 'cloud' }, sessions: [{ git: { repository: REPO }, startedAt: 2000 }] }];
+  const groups = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
+});
+
+check('does not match a non-aca device, even with matching meta', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const groups = [{ device: { kind: 'cloud', meta: { repo: REPO, issue: 42 } }, sessions: [{ startedAt: 2000 }] }];
   assert.strictEqual(acaPendingAttached(entry, groups), false);
 });
 
 check('does not match a different repository', () => {
-  const entry = { repo: REPO, dispatchedAt: 1000 };
-  const groups = [acaGroup({ sessions: [{ git: { repository: 'someone/else' }, startedAt: 2000 }] })];
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const groups = [acaGroup({ device: { meta: { repo: 'someone/else', issue: 42 } }, sessions: [{ startedAt: 2000 }] })];
   assert.strictEqual(acaPendingAttached(entry, groups), false);
 });
 
 check('an empty group list never matches, and never throws', () => {
-  assert.strictEqual(acaPendingAttached({ repo: REPO, dispatchedAt: 1000 }, []), false);
-  assert.strictEqual(acaPendingAttached({ repo: REPO, dispatchedAt: 1000 }, undefined), false);
+  assert.strictEqual(acaPendingAttached({ repo: REPO, issue: 42, dispatchedAt: 1000 }, []), false);
+  assert.strictEqual(acaPendingAttached({ repo: REPO, issue: 42, dispatchedAt: 1000 }, undefined), false);
 });
 
-// --- acaPendingMatch: repository alone must never double-claim ------------
+// --- acaPendingMatch: repeated/same-issue exclusivity ----------------------
 //
-// The bug this guards against: two pending dispatches on the SAME repository
-// (a second job started before the first one's device attached), or an
-// unrelated/pre-existing `aca-` session already running against that
-// repository, must never let repository-matching alone resolve more than
-// one pending row off a single real session.
+// The bug this guards against: two pending dispatches on the SAME
+// repository+issue (a re-dispatch after an earlier one appeared to stall),
+// or an unrelated/pre-existing `aca-` session reporting that same identity,
+// must never let one real session resolve more than one pending row.
 
-check('a single matching session only ever satisfies ONE of two same-repo pending entries', () => {
-  const older = { repo: REPO, dispatchedAt: 1000 };
-  const newer = { repo: REPO, dispatchedAt: 5000 };
-  const groups = [acaGroup({ sessions: [{ id: 's1', git: { repository: REPO }, startedAt: 6000 }] })];
+check('a single matching session only ever satisfies ONE of two repeated-same-issue pending entries', () => {
+  const older = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const newer = { repo: REPO, issue: 42, dispatchedAt: 5000 };
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 's1', startedAt: 6000 }],
+  })];
 
   // Unclaimed: both independently see the one session (acaPendingAttached's
   // plain yes/no has no notion of exclusivity, by design -- see its own doc
@@ -232,36 +281,58 @@ check('a single matching session only ever satisfies ONE of two same-repo pendin
   assert.strictEqual(acaPendingAttached(newer, groups), true);
 
   // With the session already claimed by the older entry, the newer entry
-  // must NOT also resolve to it.
+  // must NOT also resolve to it -- oldest-dispatch-claims-first, mirroring
+  // DispatchTracker's own server-side rule.
   const claimed = new Set(['s1']);
   assert.strictEqual(acaPendingMatch(older, groups, claimed), null, 'the older entry should not re-claim what it already has');
   const matchOlder = acaPendingMatch(older, groups, new Set());
   assert.strictEqual(matchOlder && matchOlder.key, 's1');
   assert.strictEqual(acaPendingMatch(newer, groups, claimed), null,
-    'a second dispatch on the same repository must not also consume the first dispatch\'s attached session');
+    'a repeat dispatch on the same issue must not also consume the first dispatch\'s attached session');
 });
 
-check('a pre-existing/unrelated aca- session on the same repository does not steal a different pending entry\'s claim', () => {
-  const dispatchedAt = 10000;
-  const entry = { repo: REPO, dispatchedAt };
-  // A session on the SAME repo that started well before this dispatch (more
-  // than the 2-minute clock-drift slack) is a pre-existing/unrelated job --
-  // acaPendingMatch must not consider it a candidate at all.
-  const preExisting = [acaGroup({ sessions: [{ id: 'old-session', git: { repository: REPO }, startedAt: dispatchedAt - (10 * 60 * 1000) }] })];
+check('a pre-existing/unrelated aca- session reporting a different issue does not steal a different pending entry\'s claim', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 10000 };
+  // A session on the SAME repo but a DIFFERENT issue -- the two-minute
+  // clock-drift floor this replaced would have let this through purely on
+  // timing; issue-based matching rejects it regardless of when it started.
+  const preExisting = [acaGroup({
+    device: { meta: { repo: REPO, issue: 7 } },
+    sessions: [{ id: 'old-session', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
+  })];
   assert.strictEqual(acaPendingMatch(entry, preExisting, new Set()), null);
 
   // A genuinely unrelated device on a DIFFERENT repository, running
   // concurrently, must never match either.
-  const unrelated = [acaGroup({ sessions: [{ id: 'other-device', git: { repository: 'someone/else' }, startedAt: dispatchedAt + 1000 }] })];
+  const unrelated = [acaGroup({
+    device: { meta: { repo: 'someone/else', issue: 42 } },
+    sessions: [{ id: 'other-device', startedAt: entry.dispatchedAt + 1000 }],
+  })];
   assert.strictEqual(acaPendingMatch(entry, unrelated, new Set()), null);
 });
 
-check('acaPendingMatch picks the earliest-started eligible session, matching the oldest-dispatch-claims-first rule', () => {
-  const entry = { repo: REPO, dispatchedAt: 1000 };
+check('a newer job attaching before an older one still only ever resolves its OWN issue\'s entry', () => {
+  // Out-of-order attach: the job for a LATER dispatch (issue 43) reports in
+  // before the job for an EARLIER dispatch (issue 42) does. Repository-only
+  // matching had no way to tell these apart except array/time order; issue
+  // identity makes the order irrelevant to correctness.
+  const earlierEntry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const laterEntry = { repo: REPO, issue: 43, dispatchedAt: 2000 };
+  const groups = [
+    acaGroup({ device: { meta: { repo: REPO, issue: 43 } }, sessions: [{ id: 'later-job', startedAt: 2500 }] }),
+  ];
+  assert.strictEqual(acaPendingMatch(earlierEntry, groups, new Set()), null);
+  const match = acaPendingMatch(laterEntry, groups, new Set());
+  assert.strictEqual(match && match.key, 'later-job');
+});
+
+check('acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1000 };
   const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
     sessions: [
-      { id: 'later', git: { repository: REPO }, startedAt: 9000 },
-      { id: 'earlier', git: { repository: REPO }, startedAt: 2000 },
+      { id: 'later', startedAt: 9000 },
+      { id: 'earlier', startedAt: 2000 },
     ],
   })];
   const match = acaPendingMatch(entry, groups, new Set());
@@ -290,6 +361,24 @@ check('user-controlled text in a pending row is escaped', () => {
     localId: 'x', repo: '<img src=x onerror=alert(1)>/x', dispatchedAt: Date.now(), status: null,
   });
   assert.ok(!html.includes('<img'), html);
+});
+
+check('a completed-success row still shows "Queued on ACA" while within the bounded wait', () => {
+  const html = acaPendingRowHtml({
+    localId: 'x', repo: REPO, dispatchedAt: Date.now(),
+    completedAt: Date.now() - (ACA_COMPLETED_WAIT_MS - 1000),
+    status: { state: 'completed', conclusion: 'success' },
+  });
+  assert.ok(!html.includes('Unknown outcome'), html);
+});
+
+check('a completed-success row with no attach past the bounded wait reports an honest unknown outcome, not a lie about success', () => {
+  const html = acaPendingRowHtml({
+    localId: 'x', repo: REPO, dispatchedAt: Date.now(),
+    completedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 1000),
+    status: { state: 'completed', conclusion: 'success' },
+  });
+  assert.ok(html.includes('Unknown outcome'), html);
 });
 
 check('the section is empty with nothing pending, and on the Local scope (an ACA job cannot run there)', () => {

@@ -2987,7 +2987,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v10';`,
+    find: `const CACHE = 'squad-hub-shell-v11';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -4472,6 +4472,47 @@ if ($health.accessStore -ne 'durable') {`,
             status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
           } else if (status && status.runId != null) {`,
     mustFail: 'a concurrent poll that already bound a record is never overwritten by a slower, stale search result',
+  },
+  {
+    // #178's release-gate review, Gate 1: `record()` must surface the
+    // tracker's own stable id to the caller, or the client has nothing
+    // authoritative to bind a dispatch to (see hub-service.js's
+    // `POST /api/aca/dispatch` and web/js/aca-pending.js's `syncAcaPending`).
+    name: 'DispatchTracker.record() stops returning the stored record',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    list.push(stored);
+    while (list.length > MAX_PER_USER) list.shift();
+    this._byUser.set(userKey, list);
+    return stored;
+  }`,
+    replace: `    list.push(stored);
+    while (list.length > MAX_PER_USER) list.shift();
+    this._byUser.set(userKey, list);
+    if (process.env.MUTANT) return undefined; // MUTATION
+    return stored;
+  }`,
+    mustFail: 'record() returns the stored record, with its own stable id and the issue number',
+  },
+  {
+    // The dispatch POST route must thread the tracker's own id back to the
+    // client as `trackerId` -- without it, `syncAcaPending` has nothing to
+    // bind a pending row to and falls back to guessing (the exact gate this
+    // PR closes).
+    name: 'POST /api/aca/dispatch stops returning trackerId',
+    file: 'src/service/hub-service.js',
+    find: `        return send(200, { issue: result.issue, runUrl: result.runUrl, trackerId: record.id });`,
+    replace: `        return send(200, { issue: result.issue, runUrl: result.runUrl, trackerId: process.env.MUTANT ? undefined : record.id }); // MUTATION`,
+    mustFail: 'POST /api/aca/dispatch returns a trackerId that correlates to GET /api/aca/dispatches',
+  },
+  {
+    // Same gate: the tracked record must actually store the dispatch's own
+    // issue number, or `device.meta.issue`-based correlation (aca-pending.js)
+    // has nothing authoritative to compare a candidate device against.
+    name: 'POST /api/aca/dispatch stops storing the issue number on the tracker record',
+    file: 'src/service/hub-service.js',
+    find: `          issue: (result.issue && result.issue.number) || null,`,
+    replace: `          issue: process.env.MUTANT ? null : ((result.issue && result.issue.number) || null), // MUTATION`,
+    mustFail: 'POST /api/aca/dispatch returns a trackerId that correlates to GET /api/aca/dispatches',
   },
   {
     // GitHubApp: a minted installation token must be scoped to only the
@@ -6011,25 +6052,89 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a run that completed without ever attaching is reported as failed',
   },
   {
+    // #178's release-gate review, Gate 3: GitHub Actions reaching
+    // `in_progress` is real evidence the workflow is executing, but NEVER
+    // evidence the ACA job itself claimed its lease or started -- that only
+    // happens inside the job, which this hub cannot see until a device
+    // attaches. Only "Dispatched" may ever be asserted done here.
+    name: 'acaStepsForStatus stops being honest about in_progress evidence (falsely marks "Lease claimed" done)',
+    file: 'web/js/aca.js',
+    find: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 2),
+    };
+  }
+
+  if (st === 'queued') {`,
+    replace: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(process.env.MUTANT ? 2 : 1, 2), // MUTATION
+    };
+  }
+
+  if (st === 'queued') {`,
+    mustFail: 'an in_progress run shows "Starting job" current, with only Dispatched proven done -- Actions in_progress is not job-start proof',
+  },
+  {
+    name: 'acaStepsForStatus stops being honest about queued evidence (falsely marks "Lease claimed" done)',
+    file: 'web/js/aca.js',
+    find: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 1),
+    };
+  }
+
+  // \`pending\``,
+    replace: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(process.env.MUTANT ? 2 : 1, 1), // MUTATION
+    };
+  }
+
+  // \`pending\``,
+    mustFail: 'a queued run shows "Lease claimed" current, with only Dispatched proven done -- Actions queued is not lease proof',
+  },
+  {
+    // The bounded-wait terminal state ("Unknown outcome") must actually be
+    // reachable -- without it, a completed-success run with no attach would
+    // silently fall through to the ordinary "Queued on ACA" branch forever
+    // (the exact behavior #178's release-gate review flagged).
+    name: 'acaStepsForStatus stops surfacing the bounded-wait unknown-outcome state',
+    file: 'web/js/aca.js',
+    find: `    if (ok && completedWaitExpired) {`,
+    replace: `    if (ok && completedWaitExpired && !process.env.MUTANT) { // MUTATION`,
+    mustFail: 'a completed-success row with no attach past the bounded wait reports an honest unknown outcome, not a lie about success',
+  },
+  {
     name: 'acaPendingMatch stops requiring an aca-kind device',
     file: 'web/js/aca-pending.js',
     find: `    if (!g || !g.device || g.device.kind !== 'aca') continue;`,
     replace: `    if (!g || !g.device || (!process.env.MUTANT && g.device.kind !== 'aca')) continue; // MUTATION`,
-    mustFail: 'does not match a non-aca device, even with the same repository',
+    mustFail: 'does not match a non-aca device, even with matching meta',
+  },
+  {
+    // #178's release-gate review, Gate 2: the ONLY proof an attached device
+    // belongs to a dispatch is its own reported meta (src/device-meta.js),
+    // never a guess -- a device that omits repo/issue must be skipped
+    // entirely, not treated as an automatic match.
+    name: 'acaPendingMatch stops requiring the candidate device to report meta at all',
+    file: 'web/js/aca-pending.js',
+    find: `    const meta = g.device.meta || null;
+    if (!meta || !meta.repo || !meta.issue) continue; // no proof available -- never guessed`,
+    replace: `    const meta = g.device.meta || null; // MUTATION: proof requirement removed below
+    if (process.env.MUTANT ? false : (!meta || !meta.repo || !meta.issue)) continue;`,
+    mustFail: 'a device whose meta omits repo/issue is never treated as a match (no proof, no guess)',
   },
   {
     name: 'acaPendingMatch stops requiring the repository to match',
     file: 'web/js/aca-pending.js',
-    find: `      if (!repo || repo.toLowerCase() !== want) continue;`,
-    replace: `      if (!repo || (!process.env.MUTANT && repo.toLowerCase() !== want)) continue; // MUTATION`,
+    find: `    if (!metaRepo || metaRepo.toLowerCase() !== want) continue;`,
+    replace: `    if (!metaRepo || (!process.env.MUTANT && metaRepo.toLowerCase() !== want)) continue; // MUTATION`,
     mustFail: 'does not match a different repository',
   },
   {
-    name: 'acaPendingMatch stops applying the two-minute clock-drift floor',
+    // The core correlation fix this PR adds: repository alone is not proof
+    // -- an unrelated (or re-dispatched) session reporting the SAME
+    // repository but a DIFFERENT issue must never match either.
+    name: 'acaPendingMatch stops requiring the issue number to match',
     file: 'web/js/aca-pending.js',
-    find: `  const floor = (entry.dispatchedAt || 0) - (2 * 60 * 1000);`,
-    replace: `  const floor = process.env.MUTANT ? -Infinity : (entry.dispatchedAt || 0) - (2 * 60 * 1000); // MUTATION`,
-    mustFail: 'tolerates up to two minutes of clock drift, but not more',
+    find: `    const metaIssue = Number(meta.issue);
+    if (!Number.isInteger(metaIssue) || metaIssue !== wantIssue) continue;`,
+    replace: `    const metaIssue = Number(meta.issue);
+    if (process.env.MUTANT ? false : (!Number.isInteger(metaIssue) || metaIssue !== wantIssue)) continue; // MUTATION`,
+    mustFail: 'a near-time session on the SAME repository but a DIFFERENT issue never matches',
   },
   {
     // The core fix this PR adds: matching repository alone must not let a
@@ -6039,7 +6144,7 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'web/js/aca-pending.js',
     find: `      if (claimedKeys && key && claimedKeys.has(key)) continue;`,
     replace: `      if (!process.env.MUTANT && claimedKeys && key && claimedKeys.has(key)) continue; // MUTATION`,
-    mustFail: 'a single matching session only ever satisfies ONE of two same-repo pending entries',
+    mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
   },
   {
     // Picking the EARLIEST eligible session (not merely "the first one found
@@ -6049,7 +6154,17 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'web/js/aca-pending.js',
     find: `      if (!best || startedAt < best.startedAt) best = { key, startedAt };`,
     replace: `      if (!best || (!process.env.MUTANT && startedAt < best.startedAt)) best = { key, startedAt }; // MUTATION`,
-    mustFail: 'acaPendingMatch picks the earliest-started eligible session, matching the oldest-dispatch-claims-first rule',
+    mustFail: 'acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule',
+  },
+  {
+    // #178's release-gate review, Gate 3: a completed-success Actions run
+    // with no attached device must eventually surface an honest "unknown
+    // outcome" rather than polling (and lying "Queued on ACA") forever.
+    name: 'acaPendingRowHtml stops bounding the completed-but-unattached wait',
+    file: 'web/js/aca-pending.js',
+    find: `  const waitExpired = !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS));`,
+    replace: `  const waitExpired = process.env.MUTANT ? false : !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS)); // MUTATION`,
+    mustFail: 'a completed-success row with no attach past the bounded wait reports an honest unknown outcome, not a lie about success',
   },
   {
     // hub-service.js's `/api/aca/repos` and `/api/aca/dispatches` 501s
@@ -6121,10 +6236,7 @@ if ($health.accessStore -ne 'durable') {`,
       <small id="acaRepoHint"></small>
     </label>
 
-    <!-- Shown once GET /api/aca/repos answers (issue #178, backend #177/#213).
-         Hidden by default so a hub with no GitHub App configured never shows a
-         form whose submit can only 501 -- see acaSetMode() in aca.js. -->
-    <div id="acaForm">`,
+    <fieldset class="field cnopts">`,
     replace: `    <!-- MUTATION (#178): acaRepo moved inside #acaForm -->
     <div id="acaForm">
       <label class="field">
@@ -6133,7 +6245,9 @@ if ($health.accessStore -ne 'durable') {`,
         <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
         <datalist id="acaRepoList"></datalist>
         <small id="acaRepoHint"></small>
-      </label>`,
+      </label>
+
+    <fieldset class="field cnopts">`,
     mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
   },
 ];

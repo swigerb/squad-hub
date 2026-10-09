@@ -38,7 +38,7 @@
 // their styling) and #173 (the new /js/device-detail.js split module). Either
 // alone would have been v9; both landing together need a fresh value so an
 // aeroplane device does not keep serving a stale copy of either change.
-const CACHE = 'squad-hub-shell-v10';
+const CACHE = 'squad-hub-shell-v11';
 
 /**
  * The shell. Everything here is a public static asset.

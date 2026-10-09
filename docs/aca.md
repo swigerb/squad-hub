@@ -250,15 +250,45 @@ or this same timer's next tick otherwise).
 
 Matching on repository alone is not enough: a hub user can have two
 dispatches queued on the same repository at once, or an unrelated/
-pre-existing `aca-` session can already be running against it. `aca-pending.js`'s
-`acaPendingMatch` therefore also requires that each candidate session started
-no earlier than its own dispatch (with a two-minute clock-drift allowance),
-excludes any session another pending row already claimed in the same pass,
-and — when more than one session still qualifies — prefers the
-earliest-started one, mirroring `DispatchTracker`'s own oldest-dispatch-
-claims-first binding order server-side. Two same-repo dispatches, or a
-same-repo dispatch alongside an unrelated pre-existing device, each resolve
-to their own session rather than one consuming the other's row.
+pre-existing `aca-` session can already be running against it. Timing is
+not proof either — a near-time coincidence does not mean two different runs
+are the same run. `aca-pending.js`'s `acaPendingMatch` therefore requires
+**authoritative identity**, not a guess: the server stores the dispatch's
+own `issue` number on its `DispatchTracker` record at dispatch time, and the
+dispatching browser's row remembers that exact record's own `id` (returned
+to the caller as `trackerId` in the `POST /api/aca/dispatch` response). A
+candidate `aca-` device only ever matches a pending row if the device's own
+reported `meta.repo`/`meta.issue` (see [`device-meta.js`](../src/device-meta.js))
+matches that row's `repo`/`issue` **exactly** — never merely "the newest
+session on this repository" or "started after the dispatch, within some
+clock-drift window". A device that omits `meta.issue` entirely (an
+older `squad-on-aca` worker that pre-dates this metadata) is proof of
+nothing and is never treated as a match; it will not auto-attach, and the
+row will eventually report "Unknown outcome" once its bounded wait expires
+(below) rather than silently guessing. When more than one still-eligible
+session genuinely ties on identity, `acaPendingMatch` excludes any session
+another pending row already claimed in the same pass, and prefers the
+earliest-started one as a tie-break, mirroring `DispatchTracker`'s own
+oldest-dispatch-claims-first binding order server-side. Two dispatches
+against the *same issue* (a re-run), a same-repo dispatch alongside an
+unrelated pre-existing device on a *different* issue, and two overlapping
+15-second polls racing each other, each resolve correctly rather than one
+consuming the other's row — see `test/aca-dispatch-dialog-unit.js` and
+`test/browser-e2e-unit.js` for the regression coverage of each case.
+
+The four steps shown — Dispatched, Lease claimed, Starting job, Attached —
+are evidence-honest, not merely decorative: GitHub Actions reaching
+`queued` or `in_progress` is real evidence the *workflow* is executing, but
+it is **not** evidence the ACA job itself claimed its dispatch lease or
+started — that only happens inside the job, which this hub cannot see until
+a device actually attaches. Only "Dispatched" (the POST that already
+succeeded) is ever marked done before an attach; "Lease claimed"/"Starting
+job" are shown merely as the in-flight current step, never asserted as
+proven. A run that reaches `completed`/`success` with no device ever
+attaching is the one outcome this hub genuinely cannot resolve on its own —
+rather than polling (and reading "Queued on ACA") forever, the row shows an
+honest **"Unknown outcome"** once `ACA_COMPLETED_WAIT_MS` (5 minutes) has
+elapsed since completion with still no attach.
 
 This tracking is **per browser tab and in-memory**, the same durability
 `DispatchTracker` itself documents server-side: reloading the page loses the
@@ -308,6 +338,20 @@ not exist yet (swigerb/squad-on-aca#135 is the matching work on the workflow
 side, open and not yet implemented, which is why only `issue` and `prompt` are
 sent until it lands).
 
+With no App configured, the dialog's Repository and Issue fields still work
+(they sit outside the disabled `#acaForm`, not inside it, specifically so the
+501 state does not take them down too): the caller can still pick or type a
+repository, and either open a **new** issue or point at an **existing** one —
+`acaIssueLink`/`acaNewIssueLink` branch on that choice so "Review existing
+issue" always opens the issue the caller actually selected, never silently
+falling back to the new-issue link regardless of mode. Below the disabled
+form, a read-only, selectable `#acaCmdPreview` shows the exact `/squad-aca`
+command (updated live as the Instructions field changes) the caller copies
+into a PR comment instead — the only direction available without the App —
+and "Copy command" reports success or failure honestly (via the same
+`copyToClipboard` helper the rest of the app uses) rather than assuming the
+clipboard write worked.
+
 **When registering the App on GitHub, set it to private ("Only on this
 account"), not public.** A public App can be installed by anyone who finds
 it; private keeps installation restricted to the account or organization
@@ -332,6 +376,16 @@ What it sends maps onto `squad-dispatch.yml`'s `workflow_dispatch` inputs:
 | `publishPr` | `publish_pr` |
 | `reviewer` | `reviewer` |
 | `watchOnly` | `watch_only` |
+
+`reviewer`, despite the name, is **not a GitHub username** — it is validated
+against the same identifier shape Squad member ids use elsewhere in this hub
+(`REVIEWER_RE` in `src/aca-dispatch.js`), because `squad-dispatch.yml`'s own
+`reviewer` input is forwarded to the ACA job as the Squad member id its
+`squad.agent.md`-driven review step should address, not a GitHub account to
+`@mention`. Supplying an actual GitHub username that happens to match the
+identifier shape is accepted by the regex (the two namespaces can overlap),
+but the field's contract is the Squad member id; it is on the caller to
+supply the right one.
 
 Only fields actually supplied are sent, and only when the target repository's
 own `squad-dispatch.yml` declares that input. GitHub's `workflow_dispatch` API
