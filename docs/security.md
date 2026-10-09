@@ -547,49 +547,130 @@ show what NOT to run:**
 node -e "console.log(JSON.stringify(require('./src/service/web-push.js').generateVapidKeys()))"
 ```
 
-**The reviewed procedure instead keeps the private half off stdout, off
-disk, and off the process argument list, by handing it to the OS clipboard
-from inside the same Node process that generated it:**
+**A clipboard is not memory-only either, and the reviewed procedure no
+longer uses one.** An earlier revision of this doc recommended handing the
+private half to `pbcopy`/`xclip`/`clip`, then pasting it into the protected
+setting. That still leaks: a system clipboard is commonly synced to other
+signed-in devices, kept in a clipboard *history* application (several ship
+enabled by default on both desktop and mobile), and readable by any other
+app with clipboard-read permission while it sits there — and overwriting or
+"clearing" the current clipboard entry does **not** erase it from that
+history. No production key was ever exposed through this — these are held
+docs, not an incident — but "paste it in somewhere, then clear the
+clipboard" is not actually memory-only, so this section no longer
+recommends it.
+
+**The reviewed procedure instead captures the generated pair only in this
+one process's memory, and hands the private half directly to the protected
+settings store's own API over HTTPS — never to stdout, a file, a
+command-line argument, or the clipboard:**
 
 ```bash
 node -e "
 const { generateVapidKeys } = require('./src/service/web-push.js');
-const { execFileSync } = require('child_process');
-const { publicKey, privateKey } = generateVapidKeys();
+const https = require('https');
 
-// The private half goes to the clipboard over stdin -- never printed to
-// this terminal, never a command-line argument (so it never shows up in
-// `ps`/`/proc`/shell history), never written to a file. Swap the clipboard
-// command for your platform; see the table below.
-execFileSync('pbcopy', [], { input: privateKey });
+// The resource path and an access token come from this shell's environment
+// -- set them before running this, never as command-line arguments.
+// Neither is the VAPID private key, so env is fine for them:
+//   az account get-access-token --query accessToken -o tsv
+const resourcePath = process.env.APP_SERVICE_SETTINGS_PATH; // .../config/appsettings
+const token = process.env.AZ_ACCESS_TOKEN;
+if (!resourcePath || !token) {
+  console.error('Set APP_SERVICE_SETTINGS_PATH and AZ_ACCESS_TOKEN first.');
+  process.exit(1);
+}
 
-// The public half is not a secret (every subscribing browser is handed it
-// as applicationServerKey), so it is fine to print for pairing.
-console.log('Public key (not secret) -- paste it alongside the private key:');
-console.log(publicKey);
-console.log('Private key is now on the clipboard. Paste it into the');
-console.log('protected setting NOW, then clear the clipboard (see below).');
+function settingsRequest(method, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : undefined;
+    const req = https.request({
+      hostname: 'management.azure.com',
+      path: resourcePath + '?api-version=2022-03-01',
+      method,
+      headers: Object.assign(
+        { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        payload ? { 'Content-Length': Buffer.byteLength(payload) } : {},
+      ),
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data ? JSON.parse(data) : {} }));
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+(async () => {
+  // 1. FIRST inspect the existing pair. Never generate or replace blind.
+  const current = await settingsRequest('GET');
+  if (current.status !== 200) {
+    console.error('Refusing: could not read the current settings (HTTP ' + current.status + '). Fix access before generating anything.');
+    process.exit(1);
+  }
+  const existing = current.body.properties || {};
+  const hasPublic = Boolean(existing.SQUAD_HUB_VAPID_PUBLIC_KEY);
+  const hasPrivate = Boolean(existing.SQUAD_HUB_VAPID_PRIVATE_KEY);
+  if (hasPublic && hasPrivate) {
+    console.error('Refusing: a VAPID key pair is already configured. This procedure is initial setup only -- see Explicit rotation below for how to replace an existing pair deliberately; it is never run again just to get a fresh one.');
+    process.exit(1);
+  }
+  if (hasPublic !== hasPrivate) {
+    console.error('Refusing: only one half of a VAPID pair is currently set. Fix that by hand -- re-enter the missing half from wherever the original pair is backed up -- never by silently generating a replacement for just the missing half.');
+    process.exit(1);
+  }
+
+  // 2. Generate the new pair. It lives only in this process's memory from
+  // here on -- never assigned anywhere it could be printed or written.
+  const { publicKey, privateKey } = generateVapidKeys();
+
+  // 3. The settings API replaces the whole settings object, it does not
+  // merge -- so every pre-existing setting is carried forward unchanged,
+  // and only the two VAPID keys are added.
+  const merged = Object.assign({}, existing, {
+    SQUAD_HUB_VAPID_PUBLIC_KEY: publicKey,
+    SQUAD_HUB_VAPID_PRIVATE_KEY: privateKey,
+  });
+  const write = await settingsRequest('PUT', { properties: merged });
+  if (write.status !== 200) {
+    console.error('Refusing to confirm success: the settings API returned HTTP ' + write.status + '. Do not treat this pair as deployed.');
+    process.exit(1);
+  }
+
+  // 4. Read back and validate. Only the public half is ever safe to print
+  // or compare this way -- the private half is never read back, logged, or
+  // compared outside the process that just wrote it.
+  const readback = await settingsRequest('GET');
+  const storedPublic = (readback.body.properties || {}).SQUAD_HUB_VAPID_PUBLIC_KEY;
+  if (storedPublic !== publicKey) {
+    console.error('MISMATCH -- the stored public key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }
+  console.log('Pair stored and verified. Public key (not secret):');
+  console.log(publicKey);
+  console.log(Object.keys(existing).length + ' pre-existing setting(s) preserved unchanged.');
+})();
 "
 ```
 
-| Platform | Clipboard command | Clear the clipboard afterward |
-|---|---|---|
-| macOS | `pbcopy` | `pbcopy </dev/null` |
-| Linux (X11) | `xclip -selection clipboard` or `xsel --clipboard --input` | `printf '' \| xclip -selection clipboard` |
-| Windows (PowerShell) | `clip` | `Set-Clipboard -Value ''` |
-| No clipboard available (headless) | Use your secret store's own stdin-based `set` command if it has one; otherwise run this from an interactive session on a trusted machine you control, never over a connection whose output is logged | n/a |
-
-- Paste both values straight into the deployment's protected App Service
-  settings (or equivalent secret store) — never into a shell history file,
-  a committed file, a chat message, an issue/PR body, or a workflow log.
-  `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout` that is
-  captured anywhere durable, nor in any CI step's output, nor as a bare
-  command-line argument.
-- Set both settings together, from the same generation, and save them
-  together. **Refuse to replace only one half of an existing pair** — a
-  public key paired with a private key from a different generation is a
-  new, different, untested pair, not a smaller edit; see "no automatic
-  mismatch guarantee" below for why that is not caught for you.
+- This procedure is **initial setup only** — run deliberately, once, by an
+  operator from an interactive session on a trusted machine. It is never
+  invoked by a worker, never run automatically on redeploy or at hub
+  startup, and never touches a running production pair that is already
+  configured: step 1's refusal is exactly what stops that from happening
+  by accident.
+- `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout`, a log
+  captured anywhere durable, a file, a bare command-line argument, or a
+  system clipboard — the script above only ever places it in the HTTPS
+  request body sent directly to the settings API.
+- **Refuse to replace only one half of an existing pair**, and refuse to
+  regenerate when a complete pair is already configured (both enforced by
+  the script's own first step) — a public key paired with a private key
+  from a different generation is a new, different, untested pair, not a
+  smaller edit; see "no automatic mismatch guarantee" below for why that is
+  not caught for you.
 - Production keys for this deployment are already configured, once, by the
   operator. **Never regenerate or rotate them from a worker, from this
   workflow, or at any startup path** — doing so would silently orphan every

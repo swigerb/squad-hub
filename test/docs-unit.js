@@ -337,12 +337,68 @@ check('security.md never recommends printing the VAPID private key to stdout', (
   assert.ok(idx !== -1, 'security.md no longer shows the risky command as a counter-example');
   const before = security.slice(Math.max(0, idx - 400), idx);
   assert.match(before, /DO NOT DO THIS/, 'the stdout-printing command must be framed as what NOT to run');
-  // The reviewed procedure's own code block must not call console.log on
-  // the private key -- it must only ever touch it via execFileSync's input.
-  const recommendedIdx = security.indexOf('execFileSync');
-  assert.ok(recommendedIdx !== -1, 'no clipboard-based transfer procedure found');
-  const recommendedBlock = security.slice(recommendedIdx, recommendedIdx + 600);
+  // The reviewed procedure's own code block must capture the pair in
+  // process memory and hand the private half straight to the settings
+  // store's own HTTPS API -- never log it.
+  const recommendedIdx = security.indexOf('function settingsRequest');
+  assert.ok(recommendedIdx !== -1, 'no direct settings-API transfer procedure found');
+  const recommendedBlock = security.slice(recommendedIdx, recommendedIdx + 3600);
   assert.ok(!/console\.log\([^)]*privateKey/.test(recommendedBlock), 'the recommended procedure must never log the private key');
+});
+
+// Scout review (follow-up to #244): a clipboard is not memory-only either --
+// a synced/history-tracking clipboard retains the private key even after the
+// current entry is overwritten or "cleared". No production key was ever
+// exposed through this; the docs are being corrected before any incident,
+// not after one. The recommended procedure must not use a clipboard command
+// at all, only the counter-example framing may mention clipboards (to
+// explain why one was removed).
+check('security.md no longer recommends a clipboard for VAPID private key transfer', () => {
+  const recommendedIdx = security.indexOf('function settingsRequest');
+  assert.ok(recommendedIdx !== -1, 'no direct settings-API transfer procedure found');
+  const recommendedBlock = security.slice(recommendedIdx, recommendedIdx + 3600);
+  for (const clipboardCmd of ['pbcopy', 'xclip', 'xsel', /\bclip\b/]) {
+    assert.ok(!recommendedBlock.match(clipboardCmd), `the recommended procedure must not use ${clipboardCmd} to transfer the private key`);
+  }
+  assert.match(security, /clipboard is not memory-only/, 'security.md must explain why a clipboard was rejected, not just silently drop it');
+});
+
+// Scout review (follow-up to #244): the recommended procedure must inspect
+// the existing pair before generating anything, and refuse rather than
+// silently overwrite -- both when a complete pair is already configured
+// (this is initial-setup only, never a redeploy/rotation shortcut) and when
+// only one half is present (never silently fill in a mismatched half).
+check('security.md\'s VAPID transfer procedure refuses to run when a complete pair is already configured', () => {
+  assert.match(security, /a VAPID key pair is already configured/, 'security.md must refuse when both halves are already set');
+  assert.match(security, /initial setup only/, 'security.md must say this procedure is initial-setup only, not a redeploy/rotation path');
+});
+
+check('security.md\'s VAPID transfer procedure refuses to run when only one half of the pair is configured', () => {
+  assert.match(security, /only one half of a VAPID pair is currently set/, 'security.md must refuse an incomplete pair rather than silently generating the missing half');
+});
+
+// Scout review (follow-up to #244): the settings API replaces the entire
+// settings object rather than merging, so the recommended script must
+// explicitly carry every pre-existing setting forward -- otherwise following
+// this doc would silently delete every other App Service setting.
+check('security.md\'s VAPID transfer procedure preserves every other existing setting', () => {
+  const recommendedIdx = security.indexOf('function settingsRequest');
+  assert.ok(recommendedIdx !== -1, 'no direct settings-API transfer procedure found');
+  const recommendedBlock = security.slice(recommendedIdx, recommendedIdx + 3600);
+  assert.match(recommendedBlock, /Object\.assign\(\{\}, existing,/, 'the recommended script must merge the new VAPID keys into the existing settings, not replace them');
+  assert.match(recommendedBlock, /preserved unchanged/, 'the recommended script must confirm pre-existing settings were preserved');
+});
+
+// Scout review (follow-up to #244): after writing the new pair, the
+// procedure must read it back and compare, and give an explicit, safe error
+// -- never a silent success -- on any failure (unreadable settings, a
+// failed write, or a stored public key that does not match what was sent).
+check('security.md\'s VAPID transfer procedure reads back and validates the stored public key, with explicit safe errors', () => {
+  const recommendedIdx = security.indexOf('function settingsRequest');
+  assert.ok(recommendedIdx !== -1, 'no direct settings-API transfer procedure found');
+  const recommendedBlock = security.slice(recommendedIdx, recommendedIdx + 3600);
+  assert.match(recommendedBlock, /MISMATCH/, 'the recommended script must detect and report a stored public key that does not match what was generated');
+  assert.match(recommendedBlock, /console\.error\('Refusing/, 'the recommended script must give an explicit refusal message, not fail silently');
 });
 
 // PR #244 review: security.md claimed /api/me's push.publicKey is derived
