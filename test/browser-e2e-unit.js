@@ -2312,6 +2312,49 @@ async function watchCsp(pg) {
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
+    // Evidence capture for CI: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.
+    await check('the session detail page renders and is captured at desktop and phone widths, dark and light', async () => {
+      const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
+      if (!outDir) { assert.ok(true); return; }
+      assert.ok(fs.statSync(outDir).isDirectory(), `SQUAD_HUB_SCREENSHOT_DIR is not a directory: ${outDir}`);
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const shots = [
+        { width: 1280, height: 900, scheme: 'dark', file: 'detail-desktop-dark.png' },
+        { width: 1280, height: 900, scheme: 'light', file: 'detail-desktop-light.png' },
+        { width: 390, height: 844, scheme: 'dark', file: 'detail-phone-390-dark.png' },
+        { width: 390, height: 844, scheme: 'light', file: 'detail-phone-390-light.png' },
+      ];
+      try {
+        for (const shot of shots) {
+          await page.setViewportSize({ width: shot.width, height: shot.height });
+          await page.emulateMedia({ colorScheme: shot.scheme });
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+          const state = await page.evaluate(() => {
+            const shown = (id) => { const el = document.getElementById(id); return !!el && el.offsetParent !== null; };
+            return {
+              signin: !!document.querySelector('.signin'),
+              title: shown('dtTitle'),
+              rename: shown('dtRename'),
+              more: shown('dtMoreBtn'),
+              back: shown('dtBackPhone'),
+              titleText: (document.getElementById('dtTitle') || {}).textContent || '',
+            };
+          });
+          assert.strictEqual(state.signin, false, `${shot.file}: the sign-in page is showing, not the session detail`);
+          assert.ok(state.title && state.titleText.trim(), `${shot.file}: the detail title is not visible`);
+          assert.ok(state.rename, `${shot.file}: the rename pencil is not visible`);
+          assert.ok(state.more, `${shot.file}: the More actions button is not visible`);
+          if (shot.width <= 900) assert.ok(state.back, `${shot.file}: the phone back arrow is not visible`);
+          await page.screenshot({ path: path.join(outDir, shot.file) });
+          assert.ok(fs.statSync(path.join(outDir, shot.file)).size > 0, `${shot.file} was written empty`);
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
     await check('under 900px, the sidebar is hidden and the phone back arrow takes its place', async () => {
       await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
       await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });

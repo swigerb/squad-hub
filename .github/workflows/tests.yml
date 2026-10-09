@@ -56,7 +56,14 @@ jobs:
           npm install --no-save --no-audit --no-fund playwright
           npx playwright install --with-deps chromium
 
+      - name: Create the screenshot directory
+        run: mkdir -p "${{ runner.temp }}/screenshots"
+
       - name: Run the test suite
+        env:
+          # Makes test/browser-e2e-unit.js capture the session detail page
+          # (dark/light, desktop/phone) for issue #181's visual evidence.
+          SQUAD_HUB_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
         run: |
           set -o pipefail
           rc=0
