@@ -1409,6 +1409,19 @@ import { syncSession } from './js/detail-control.js';`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
   },
   {
+    name: 'Escape falls through from the row menu and also closes detail',
+    file: 'web/js/wiring.js',
+    find: `  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return true;
+  }`,
+    replace: `  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return process.env.MUTANT ? false : true; // MUTATION
+  }`,
+    mustFail: 'Escape closes the detail header row menu first, returns focus, and only the next Escape closes detail',
+  },
+  {
     name: 'a transient Windows file lock is not retried',
     file: 'src/service/device-token-store.js',
     find: `      if (!retryable.has(e.code) || attempt >= 7) throw e;`,

@@ -2165,7 +2165,9 @@ async function watchCsp(pg) {
         // closing and reopening a session performs.
         await page.click('#dtBack');
         await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
-        await page.click(`[data-session="${CSS.escape(firstSessionKey)}"]`);
+        await page.evaluate((key) => {
+          document.querySelector(`[data-session="${CSS.escape(key)}"]`).click();
+        }, firstSessionKey);
         await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
         await until(async () => ((await page.textContent('#dtControlLabel')) === 'Checking control…' ? true : null),
           'the reopened session to start a fresh control check');

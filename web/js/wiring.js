@@ -97,6 +97,40 @@ function togglePopup(menuId, btnId, force) {
   if (open && menuId === 'inboxMenu') renderInboxMenu();
 }
 
+function closeFilterBar() {
+  $('filterbarEnd').classList.remove('open');
+  $('filterToggle').setAttribute('aria-expanded', 'false');
+}
+
+/** Dismiss one Escape target at a time, topmost first, before the detail page itself. */
+export function dismissTopmostEscapeTarget() {
+  for (const id of ['approvalScrim', 'newScrim']) {
+    if (!$(id).hidden) {
+      $(id).hidden = true;
+      return true;
+    }
+  }
+  if (!$('menu').hidden) {
+    toggleMenu(false);
+    return true;
+  }
+  for (const [menuId, btnId] of Object.entries(POPUP_BUTTON)) {
+    if (!$(menuId).hidden) {
+      togglePopup(menuId, btnId, false);
+      return true;
+    }
+  }
+  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return true;
+  }
+  if ($('filterbarEnd').classList.contains('open')) {
+    closeFilterBar();
+    return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // The per-row ⋯ menu (#170): one shared, floating `<nav id="rowMenu">`,
 // repositioned per click -- the mockup's own approach, rather than one
@@ -476,10 +510,7 @@ export function wire() {
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
     if (!$('rowMenu').hidden && !e.target.closest('#rowMenu') && !e.target.closest('[data-more]')) closeRowMenu();
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
-    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
-      $('filterbarEnd').classList.remove('open');
-      $('filterToggle').setAttribute('aria-expanded', 'false');
-    }
+    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) closeFilterBar();
   });
 
   wireInstall();
@@ -544,13 +575,6 @@ export function wire() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    toggleMenu(false);
-    togglePopup('newMenu', 'newMoreBtn', false);
-    togglePopup('tidyMenu', 'tidyBtn', false);
-    closeRowMenu({ restoreFocus: true });
-    $('filterbarEnd').classList.remove('open');
-    $('filterToggle').setAttribute('aria-expanded', 'false');
-    for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;
-    if (!$('detailScrim').hidden) closeDetail();
+    if (!dismissTopmostEscapeTarget() && !$('detailScrim').hidden) closeDetail();
   });
 }
