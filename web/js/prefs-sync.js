@@ -62,10 +62,25 @@ let hydrated = false;
  * hydration's merge ran. Cleared the instant hydration consumes it; re-added
  * before then simply removes its own tombstone (see `toggleFavorite`). */
 let pendingPinRemovals = new Set();
+/** Keys explicitly (re-)favorited before hydration. Tracked separately from
+ * `state.favorites` itself (see Scout's latest review, below) because once a
+ * client HAS migrated, `loadPrefs()` must treat the server as the
+ * authoritative baseline and overlay only edits that actually happened
+ * during this gap -- not the client's entire cached set, which may be stale
+ * (a pin this client still has cached could have been unpinned on another
+ * device since this browser's last sync). This set is how an explicit add
+ * during the gap is told apart from "this was already in the stale cache". */
+let pendingPinAdds = new Set();
 /** Same tombstone, for a name explicitly cleared (renamed to blank) before
  * hydration -- an object spread has the identical blind spot a Set union
  * does: it can overwrite a key, never delete one the client no longer has. */
 let pendingNameClears = new Set();
+/** key -> name, for a name explicitly SET (renamed to a non-blank value)
+ * before hydration. Same reasoning as `pendingPinAdds`: once migrated, only
+ * an explicit rename during the gap should override the server's copy of
+ * that key -- not whatever this client's stale local cache happens to hold
+ * for every OTHER key too. */
+let pendingNameSets = new Map();
 /** A view change (scope/filters/groupBy/sortBy) landed before hydration. That
  * edit is newer than whatever the server has saved, so hydration must keep
  * it rather than overwrite it with the server's (older) saved view -- the
@@ -184,14 +199,33 @@ function schedulePullRetry() {
  * is retried as another `GET` (never as a write -- see `schedulePullRetry`
  * above) until one succeeds.
  *
- * Every field is merged, never just replaced and never just kept: the base
- * is whatever the server actually has, with this client's own tombstones
- * (explicit removals/clears from before hydration) applied, then unioned
- * with whatever is live in `state` right now -- which already holds every
- * local add/rename/re-add, whether it happened before this call or raced it.
- * That union is also exactly what the old pre-#170 "first sync ever, nothing
- * server-side yet" migration needed, so there is only one merge rule now,
- * not a separate one for first-sync and every pull after it. */
+ * Every field is merged, never just replaced and never just kept -- but HOW
+ * it is merged depends on whether this client has synced before (Scout's
+ * latest review, below):
+ *
+ *   - Already migrated: the server is the AUTHORITATIVE baseline. Only
+ *     explicit pending edits from THIS hydration gap (an add/removal/rename/
+ *     clear this call's own tombstones/sets recorded) are overlaid on top.
+ *     A plain union with whatever this client's `state.favorites`/
+ *     `state.names` happen to hold right now would also drag in every
+ *     OTHER, untouched, entry from this client's local cache -- which can be
+ *     stale. A pin unpinned, or a name renamed or cleared, on a second
+ *     device since this browser's last sync is exactly what the server's
+ *     fresh `GET` is reporting; spreading the stale local cache back in on
+ *     top of it would resurrect the unpin or mask the rename/clear, on a
+ *     client that itself made NO edits at all this load. That failure mode
+ *     is silent -- it never touches the network, never fails a request, it
+ *     just quietly un-does another device's change the next time this one
+ *     happens to reload.
+ *   - Never migrated (first sync ever): there is no "stale cache" risk,
+ *     because the server has nothing of its own to be stale against -- this
+ *     is the pre-#166 localStorage-only client reaching `/api/prefs` for the
+ *     very first time. So this ONE case keeps the old union: whatever this
+ *     browser already has (local-only pins/names/renames the server has
+ *     never seen) is merged with whatever the server has (ordinarily
+ *     nothing, in practice). This is also why it stays a one-time path: the
+ *     migrated flag flips to `'1'` right after, so no later pull ever takes
+ *     this branch again for this browser. */
 export async function loadPrefs() {
   let server;
   try {
@@ -204,13 +238,25 @@ export async function loadPrefs() {
 
   const migrated = localStorage.getItem(PREFS_MIGRATED_KEY) === '1';
 
-  const basePins = new Set(server.pins || []);
-  for (const k of pendingPinRemovals) basePins.delete(k);
-  state.favorites = new Set([...basePins, ...state.favorites]);
+  if (migrated) {
+    const favorites = new Set(server.pins || []);
+    for (const k of pendingPinRemovals) favorites.delete(k);
+    for (const k of pendingPinAdds) favorites.add(k);
+    state.favorites = favorites;
 
-  const baseNames = { ...(server.names || {}) };
-  for (const k of pendingNameClears) delete baseNames[k];
-  state.names = { ...baseNames, ...state.names };
+    const names = { ...(server.names || {}) };
+    for (const k of pendingNameClears) delete names[k];
+    for (const [k, v] of pendingNameSets) names[k] = v;
+    state.names = names;
+  } else {
+    const basePins = new Set(server.pins || []);
+    for (const k of pendingPinRemovals) basePins.delete(k);
+    state.favorites = new Set([...basePins, ...state.favorites]);
+
+    const baseNames = { ...(server.names || {}) };
+    for (const k of pendingNameClears) delete baseNames[k];
+    state.names = { ...baseNames, ...state.names };
+  }
 
   saveFavorites();
   saveNames();
@@ -231,10 +277,13 @@ export async function loadPrefs() {
   }
 
   hydrated = true;
-  const hadPendingEdits = pendingPinRemovals.size > 0 || pendingNameClears.size > 0
+  const hadPendingEdits = pendingPinRemovals.size > 0 || pendingPinAdds.size > 0
+    || pendingNameClears.size > 0 || pendingNameSets.size > 0
     || pendingViewChanged || prefsDirty;
   pendingPinRemovals = new Set();
+  pendingPinAdds = new Set();
   pendingNameClears = new Set();
+  pendingNameSets = new Map();
   pendingViewChanged = false;
   // First sync ever always writes the reconciled record back (there may be
   // local-only pins/names the server has never seen); afterward, only an
@@ -248,10 +297,10 @@ export function toggleFavorite(key) {
   if (!key) return;
   if (state.favorites.has(key)) {
     state.favorites.delete(key);
-    if (!hydrated) pendingPinRemovals.add(key);
+    if (!hydrated) { pendingPinRemovals.add(key); pendingPinAdds.delete(key); }
   } else {
     state.favorites.add(key);
-    if (!hydrated) pendingPinRemovals.delete(key); // re-adding cancels its own tombstone
+    if (!hydrated) { pendingPinAdds.add(key); pendingPinRemovals.delete(key); } // re-adding cancels its own removal tombstone
   }
   saveFavorites();
   pushPrefs('pins');
@@ -265,10 +314,10 @@ export function renameSession(key, name) {
   const trimmed = String(name == null ? '' : name).trim();
   if (trimmed) {
     state.names[key] = trimmed;
-    if (!hydrated) pendingNameClears.delete(key); // re-set cancels its own tombstone
+    if (!hydrated) { pendingNameSets.set(key, trimmed); pendingNameClears.delete(key); } // re-set cancels its own clear tombstone
   } else {
     delete state.names[key];
-    if (!hydrated) pendingNameClears.add(key);
+    if (!hydrated) { pendingNameClears.add(key); pendingNameSets.delete(key); }
   }
   saveNames();
   pushPrefs('names');

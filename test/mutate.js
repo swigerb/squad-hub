@@ -3006,7 +3006,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v12';`,
+    find: `const CACHE = 'squad-hub-shell-v13';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6046,8 +6046,8 @@ if ($health.accessStore -ne 'durable') {`,
     // resolution -- the pull started reading before the edit happened.
     name: 'a dirty GET/PUT race loses the local edit again (#236 finding 3)',
     file: 'web/js/prefs-sync.js',
-    find: `  state.favorites = new Set([...basePins, ...state.favorites]);`,
-    replace: `  state.favorites = basePins; // MUTATION (drops any local edit that raced this pull)`,
+    find: `    for (const k of pendingPinAdds) favorites.add(k);`,
+    replace: `    // MUTATION (drops any pin added during the hydration gap)`,
     mustFail: 'a pin added while the pull is still in flight survives that pull’s resolution',
   },
   {
@@ -6057,16 +6057,16 @@ if ($health.accessStore -ne 'durable') {`,
     // pin resurrects it the instant hydration's merge runs.
     name: 'a pin removed before hydration is resurrected by the server\u2019s older copy again (outbox-order 1a)',
     file: 'web/js/prefs-sync.js',
-    find: `  for (const k of pendingPinRemovals) basePins.delete(k);`,
-    replace: `  // MUTATION (ignores the removal tombstone)`,
+    find: `    for (const k of pendingPinRemovals) favorites.delete(k);`,
+    replace: `    // MUTATION (ignores the removal tombstone)`,
     mustFail: 'a pin REMOVED before hydration is not resurrected by the server’s older (nonempty) copy of it',
   },
   {
     // Same schedule, for a cleared name instead of a removed pin.
     name: 'a name cleared before hydration is resurrected by the server\u2019s older copy again (outbox-order 1b)',
     file: 'web/js/prefs-sync.js',
-    find: `  for (const k of pendingNameClears) delete baseNames[k];`,
-    replace: `  // MUTATION (ignores the clear tombstone)`,
+    find: `    for (const k of pendingNameClears) delete names[k];`,
+    replace: `    // MUTATION (ignores the clear tombstone)`,
     mustFail: 'a name CLEARED before hydration is not resurrected by the server’s older (nonempty) copy of it',
   },
   {
@@ -6105,6 +6105,37 @@ if ($health.accessStore -ne 'durable') {`,
     find: `    if (writePending) { writePending = false; queuePush(); } // don't wait out the timer if there is already more to send`,
     replace: `    // MUTATION (later edit now waits for the 15s retry timer instead)`,
     mustFail: 'an edit that lands WHILE an earlier write is still failing is coalesced into an immediate retry, not dropped until the 15s timer',
+  },
+  {
+    // Scout's cache-versus-edits review of 476d2d1: once migrated, the
+    // server is the authoritative baseline -- spreading this client's own
+    // (possibly stale) cached pins back on top resurrects a pin unpinned on
+    // another device, even though THIS client made no edit at all.
+    name: 'a migrated client resurrects a remote unpin via its own stale local cache again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    state.favorites = favorites;`,
+    replace: `    state.favorites = new Set([...favorites, ...state.favorites]); // MUTATION (resurrects this client's stale cached pins)`,
+    mustFail: 'an already-migrated client with no local edits adopts a remote UNPIN, not its own stale cached pin',
+  },
+  {
+    // Same bug, for names: a plain spread of the stale local cache on top of
+    // the server's names masks a remote rename or clear.
+    name: 'a migrated client masks a remote rename/clear via its own stale local cache again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    state.names = names;`,
+    replace: `    state.names = { ...names, ...state.names }; // MUTATION (resurrects this client's stale cached names)`,
+    mustFail: 'an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name',
+  },
+  {
+    // An explicit NAME SET during the hydration gap must still reach the
+    // merged state once the migrated-authoritative-baseline branch is the
+    // one actually taken (NOT the legacy first-sync union branch, which the
+    // old "outbox-order" anchor pointed at before this review).
+    name: 'an explicit name set during the hydration gap is dropped against a nonempty remote record again (cache-vs-edits review of 476d2d1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    for (const [k, v] of pendingNameSets) names[k] = v;`,
+    replace: `    // MUTATION (drops any name explicitly set during the hydration gap)`,
+    mustFail: 'an explicit name SET during the hydration gap merges with a nonempty remote record, without resurrecting a stale unrelated name',
   },
   {
     // PR #236 review, finding 4: `copyToClipboard` never throws -- it

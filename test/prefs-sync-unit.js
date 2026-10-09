@@ -453,6 +453,132 @@ await checkAsync('an edit that lands WHILE an earlier write is still failing is 
   });
 });
 
+// ---------------------------------------------------------------------------
+// 5. Scout's cache-versus-edits review of 476d2d1: once a client has
+//    migrated, a plain union of "server pins/names" with "whatever this
+//    client's local cache currently holds" can only ever ADD a field back --
+//    it has no way to represent a pin unpinned, or a name renamed or
+//    cleared, on ANOTHER device since this browser's last sync. Spreading
+//    the whole stale cache back in on every pull resurrects the remote
+//    unpin or masks the remote rename/clear, even on a client that itself
+//    made NO edits this load. `loadPrefs()` must instead treat the server as
+//    the authoritative baseline once migrated, and overlay only explicit
+//    pending edits from this hydration gap -- never the untouched rest of
+//    the local cache. The legacy whole-cache union stays, but ONLY for the
+//    very first sync ever (there is nothing server-side yet to be stale
+//    against).
+// ---------------------------------------------------------------------------
+
+await checkAsync('an already-migrated client with no local edits adopts a remote UNPIN, not its own stale cached pin', async () => {
+  const fetchImpl = queueFetch([
+    { body: { pins: ['dev-a:s2', 'dev-b:other'], names: {}, view: null } }, // dev-a:s1 was unpinned remotely
+  ]);
+  const storage = fakeStorage();
+  storage.setItem('squad-hub-prefs-migrated', '1');
+  storage.setItem('squad-hub-favorites', JSON.stringify(['dev-a:s1', 'dev-a:s2']));
+  const { loadPrefs, state } = loadModule({ fetchImpl, storage });
+  state.favorites = new Set(['dev-a:s1', 'dev-a:s2']); // this browser's stale cache, loaded before the pull
+
+  await loadPrefs();
+
+  assert.ok(!state.favorites.has('dev-a:s1'),
+    'a remote unpin must be adopted, not masked by this client\u2019s own stale cached copy of the pin');
+  assert.ok(state.favorites.has('dev-a:s2'), 'a pin still on the server must survive');
+  assert.ok(state.favorites.has('dev-b:other'), 'an untouched remote-only pin must survive');
+  assert.strictEqual(fetchImpl.calls.length, 1,
+    'nothing was pending, so a migrated client must not re-upload a stale PUT nobody asked for');
+});
+
+await checkAsync('an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name', async () => {
+  const fetchImpl = queueFetch([
+    { body: { pins: [], names: { 'dev-a:s1': 'New Name' }, view: null } }, // renamed remotely
+  ]);
+  const storage = fakeStorage();
+  storage.setItem('squad-hub-prefs-migrated', '1');
+  const { loadPrefs, state } = loadModule({ fetchImpl, storage });
+  state.names = { 'dev-a:s1': 'Old Cached Name' }; // this browser's stale cache, loaded before the pull
+
+  await loadPrefs();
+
+  assert.strictEqual(state.names['dev-a:s1'], 'New Name',
+    'a remote rename must be adopted, not masked by this client\u2019s own stale cached name');
+  assert.strictEqual(fetchImpl.calls.length, 1,
+    'nothing was pending, so a migrated client must not re-upload a stale PUT nobody asked for');
+});
+
+await checkAsync('an already-migrated client with no local edits adopts a remote CLEAR, not its own stale cached name', async () => {
+  const fetchImpl = queueFetch([
+    { body: { pins: [], names: {}, view: null } }, // the name was cleared remotely
+  ]);
+  const storage = fakeStorage();
+  storage.setItem('squad-hub-prefs-migrated', '1');
+  const { loadPrefs, state } = loadModule({ fetchImpl, storage });
+  state.names = { 'dev-a:s1': 'Stale Cached Name' };
+
+  await loadPrefs();
+
+  assert.ok(!('dev-a:s1' in state.names),
+    'a remote clear must be adopted, not masked by this client\u2019s own stale cached name');
+  assert.strictEqual(fetchImpl.calls.length, 1,
+    'nothing was pending, so a migrated client must not re-upload a stale PUT nobody asked for');
+});
+
+await checkAsync('an explicit pin ADDED during the hydration gap merges with a nonempty remote record, without resurrecting a stale unrelated pin', async () => {
+  let resolveGet;
+  const getPromise = new Promise((resolve) => { resolveGet = resolve; });
+  const fetchImpl = queueFetch([
+    () => getPromise,
+    { body: { ok: true } }, // the deferred push once hydration has a base to merge onto
+  ]);
+  const storage = fakeStorage();
+  storage.setItem('squad-hub-prefs-migrated', '1');
+  storage.setItem('squad-hub-favorites', JSON.stringify(['dev-a:s1', 'dev-a:s2']));
+  const { loadPrefs, toggleFavorite, state } = loadModule({ fetchImpl, storage });
+  state.favorites = new Set(['dev-a:s1', 'dev-a:s2']); // dev-a:s1 was unpinned remotely, stale in this cache
+
+  const pulling = loadPrefs();
+  await Promise.resolve(); await Promise.resolve();
+
+  toggleFavorite('dev-b:new'); // an explicit add during the hydration gap
+
+  resolveGet({ ok: true, status: 200, json: async () => ({ pins: ['dev-a:s2', 'dev-b:other'], names: {}, view: null }) });
+  await pulling;
+
+  assert.ok(state.favorites.has('dev-b:new'), 'the explicit add during the gap must reach the merged state');
+  assert.ok(state.favorites.has('dev-a:s2'), 'an untouched pin already on the server must survive');
+  assert.ok(state.favorites.has('dev-b:other'), 'an untouched remote-only pin must survive');
+  assert.ok(!state.favorites.has('dev-a:s1'),
+    'a stale cached pin this client did NOT explicitly re-add must not be resurrected alongside the real add');
+  assert.ok(fetchImpl.calls[1].body.pins.includes('dev-b:new'), 'the deferred push must carry the explicit add');
+  assert.ok(!fetchImpl.calls[1].body.pins.includes('dev-a:s1'), 'the deferred push must not resurrect the stale pin either');
+});
+
+await checkAsync('an explicit name SET during the hydration gap merges with a nonempty remote record, without resurrecting a stale unrelated name', async () => {
+  let resolveGet;
+  const getPromise = new Promise((resolve) => { resolveGet = resolve; });
+  const fetchImpl = queueFetch([
+    () => getPromise,
+    { body: { ok: true } },
+  ]);
+  const storage = fakeStorage();
+  storage.setItem('squad-hub-prefs-migrated', '1');
+  const { loadPrefs, renameSession, state } = loadModule({ fetchImpl, storage });
+  state.names = { 'dev-a:s1': 'Stale Cached Name', 'dev-a:s2': 'Still Current' };
+
+  const pulling = loadPrefs();
+  await Promise.resolve(); await Promise.resolve();
+
+  renameSession('dev-b:new', 'Fresh Name'); // an explicit rename during the hydration gap
+
+  resolveGet({ ok: true, status: 200, json: async () => ({ pins: [], names: { 'dev-a:s2': 'Still Current' }, view: null }) });
+  await pulling;
+
+  assert.strictEqual(state.names['dev-b:new'], 'Fresh Name', 'the explicit rename during the gap must reach the merged state');
+  assert.strictEqual(state.names['dev-a:s2'], 'Still Current', 'an untouched name already on the server must survive');
+  assert.ok(!('dev-a:s1' in state.names),
+    'a stale cached name this client did NOT explicitly re-set must not be resurrected alongside the real rename');
+});
+
 setTimeout(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
