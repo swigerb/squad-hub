@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-review-pr-247-33af479-final-contract",
+  "sessionId": "review-pr-247-33af479-final-contract",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T19:09:26.526Z",
+  "lastHeartbeatAt": "2026-10-09T19:09:26.526Z",
+  "updatedAt": "2026-10-09T19:09:26.526Z",
+  "terminalReason": null,
+  "executionRef": null
+}
