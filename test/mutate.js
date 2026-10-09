@@ -6217,9 +6217,27 @@ if ($health.accessStore -ne 'durable') {`,
     // dispatchedAt is actually closer.
     name: 'acaPendingMatch stops narrowing to the closest-preceding sibling entry (Bug B)',
     file: 'web/js/aca-match.js',
-    find: `        const otherEligible = others.filter((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS);`,
-    replace: `        const otherEligible = process.env.MUTANT ? [] : others.filter((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS); // MUTATION`,
+    find: `        const otherEligible = others.filter(precedes);`,
+    replace: `        const otherEligible = process.env.MUTANT ? [] : others.filter(precedes); // MUTATION`,
     mustFail: 'a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)',
+  },
+  {
+    // The Squad reviewer's confirmed regression on rule 2's original fix:
+    // `precedes` is the hard upper-bound exclusion that stops a sibling (or
+    // `entry` itself) whose own `dispatchedAt` happened MEANINGFULLY AFTER
+    // the candidate session's `startedAt` from ever winning this tie-break,
+    // regardless of how numerically close that `dispatchedAt` looks.
+    // Disabling just the `entry`-side half of this check (`!precedes(entry)`)
+    // reproduces the exact bug the reviewer found: a same-issue retry
+    // dispatched less than `ACA_START_TOLERANCE_MS` apart from an earlier
+    // one could claim a session that had already started before the retry
+    // was even dispatched -- stealing it from the earlier entry whose own
+    // job it genuinely was.
+    name: 'acaPendingMatch stops excluding entry when its own dispatch happened after the session already started',
+    file: 'web/js/aca-match.js',
+    find: `        if (!precedes(entry)) continue; // entry's own dispatch happened after this session already started -- not a plausible owner at all`,
+    replace: `        if (!process.env.MUTANT && !precedes(entry)) continue; // MUTATION`,
+    mustFail: 'a closely-spaced same-issue retry does not let the newer dispatch steal the older dispatch\'s own session (reviewer-found regression)',
   },
   {
     // A genuine tie between two siblings (neither is a strictly closer

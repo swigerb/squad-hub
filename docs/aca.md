@@ -287,14 +287,29 @@ guess, combining two independent proofs:
    When more than one still-pending entry shares the same repository and
    issue (a genuine retry), a session binds to whichever entry has the
    *closest preceding* `dispatchedAt` — not to whichever entry happened to
-   be checked first. This is what keeps two same-issue retries from being
-   able to swap with each other when their own jobs attach out of order:
-   repository and issue proof alone is identical for both of them by
-   construction, so only time ordering can tell a retry's own session apart
-   from its predecessor's. A session already claimed by another pending
-   entry (`claimedKeys`) is never claimed twice; a genuine ambiguity (two
-   sibling entries that tie exactly on "closest preceding") resolves to
-   *neither*, rather than fabricate a guess either way. See `aca-match.js`'s
+   be checked first. "Preceding" is a hard requirement here, not merely a
+   preference: a candidate entry whose own `dispatchedAt` is meaningfully
+   *after* the session's `startedAt` is excluded from this comparison
+   outright, no matter how numerically close that `dispatchedAt` looks —
+   it could not have produced a session that already existed before it was
+   even dispatched. (A confirmed regression here: reusing the same
+   generous clock-drift tolerance used for the check above to decide
+   "preceding" let a same-issue retry dispatched only a few seconds after
+   an earlier one win a session that had already started *before* the
+   retry was even dispatched, stealing it from the earlier entry whose own
+   job it genuinely was. The fix uses a much tighter tolerance for this
+   specific comparison, since every `dispatchedAt` being compared here
+   comes from this same process's own clock — no cross-process drift to
+   account for, unlike the entry-vs-session comparison above.) This is
+   what keeps two same-issue retries from being able to swap with each
+   other when their own jobs attach out of order, including when they are
+   dispatched close together: repository and issue proof alone is
+   identical for both of them by construction, so only time ordering can
+   tell a retry's own session apart from its predecessor's. A session
+   already claimed by another pending entry (`claimedKeys`) is never
+   claimed twice; a genuine ambiguity (two sibling entries that tie
+   exactly on "closest preceding") resolves to *neither*, rather than
+   fabricate a guess either way. See `aca-match.js`'s
    own doc comment above `acaPendingMatch` for the full worked-through
    scenarios, and `test/aca-dispatch-dialog-unit.js` /
    `test/browser-e2e-unit.js` for the regression coverage.

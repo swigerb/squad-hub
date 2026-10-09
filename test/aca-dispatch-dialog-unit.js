@@ -332,6 +332,59 @@ check('a single matching session only ever satisfies ONE of two repeated-same-is
     'a repeat dispatch on the same issue must not also consume the first dispatch\'s attached session');
 });
 
+check('a closely-spaced same-issue retry does not let the newer dispatch steal the older dispatch\'s own session (reviewer-found regression)', () => {
+  // The Squad reviewer's confirmed regression on rule 2's original
+  // "closest-preceding-wins" tie-break: that rule picked whichever
+  // same-issue sibling's `dispatchedAt` was numerically CLOSEST to (and
+  // still timing-eligible for) a candidate session's `startedAt`, with
+  // "timing-eligible" meaning only rule 1's own one-sided check
+  // (`session.startedAt >= sibling.dispatchedAt - ACA_START_TOLERANCE_MS`).
+  // That check has no upper bound -- it never required the sibling's own
+  // dispatch to have happened AT OR BEFORE the session started, only "not
+  // meaningfully before" it. So when two same-issue retries are dispatched
+  // less than `ACA_START_TOLERANCE_MS` (5s) apart -- a plausible
+  // impatient-retry/double-submit scenario, nothing prevents it -- a
+  // session that is genuinely the OLDER entry's own job (started shortly
+  // after the older entry's own dispatch, before the newer entry was even
+  // dispatched) could still be awarded to the NEWER entry, purely because
+  // the newer entry's `dispatchedAt` was numerically closer to the
+  // session's `startedAt`, even though the newer dispatch happened AFTER
+  // the session had already started.
+  //
+  // older dispatched at t=0; newer dispatched only 4s later (t=4000),
+  // still inside the 5s `ACA_START_TOLERANCE_MS` window. The one real
+  // session started at t=500 -- i.e. AFTER older's own dispatch, and
+  // BEFORE newer was even dispatched -- so it can only possibly be
+  // older's own job, never newer's.
+  const older = { repo: REPO, issue: 1, dispatchedAt: 0, attached: false };
+  const newer = { repo: REPO, issue: 1, dispatchedAt: 4000, attached: false };
+  const sessionOlder = { id: 'sessionOlder', startedAt: 500 };
+  const groupsPass1 = [acaGroup({
+    device: { meta: { repo: REPO, issue: 1 } },
+    sessions: [sessionOlder],
+  })];
+  const allPending = [older, newer];
+
+  const matchOlder = acaPendingMatch(older, groupsPass1, new Set(), allPending);
+  assert.strictEqual(matchOlder && matchOlder.key, 'sessionOlder',
+    'older is the only dispatch that precedes this session -- it must win it');
+  assert.strictEqual(acaPendingMatch(newer, groupsPass1, new Set(), allPending), null,
+    'newer\'s own dispatch happened AFTER sessionOlder already started -- it must never claim it, no matter how numerically close dispatchedAt looks');
+
+  // Once older has genuinely claimed sessionOlder, when newer's OWN real
+  // session later attaches, newer must resolve to that session, never
+  // re-claim older's -- proving the fix does not just suppress the match,
+  // it correctly re-routes newer to its actual job.
+  const claimedKeys = new Set(['sessionOlder']);
+  const sessionNewer = { id: 'sessionNewer', startedAt: 4500 }; // genuinely newer's own job
+  const groupsPass2 = [acaGroup({
+    device: { meta: { repo: REPO, issue: 1 } },
+    sessions: [sessionOlder, sessionNewer],
+  })];
+  const matchNewer = acaPendingMatch(newer, groupsPass2, claimedKeys, allPending);
+  assert.strictEqual(matchNewer && matchNewer.key, 'sessionNewer', 'newer must resolve to its OWN session, never re-claim older\'s');
+});
+
 check('a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)', () => {
   // The genuinely ambiguous case the brief's "leave unknown, do not
   // fabricate" instruction is actually about: two sibling entries whose
