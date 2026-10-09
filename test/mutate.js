@@ -5718,6 +5718,22 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'with no VAPID keys configured, the sender is disabled, not ephemeral',
   },
   {
+    // #240: a generated private scalar shorter than 32 bytes (Node drops its
+    // leading zero byte(s)) must be left-zero-padded back to the canonical
+    // 32-byte encoding before being handed out. Losing the padding reverts to
+    // the exact defect that broke #233's node18 run: a generated key the
+    // generator's OWN strict 32-byte validator then rejects.
+    name: 'a short (leading-zero) generated private scalar stops being zero-padded back to 32 bytes (#240)',
+    file: 'src/service/web-push.js',
+    find: `  const privateKey = rawPrivateKey.length === 32
+    ? rawPrivateKey
+    : Buffer.concat([Buffer.alloc(32 - rawPrivateKey.length, 0), rawPrivateKey]);`,
+    replace: `  const privateKey = process.env.MUTANT ? rawPrivateKey : (rawPrivateKey.length === 32
+    ? rawPrivateKey
+    : Buffer.concat([Buffer.alloc(32 - rawPrivateKey.length, 0), rawPrivateKey])); // MUTATION`,
+    mustFail: 'a generated private scalar with leading zero bytes is padded to exactly 32 bytes, imports, and signs with its matching public key (#240)',
+  },
+  {
     // The auth secret is what makes the ECDH secret alone insufficient to
     // decrypt -- folding it out of the HKDF-Extract input would make a
     // compromised push service (which only ever sees the ECDH exchange)

@@ -171,6 +171,67 @@ check('the VAPID audience is the push endpoint\'s own origin, not the hub\'s', (
   assert.strictEqual(payload.aud, 'https://push.example.invalid');
 });
 
+check('a generated private scalar with leading zero bytes is padded to exactly 32 bytes, imports, and signs with its matching public key (#240)', () => {
+  // Deterministic repro of #240: Node's `ecdh.getPrivateKey()` returns the
+  // scalar's MINIMAL big-endian encoding, dropping leading zero bytes -- so
+  // a scalar that happens to start with zero byte(s) comes back SHORTER
+  // than 32 bytes. Rather than wait on random generation to land on one
+  // (the coordinator needed 362 tries), force it: `scalar = 1` is as
+  // leading-zero as a P-256 scalar gets, and `setPrivateKey` computes the
+  // matching public point the same way `generateKeys` would.
+  const originalCreateECDH = crypto.createECDH;
+  crypto.createECDH = (curve) => {
+    const ecdh = originalCreateECDH(curve);
+    ecdh.generateKeys = () => {
+      ecdh.setPrivateKey(Buffer.concat([Buffer.alloc(31, 0), Buffer.from([0x01])]));
+      return ecdh.getPublicKey(null, 'uncompressed');
+    };
+    return ecdh;
+  };
+  let keys;
+  try {
+    keys = generateVapidKeys();
+  } finally {
+    crypto.createECDH = originalCreateECDH;
+  }
+
+  const privateKeyBuf = Buffer.from(keys.privateKey, 'base64url');
+  assert.strictEqual(privateKeyBuf.length, 32, 'the generated private scalar must be exactly 32 bytes, not the minimal encoding');
+  assert.strictEqual(privateKeyBuf.slice(0, 31).every((b) => b === 0), true, 'the padding must be the leading bytes, never a change to the scalar value');
+  assert.strictEqual(privateKeyBuf[31], 0x01, 'the scalar value itself must be unchanged by padding');
+
+  // Proves the padded key actually WORKS: imports without throwing, and
+  // signs a VAPID token that verifies against its OWN public key -- the
+  // exact two things the defective generator could silently break.
+  const priv = vapidPrivateKeyObject(keys.publicKey, keys.privateKey);
+  const header = vapidAuthorizationHeader({
+    endpoint: 'https://fcm.googleapis.com/fcm/send/xyz',
+    publicKey: keys.publicKey,
+    privateKeyObject: priv,
+    subject: 'mailto:ops@example.com',
+  });
+  const m = header.match(/^vapid t=([^,]+), k=(.+)$/);
+  assert.ok(m, `header did not match the vapid scheme: ${header}`);
+  const [, jwt, k] = m;
+  assert.strictEqual(k, keys.publicKey);
+  const [h, p, s] = jwt.split('.');
+  const pub = crypto.createPublicKey(priv);
+  const ok = crypto.verify('sha256', Buffer.from(`${h}.${p}`), { key: pub, dsaEncoding: 'ieee-p1363' }, Buffer.from(s, 'base64url'));
+  assert.strictEqual(ok, true, 'the signature from a padded, previously-short scalar does not verify against its own public key');
+});
+
+check('generateVapidKeys produces a 32-byte private scalar across many draws (supplemental stress, not the regression test for #240)', () => {
+  // Supplemental only: this is what originally needed 362 draws to catch the
+  // defect, so it proves nothing on its own run-to-run. The deterministic
+  // leading-zero test above is the actual regression coverage for #240; this
+  // loop stays as a secondary net against any other source of short output.
+  for (let i = 0; i < 200; i += 1) {
+    const keys = generateVapidKeys();
+    const buf = Buffer.from(keys.privateKey, 'base64url');
+    assert.strictEqual(buf.length, 32, `draw ${i}: expected a 32-byte private scalar, got ${buf.length}`);
+  }
+});
+
 check('a tampered JWT fails verification', () => {
   const keys = generateVapidKeys();
   const priv = vapidPrivateKeyObject(keys.publicKey, keys.privateKey);
