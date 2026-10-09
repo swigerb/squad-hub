@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-245-dispatch-provenance",
+  "sessionId": "hub-245-dispatch-provenance",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T12:47:48.320Z",
+  "lastHeartbeatAt": "2026-10-09T12:47:48.320Z",
+  "updatedAt": "2026-10-09T12:47:48.320Z",
+  "terminalReason": null,
+  "executionRef": null
+}
