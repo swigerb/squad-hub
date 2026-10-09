@@ -205,6 +205,43 @@ check('findWatcherDevice still matches the canonical convention when the role to
   assert.strictEqual(findWatcherDevice([d]), d);
 });
 
+// A fourth Scout review (#233): the mid-slug rejection above still scanned
+// EVERY token position looking for the "squad","aca",role run, anchoring
+// only on what followed it (a number or the end). An adversarial name can
+// supply that too -- a fabricated, revision-shaped numeric suffix tacked
+// onto an embedded match -- and the old scan accepted it. The real
+// convention only ever has the run starting the name outright, or starting
+// right after the literal "aca","ca" prefix; these two checks anchor to
+// those START positions instead of scanning the whole token list.
+check('findWatcherDevice rejects an embedded canonical run padded with a fabricated revision-shaped suffix, anchored to known job identity only (#233 fourth review)', () => {
+  // "squad","aca","watch" appears here too, followed by "0000016" -- a
+  // purely numeric token that looks exactly like a real Azure revision
+  // suffix -- but this name is an implementation session's own slug that
+  // merely embeds the run partway through, not the known job identity
+  // itself (which would start with "aca","ca" or be the bare run outright).
+  const d = acaDev({ name: 'aca-caj-squad-aca-session-repair-squad-aca-watch--0000016-x' });
+  assert.strictEqual(findWatcherDevice([d]), null);
+  assert.strictEqual(findRalphDevice([d]), null);
+});
+
+check('findRalphDevice rejects the same embedded-run-plus-fabricated-suffix pattern for the ralph role', () => {
+  const d = acaDev({ name: 'aca-caj-squad-aca-session-repair-squad-aca-ralph--0000031-y' });
+  assert.strictEqual(findRalphDevice([d]), null);
+  assert.strictEqual(findWatcherDevice([d]), null);
+});
+
+check('findWatcherDevice still requires the role token itself to be followed by nothing or a numeric revision, even at a known START position', () => {
+  // The run starts the name outright ("squad","aca","watch" at index 0, the
+  // bare form), so the START-position anchor alone is already satisfied --
+  // but it is followed by the plain word "extra", never a revision number
+  // and never the end of the name. The suffix anchor must still reject this
+  // independently of the start-position anchor, which this isolates from
+  // the mid-slug tests above (those are rejected by the START anchor before
+  // the suffix is ever checked).
+  const d = acaDev({ name: 'squad-aca-watch-extra' });
+  assert.strictEqual(findWatcherDevice([d]), null);
+});
+
 check('findWatcherDevice requires the literal "squad","aca" tokens immediately before the role word, not merely the role word somewhere', () => {
   // The role word alone, however well-anchored to the end of the name or a
   // numeric suffix, is not the established convention -- "squad" and "aca"

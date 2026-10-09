@@ -36,11 +36,12 @@ if (!chromium) {
   process.exit(0);
 }
 
-const { Authenticator, MODES, subjectKey } = require('../src/service/auth');
+const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { GitHubOAuth } = require('../src/service/github-oauth');
 const { GitHubApp } = require('../src/service/github-app');
 const { Daemon } = require('../src/daemon');
+const { HubLink } = require('../src/hub-link');
 const config = require('../src/config');
 const crypto = require('crypto');
 const http = require('http');
@@ -2308,6 +2309,23 @@ async function watchCsp(pg) {
     // still driven by real `store.registerDevice`/`heartbeat` calls and a
     // real rendered `#acaStatusCard`, only the App-connection half of the
     // phase is now real too.
+    //
+    // A THIRD Scout review on 35fdaaf found this check broken on real CI
+    // AGAIN, in a different way: it called `svcAca2.store.heartbeat(...)`
+    // directly to report the verified `approvalMode`/`lastSweepAt` facts.
+    // `store.heartbeat` only ever updates the STORE -- it is `HubService`'s
+    // own device-socket frame handler (`_fromDevice`'s `case 'heartbeat':`)
+    // that broadcasts the refreshed `{ type: 'overview', ... }` payload to
+    // every connected watcher (the browser page's own live socket) -- so a
+    // store-only call left the already-rendered card waiting on its next
+    // periodic poll to notice anything changed, and that poll is 15 seconds
+    // out while the `until()` below gave up after 10. Fixed by attaching two
+    // REAL, authenticated device sockets (`HubLink`, the same class the real
+    // daemon/cloud-device uses to talk to a hub) for the watcher and Ralph
+    // devices, and sending `register`/`heartbeat` FRAMES over them exactly as
+    // a real device would -- which drives the genuine
+    // `_attachDevice`/`_fromDevice`/`_broadcast` path and pushes the update
+    // to the browser immediately, not on a timer.
     await check('the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)', async () => {
       const ghServer2 = acaFakeGitHubServer();
       const ghPort2 = await listen(ghServer2);
@@ -2319,25 +2337,24 @@ async function watchCsp(pg) {
       const addrAca2 = await svcAca2.listen(0, '127.0.0.1');
       const originAca2 = `http://127.0.0.1:${addrAca2.port}`;
       const tokenAca2 = authAca2.mintDevToken('t-aca2', 'u-aca2', 'aca person 2');
-      const subject = subjectKey('t-aca2', 'u-aca2');
+      const wsOriginAca2 = originAca2.replace('http', 'ws');
 
-      // The literal name Scout's review quoted from the real record, with no
-      // approval metadata reported -- the "unknown, never a false label" case.
-      svcAca2.store.registerDevice(subject, {
-        deviceId: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5',
-        name: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5',
-        platform: 'linux',
-        meta: null,
-      });
+      const WATCH_DEVICE_ID = 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5';
+      const RALPH_DEVICE_ID = 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z';
+
+      // Two real device sockets, attached and registered exactly as a real
+      // squad-on-aca Container App Job would -- the literal name Scout's
+      // review quoted from the real record, with no approval metadata
+      // reported at register time -- the "unknown, never a false label" case.
+      const watchLink = new HubLink({ url: `${wsOriginAca2}/ws`, token: tokenAca2, deviceId: WATCH_DEVICE_ID });
+      const ralphLink = new HubLink({ url: `${wsOriginAca2}/ws`, token: tokenAca2, deviceId: RALPH_DEVICE_ID });
+      await watchLink.connect();
+      await ralphLink.connect();
+      watchLink.send({ type: 'register', device: { name: WATCH_DEVICE_ID, platform: 'linux', meta: null } });
       // The established "squad-aca-ralph" job naming convention, heartbeating
-      // (lastSeen set by registerDevice itself) but never reporting a
+      // (lastSeen set by the register frame itself) but never reporting a
       // confirmed `lastSweepAt` -- the heartbeat-is-not-a-sweep case.
-      svcAca2.store.registerDevice(subject, {
-        deviceId: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z',
-        name: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z',
-        platform: 'linux',
-        meta: null,
-      });
+      ralphLink.send({ type: 'register', device: { name: RALPH_DEVICE_ID, platform: 'linux', meta: null } });
 
       const pageAca2 = await browser.newPage();
       const errorsAca2 = [];
@@ -2369,13 +2386,12 @@ async function watchCsp(pg) {
 
         // Now report the device-side facts a real device would send on its
         // next heartbeat: a VERIFIED auto approval mode, and a VERIFIED sweep
-        // timestamp -- through the same heartbeat path a real daemon uses.
-        svcAca2.store.heartbeat(subject, 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5', {
-          meta: { approvalMode: 'auto' },
-        });
-        svcAca2.store.heartbeat(subject, 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z', {
-          meta: { lastSweepAt: new Date().toISOString() },
-        });
+        // timestamp -- sent as real `heartbeat` FRAMES over the same device
+        // sockets, so the hub's own `_fromDevice` broadcasts the refreshed
+        // overview to the page immediately, the same as a real daemon's
+        // 15-second heartbeat would once it next fires.
+        watchLink.send({ type: 'heartbeat', device: { meta: { approvalMode: 'auto' } } });
+        ralphLink.send({ type: 'heartbeat', device: { meta: { lastSweepAt: new Date().toISOString() } } });
 
         await until(async () => {
           const t = await pageAca2.textContent('#acaStatusCard').catch(() => null);
@@ -2391,6 +2407,8 @@ async function watchCsp(pg) {
         assert.deepStrictEqual(broken2, [], `the real-shaped-device page reported errors: ${broken2.join(' | ')}`);
       } finally {
         await pageAca2.close();
+        watchLink.stop();
+        ralphLink.stop();
         await svcAca2.close();
         ghServer2.close();
       }

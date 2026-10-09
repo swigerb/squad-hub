@@ -53,30 +53,33 @@ function nameTokens(name) {
  * The established squad-on-aca Container App Job naming convention for the
  * two persistent jobs this card looks for: `squad`, `aca`, then the role
  * word, as three CONSECUTIVE tokens -- matching the real production device
- * name above (`..., 'ca', 'squad', 'aca', 'watch', '0000016', ...`) -- and
- * ANCHORED to what actually follows a real Azure revision name: either
- * nothing (a bare job name with no suffix at all) or a purely numeric
- * revision token, never an arbitrary following word.
+ * name above (`'aca', 'ca', 'squad', 'aca', 'watch', '0000016', ...`) -- and
+ * ANCHORED to exactly the two shapes a real job name takes: that run starting
+ * the name outright (a bare job name, no Azure-generated prefix at all), or
+ * immediately after the literal `aca-ca-` prefix Azure actually generates.
+ * What follows the role word must be either nothing (the bare form) or a
+ * purely numeric revision token, never an arbitrary following word.
  *
- * That anchor is what tells apart a real Container App Job name from an
- * implementation session's own slug that merely happens to CONTAIN the
- * three-token run somewhere in the middle (#233's second review): a name
- * like `aca-caj-squad-aca-session-repair-squad-aca-watch-card` contains the
- * literal run `squad`, `aca`, `watch` -- but immediately followed by the
- * plain word `card`, not a revision number and not the end of the name, so
- * it is rejected here even though an unanchored substring/token search would
- * have matched it. A real device's role token is always either the last
- * token in the name or immediately followed by the Azure-generated numeric
- * revision (`--0000016-...`), which is exactly the shape checked below.
+ * A FOURTH review (#233) found that checking only "is this run followed by a
+ * revision number or the end", while scanning every token position for it,
+ * still let an adversarial implementation-session slug through: a name like
+ * `aca-caj-squad-aca-session-repair-squad-aca-watch--0000016-x` contains the
+ * literal run `squad`, `aca`, `watch` in its MIDDLE, immediately followed by
+ * `0000016` -- a token that is purely numeric and therefore satisfied the old
+ * "followed by a revision number" check, even though this name is not the
+ * known job identity at all, only a slug that happens to embed it with a
+ * fabricated revision-shaped suffix tacked on. Anchoring the run to one of
+ * the two known START positions (index 0, or index 2 right after the known
+ * `aca`, `ca` prefix) removes that whole class of forgery: an embedded match
+ * anywhere else in the token list, suffix or no suffix, is never considered.
  */
 function matchesAcaJobConvention(tokens, role) {
-  for (let i = 0; i <= tokens.length - 3; i += 1) {
-    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {
-      const next = tokens[i + 3];
-      if (next === undefined || /^[0-9]+$/.test(next)) return true;
-    }
-  }
-  return false;
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
 }
 
 /** `online` beats `stale` beats `offline`, for picking the live record among

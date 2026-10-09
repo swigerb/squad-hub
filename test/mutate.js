@@ -2604,46 +2604,83 @@ const MUTATIONS = [
     name: 'matchesAcaJobConvention reverts to a loose substring match, which misses the real production device name',
     file: 'web/js/aca-status.js',
     find: `function matchesAcaJobConvention(tokens, role) {
-  for (let i = 0; i <= tokens.length - 3; i += 1) {
-    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {
-      const next = tokens[i + 3];
-      if (next === undefined || /^[0-9]+$/.test(next)) return true;
-    }
-  }
-  return false;
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
 }`,
     replace: `function matchesAcaJobConvention(tokens, role) {
   if (process.env.MUTANT) return tokens.some((t) => t.includes(role === 'watch' ? 'watch' : 'ralph') || t === role); // MUTATION
-  for (let i = 0; i <= tokens.length - 3; i += 1) {
-    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {
-      const next = tokens[i + 3];
-      if (next === undefined || /^[0-9]+$/.test(next)) return true;
-    }
-  }
-  return false;
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
 }`,
     mustFail: 'findWatcherDevice never matches an arbitrary implementation session containing "watcher"/"ralph" as a substring',
   },
   {
     name: 'matchesAcaJobConvention stops requiring the role token immediately after "squad","aca", matching an arbitrary implementation session',
     file: 'web/js/aca-status.js',
-    find: `    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) {`,
-    replace: `    if ((process.env.MUTANT ? tokens[i + 2] === role : tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role)) { // MUTATION`,
+    find: `  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;`,
+    replace: `  if ((process.env.MUTANT ? tokens[i + 2] !== role : tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role)) return false; // MUTATION`,
     mustFail: 'findWatcherDevice requires the literal "squad","aca" tokens immediately before the role word, not merely the role word somewhere',
   },
   {
     // #233's third review, finding 3: the token run must be ANCHORED to the
     // real revision-suffix shape, not merely present anywhere in the name --
-    // otherwise a slug like "...-squad-aca-watch-card" (an implementation
-    // session that happens to contain the run, followed by an ordinary word)
-    // would still masquerade as the watcher.
+    // otherwise a slug like "squad-aca-watch-extra" (the role run anchored to
+    // the START of the name, satisfying that anchor, but followed by the
+    // plain word "extra", never a revision number and never the end of the
+    // name) would still masquerade as the watcher.
     name: 'matchesAcaJobConvention stops anchoring the role token to the end of the name or a numeric revision suffix',
     file: 'web/js/aca-status.js',
-    find: `      const next = tokens[i + 3];
-      if (next === undefined || /^[0-9]+$/.test(next)) return true;`,
-    replace: `      const next = tokens[i + 3];
-      if (process.env.MUTANT || next === undefined || /^[0-9]+$/.test(next)) return true; // MUTATION`,
-    mustFail: 'findWatcherDevice rejects a job-identity token run embedded mid-slug, never anchored to a real revision suffix',
+    find: `  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `  const next = tokens[i + 3];
+  return process.env.MUTANT || next === undefined || /^[0-9]+$/.test(next); // MUTATION
+}`,
+    mustFail: 'findWatcherDevice still requires the role token itself to be followed by nothing or a numeric revision, even at a known START position',
+  },
+  {
+    // A FOURTH Scout review (#233): anchoring only what the run is FOLLOWED
+    // by (a number or the end) still let the run be found at ANY token
+    // position -- an adversarial implementation-session slug could embed the
+    // real "squad","aca",role run in its middle and tack on a fabricated,
+    // revision-shaped numeric suffix to satisfy that check too. The real
+    // convention only ever has the run starting the whole name, or starting
+    // immediately after the real Azure-generated "aca","ca" prefix; these
+    // are the only two START positions now considered.
+    name: 'matchesAcaJobConvention stops anchoring the run to a known START position, scanning every token position for it again',
+    file: 'web/js/aca-status.js',
+    find: `  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `  if (process.env.MUTANT) { // MUTATION: the start-position anchor is gone, scanning resumes at every index
+    for (let j = 0; j <= tokens.length - 3; j += 1) {
+      if (tokens[j] === 'squad' && tokens[j + 1] === 'aca' && tokens[j + 2] === role) {
+        const n = tokens[j + 3];
+        if (n === undefined || /^[0-9]+$/.test(n)) return true;
+      }
+    }
+    return false;
+  }
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    mustFail: 'findWatcherDevice rejects an embedded canonical run padded with a fabricated revision-shaped suffix, anchored to known job identity only (#233 fourth review)',
   },
   {
     // #233's third review, finding 2: the FIRST roster match is not
