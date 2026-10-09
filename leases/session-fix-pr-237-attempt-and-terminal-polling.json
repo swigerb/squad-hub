@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-237-attempt-and-terminal-polling",
+  "sessionId": "fix-pr-237-attempt-and-terminal-polling",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T03:05:50.726Z",
+  "lastHeartbeatAt": "2026-10-09T03:05:50.726Z",
+  "updatedAt": "2026-10-09T03:05:50.726Z",
+  "terminalReason": null,
+  "executionRef": null
+}
