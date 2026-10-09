@@ -83,6 +83,17 @@ const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const LIST_PAGE_SIZE = 100;
 const MAX_LIST_PAGES = 50;
 
+/** How far before a record's own `dispatchedAt` `resolveRunStatus`'s
+ * `created` candidate-window filter starts (see `resolveRunStatus`). Exists
+ * solely to absorb ordinary clock drift between this process's `Date.now()`
+ * and GitHub's own `created_at` timestamps -- a real `workflow_dispatch` run
+ * is created within seconds of the dispatch call that triggered it, never
+ * minutes earlier, so this is a generous margin, not a timing-based identity
+ * claim. The actual match is still decided purely by the correlation id in
+ * `display_title`; this constant only bounds the candidate set fetched and
+ * what `total_count` is checked against. */
+const RUN_SEARCH_WINDOW_SKEW_MS = 10 * 60 * 1000;
+
 const HUB_CORRELATION_INPUT = 'hub_correlation_id';
 const HUB_CORRELATION_TITLE_RE = /^Squad dispatch \[corr:([A-Za-z0-9]{8,64})\]$/;
 /** The receipt artifact the workflow publishes once ARM confirmed an execution:
@@ -606,17 +617,42 @@ class GitHubApp {
    * `event=workflow_dispatch`, `ref`, and `excludeRunIds` remain as cheap
    * defence-in-depth filters, but they are not the proof. If the workflow does
    * not declare `hub_correlation_id`, this method refuses to guess.
+   *
+   * `dispatchedAt` (this record's own dispatch time, from `DispatchTracker`)
+   * bounds the CANDIDATE SET this lookup fetches, never the identity proof
+   * itself: the actual match is still decided purely by `correlationId`
+   * appearing in `display_title`, above. Without this bound, `total_count`
+   * on the plain `?event=workflow_dispatch` listing is GitHub's count of
+   * every manual dispatch this workflow has EVER had, for the whole
+   * repository's history -- once that history passes `per_page=20`, the
+   * truncation check below trips permanently, on every future dispatch,
+   * even a uniquely correlated brand-new run sitting right there on the
+   * fetched page (#247). Filtering by `created` narrows what `total_count`
+   * counts to runs created at or after a conservative window before this
+   * record's own dispatch -- recovering the truncation check's actual
+   * purpose (catching a same-window duplicate correlation match truncated
+   * off this page) without conflating it with the repository's unrelated
+   * total history. A window that starts BEFORE `dispatchedAt` (rather than
+   * exactly at it) absorbs ordinary clock drift between this process and
+   * GitHub's own `created_at` timestamps; a manual rerun keeps the run's
+   * original `created_at`, so it always stays inside a window drawn from
+   * the run's original dispatch time. Older callers (or any caller that does
+   * not supply `dispatchedAt`) get the previous, unbounded behavior exactly
+   * as before.
    */
   async resolveRunStatus({
-    owner, repo, installationId, correlationId, correlationSupported, ref, excludeRunIds,
+    owner, repo, installationId, correlationId, correlationSupported, ref, excludeRunIds, dispatchedAt,
   }) {
     if (!correlationSupported || !correlationId) {
       return { state: 'unsupported', reason: UNSUPPORTED_CORRELATION_REASON };
     }
     const token = await this._installationToken(installationId, repo);
+    const createdFilter = dispatchedAt != null
+      ? `&created=${encodeURIComponent(`>=${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}`)}`
+      : '';
     const res = await this._request({
       method: 'GET',
-      path: `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=20`,
+      path: `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=20${createdFilter}`,
       token,
     });
     if (res.status !== 200) {
@@ -632,14 +668,16 @@ class GitHubApp {
     if (runs.length > 1) {
       return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
     }
-    // This lookup is bounded to the newest `per_page=20` runs (see docs/aca.md
-    // and docs/security.md): a false NEGATIVE from that bound (a legitimate
-    // run just outside the newest 20) is an acceptable honest "pending", but a
-    // false claim of UNIQUENESS is not. If GitHub reports more runs exist than
-    // this one page fetched, a second, still-unfetched run could carry the
-    // same correlation id -- so a single match found here must not be trusted
-    // as proof of uniqueness; fail closed exactly as the real `runs.length > 1`
-    // case above does, rather than silently returning this run's status.
+    // This lookup is bounded to the newest `per_page=20` runs within the
+    // candidate window above (see docs/aca.md and docs/security.md): a false
+    // NEGATIVE from that bound (a legitimate run just outside the newest 20
+    // in-window runs) is an acceptable honest "pending", but a false claim of
+    // UNIQUENESS is not. If GitHub reports more runs exist within that same
+    // bounded window than this one page fetched, a second, still-unfetched
+    // run could carry the same correlation id -- so a single match found
+    // here must not be trusted as proof of uniqueness; fail closed exactly
+    // as the real `runs.length > 1` case above does, rather than silently
+    // returning this run's status.
     const totalCount = typeof res.json.total_count === 'number' ? res.json.total_count : fetched.length;
     if (totalCount > fetched.length) {
       return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };

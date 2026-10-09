@@ -245,18 +245,42 @@ function fakeGitHubApp({
       if (runsMatch && req.method === 'GET') {
         if (runsStatus !== 200) return json(runsStatus, { message: 'run listing refused in fake' });
         const list = runs || defaultRuns();
+        const withDefaults = list.map((r) => ({
+          id: r.id,
+          status: r.status,
+          conclusion: r.conclusion || null,
+          run_attempt: r.run_attempt || 1,
+          html_url: r.html_url || `https://github.com/acme/widgets/actions/runs/${r.id}`,
+          created_at: r.created_at || new Date().toISOString(),
+          head_branch: r.head_branch || defaultBranch,
+          display_title: r.display_title || '',
+        }));
+        // Real GitHub supports `created=>=<ISO>` on this endpoint, bounding
+        // BOTH the returned page and `total_count` to runs created at or
+        // after that instant. `resolveRunStatus`'s dispatch-time candidate
+        // window relies on exactly this real-server behavior (#247, finding
+        // 2) -- so the fake reproduces it rather than always returning the
+        // whole fixture regardless of the query, which would hide the bug
+        // the production code was fixed to avoid.
+        const q = new URL(req.url, 'http://x').searchParams;
+        const created = q.get('created');
+        const cutoffMatch = created && created.match(/^>=(.+)$/);
+        const windowed = cutoffMatch
+          ? withDefaults.filter((r) => new Date(r.created_at).getTime() >= new Date(cutoffMatch[1]).getTime())
+          : withDefaults;
+        // Real pagination too (newest first, same convention GitHub itself
+        // uses): `total_count` reflects every run matching the query
+        // (`event` + `created`, when given), while `workflow_runs` is only
+        // this one `per_page`-sized page of it. A fixture with more
+        // in-window runs than `per_page` genuinely gets truncated here, the
+        // same way a real `per_page=20` repository history would.
+        const perPage = Number(q.get('per_page')) || windowed.length || 1;
+        const page = Number(q.get('page')) || 1;
+        const sorted = [...windowed].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        const pageItems = sorted.slice((page - 1) * perPage, page * perPage);
         return json(200, {
-          total_count: runsTotalCount != null ? runsTotalCount : list.length,
-          workflow_runs: list.map((r) => ({
-            id: r.id,
-            status: r.status,
-            conclusion: r.conclusion || null,
-            run_attempt: r.run_attempt || 1,
-            html_url: r.html_url || `https://github.com/acme/widgets/actions/runs/${r.id}`,
-            created_at: r.created_at || new Date().toISOString(),
-            head_branch: r.head_branch || defaultBranch,
-            display_title: r.display_title || '',
-          })),
+          total_count: runsTotalCount != null ? runsTotalCount : windowed.length,
+          workflow_runs: pageItems,
         });
       }
 
@@ -1374,6 +1398,100 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(status.state, 'pending');
   });
 
+  await checkAsync('more than 20 historical unrelated workflow_dispatch runs never permanently block a uniquely correlated new dispatch from resolving (#247)', async () => {
+    // Exact reproduction of the #247 finding-2 bug: GitHub's `total_count`
+    // on the plain `?event=workflow_dispatch` listing counts EVERY manual
+    // dispatch run this workflow has ever had, for the whole repository's
+    // history -- not just runs that could plausibly be this dispatch. 24
+    // unrelated, completed, days-old runs plus one uniquely correlated
+    // brand-new run add up to 25 total: without a dispatch-time candidate
+    // window bounding what `total_count` is checked against, the truncation
+    // check below used to trip FOREVER on every future dispatch, once a
+    // repository's all-time manual-dispatch history passed `per_page=20`,
+    // even though the real match sat right there on the fetched page.
+    const corr = 'f00df00df00df00df00df00df00df00d';
+    const dispatchedAt = Date.now();
+    const oldUnrelatedRuns = Array.from({ length: 24 }, (_, i) => ({
+      id: 3000 + i,
+      status: 'completed',
+      conclusion: 'success',
+      head_branch: 'main',
+      // Real, unrelated manual dispatch history: each one days before this
+      // dispatch, well outside any reasonable dispatch-time window.
+      created_at: new Date(dispatchedAt - (i + 1) * 24 * 60 * 60 * 1000).toISOString(),
+      display_title: 'Squad dispatch (manual run)',
+    }));
+    const matchingRun = {
+      id: 4000,
+      status: 'in_progress',
+      conclusion: null,
+      head_branch: 'main',
+      created_at: new Date(dispatchedAt).toISOString(),
+      display_title: correlationTitle(corr),
+    };
+    const runs = [...oldUnrelatedRuns, matchingRun];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, correlationId: corr, correlationSupported: true, ref: 'main', dispatchedAt,
+    });
+    server.close();
+    assert.strictEqual(
+      status.state,
+      'in_progress',
+      `expected the uniquely correlated new run to resolve despite 25 total historical runs, got ${JSON.stringify(status)}`,
+    );
+    assert.strictEqual(status.runId, 4000);
+  });
+
+  await checkAsync('a dispatch-time-bounded lookup still fails closed on a genuinely ambiguous truncated page within the window (#247)', async () => {
+    // The fix narrows what `total_count` counts against to this dispatch's
+    // own time window -- it must not become a blanket "trust the single
+    // match" once that narrowing is in place. If GitHub reports MORE runs
+    // exist within the SAME bounded window than this page fetched, that is
+    // still a genuine, un-ruled-out ambiguity and must still fail closed.
+    const corr = 'ab0dab0dab0dab0dab0dab0dab0dab0d';
+    const dispatchedAt = Date.now();
+    const runs = [{
+      id: 5000, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(dispatchedAt).toISOString(), display_title: correlationTitle(corr),
+    }];
+    // Forces GitHub's reported total (for whatever query was actually sent)
+    // to exceed what this one page fetched, the same technique the
+    // pre-existing truncation tests above use.
+    const { server } = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, runs, runsTotalCount: 22,
+    });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, correlationId: corr, correlationSupported: true, ref: 'main', dispatchedAt,
+    });
+    server.close();
+    assert.strictEqual(status.state, 'error', 'an in-window truncated page must still fail closed, not be waved through by the time bound');
+    assert.match(status.reason, /refusing to assume this match is unique/);
+  });
+
+  await checkAsync('the dispatch-time candidate window is a search bound only, never an identity substitute (#247)', async () => {
+    // A run created well within the window but with NO correlation match
+    // must still be an honest pending, never accidentally promoted to a
+    // match just because it falls inside the time bound -- correlationId in
+    // display_title remains the only proof of identity.
+    const corr = 'de0ade0ade0ade0ade0ade0ade0ade0a';
+    const dispatchedAt = Date.now();
+    const runs = [{
+      id: 6000, status: 'in_progress', conclusion: null, head_branch: 'main', created_at: new Date(dispatchedAt).toISOString(), display_title: 'Squad dispatch (unrelated manual run)',
+    }];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const status = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, correlationId: corr, correlationSupported: true, ref: 'main', dispatchedAt,
+    });
+    server.close();
+    assert.strictEqual(status.state, 'pending', 'timing proximity alone must never stand in for the correlation id proof');
+  });
+
   await checkAsync('resolveRunStatus never binds a run id already bound to another recorded dispatch', async () => {
     const corrA = '66666666666666666666666666666666';
     const corrB = '77777777777777777777777777777777';
@@ -1891,6 +2009,66 @@ function apiRequest(port, path, token, opts = {}) {
     const list1 = await p1;
     assert.strictEqual(list2[0].executionName, 'synthetic-newer');
     assert.strictEqual(list1[0].executionName, null, 'the stale attempt-1 result must not overwrite the already-cached newer attempt');
+  });
+
+  await checkAsync('a stale deferred run-status arriving after a newer attempt is already cached must not clear the cache or re-query (#247)', async () => {
+    // Exact reproduction of the #247 finding-1 bug: this is NOT the
+    // #245 receipt-lookup race the two tests above already cover -- this one
+    // is about the run STATUS itself (from a bound record's own `_getRun`),
+    // arriving late, after a concurrent poll has already observed and fully
+    // CACHED a newer attempt's executionName.
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main',
+      correlationId: 'c0ffeec0ffeec0ffeec0ffeec0ffeec0', correlationSupported: true, dispatchedAt: Date.now() - 2000,
+    });
+
+    // Seed: a first, uncontested poll binds the run and fully caches
+    // attempt 2's executionName.
+    const seedApp = {
+      resolveRunStatus: async () => ({ state: 'in_progress', runId: 42, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+      resolveExecutionReceipt: async () => ({ executionName: 'synthetic-attempt-2', artifactId: 9 }),
+    };
+    const seeded = await tracker.listWithStatus('alice', seedApp);
+    assert.strictEqual(seeded[0].executionName, 'synthetic-attempt-2', 'seed poll must have cached attempt 2');
+
+    // oldPoll: its own `_getRun` is deferred (never resolves until released,
+    // below) -- simulating a slow read that started before, but is only
+    // observed after, a concurrent fresher read.
+    let releaseOld;
+    const oldGate = new Promise((resolve) => { releaseOld = resolve; });
+    const oldPoll = tracker.listWithStatus('alice', {
+      ...seedApp,
+      _getRun: () => oldGate,
+      resolveExecutionReceipt: () => { throw new Error('a stale, superseded status must never start its own receipt lookup'); },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // newPoll: its own `_getRun` resolves immediately, confirming the SAME
+    // (already cached) attempt 2 -- the ordinary, correct refresh path.
+    const newPoll = await tracker.listWithStatus('alice', {
+      ...seedApp,
+      _getRun: async () => ({ state: 'in_progress', runId: 42, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+      resolveExecutionReceipt: () => { throw new Error('already cached for this attempt; must not be re-resolved'); },
+    });
+    assert.strictEqual(newPoll[0].executionName, 'synthetic-attempt-2', 'the fresh same-attempt poll must still see the cached name');
+
+    // NOW release the deferred old `_getRun`, reporting the STALE attempt 1
+    // -- after attempt 2 is already fully cached and confirmed above.
+    releaseOld({ state: 'in_progress', runId: 42, runAttempt: 1, htmlUrl: 'https://example.invalid/r' });
+    const oldResult = await oldPoll;
+
+    // The stale attempt-1 status is allowed to report itself as stale (it
+    // genuinely does not match attempt 2), but it must NOT have destroyed
+    // the record's cache: a poll running right after it must still see
+    // attempt 2's cached name, not null, and must not re-query GitHub for it.
+    assert.strictEqual(oldResult[0].executionName, null, 'a status for an attempt behind the fence legitimately withholds its own name');
+    const afterStale = await tracker.listWithStatus('alice', {
+      ...seedApp,
+      _getRun: async () => ({ state: 'in_progress', runId: 42, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+      resolveExecutionReceipt: () => { throw new Error('the stale attempt-1 status must not have cleared the cache for attempt 2'); },
+    });
+    assert.strictEqual(afterStale[0].executionName, 'synthetic-attempt-2', 'a late stale status must never clobber an already-cached newer attempt');
   });
 
   await checkAsync('a minted installation token for a dispatch is scoped to just the target repository', async () => {

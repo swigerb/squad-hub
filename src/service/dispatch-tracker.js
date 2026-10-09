@@ -249,20 +249,58 @@ class DispatchTracker {
    * current attempt starts its own fresh lookup), so a stale lookup can
    * neither clobber a newer attempt's cached name nor block that newer
    * attempt's own lookup from ever recording its result.
+   *
+   * That guard alone is not enough, though: it only protects a receipt
+   * LOOKUP already in flight. A bound record's run STATUS is also re-fetched
+   * every poll (`_getRun`, above in `listWithStatus`), and two overlapping
+   * `listWithStatus` calls can each be awaiting their OWN `_getRun` for the
+   * exact same run id at once. If an older call's `_getRun` happens to be
+   * slow and only resolves (still reporting the attempt it started with)
+   * AFTER a faster, later-started call already observed a newer attempt and
+   * cached that newer attempt's receipt, this function would previously be
+   * reached again for that late, now-superseded status -- and the "drop a
+   * previous attempt's cache" step below would still fire, because it only
+   * ever compared the cache against the raw incoming `status.runAttempt`,
+   * never against `r._attemptFence`. That cleared the newer attempt's
+   * already-cached, already-proven `executionName`, started a second, wasted
+   * receipt lookup for the stale older attempt, and left the cache null when
+   * that lookup's own fencing check (correctly) refused to commit a result
+   * for an attempt the fence had already moved past -- surfacing
+   * `executionName: null` for the CURRENT attempt despite it having already
+   * been resolved. Guarding against a stale receipt result is not enough
+   * when a stale status can erase the cache before any receipt lookup even
+   * starts.
+   *
+   * The fix: a status reporting an attempt BEHIND the fence is itself stale
+   * -- some other, already-processed poll has already observed a newer
+   * attempt for this run -- and must not be allowed to touch the cache,
+   * the in-flight lookup, or start a new one. It is still returned to ITS
+   * OWN caller as-is (the caller asked about this run and gets an honest,
+   * if momentarily stale, answer); `_publicRecord` already withholds
+   * `executionName` whenever the attempt it was cached for does not match
+   * the attempt being reported, so a stale status reported this way can
+   * never be paired with a newer attempt's name.
    */
   async _withExecutionReceipt(r, status, githubApp) {
     if (status && status.runAttempt != null) {
+      const incomingAttempt = status.runAttempt;
       r._attemptFence = r._attemptFence == null
-        ? status.runAttempt : Math.max(r._attemptFence, status.runAttempt);
+        ? incomingAttempt : Math.max(r._attemptFence, incomingAttempt);
+      if (incomingAttempt < r._attemptFence) {
+        // Superseded: some other poll already observed a newer attempt for
+        // this record. Leave the cache, the in-flight lookup, and the fence
+        // exactly as they are and hand this stale status back unmodified.
+        return status;
+      }
       // Drop a previous attempt's cache before any early return, so a rerun
       // that is still queued/pending/errored never keeps the old name. A
       // status with no runAttempt cannot be compared and leaves the cache
       // alone; _publicRecord still withholds the name for it.
-      if (r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {
+      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
         r.executionName = null;
         r.executionAttempt = null;
       }
-      if (r._receiptLookup && r._receiptLookupAttempt !== status.runAttempt) {
+      if (r._receiptLookup && r._receiptLookupAttempt !== incomingAttempt) {
         r._receiptLookup = null;
         r._receiptLookupAttempt = null;
       }

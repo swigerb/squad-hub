@@ -411,6 +411,19 @@ closed the same way a genuine on-page duplicate does, rather than treating an
 unverifiable single match as proof of uniqueness (see docs/api.md and
 docs/security.md).
 
+The run-list lookup additionally narrows its *candidate set* to runs created
+at or after this dispatch's own `dispatchedAt` (minus a small clock-skew
+buffer), using GitHub's `created` query filter. Without that bound, a
+repository's lifetime `workflow_dispatch` count — not just runs relevant to
+this dispatch — decides whether the page looks truncated; once a repository
+has made more than 20 manual dispatches *ever*, every future dispatch would
+otherwise see `total_count` exceed the fetched page and fail closed forever,
+even though the dispatch it is looking for is right there on the page. Time
+only bounds *which runs are candidates for the search* — it is never used as
+or in place of the correlation id, and a run sitting inside the time window
+with no matching correlation id is still left `pending`, exactly as if it had
+never been fetched at all.
+
 Each dispatch also gets a second, unrelated id: `DispatchTracker.record()`
 mints its own opaque `crypto.randomUUID()` the moment the dispatch is
 recorded, returned to the browser as `trackerId` from `POST /api/aca/dispatch`

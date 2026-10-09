@@ -4578,6 +4578,38 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an ambiguous duplicate correlation receipt returns error instead of guessing',
   },
   {
+    // #247 finding 2: a single match on a truncated page is not provably
+    // unique -- without this check, a genuine same-window duplicate
+    // correlation match sitting on an unfetched page would be silently
+    // trusted instead of failing closed.
+    name: 'resolveRunStatus trusts a single match even when GitHub reports a truncated page',
+    file: 'src/service/github-app.js',
+    find: `    if (totalCount > fetched.length) {
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }`,
+    replace: `    if (!process.env.MUTANT && totalCount > fetched.length) { // MUTATION
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }`,
+    mustFail: 'a single matching run found on a truncated (bounded) run-list page fails closed instead of claiming uniqueness',
+  },
+  {
+    // #247 finding 2: without a dispatch-time candidate window, GitHub's
+    // `total_count` on the plain run listing counts every manual dispatch
+    // this workflow has EVER had, repository-wide -- once that history
+    // passes `per_page=20`, the truncation check above trips permanently,
+    // on every future dispatch, even a uniquely correlated brand-new run
+    // sitting right there on the fetched page.
+    name: 'resolveRunStatus never bounds the run-list query to this dispatch\'s own time window',
+    file: 'src/service/github-app.js',
+    find: `    const createdFilter = dispatchedAt != null
+      ? \`&created=\${encodeURIComponent(\`>=\${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}\`)}\`
+      : '';`,
+    replace: `    const createdFilter = (process.env.MUTANT ? false : dispatchedAt != null) // MUTATION
+      ? \`&created=\${encodeURIComponent(\`>=\${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}\`)}\`
+      : '';`,
+    mustFail: 'more than 20 historical unrelated workflow_dispatch runs never permanently block a uniquely correlated new dispatch from resolving (#247)',
+  },
+  {
     // A GitHub 401/403 is the APP'S OWN credential being rejected, not the
     // signed-in hub user's sign-in failing -- passed straight through it
     // would look exactly like the caller's own authorization failing.
@@ -5061,11 +5093,11 @@ if ($health.accessStore -ne 'durable') {`,
     // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
     name: 'a cached executionName is trusted across a rerun attempt change',
     file: 'src/service/dispatch-tracker.js',
-    find: `      if (r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {
+    find: `      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
         r.executionName = null;
         r.executionAttempt = null;
       }`,
-    replace: `      if (!process.env.MUTANT && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) { // MUTATION
+    replace: `      if (!process.env.MUTANT && r.executionAttempt != null && r.executionAttempt !== incomingAttempt) { // MUTATION
         r.executionName = null;
         r.executionAttempt = null;
       }`,
@@ -5087,6 +5119,18 @@ if ($health.accessStore -ne 'durable') {`,
     find: `            runAttempt: attempt,`,
     replace: `            runAttempt: process.env.MUTANT ? undefined : attempt, // MUTATION`,
     mustFail: 'tracker surfaces a resolved executionName through the public record and passes the run attempt',
+  },
+  {
+    // A status reporting an attempt behind the fence (a deferred `_getRun`
+    // that only resolves after a later poll already observed and cached a
+    // newer attempt) must not be allowed to clear that newer attempt's
+    // already-cached executionName or start a wasted receipt lookup for the
+    // stale attempt -- see #247, finding 1.
+    name: 'a status behind the attempt fence is still allowed to clear the cache and start a new lookup',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      if (incomingAttempt < r._attemptFence) {`,
+    replace: `      if (!process.env.MUTANT && incomingAttempt < r._attemptFence) { // MUTATION`,
+    mustFail: 'a stale deferred run-status arriving after a newer attempt is already cached must not clear the cache or re-query (#247)',
   },
 
   {

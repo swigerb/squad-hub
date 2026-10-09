@@ -552,6 +552,18 @@ silently trusting a single match that is not provably unique. This never
 causes extra GitHub traffic — it never fetches a second page — it only refuses
 to call a possibly-incomplete single page conclusive.
 
+The run-list lookup also narrows its candidate set with a `created=>=<ISO>`
+filter anchored to this dispatch's own `dispatchedAt` (minus a small
+clock-skew allowance), so "more runs exist than fetched" reflects runs created
+around this dispatch, not every manual dispatch the repository has ever had.
+Without that bound, a repository that accumulates more than 20
+`workflow_dispatch` runs over its lifetime would see every future dispatch's
+lookup falsely report truncation and fail closed forever, even when the
+uniquely-correlated run is on the fetched page. The time filter only narrows
+*which runs the hub asks GitHub for*; it is never substituted for the
+correlation id, and a time-window match with no matching correlation id is
+still reported `pending`.
+
 `GET /api/aca/repos` and `GET /api/aca/dispatches` share one read-only rate
 limit, per signed-in user (#213): **30 requests/minute**. Each spends the
 App's own shared GitHub API quota — `GET /api/aca/repos` walks every

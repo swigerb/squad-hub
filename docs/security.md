@@ -229,6 +229,17 @@ attempt, so the lookup refuses to assume uniqueness and fails closed exactly as
 it does for a genuine same-page duplicate, rather than silently trusting a
 partial read.
 
+**The run-list candidate window is a search bound, never an identity
+substitute.** The run-status lookup filters GitHub's run list to runs created
+at or after this dispatch's own `dispatchedAt` (minus a clock-skew allowance),
+so `total_count` (and the truncation check above) reflects runs relevant to
+this dispatch instead of every manual `workflow_dispatch` the repository has
+ever had. Without this, a repository that passes 20 lifetime manual dispatches
+would see the truncation check trip on every future dispatch permanently, even
+one uniquely correlated and present on the fetched page. The correlation id
+match remains the only proof of identity; a run inside the time window with no
+matching correlation id is left `pending`, never promoted by timing alone.
+
 **Two opaque, unrelated ids, not one.** `hub_correlation_id` is the internal
 token used solely to match a dispatch to its Actions run; it is minted
 per-dispatch, lives only in the authenticated user's in-memory tracker
