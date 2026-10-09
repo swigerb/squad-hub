@@ -23,6 +23,28 @@
  *      so reopening the menu mid-resync could fire a second one at the same
  *      target. The fix restores a one-in-flight-resync-per-target guard.
  *
+ * Two further regressions, found by Scout's actual-source review of the
+ * first fix (34256a0) and fixed here, with their own deterministic coverage:
+ *
+ *   3. The in-flight guard above was a single scalar key, not a per-target
+ *      lock: starting Sync for A, navigating to B and starting Sync for B,
+ *      then returning to A and clicking Sync again before either request had
+ *      returned, let B's start silently overwrite A's lock -- A's second
+ *      click fired a SECOND resync for A while B still only ever got one.
+ *      The fix is a `Set` of in-flight target keys, where each target's own
+ *      settlement only ever deletes its own key.
+ *
+ *   4. `controlToken` only increments once a NEW `verifyControl` call
+ *      actually starts, but `openDetail` sets `state.currentSession` and
+ *      awaits the transcript fetch BEFORE calling `verifyControl` again. A
+ *      reply for an OLD verification (even of the exact same session, closed
+ *      and reopened) can land in that gap, pass the same-key/same-token
+ *      check, and get applied as if it answered the new context. The fix
+ *      adds a `selectionGeneration` bumped synchronously by
+ *      `invalidateSelection` -- called by `openDetail`/`closeDetail`
+ *      immediately, before anything async -- which a same-session
+ *      live-snapshot refresh (no open/close call) never touches.
+ *
  * Loaded the same way row-menu-action-unit.js loads app.js's whole dependency
  * graph: `readWebSource()` walks app.js's imports transitively (so
  * `detail-control.js`, reached only via detail.js's own import, is included)
@@ -86,12 +108,12 @@ refresh = async () => { __refreshCalls += 1; };
 function __setApiImpl(fn) { __apiImpl = fn; }
 function __getRefreshCalls() { return __refreshCalls; }
 module.exports = {
-  verifyControl, syncSession, detailSyncMenuItem, state, renderControl, composerReduce,
+  verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
   __setApiImpl, __getRefreshCalls,
 };`)(mod, mod.exports);
 
 const {
-  verifyControl, syncSession, detailSyncMenuItem, state, renderControl, composerReduce,
+  verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
   __setApiImpl, __getRefreshCalls,
 } = mod.exports;
 
@@ -291,6 +313,159 @@ function resetComposer() {
     assert.strictEqual(state.composer.reason, 'device unreachable', 'the real failure reason did not reach the banner');
     assert.strictEqual(detailSyncMenuItem().disabled, false,
       'the in-flight flag was not cleared after a failed resync, locking the menu item disabled forever');
+  });
+
+  await checkAsync('A-B-A interleaving: starting Sync for A, then B, then A again before either settles issues exactly one resync for A and one for B', async () => {
+    resetComposer();
+    state.composer.control = 'not_synced';
+    state.currentSession = session('lockA');
+    let resyncCallsA = 0; let resyncCallsB = 0;
+    const resyncA = deferred();
+    const resyncB = deferred();
+    const controlCheck = deferred();
+    __setApiImpl((path, opts) => {
+      if (path.includes('/resync')) {
+        if (opts.body.sessionId === 'lockA') { resyncCallsA += 1; return resyncA.promise; }
+        if (opts.body.sessionId === 'lockB') { resyncCallsB += 1; return resyncB.promise; }
+        throw new Error(`unexpected resync target: ${opts.body.sessionId}`);
+      }
+      if (path.includes('/control-check')) return controlCheck.promise;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    // A's Sync starts first.
+    const pA1 = syncSession();
+    await Promise.resolve();
+    assert.strictEqual(resyncCallsA, 1, 'starting Sync for A did not issue A\u2019s resync request');
+
+    // Navigate to B and start its own Sync -- a SEPARATE target, must not
+    // disturb A's still-pending lock.
+    state.currentSession = session('lockB');
+    const pB = syncSession();
+    await Promise.resolve();
+    assert.strictEqual(resyncCallsB, 1, 'starting Sync for B did not issue B\u2019s resync request');
+
+    // Return to A and click Sync again before EITHER request has returned.
+    // The bug: a scalar `syncInFlightKey` was overwritten by B's start, so
+    // this second click for A was no longer seen as "already pending" and
+    // fired a second resync for A.
+    state.currentSession = session('lockA');
+    const pA2 = syncSession();
+    await Promise.resolve();
+    assert.strictEqual(resyncCallsA, 1,
+      'clicking Sync again for A, while A was already pending and after B had separately started, issued a SECOND resync for A');
+
+    resyncA.resolve({});
+    resyncB.resolve({});
+    controlCheck.resolve({ controllable: true });
+    await Promise.all([pA1, pA2, pB]);
+
+    assert.strictEqual(resyncCallsA, 1, 'more than one resync request reached the device for target A');
+    assert.strictEqual(resyncCallsB, 1, 'more than one resync request reached the device for target B');
+  });
+
+  await checkAsync('out-of-order settlement: B resync finishing before A\u2019s does not clear or disturb A\u2019s own lock', async () => {
+    resetComposer();
+    state.composer.control = 'not_synced';
+    state.currentSession = session('revA');
+    let resyncCallsA = 0; let resyncCallsB = 0;
+    const resyncA = deferred();
+    const resyncB = deferred();
+    const controlCheck = deferred();
+    __setApiImpl((path, opts) => {
+      if (path.includes('/resync')) {
+        if (opts.body.sessionId === 'revA') { resyncCallsA += 1; return resyncA.promise; }
+        resyncCallsB += 1; return resyncB.promise;
+      }
+      if (path.includes('/control-check')) return controlCheck.promise;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const pA = syncSession();
+    await Promise.resolve();
+    state.currentSession = session('revB');
+    const pB = syncSession();
+    await Promise.resolve();
+
+    // B settles FIRST, A is still pending -- reversed from the usual order.
+    resyncB.resolve({});
+    controlCheck.resolve({ controllable: true });
+    await pB;
+    assert.strictEqual(resyncCallsB, 1, 'B\u2019s own resync was requested more than once');
+
+    // A must still show as pending for its own target, unaffected by B's
+    // settlement -- the whole point of a per-target lock. Re-select A (its
+    // own resync is still unresolved) and click Sync again: if B's
+    // settlement had incorrectly cleared a SHARED lock instead of only its
+    // own key, this would fire a second resync request for A.
+    state.currentSession = session('revA');
+    const pA2 = syncSession();
+    await Promise.resolve();
+    assert.strictEqual(resyncCallsA, 1,
+      'B settling first incorrectly cleared A\u2019s still-pending in-flight lock, allowing a second resync for A');
+
+    resyncA.resolve({});
+    await Promise.all([pA, pA2]);
+    assert.strictEqual(resyncCallsA, 1, 'A\u2019s resync was requested more than once overall');
+  });
+
+  await checkAsync('a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded', async () => {
+    resetComposer();
+    const key = 'reopen-key';
+    state.currentSession = session(key);
+    const first = deferred();
+    __setApiImpl(() => first.promise);
+
+    const p1 = verifyControl();
+    await Promise.resolve(); // old verifyControl is now in flight for `key`
+
+    // Simulate closeDetail(): clears the selection AND invalidates it
+    // immediately, same as web/js/detail.js actually does.
+    invalidateSelection();
+    state.currentSession = null;
+
+    // Simulate re-opening the IDENTICAL session: openDetail sets
+    // state.currentSession and invalidates again before awaiting the
+    // transcript fetch -- represented here by simply NOT having started a
+    // new verifyControl yet. The old reply must still be rejected even
+    // though sessionKey matches and no newer verifyControl has bumped
+    // controlToken.
+    invalidateSelection();
+    state.currentSession = session(key);
+
+    first.resolve({ controllable: true });
+    await p1;
+
+    assert.strictEqual(state.composer.control, 'verifying',
+      'a verifyControl reply for a session already closed-and-reopened (same key, before any new check started) was applied as if it answered the new context');
+  });
+
+  await checkAsync('a syncSession success that arrives after close+reopen of the SAME session must not apply or re-verify the new context', async () => {
+    resetComposer();
+    state.composer.control = 'not_synced';
+    const key = 'reopen-sync-key';
+    state.currentSession = session(key);
+    const resync = deferred();
+    __setApiImpl((path) => {
+      if (path.includes('/resync')) return resync.promise;
+      throw new Error(`unexpected path for a reopened-session test: ${path}`);
+    });
+
+    const p = syncSession();
+    await Promise.resolve();
+
+    // Close then reopen the identical session while the resync is still
+    // pending -- same simulated sequence as the test above.
+    invalidateSelection();
+    state.currentSession = null;
+    invalidateSelection();
+    state.currentSession = session(key);
+
+    resync.resolve({});
+    await p;
+
+    assert.strictEqual(state.composer.control, 'not_synced',
+      'a resync success belonging to a closed-and-reopened session re-verified or otherwise touched the new context\u2019s composer');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

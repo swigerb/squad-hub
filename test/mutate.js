@@ -979,9 +979,38 @@ const MUTATIONS = [
     // re-admits that stale, superseded answer.
     name: 'verifyControl drops the controlToken check, so a superseded verification can still apply its late reply',
     file: 'web/js/detail-control.js',
-    find: `  if (!stillSameSelection || token !== controlToken) return;`,
-    replace: `  if (!stillSameSelection || (!process.env.MUTANT && token !== controlToken)) return; // MUTATION`,
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection || (!process.env.MUTANT && token !== controlToken) || generation !== selectionGeneration) return; // MUTATION`,
     mustFail: 'a second verifyControl call for the same session supersedes the first; its late reply is rejected',
+  },
+  {
+    // Scout's actual-source review of 34256a0: `controlToken` only
+    // increments once a NEW `verifyControl` call actually starts, but
+    // `openDetail` sets `state.currentSession` and awaits the transcript
+    // fetch BEFORE calling `verifyControl` again -- a reply for an OLD
+    // verification can land in that gap and pass a same-key/same-token
+    // check. Dropping the `selectionGeneration` guard re-admits exactly
+    // that stale result once the session is closed and reopened.
+    name: 'verifyControl drops the selectionGeneration check, so a reply from before a close+reopen can still be applied',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection || token !== controlToken || (!process.env.MUTANT && generation !== selectionGeneration)) return; // MUTATION`,
+    mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
+  },
+  {
+    // `invalidateSelection` is useless if nothing ever calls it at the
+    // actual moment of navigation -- this proves `openDetail`/`closeDetail`
+    // really do call it, not merely that the function exists.
+    name: 'invalidateSelection is never actually bumped (a no-op stub), so close+reopen never invalidates a stale reply',
+    file: 'web/js/detail-control.js',
+    find: `export function invalidateSelection() {
+  selectionGeneration += 1;
+}`,
+    replace: `export function invalidateSelection() {
+  if (process.env.MUTANT) return; // MUTATION
+  selectionGeneration += 1;
+}`,
+    mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
   },
   {
     // The Sync regression: moving "Sync session" into the shared row menu
@@ -990,21 +1019,31 @@ const MUTATIONS = [
     // second resync for a target already being resynced.
     name: 'syncSession drops its one-in-flight-per-target guard, allowing a reopened menu to restart the same resync',
     file: 'web/js/detail-control.js',
-    find: `  if (syncInFlightKey === key) return;`,
-    replace: `  if (!process.env.MUTANT && syncInFlightKey === key) return; // MUTATION`,
+    find: `  if (syncInFlightKeys.has(key)) return;`,
+    replace: `  if (!process.env.MUTANT && syncInFlightKeys.has(key)) return; // MUTATION`,
     mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
   },
   {
-    // Without clearing the flag, a target that fails to resync (or whose
-    // request throws) would be stuck permanently "Syncing…" and never
-    // offered again -- proving the guard actually recovers, not just blocks.
+    // Scout's actual-source review of 34256a0: a single scalar lock gets
+    // silently overwritten when a SECOND target starts its own Sync, so a
+    // target the lock no longer names is treated as free even though it is
+    // still pending. Replacing the `Set` with a scalar that only remembers
+    // the MOST RECENT target reproduces exactly that A-navigate-to-B-back-
+    // to-A regression.
+    name: 'syncInFlightKeys regresses to a single scalar, so starting Sync for a second target un-blocks the first target\u2019s own reopened click',
+    file: 'web/js/detail-control.js',
+    find: `const syncInFlightKeys = new Set();`,
+    replace: `const syncInFlightKeys = process.env.MUTANT ? (() => { let last = null; return { has: (k) => k === last, add: (k) => { last = k; }, delete: (k) => { if (last === k) last = null; } }; })() : new Set(); // MUTATION`,
+    mustFail: 'A-B-A interleaving: starting Sync for A, then B, then A again before either settles issues exactly one resync for A and one for B',
+  },
+  {
     name: 'syncSession never clears its in-flight flag, so a target gets permanently stuck disabled after one resync',
     file: 'web/js/detail-control.js',
     find: `  } finally {
-    if (syncInFlightKey === key) syncInFlightKey = null;
+    syncInFlightKeys.delete(key);
   }`,
     replace: `  } finally {
-    if (!process.env.MUTANT && syncInFlightKey === key) syncInFlightKey = null; // MUTATION
+    if (!process.env.MUTANT) syncInFlightKeys.delete(key); // MUTATION
   }`,
     mustFail: 'a resync failure for the STILL-open session reports the error on its own composer',
   },
@@ -1015,9 +1054,30 @@ const MUTATIONS = [
     // flag itself is still tracked correctly.
     name: 'detailSyncMenuItem never reports Sync session as pending/disabled while a resync is in flight',
     file: 'web/js/detail-control.js',
-    find: `  const pending = syncInFlightKey === sessionKey(current.session);`,
-    replace: `  const pending = !process.env.MUTANT && syncInFlightKey === sessionKey(current.session); // MUTATION`,
+    find: `  const pending = syncInFlightKeys.has(sessionKey(current.session));`,
+    replace: `  const pending = !process.env.MUTANT && syncInFlightKeys.has(sessionKey(current.session)); // MUTATION`,
     mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
+  },
+  {
+    // Scout's actual-source review of 34256a0: a late resync success/failure
+    // for an abandoned session must not re-verify or clobber a context the
+    // person has since closed and reopened, even of the SAME session key.
+    // Dropping the generation half of this guard (leaving only the sessionKey
+    // check) re-admits the stale-verify-after-reopen regression through the
+    // sync path specifically.
+    name: 'syncSession\u2019s late-success re-verify ignores selectionGeneration, re-verifying after a close+reopen of the same session',
+    file: 'web/js/detail-control.js',
+    find: `  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && generation === selectionGeneration
+  ) await verifyControl();`,
+    replace: `  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && (process.env.MUTANT || generation === selectionGeneration)
+  ) await verifyControl(); // MUTATION`,
+    mustFail: 'a syncSession success that arrives after close+reopen of the SAME session must not apply or re-verify the new context',
   },
   {
     // The OUTER catch in readSquad is unreachable while every inner reader is
