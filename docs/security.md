@@ -536,16 +536,16 @@ across restarts, so nothing in this project generates or rotates one for you
 implicitly. An operator runs it deliberately, exactly once per deployment (or
 explicitly once per rotation — see below), typically with:
 
-**Do not print the private key. The command below is wrong, on purpose, to
-show what NOT to run:**
-
-```bash
-# DO NOT DO THIS -- it writes the private key straight to this terminal's
-# stdout, which many terminals scroll back to a log file, many CI runners
-# capture into a durable step log, and many SSH/tmux sessions record by
-# default. That is the opposite of memory-only.
-node -e "console.log(JSON.stringify(require('./src/service/web-push.js').generateVapidKeys()))"
-```
+**Do not print the private key.** It is tempting to sanity-check a freshly
+generated pair by piping `generateVapidKeys()` straight into `console.log`,
+but stdout is not memory-only: most terminals scroll output back into a log
+file, most CI runners capture every step's stdout into a durable job log, and
+most SSH/tmux sessions record scrollback by default. Printing the pair, even
+once, even "just to look at it", hands the private half to whatever captures
+that terminal's output next. The procedure below never does this: the pair
+is generated, checked, and written to the settings API entirely in this one
+process's memory, with nothing ever passed to `console.log`, `console.error`,
+a file, or a command-line argument.
 
 **A clipboard is not memory-only either, and the reviewed procedure no
 longer uses one.** An earlier revision of this doc recommended handing the
@@ -561,14 +561,27 @@ clipboard" is not actually memory-only, so this section no longer
 recommends it.
 
 **The reviewed procedure instead captures the generated pair only in this
-one process's memory, and hands the private half directly to the protected
+one process's memory, proves the two halves actually correspond before ever
+writing anything, and hands the private half directly to the protected
 settings store's own API over HTTPS — never to stdout, a file, a
-command-line argument, or the clipboard:**
+command-line argument, or the clipboard.** Reading the current settings is
+Azure's [List Application Settings](https://learn.microsoft.com/en-us/rest/api/appservice/web-apps/list-application-settings)
+operation — a `POST` to `.../config/appsettings/list`, despite being a read
+— and writing is the separate [Update Application Settings](https://learn.microsoft.com/en-us/rest/api/appservice/web-apps/update-application-settings)
+operation, a `PUT` to `.../config/appsettings` with **no** `/list` suffix;
+there is no documented `GET` for this resource. The script below uses each
+verb and path for the right one, never interchanged. `APP_SERVICE_SETTINGS_HOST`
+and `APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT` exist only so this
+project's own test suite can run this exact script against a local stub
+instead of real Azure — both default to the real, production-safe behavior
+(`management.azure.com` over `https`) when unset, so copy-pasting this below
+does the right thing without touching either variable. **Never set either of
+those two in a real deployment.**
 
 ```bash
 node -e "
 const { generateVapidKeys } = require('./src/service/web-push.js');
-const https = require('https');
+const crypto = require('crypto');
 
 // The resource path and an access token come from this shell's environment
 // -- set them before running this, never as command-line arguments.
@@ -581,12 +594,25 @@ if (!resourcePath || !token) {
   process.exit(1);
 }
 
+// Test-only seam -- both default to the real production behavior and must
+// never be set outside this project's own test suite.
+const insecureTestTransport = process.env.APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT === '1';
+const transport = insecureTestTransport ? require('http') : require('https');
+const hostParts = (process.env.APP_SERVICE_SETTINGS_HOST || 'management.azure.com').split(':');
+const apiHostname = hostParts[0];
+const apiPort = hostParts[1] ? Number(hostParts[1]) : (insecureTestTransport ? 80 : 443);
+
+// Azure's real read operation (List Application Settings) is a POST to
+// .../list despite being a read; the write operation (Update Application
+// Settings) is a PUT with no /list suffix. Never swap these.
 function settingsRequest(method, body) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
-    const req = https.request({
-      hostname: 'management.azure.com',
-      path: resourcePath + '?api-version=2022-03-01',
+    const reqPath = (method === 'POST' ? resourcePath + '/list' : resourcePath) + '?api-version=2022-03-01';
+    const req = transport.request({
+      hostname: apiHostname,
+      port: apiPort,
+      path: reqPath,
       method,
       headers: Object.assign(
         { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -595,7 +621,14 @@ function settingsRequest(method, body) {
     }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, body: data ? JSON.parse(data) : {} }));
+      res.on('end', () => {
+        if (!data) { resolve({ status: res.statusCode, body: {} }); return; }
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch {
+          resolve({ status: res.statusCode, body: null, malformed: true });
+        }
+      });
     });
     req.on('error', reject);
     if (payload) req.write(payload);
@@ -603,14 +636,30 @@ function settingsRequest(method, body) {
   });
 }
 
-(async () => {
-  // 1. FIRST inspect the existing pair. Never generate or replace blind.
-  const current = await settingsRequest('GET');
-  if (current.status !== 200) {
-    console.error('Refusing: could not read the current settings (HTTP ' + current.status + '). Fix access before generating anything.');
+// Shared by the initial read and the post-write readback -- never trust a
+// response shape that has not been checked. A malformed body or a missing
+// properties object must refuse loudly, never silently degrade to {} and
+// then write a settings object that has lost every real setting.
+function readProperties(res, label) {
+  if (res.malformed || res.body === null) {
+    console.error('Refusing: ' + label + ' was not valid JSON. Fix connectivity/access before trusting anything here.');
     process.exit(1);
   }
-  const existing = current.body.properties || {};
+  if (res.status !== 200) {
+    console.error('Refusing: could not ' + label + ' (HTTP ' + res.status + '). Fix access before generating anything.');
+    process.exit(1);
+  }
+  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') {
+    console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
+    process.exit(1);
+  }
+  return res.body.properties;
+}
+
+(async () => {
+  // 1. FIRST inspect the existing pair. Never generate or replace blind.
+  const current = await settingsRequest('POST');
+  const existing = readProperties(current, 'read the current settings');
   const hasPublic = Boolean(existing.SQUAD_HUB_VAPID_PUBLIC_KEY);
   const hasPrivate = Boolean(existing.SQUAD_HUB_VAPID_PRIVATE_KEY);
   if (hasPublic && hasPrivate) {
@@ -622,9 +671,22 @@ function settingsRequest(method, body) {
     process.exit(1);
   }
 
-  // 2. Generate the new pair. It lives only in this process's memory from
-  // here on -- never assigned anywhere it could be printed or written.
+  // 2. Generate the new pair -- it lives only in this process's memory from
+  // here on -- then prove the two halves actually correspond BEFORE ever
+  // writing anything, using Node's own ECDH. App Service's real API never
+  // hands the private half back, so this in-memory check is the only place
+  // correspondence can ever be proven -- never by trusting a network
+  // round-trip. This is the same check an earlier revision of this doc ran
+  // as a separate, paste-based manual step; it is now folded in here so the
+  // private half never leaves this one protected process at all.
   const { publicKey, privateKey } = generateVapidKeys();
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'));
+  const derivedPublic = ecdh.getPublicKey(null, 'uncompressed').toString('base64url');
+  if (derivedPublic !== publicKey) {
+    console.error('Refusing: the freshly generated pair does not correspond (ECDH derivation mismatch). This would be a bug in generateVapidKeys, not a network problem -- do not write anything.');
+    process.exit(1);
+  }
 
   // 3. The settings API replaces the whole settings object, it does not
   // merge -- so every pre-existing setting is carried forward unchanged,
@@ -639,19 +701,29 @@ function settingsRequest(method, body) {
     process.exit(1);
   }
 
-  // 4. Read back and validate. Only the public half is ever safe to print
-  // or compare this way -- the private half is never read back, logged, or
+  // 4. Read back and validate -- status, shape, the public half, AND every
+  // pre-existing key by name and value. Only the public half is ever safe to
+  // compare this way -- the private half is never read back, logged, or
   // compared outside the process that just wrote it.
-  const readback = await settingsRequest('GET');
-  const storedPublic = (readback.body.properties || {}).SQUAD_HUB_VAPID_PUBLIC_KEY;
-  if (storedPublic !== publicKey) {
+  const readback = await settingsRequest('POST');
+  const stored = readProperties(readback, 'read back the settings just written');
+  if (stored.SQUAD_HUB_VAPID_PUBLIC_KEY !== publicKey) {
     console.error('MISMATCH -- the stored public key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
     process.exit(1);
+  }
+  for (const key of Object.keys(existing)) {
+    if (stored[key] !== existing[key]) {
+      console.error('Refusing to confirm success: pre-existing setting ' + key + ' was not preserved unchanged. Investigate before relying on this deployment.');
+      process.exit(1);
+    }
   }
   console.log('Pair stored and verified. Public key (not secret):');
   console.log(publicKey);
   console.log(Object.keys(existing).length + ' pre-existing setting(s) preserved unchanged.');
-})();
+})().catch((err) => {
+  console.error('Refusing: ' + (err && err.message || err));
+  process.exit(1);
+});
 "
 ```
 
@@ -660,11 +732,14 @@ function settingsRequest(method, body) {
   invoked by a worker, never run automatically on redeploy or at hub
   startup, and never touches a running production pair that is already
   configured: step 1's refusal is exactly what stops that from happening
-  by accident.
+  by accident, and that refusal only ever fires after the response's status
+  and shape have themselves been validated — a malformed or unexpected
+  response is refused explicitly, never silently treated as "no settings".
 - `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout`, a log
   captured anywhere durable, a file, a bare command-line argument, or a
   system clipboard — the script above only ever places it in the HTTPS
-  request body sent directly to the settings API.
+  request body sent directly to the settings API, after proving in memory
+  (step 2) that it actually corresponds to the generated public half.
 - **Refuse to replace only one half of an existing pair**, and refuse to
   regenerate when a complete pair is already configured (both enforced by
   the script's own first step) — a public key paired with a private key
@@ -702,30 +777,27 @@ sign for), not a failure at *subscribe* time — subscribing only ever hands
 the browser the public half, never the private one, so a mismatch is
 invisible until the first real send.
 
-**Verifying a pair actually corresponds, once, at initial setup — not a
-redeploy, rotation, or anything this project automates:**
-
-```bash
-node -e "
-const crypto = require('crypto');
-// Paste the two candidate values into this shell's environment for this
-// one-off check only -- never into a file, and unset/close the shell
-// immediately after.
-const privateKey = process.env.CANDIDATE_PRIVATE_KEY;
-const expectedPublicKey = process.env.CANDIDATE_PUBLIC_KEY;
-const ecdh = crypto.createECDH('prime256v1');
-ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'));
-const derived = ecdh.getPublicKey(null, 'uncompressed').toString('base64url');
-console.log(derived === expectedPublicKey ? 'pair matches' : 'MISMATCH -- do not deploy this pair');
-"
-unset CANDIDATE_PRIVATE_KEY CANDIDATE_PUBLIC_KEY
-```
-
-This is a manual, one-time readback check an operator runs deliberately
-right after generating a pair and before relying on it in production —
-exactly like `generateVapidKeys()` itself, it is never called at hub
-startup, never run automatically before a send, and never a substitute for
-the "set both together" rule above.
+**Verifying a pair actually corresponds, once, at initial setup — now step 2
+of the one script above, not a separate manual procedure.** An earlier
+revision of this doc ran this as its own copy-pasted example, with a comment
+telling the operator to paste the two candidate values into the shell's
+environment for a one-off check. That is exactly the kind of manual,
+by-hand handling of a private key this project otherwise refuses to
+recommend — a pasted secret can land in shell history, a terminal's
+scrollback, or a recorded session the same way a printed or clipped one can.
+There is nothing about this check that requires a separate process or a
+separate paste: step 2 above runs the identical ECDH derivation
+(`crypto.createECDH('prime256v1')`, `setPrivateKey`, `getPublicKey(null,
+'uncompressed')`, compared against the generated `publicKey`) on the pair
+the moment it is generated, inside the same protected, memory-only process,
+before that process ever makes a network call. If it fails, the script
+refuses (`console.error` plus `process.exit(1)`) before any write — exactly
+like every other refusal in this procedure. This check exists because
+Node's JWK import does not verify `d·G == (x, y)` on its own (below) — it is
+still a one-time, initial-setup-only check, never called at hub startup,
+never run automatically before a send, and never a substitute for the "set
+both together" rule above; it is just no longer a second, paste-based
+runnable example.
 
 **Backup and recovery.** The hub itself is not a backup for this pair — it
 holds the private key only in process memory (an environment variable), the

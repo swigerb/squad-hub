@@ -6548,6 +6548,46 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `          INPUT_MODEL: \${{ github.event.inputs.model || '' }} # MUTATION: GH_TOKEN removed`,
     mustFail: 'input validation carries a GH_TOKEN so its gh api base-branch check is authenticated',
   },
+  {
+    // PR #244 review (Finding 1): Azure's real "List Application Settings"
+    // operation is a POST to .../list, despite being a read -- there is no
+    // documented GET for config/appsettings. Reverting the recommended
+    // VAPID transfer script's read call back to GET reproduces exactly the
+    // factually-wrong REST shape the review flagged.
+    name: 'the recommended VAPID transfer script reads settings with GET instead of the real POST .../list operation',
+    file: 'docs/security.md',
+    find: `  const current = await settingsRequest('POST');`,
+    replace: `  const current = await settingsRequest('GET'); // MUTATION: Azure has no documented GET for this resource`,
+    mustFail: 'executable: the recommended script reads via POST .../list (not GET) and writes via PUT (not /list)',
+  },
+  {
+    // PR #244 review (Finding 2a): a malformed or unexpected-shape settings
+    // response must refuse loudly, never silently degrade to {} and then
+    // write a settings object that has lost every real pre-existing
+    // setting. Dropping the shape check back to the old `|| {}` fallback
+    // reproduces exactly that silent-data-loss bug.
+    name: 'the recommended VAPID transfer script silently treats a malformed settings response as empty instead of refusing',
+    file: 'docs/security.md',
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') {
+    console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
+    process.exit(1);
+  }
+  return res.body.properties;`,
+    replace: `  return res.body.properties || {}; // MUTATION: silently treats a malformed/missing-shape response as "no settings"`,
+    mustFail: 'executable: the script refuses safely, with no write, when the read response is JSON but missing properties',
+  },
+  {
+    // PR #244 review (Finding 2d): the public/private correspondence check
+    // must run in memory, before any network write, and actually refuse on
+    // a mismatch. Disabling the comparison reproduces writing an unverified
+    // pair -- exactly what an earlier, separate paste-based manual example
+    // existed to catch, now folded into this one script.
+    name: 'the in-script ECDH correspondence check never refuses, even on a derivation mismatch',
+    file: 'docs/security.md',
+    find: `  if (derivedPublic !== publicKey) {`,
+    replace: `  if (false) { // MUTATION: correspondence check disabled`,
+    mustFail: 'security.md folds the ECDH correspondence check into the one recommended script, with no separate paste-based example',
+  },
 ];
 
 /**
