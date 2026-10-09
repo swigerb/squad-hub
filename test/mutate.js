@@ -6471,6 +6471,232 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
     mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
   },
+
+  // -------------------------------------------------------------------------
+  // Issue #242: `.github/workflows/squad-dispatch.yml`, the manual-only
+  // target dispatch workflow pinned to a reviewed squad-on-aca core.
+  // -------------------------------------------------------------------------
+  {
+    name: 'squad-dispatch.yml gains an issues: auto-dispatch trigger',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `on:
+  workflow_dispatch:`,
+    replace: `on:
+  issues:
+    types: [labeled] # MUTATION
+  workflow_dispatch:`,
+    mustFail: 'issues/issue_comment auto-dispatch triggers are NOT present',
+  },
+  {
+    name: 'the pinned core checkout is no longer verified to resolve to the pinned SHA',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if [ "$resolved" != "\${{ env.SQUAD_ACA_CORE_REF }}" ]; then`,
+    replace: `          if false; then # MUTATION: the pin check can never fire`,
+    mustFail: 'the pinned checkout is verified to actually resolve to the pinned SHA before any side effect runs',
+  },
+  {
+    name: 'the pinned core checkout starts persisting credentials',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          path: aca-core
+          persist-credentials: false`,
+    replace: `          path: aca-core
+          persist-credentials: true # MUTATION`,
+    mustFail: 'the pinned core checkout is read-only (no credentials persisted)',
+  },
+  {
+    name: 'the ACA job start no longer refuses a template missing image/cpu/memory',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if ! jq -e '.properties.template.containers[0].image and (.properties.template.containers[0].resources.cpu != null) and .properties.template.containers[0].resources.memory' "$job_file" >/dev/null; then`,
+    replace: `          if false; then # MUTATION: the template shape is never checked`,
+    mustFail: 'the job template is checked for image/cpu/memory before an override is attempted',
+  },
+  {
+    name: 'the ACA job start no longer refuses a merged environment with no GITHUB_TOKEN secret reference',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if ! printf '%s\\n' "\${start_env[@]}" | grep -q '^GITHUB_TOKEN=secretref:'; then`,
+    replace: `          if false; then # MUTATION: never refuses a missing GITHUB_TOKEN secret reference`,
+    mustFail: 'a merged environment with no GITHUB_TOKEN secret reference refuses to start',
+  },
+  {
+    name: 'a claimed lease with no resulting execution is no longer a hard failure',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if [ -z "\${EXEC}" ]; then
+            echo "The lease was claimed for this issue but NO ACA execution was started."
+            echo "The lease is now held by a session that does not exist, so the issue is blocked until it is swept."
+            exit 1
+          fi`,
+    replace: `          if false; then # MUTATION: a claimed-but-unstarted lease is no longer caught
+            exit 1
+          fi`,
+    mustFail: 'a claimed lease with no resulting execution is a hard failure, not a quiet success',
+  },
+  {
+    name: 'the job-level permissions widen to include actions: write',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `    permissions:
+      id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
+    replace: `    permissions:
+      actions: write   # MUTATION: this job never needs Actions permission on itself
+      id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
+    mustFail: 'permissions are minimal at the workflow level and scoped at the job level',
+  },
+  {
+    name: 'input validation loses its GH_TOKEN, leaving its gh api base-branch check unauthenticated',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          INPUT_MODEL: \${{ github.event.inputs.model || '' }}`,
+    replace: `          INPUT_MODEL: \${{ github.event.inputs.model || '' }} # MUTATION: GH_TOKEN removed`,
+    mustFail: 'input validation carries a GH_TOKEN so its gh api base-branch check is authenticated',
+  },
+  {
+    // PR #244 review (Finding 1): Azure's real "List Application Settings"
+    // operation is a POST to .../list, despite being a read -- there is no
+    // documented GET for config/appsettings. Reverting the recommended
+    // VAPID transfer script's read call back to GET reproduces exactly the
+    // factually-wrong REST shape the review flagged.
+    name: 'the recommended VAPID transfer script reads settings with GET instead of the real POST .../list operation',
+    file: 'docs/security.md',
+    find: `  const current = await settingsRequest('POST', undefined, 'read');`,
+    replace: `  const current = await settingsRequest('GET', undefined, 'read'); // MUTATION: Azure has no documented GET for this resource`,
+    mustFail: 'executable: the recommended script reads via POST .../list (not GET) and writes via PUT (not /list)',
+  },
+  {
+    // PR #244 review (Finding 2a): a malformed or unexpected-shape settings
+    // response must refuse loudly, never silently degrade to {} and then
+    // write a settings object that has lost every real pre-existing
+    // setting. Dropping the shape check back to the old `|| {}` fallback
+    // reproduces exactly that silent-data-loss bug.
+    name: 'the recommended VAPID transfer script silently treats a malformed settings response as empty instead of refusing',
+    file: 'docs/security.md',
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {
+    console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
+    process.exit(1);
+  }
+  return res.body.properties;`,
+    replace: `  return res.body.properties || {}; // MUTATION: silently treats a malformed/missing-shape response as "no settings"`,
+    mustFail: 'executable: the script refuses safely, with no write, when the read response is JSON but missing properties',
+  },
+  {
+    // PR #244 review (Finding 2d): the public/private correspondence check
+    // must run in memory, before any network write, and actually refuse on
+    // a mismatch. Disabling the comparison reproduces writing an unverified
+    // pair -- exactly what an earlier, separate paste-based manual example
+    // existed to catch, now folded into this one script.
+    name: 'the in-script ECDH correspondence check never refuses, even on a derivation mismatch',
+    file: 'docs/security.md',
+    find: `  if (derivedPublic !== publicKey) {`,
+    replace: `  if (false) { // MUTATION: correspondence check disabled`,
+    mustFail: 'security.md folds the ECDH correspondence check into the one recommended script, with no separate paste-based example',
+  },
+  {
+    // Security review follow-up to #244 (N1): APP_SERVICE_SETTINGS_HOST must
+    // never be honored unless the insecure test-transport flag is also
+    // explicitly set to '1' -- otherwise a stray APP_SERVICE_SETTINGS_HOST
+    // left set in a real shell silently redirects the bearer token and the
+    // freshly written private key to a different host, still over HTTPS.
+    // Reverting to honoring the host override unconditionally reproduces
+    // exactly that.
+    name: 'the recommended VAPID transfer script honors APP_SERVICE_SETTINGS_HOST even without the insecure test-transport flag',
+    file: 'docs/security.md',
+    find: `const hostParts = ((insecureTestTransport && process.env.APP_SERVICE_SETTINGS_HOST) || 'management.azure.com').split(':');`,
+    replace: `const hostParts = (process.env.APP_SERVICE_SETTINGS_HOST || 'management.azure.com').split(':'); // MUTATION: host override honored unconditionally`,
+    mustFail: 'executable: APP_SERVICE_SETTINGS_HOST alone, without the insecure test-transport flag, is ignored -- the real hostname and port are used',
+  },
+  {
+    // Security review follow-up to #244 (N2): `typeof res.body.properties
+    // !== 'object'` alone is also true for an array (`typeof [] ===
+    // 'object'`), so a `properties: []` response would otherwise pass this
+    // shape check and proceed into the write path. Dropping the explicit
+    // Array.isArray rejection reproduces exactly that gap.
+    name: 'the recommended VAPID transfer script treats properties: [] as a valid shape instead of refusing',
+    file: 'docs/security.md',
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {`,
+    replace: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') { // MUTATION: array shape rejection removed`,
+    mustFail: 'executable: the script refuses safely, with no write, when properties is an array instead of an object',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 1): Azure's real List Application
+    // Settings operation returns the private value verbatim on read -- it
+    // is not redacted. The in-memory ECDH check in step 2 only proves the
+    // freshly generated pair is internally self-consistent BEFORE the
+    // write; it proves nothing about what actually landed in App Service
+    // after the PUT. Dropping the readback comparison of the stored private
+    // key reproduces exactly the bug the re-review flagged: a PUT that
+    // silently drops/corrupts/truncates the private value would still
+    // report "Pair stored and verified".
+    name: 'the recommended VAPID transfer script never compares the stored private key against the generated one on readback',
+    file: 'docs/security.md',
+    find: `  if (stored.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey) {
+    console.error('MISMATCH -- the stored private key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }`,
+    replace: `  // MUTATION: private key readback comparison removed`,
+    mustFail: 'executable: the script detects a stored private key that does not match what was generated, even though the public key matches, and never leaks either key value',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 2): settingsRequest() must bound how
+    // long it waits for a response -- a peer that accepts the connection
+    // but never finishes responding must never hang the operator's shell
+    // forever with no feedback. Removing the timeout reproduces exactly
+    // that unbounded hang.
+    name: 'the recommended VAPID transfer script has no bound on how long it waits for a response (no timeout)',
+    file: 'docs/security.md',
+    find: `    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy();
+      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }
+    });`,
+    replace: `    // MUTATION: request timeout removed`,
+    mustFail: 'executable: a stalled initial read times out, refuses safely, and reports that no write has happened yet',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 2): a timed-out PUT must never
+    // claim "no write happened" -- the request body may already have
+    // reached the server before the response stalled. Reusing the read
+    // timeout's safe "no write has happened yet" language for a stalled PUT
+    // reproduces exactly the false safety claim the re-review flagged.
+    name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled PUT, same as a stalled read',
+    file: 'docs/security.md',
+    find: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }`,
+    replace: `      reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: PUT/readback timeout falsely claims no write happened, same as a read timeout`,
+    mustFail: 'executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened',
+  },
+  {
+    // Security review follow-up (#242): collapsing the step-4 readback
+    // timeout message back to the step-1 wording reproduces the exact
+    // false-safety bug the security reviewer flagged on commit ed0f2ba --
+    // claiming "no write has happened yet" for a readback timeout that runs
+    // AFTER step 3's PUT already succeeded. This mutation keeps the PUT
+    // branch distinct (so the PUT-timeout test above still passes) but
+    // collapses ONLY the readback branch into the step-1 wording, which
+    // must make the dedicated step-4-stall test fail.
+    name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled step-4 readback, same as a stalled step-1 read',
+    file: 'docs/security.md',
+    find: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }`,
+    replace: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: readback branch collapsed back into the step-1 wording
+      }`,
+    mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
+  },
 ];
 
 /**

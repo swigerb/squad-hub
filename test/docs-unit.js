@@ -45,6 +45,36 @@ const architecture = read('docs/architecture.md');
 const security = read('docs/security.md');
 const allDocs = [commands, readme, docsIndex, cloud, architecture, security].join('\n');
 
+// PR #244 review (Finding 3): several checks below need the exact text of
+// the recommended VAPID transfer script -- both as a prose target and as
+// literal JS this suite can hand straight to `node -e` and actually run
+// against a local stub server. One extraction, reused everywhere, so a doc
+// edit that moves or grows the script cannot silently desync a hand-picked
+// slice length from the text it is meant to cover.
+function extractRecommendedScript() {
+  const marker = 'node -e "\n';
+  let idx = security.indexOf(marker);
+  while (idx !== -1) {
+    const after = idx + marker.length;
+    const closeIdx = security.indexOf('\n"\n```', after);
+    if (closeIdx !== -1) {
+      const candidate = security.slice(after, closeIdx);
+      if (candidate.includes('function settingsRequest')) return candidate;
+    }
+    idx = security.indexOf(marker, idx + 1);
+  }
+  return null;
+}
+const recommendedScript = extractRecommendedScript();
+
+function fencedCodeBlocks(text) {
+  const blocks = [];
+  const re = /```[a-zA-Z]*\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text))) blocks.push(m[1]);
+  return blocks;
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -323,6 +353,559 @@ check('cloud.md documents the GitHub App settings for direct ACA dispatch', () =
 // lookup, and security.md's partitioning section did not say so.
 check('security.md documents that /api/prefs follows the same per-user partitioning', () => {
   assert.match(security, /api\/prefs/, 'security.md does not mention /api/prefs under per-user isolation');
+});
+
+// PR #244 review (Finding 3): an earlier revision of this doc required the
+// literal dangerous command `console.log(JSON.stringify(...generateVapidKeys()))`
+// to be present, as a "DO NOT DO THIS" counter-example. Scout flagged that
+// keeping a runnable, copy-pasteable version of the unsafe command around is
+// itself a temptation -- it has been removed and replaced with prose that
+// still explains the hazard. No fenced, runnable code block anywhere in the
+// doc may print the private key, the raw generator output, or the specific
+// dangerous call that used to be the counter-example.
+check('security.md never shows a runnable command that prints the VAPID private key or raw generator output', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  const blocks = fencedCodeBlocks(security);
+  assert.ok(blocks.length > 0, 'expected at least one fenced code block in security.md');
+  const dangerousLog = /(console\.log|console\.error|process\.stdout\.write)\s*\([^)]*(privateKey|generateVapidKeys\(\)|JSON\.stringify\(require\('\.\/src\/service\/web-push\.js'\)\.generateVapidKeys\(\)\))/;
+  for (const block of blocks) {
+    assert.ok(!dangerousLog.test(block),
+      'a fenced, runnable code block in security.md prints the VAPID private key or the raw generator output');
+  }
+  // The recommended procedure's own code block must capture the pair in
+  // process memory and hand the private half straight to the settings
+  // store's own HTTPS API -- never log it.
+  assert.ok(!/console\.log\([^)]*privateKey/.test(recommendedScript), 'the recommended procedure must never log the private key');
+  // Removing the counter-example must not silently drop the "why" along
+  // with it -- the hazard must still be explained in prose.
+  assert.match(security, /stdout is not memory-only/, 'security.md must still explain the stdout/log-capture hazard in prose');
+  assert.match(security, /scrollback/, 'security.md must still name a concrete stdout-capture hazard (terminal scrollback, CI step logs, session recording)');
+});
+
+// Scout review (follow-up to #244): a clipboard is not memory-only either --
+// a synced/history-tracking clipboard retains the private key even after the
+// current entry is overwritten or "cleared". No production key was ever
+// exposed through this; the docs are being corrected before any incident,
+// not after one. The recommended procedure must not use a clipboard command
+// at all, only the counter-example framing may mention clipboards (to
+// explain why one was removed).
+check('security.md no longer recommends a clipboard for VAPID private key transfer', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  for (const clipboardCmd of ['pbcopy', 'xclip', 'xsel', /\bclip\b/]) {
+    assert.ok(!recommendedScript.match(clipboardCmd), `the recommended procedure must not use ${clipboardCmd} to transfer the private key`);
+  }
+  assert.match(security, /clipboard is not memory-only/, 'security.md must explain why a clipboard was rejected, not just silently drop it');
+});
+
+// Scout review (follow-up to #244): the recommended procedure must inspect
+// the existing pair before generating anything, and refuse rather than
+// silently overwrite -- both when a complete pair is already configured
+// (this is initial-setup only, never a redeploy/rotation shortcut) and when
+// only one half is present (never silently fill in a mismatched half).
+check('security.md\'s VAPID transfer procedure refuses to run when a complete pair is already configured', () => {
+  assert.match(security, /a VAPID key pair is already configured/, 'security.md must refuse when both halves are already set');
+  assert.match(security, /initial setup only/, 'security.md must say this procedure is initial-setup only, not a redeploy/rotation path');
+});
+
+check('security.md\'s VAPID transfer procedure refuses to run when only one half of the pair is configured', () => {
+  assert.match(security, /only one half of a VAPID pair is currently set/, 'security.md must refuse an incomplete pair rather than silently generating the missing half');
+});
+
+// Scout review (follow-up to #244): the settings API replaces the entire
+// settings object rather than merging, so the recommended script must
+// explicitly carry every pre-existing setting forward -- otherwise following
+// this doc would silently delete every other App Service setting.
+check('security.md\'s VAPID transfer procedure preserves every other existing setting', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  assert.match(recommendedScript, /Object\.assign\(\{\}, existing,/, 'the recommended script must merge the new VAPID keys into the existing settings, not replace them');
+  assert.match(recommendedScript, /preserved unchanged/, 'the recommended script must confirm pre-existing settings were preserved');
+});
+
+// Scout review (follow-up to #244): after writing the new pair, the
+// procedure must read it back and compare, and give an explicit, safe error
+// -- never a silent success -- on any failure (unreadable settings, a
+// failed write, or a stored public key that does not match what was sent).
+check('security.md\'s VAPID transfer procedure reads back and validates the stored public key, with explicit safe errors', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  assert.match(recommendedScript, /MISMATCH/, 'the recommended script must detect and report a stored public key that does not match what was generated');
+  assert.match(recommendedScript, /console\.error\('Refusing/, 'the recommended script must give an explicit refusal message, not fail silently');
+});
+
+// PR #244 review (Finding 1): Azure App Service has no documented GET for
+// reading config/appsettings -- the real "List Application Settings"
+// operation is a POST to .../list. The recommended script must use POST+
+// /list for every READ, and must keep the write as a plain PUT with no
+// /list suffix (that part was already correct).
+check('security.md\'s VAPID transfer procedure reads settings via POST .../list, never GET, and writes via plain PUT', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  assert.match(recommendedScript, /resourcePath \+ '\/list'/, 'reads must be sent to resourcePath + \'/list\'');
+  assert.match(recommendedScript, /settingsRequest\('POST', undefined, '\w+'\)/, 'the read calls must use POST, matching Azure\'s real List Application Settings operation');
+  assert.ok(!/settingsRequest\('GET'/.test(recommendedScript), 'the recommended script must never use GET to read settings -- Azure has no documented GET for this resource');
+  assert.match(recommendedScript, /settingsRequest\('PUT', \{ properties: merged \}, 'write'\)/, 'the write must stay a PUT carrying the merged properties');
+  // The write's own path construction must never carry a /list suffix.
+  const writePathLine = recommendedScript.match(/const reqPath = .*/);
+  assert.ok(writePathLine, 'could not find the request path construction');
+  assert.match(writePathLine[0], /method === 'POST' \? resourcePath \+ '\/list' : resourcePath/, 'only POST (read) may append /list -- PUT (write) must use the bare resourcePath');
+});
+
+// Scout review (follow-up to #244, Finding 2a/2b): a malformed or
+// unexpected-shape response must never be silently treated as "no settings"
+// -- that would make the write below delete every real pre-existing
+// setting. JSON.parse must be guarded (never thrown out of the response
+// event handler), and the whole async IIFE must have a top-level .catch so
+// a network failure produces a clean refusal, not a crash dump.
+check('security.md\'s VAPID transfer procedure validates response shape and guards against malformed JSON and network failures', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  assert.match(recommendedScript, /typeof res\.body !== 'object'/, 'the script must validate that the response body is actually an object');
+  assert.match(recommendedScript, /typeof res\.body\.properties !== 'object'/, 'the script must validate that body.properties is actually an object, not just truthy');
+  assert.match(recommendedScript, /try \{\s*\n\s*resolve\(\{ status: res\.statusCode, body: JSON\.parse\(data\) \}\);\s*\n\s*\} catch/, 'JSON.parse must be wrapped in a try/catch inside the response handler, never allowed to throw out of it');
+  assert.match(recommendedScript, /\}\)\(\)\.catch\(\(err\) => \{/, 'the top-level async IIFE must have its own .catch so a network failure (req.on(\'error\', reject)) produces a clean refusal, not an unhandled rejection');
+  assert.ok(!/const existing = current\.body\.properties \|\| \{\}/.test(recommendedScript), 'the script must never fall back silently to {} on an unchecked response shape');
+});
+
+// Scout review (follow-up to #244, Finding 2c): the readback after writing
+// must validate status+shape exactly like the initial read (not a looser
+// check), and must verify EVERY pre-existing key survived the write with
+// its original value -- not just count how many input keys there were.
+check('security.md\'s VAPID transfer procedure validates the readback\'s shape and checks every pre-existing key by value', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  assert.match(recommendedScript, /readProperties\(readback, 'read back the settings just written'\)/, 'the readback must run through the same shape/status validation as the initial read');
+  assert.match(recommendedScript, /for \(const key of Object\.keys\(existing\)\) \{/, 'the script must iterate every pre-existing key');
+  assert.match(recommendedScript, /if \(stored\[key\] !== existing\[key\]\) \{/, 'the script must compare each pre-existing key\'s readback value against its original value, not just count keys');
+});
+
+// Re-review (follow-up to #244): Azure's real List Application Settings
+// operation returns the FULL StringDictionary on a read, including whatever
+// is currently stored under SQUAD_HUB_VAPID_PRIVATE_KEY -- it is not
+// redacted. The in-memory ECDH check in step 2 only proves the freshly
+// generated pair is internally self-consistent BEFORE the write; it proves
+// nothing about what actually landed in App Service after the PUT. The
+// readback block must therefore compare the stored private key against the
+// generated one too, not just the public half -- this is a distinct
+// assertion from the step-3 write-merge block, which only ever assigns
+// privateKey into the object being written, never compares it back.
+check('security.md\'s VAPID transfer procedure compares the stored private key against the generated one on readback, not just the public half', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  const readbackBlock = recommendedScript.slice(recommendedScript.indexOf("const readback = await settingsRequest('POST', undefined, 'readback');"));
+  assert.match(readbackBlock, /stored\.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey/, 'the readback block must compare the stored private key against the freshly generated privateKey, not just the write-merge assignment');
+  // The refusal message itself must never echo either actual key value --
+  // only ever the fact that they did not match.
+  const mismatchMsgMatch = readbackBlock.match(/console\.error\('MISMATCH -- the stored private key does not match what was just generated\.[^']*'\);/);
+  assert.ok(mismatchMsgMatch, 'expected an explicit private-key MISMATCH refusal message, distinct from the public-key one');
+  assert.ok(!/\$\{|privateKey\s*\+|'\s*\+\s*privateKey|'\s*\+\s*stored/.test(mismatchMsgMatch[0]), 'the private-key MISMATCH message must never interpolate or concatenate the actual key values into the printed message');
+});
+
+// Scout review (follow-up to #244, Finding 2d): an earlier revision ran the
+// public/private correspondence check as a SEPARATE manual procedure that
+// told the operator to paste the private key into the shell environment --
+// itself a hand-the-secret-around step the main procedure is held against
+// elsewhere. That separate paste-based example must be gone; the same ECDH
+// check must be folded into the one recommended script, running in memory
+// on the freshly generated pair before any network write.
+check('security.md folds the ECDH correspondence check into the one recommended script, with no separate paste-based example', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  assert.match(recommendedScript, /crypto\.createECDH\('prime256v1'\)/, 'the recommended script must run the ECDH correspondence check itself');
+  assert.match(recommendedScript, /ecdh\.setPrivateKey\(Buffer\.from\(privateKey, 'base64url'\)\)/, 'the in-script check must use the freshly generated privateKey, in memory');
+  assert.match(recommendedScript, /derivedPublic !== publicKey/, 'the in-script check must compare the derived public key against the generated publicKey before any write');
+  assert.ok(!/CANDIDATE_PRIVATE_KEY/.test(security), 'security.md must no longer tell an operator to paste a candidate private key into the shell environment');
+  assert.ok(!/Paste the two candidate values/.test(security), 'the separate paste-based correspondence example must be removed entirely');
+});
+
+// ---------------------------------------------------------------------------
+// Finding 3: mutation-grade EXECUTABLE proof for the recommended VAPID
+// transfer script, not just prose assertions against the markdown text.
+//
+// The script is extracted verbatim (`recommendedScript` above) and actually
+// run with `node -e`, against a local plain-HTTP stub standing in for
+// Azure's app-settings endpoint -- the exact seam the script itself
+// documents (`APP_SERVICE_SETTINGS_HOST` / `_INSECURE_TEST_TRANSPORT`,
+// both production-safe-by-default, test-only when set).
+//
+// A single in-process `check()` cannot both run an HTTP server (event-loop
+// driven) and synchronously block on the script-under-test's completion --
+// Node has no way to interleave those on one thread. So each scenario below
+// spawns ONE self-contained "driver" subprocess (via spawnSync, which is
+// fine because the parent has nothing else to do while it runs): the driver
+// starts the stub server, uses ASYNC `spawn` (not spawnSync) to run the
+// extracted script so its own event loop keeps serving HTTP requests while
+// waiting, then reports a single JSON result line back over stdout for this
+// suite to assert against synchronously.
+// ---------------------------------------------------------------------------
+
+function vapidDriverSource() {
+  return `
+const http = require('http');
+const { spawn } = require('child_process');
+
+(async () => {
+  const scenario = JSON.parse(process.env.__VAPID_SCENARIO__);
+  const script = process.env.__VAPID_SCRIPT__;
+  const requests = { lists: [], writes: [] };
+  let listCallIndex = 0;
+  let storedProperties = scenario.initialProperties || {};
+  let server = null;
+  let port = 1; // nothing listens here -- used as-is for the closed-port scenario
+
+  if (!scenario.closedPort) {
+    server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const urlPath = req.url.split('?')[0];
+        if (req.method === 'POST' && urlPath.endsWith('/list')) {
+          requests.lists.push(req.method + ' ' + req.url);
+          const callIdx = listCallIndex;
+          listCallIndex += 1;
+          if (scenario.stallRead && callIdx === (scenario.stallReadCallIndex || 0)) {
+            // Deliberately never respond -- simulates a peer that accepts
+            // the connection but never finishes, so the script's own
+            // request timeout is what must eventually fire, not this stub.
+            return;
+          }
+          if (scenario.malformedRaw !== undefined && callIdx === 0) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(scenario.malformedRaw);
+            return;
+          }
+          if (scenario.missingProperties && callIdx === 0) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ notProperties: true }));
+            return;
+          }
+          if (scenario.arrayProperties && callIdx === 0) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: [] }));
+            return;
+          }
+          if (scenario.listStatus && scenario.listStatus !== 200 && callIdx === 0) {
+            res.writeHead(scenario.listStatus, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: storedProperties }));
+            return;
+          }
+          if (scenario.forceMismatchOnSecondRead && callIdx >= 1) {
+            const decoy = Object.assign({}, storedProperties, { SQUAD_HUB_VAPID_PUBLIC_KEY: 'DECOY-NOT-THE-REAL-KEY' });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: decoy }));
+            return;
+          }
+          if (scenario.forcePrivateMismatchOnSecondRead && callIdx >= 1) {
+            const decoy = Object.assign({}, storedProperties, { SQUAD_HUB_VAPID_PRIVATE_KEY: 'DECOY-NOT-THE-REAL-PRIVATE-KEY' });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: decoy }));
+            return;
+          }
+          if (scenario.forcePrivateMissingOnSecondRead && callIdx >= 1) {
+            const decoy = Object.assign({}, storedProperties);
+            delete decoy.SQUAD_HUB_VAPID_PRIVATE_KEY;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: decoy }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ properties: storedProperties }));
+          return;
+        }
+        if (req.method === 'PUT') {
+          let parsed = null;
+          try { parsed = JSON.parse(body); } catch (e) { parsed = null; }
+          requests.writes.push({ url: req.url, method: req.method, body: parsed });
+          if (parsed && parsed.properties) storedProperties = parsed.properties;
+          if (scenario.stallWrite) {
+            // The write body has already been fully received by this stub
+            // (pushed into requests.writes above) before we decide never to
+            // respond -- mirrors a PUT whose body reached the real server
+            // before the connection stalled on the way back.
+            return;
+          }
+          res.writeHead(scenario.writeStatus || 200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ properties: storedProperties }));
+          return;
+        }
+        requests.lists.push('UNEXPECTED ' + req.method + ' ' + req.url);
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = server.address().port;
+  }
+
+  const child = spawn(process.execPath, ['-e', script], {
+    env: Object.assign({}, process.env, {
+      APP_SERVICE_SETTINGS_HOST: '127.0.0.1:' + port,
+      APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT: '1',
+      APP_SERVICE_SETTINGS_PATH: '/test/path',
+      AZ_ACCESS_TOKEN: 'test-token',
+    }),
+  });
+  let childStdout = '';
+  let childStderr = '';
+  child.stdout.on('data', (d) => { childStdout += d; });
+  child.stderr.on('data', (d) => { childStderr += d; });
+  const status = await new Promise((resolve) => {
+    // Default kill timer is generous relative to a fast scenario, but for
+    // stall scenarios the caller raises driverKillTimeoutMs comfortably
+    // above the script's own REQUEST_TIMEOUT_MS so the script's own bound
+    // is what fires first, not this outer safety net.
+    const killTimeoutMs = scenario.driverKillTimeoutMs || 8000;
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) { /* already gone */ } resolve(124); }, killTimeoutMs);
+    child.on('close', (code) => { clearTimeout(timer); resolve(code); });
+  });
+
+  if (server) await new Promise((resolve) => server.close(resolve));
+
+  process.stdout.write('__VAPID_RESULT__' + JSON.stringify({ status, stdout: childStdout, stderr: childStderr, requests }));
+  process.exit(0);
+})().catch((err) => {
+  process.stdout.write('__VAPID_RESULT__' + JSON.stringify({ status: -1, stdout: '', stderr: String((err && err.stack) || err), requests: { lists: [], writes: [] } }));
+  process.exit(0);
+});
+`;
+}
+
+function runVapidScenario(scenario) {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  // The outer spawnSync timeout must stay comfortably above the driver's
+  // own kill timer (itself above the script's own REQUEST_TIMEOUT_MS for
+  // stall scenarios), so a stall scenario proves the SCRIPT's own bound,
+  // never the test harness's.
+  const outerTimeoutMs = Math.max(20000, (scenario.driverKillTimeoutMs || 8000) + 7000);
+  const r = spawnSync(process.execPath, ['-e', vapidDriverSource()], {
+    cwd: ROOT, encoding: 'utf8', timeout: outerTimeoutMs,
+    env: Object.assign({}, process.env, {
+      __VAPID_SCENARIO__: JSON.stringify(scenario),
+      __VAPID_SCRIPT__: recommendedScript,
+    }),
+  });
+  const out = r.stdout || '';
+  const idx = out.indexOf('__VAPID_RESULT__');
+  if (idx === -1) {
+    throw new Error('vapid scenario driver produced no result; status=' + r.status + ' stdout=' + out + ' stderr=' + (r.stderr || ''));
+  }
+  return JSON.parse(out.slice(idx + '__VAPID_RESULT__'.length));
+}
+
+check('executable: the recommended script reads via POST .../list (not GET) and writes via PUT (not /list)', () => {
+  const result = runVapidScenario({ initialProperties: { UNRELATED_SETTING: 'keep-me' } });
+  assert.strictEqual(result.status, 0, 'expected success; stderr=' + result.stderr);
+  assert.ok(result.requests.lists.every((l) => l.startsWith('POST') && l.includes('/list')), `every read must be POST .../list, got: ${JSON.stringify(result.requests.lists)}`);
+  assert.ok(result.requests.writes.length === 1 && result.requests.writes[0].method === 'PUT' && !result.requests.writes[0].url.includes('/list'),
+    `the write must be a single PUT with no /list suffix, got: ${JSON.stringify(result.requests.writes)}`);
+});
+
+check('executable: with no existing pair, the script succeeds, preserves unrelated settings, adds both VAPID keys, and never prints the private key', () => {
+  const result = runVapidScenario({ initialProperties: { UNRELATED_SETTING: 'keep-me', ANOTHER_SETTING: '42' } });
+  assert.strictEqual(result.status, 0, 'expected success; stderr=' + result.stderr);
+  const written = result.requests.writes[0].body.properties;
+  assert.strictEqual(written.UNRELATED_SETTING, 'keep-me', 'unrelated setting must survive the write unchanged');
+  assert.strictEqual(written.ANOTHER_SETTING, '42', 'unrelated setting must survive the write unchanged');
+  assert.ok(written.SQUAD_HUB_VAPID_PUBLIC_KEY, 'the public key must be written');
+  const privateKey = written.SQUAD_HUB_VAPID_PRIVATE_KEY;
+  assert.ok(privateKey, 'the private key must be written');
+  const combined = result.stdout + result.stderr;
+  assert.ok(!combined.includes(privateKey), 'the generated private key must never appear in the script\'s stdout or stderr');
+});
+
+check('executable: the script refuses and makes no write when a complete VAPID pair is already configured', () => {
+  const result = runVapidScenario({ initialProperties: { SQUAD_HUB_VAPID_PUBLIC_KEY: 'existing-pub', SQUAD_HUB_VAPID_PRIVATE_KEY: 'existing-priv' } });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /already configured/, 'expected the "already configured" refusal message');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when a complete pair is already configured');
+});
+
+check('executable: the script refuses and makes no write when only one half of the pair is configured', () => {
+  const result = runVapidScenario({ initialProperties: { SQUAD_HUB_VAPID_PUBLIC_KEY: 'existing-pub-only' } });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /only one half/, 'expected the "only one half" refusal message');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when only one half of the pair is configured');
+});
+
+check('executable: the script refuses safely, with no write, when the read response is not valid JSON', () => {
+  const result = runVapidScenario({ malformedRaw: 'this is not { json' });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /Refusing/, 'expected an explicit safe refusal, not a crash');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen after an unreadable response');
+});
+
+check('executable: the script refuses safely, with no write, when the read response is JSON but missing properties', () => {
+  const result = runVapidScenario({ missingProperties: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /Refusing/, 'expected an explicit safe refusal, not a crash');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen after a malformed-shape response');
+});
+
+check('executable: the script refuses safely, with no write, on a non-200 read status', () => {
+  const result = runVapidScenario({ listStatus: 500 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /Refusing/, 'expected an explicit safe refusal, not a crash');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen after a non-200 read status');
+});
+
+check('executable: the script refuses safely, with no crash and no write, on a connection failure', () => {
+  const result = runVapidScenario({ closedPort: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /Refusing/, 'a network failure must produce a clean refusal message');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a network failure must never surface as an unhandled promise rejection / crash dump');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen after a connection failure');
+});
+
+check('executable: the script detects and reports a readback public-key mismatch after a successful write', () => {
+  const result = runVapidScenario({ initialProperties: {}, forceMismatchOnSecondRead: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit after detecting the mismatch');
+  assert.match(result.stdout + result.stderr, /MISMATCH/, 'expected the script to report MISMATCH');
+  assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the mismatch');
+});
+
+// Re-review (follow-up to #244): the private half IS returned verbatim by
+// Azure's real List Application Settings operation, so a PUT that silently
+// drops/corrupts/truncates it must be caught on readback -- not waved
+// through because "only the public half is ever safe to compare". These
+// three scenarios extend forceMismatchOnSecondRead's shape to the private
+// key specifically, proving the new check actually bites at runtime (not
+// just via a text regex against the script's source).
+check('executable: the script detects a stored private key that does not match what was generated, even though the public key matches, and never leaks either key value', () => {
+  const result = runVapidScenario({ initialProperties: {}, forcePrivateMismatchOnSecondRead: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit after detecting the private-key mismatch');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /MISMATCH/, 'expected the script to report MISMATCH');
+  assert.match(combined, /private key does not match/, 'expected an explicit refusal naming the private key, not a generic failure');
+  assert.ok(!/Pair stored and verified/.test(combined), 'a private-key mismatch must never produce the success message');
+  assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the mismatch -- MISMATCH does not mean no write');
+  const writtenPrivateKey = result.requests.writes[0].body.properties.SQUAD_HUB_VAPID_PRIVATE_KEY;
+  assert.ok(writtenPrivateKey, 'sanity: the write must have carried a private key');
+  assert.ok(!combined.includes(writtenPrivateKey), 'the generated private key must never appear in stdout or stderr, even on a mismatch');
+  assert.ok(!combined.includes('DECOY-NOT-THE-REAL-PRIVATE-KEY'), 'the decoy stored private key must never appear in stdout or stderr either');
+});
+
+check('executable: the script detects a missing stored private key on readback, even though the public key matches, and never leaks either key value', () => {
+  const result = runVapidScenario({ initialProperties: {}, forcePrivateMissingOnSecondRead: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit when the stored private key is missing on readback');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /MISMATCH/, 'expected the script to report MISMATCH');
+  assert.match(combined, /private key does not match/, 'expected an explicit refusal naming the private key, not a generic failure');
+  assert.ok(!/Pair stored and verified/.test(combined), 'a missing private key on readback must never produce the success message');
+  assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the missing key -- MISMATCH does not mean no write');
+  const writtenPrivateKey = result.requests.writes[0].body.properties.SQUAD_HUB_VAPID_PRIVATE_KEY;
+  assert.ok(writtenPrivateKey, 'sanity: the write must have carried a private key');
+  assert.ok(!combined.includes(writtenPrivateKey), 'the generated private key must never appear in stdout or stderr, even when readback is missing it');
+});
+
+check('executable: a legitimately correct write passes the new private-key readback check too (no false negative)', () => {
+  const result = runVapidScenario({ initialProperties: { UNRELATED_SETTING: 'keep-me' } });
+  assert.strictEqual(result.status, 0, 'expected success; stderr=' + result.stderr);
+  assert.match(result.stdout, /Pair stored and verified/, 'a correct write on both halves must still succeed cleanly');
+  assert.ok(!/MISMATCH/.test(result.stdout + result.stderr), 'a correct write must never report a MISMATCH');
+  assert.strictEqual(result.requests.writes.length, 1, 'exactly one write on the success path');
+});
+
+// Security review follow-up (N2): `typeof res.body.properties !== 'object'`
+// alone is true for a plain object AND for an array (`typeof [] ===
+// 'object'`), so a `properties: []` response -- not a shape Azure's real API
+// returns, but also not one this script should ever trust -- must be
+// refused the same explicit way as any other wrong shape, never silently
+// accepted into the pre-existing/write logic.
+check('executable: the script refuses safely, with no write, when properties is an array instead of an object', () => {
+  const result = runVapidScenario({ arrayProperties: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
+  assert.match(result.stdout + result.stderr, /Refusing/, 'expected an explicit safe refusal, not a silent pass');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when properties is an array');
+});
+
+// Re-review (follow-up to #244, Gap 2): settingsRequest() has no bound on
+// how long it will wait for a peer that accepts the connection but never
+// finishes responding -- that must never hang the operator's shell
+// forever, and must never claim "no write happened" when the hung request
+// was itself the PUT (the write could already have reached the server
+// before the response stalled). driverKillTimeoutMs is raised well above
+// the script's own REQUEST_TIMEOUT_MS (15000ms, see security.md) so these
+// scenarios prove the SCRIPT's own bound fires first, not the test
+// harness's outer safety net or spawnSync's own timeout.
+check('executable: a stalled initial read times out, refuses safely, and reports that no write has happened yet', () => {
+  const result = runVapidScenario({ initialProperties: {}, stallRead: true, driverKillTimeoutMs: 20000 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit on a stalled read');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /timed out/, 'expected an explicit timeout message, not a hang or crash');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
+  assert.match(combined, /no write has happened yet/, 'a stalled READ (before any write) may safely say no write has happened yet');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when the very first read never completes');
+});
+
+check('executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened', () => {
+  const result = runVapidScenario({ initialProperties: {}, stallRead: true, stallReadCallIndex: 1, driverKillTimeoutMs: 20000 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit on a stalled readback');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /timed out/, 'expected an explicit timeout message, not a hang or crash');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
+  assert.ok(!/no write has happened yet/.test(combined), 'a stalled READBACK runs AFTER a successful PUT -- it must never reuse the step-1 "no write has happened yet" wording, that would be false-safety');
+  assert.match(combined, /write in step 3 already succeeded/, 'a stalled readback must explicitly acknowledge the write already succeeded');
+  assert.match(combined, /verification could not be confirmed/, 'a stalled readback must say verification could not be confirmed, not assert the stored pair is right or wrong');
+  assert.strictEqual(result.requests.writes.length, 1, 'the PUT in step 3 already succeeded before the step-4 readback stalled');
+});
+
+check('executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened', () => {
+  const result = runVapidScenario({ initialProperties: {}, stallWrite: true, driverKillTimeoutMs: 20000 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit on a stalled write');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /timed out/, 'expected an explicit timeout message, not a hang or crash');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
+  assert.ok(!/no write has happened yet/.test(combined), 'a stalled WRITE must never use the read-timeout\'s "no write has happened yet" language -- the PUT body may already have reached the server');
+  assert.match(combined, /may or may not have been updated/, 'a stalled write must explicitly say the outcome is unknown, not assert either way');
+  assert.strictEqual(result.requests.writes.length, 1, 'the stub already received the full PUT body before the response stalled, same as a real server that received the write before the connection dropped');
+});
+
+// Security review follow-up (N1): APP_SERVICE_SETTINGS_HOST must have no
+// effect at all unless APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT is also
+// set to '1' -- otherwise a stray APP_SERVICE_SETTINGS_HOST left set in a
+// real shell would silently redirect the bearer token and the freshly
+// written private key to a different host (still over HTTPS, but not
+// Azure). This cannot be proven with the full `runVapidScenario` harness
+// without actually dialing a real or non-existent host over HTTPS, so this
+// extracts just the host/port resolution logic verbatim from the recommended
+// script and runs it on its own -- it never calls `.request()`, so no
+// network I/O happens either way.
+function extractHostResolutionSnippet() {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  const match = recommendedScript.match(
+    /const insecureTestTransport[\s\S]*?const apiPort = hostParts\[1\] \? Number\(hostParts\[1\]\) : \(insecureTestTransport \? 80 : 443\);/,
+  );
+  assert.ok(match, 'could not find the host/transport resolution block in the recommended script');
+  return match[0];
+}
+
+function runHostResolution(overrides) {
+  const snippet = extractHostResolutionSnippet() + "\nconsole.log(JSON.stringify({ insecureTestTransport, apiHostname, apiPort }));";
+  const env = Object.assign({}, process.env);
+  delete env.APP_SERVICE_SETTINGS_HOST;
+  delete env.APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT;
+  Object.assign(env, overrides);
+  const r = spawnSync(process.execPath, ['-e', snippet], { encoding: 'utf8', timeout: 5000, env });
+  assert.strictEqual(r.status, 0, 'the extracted host-resolution snippet must run without error; stderr=' + r.stderr);
+  return JSON.parse(r.stdout.trim());
+}
+
+check('executable: APP_SERVICE_SETTINGS_HOST alone, without the insecure test-transport flag, is ignored -- the real hostname and port are used', () => {
+  const result = runHostResolution({ APP_SERVICE_SETTINGS_HOST: 'evil.example:9999' });
+  assert.strictEqual(result.insecureTestTransport, false, 'the insecure test transport flag must be false when not set to the literal string \'1\'');
+  assert.strictEqual(result.apiHostname, 'management.azure.com', 'a stray APP_SERVICE_SETTINGS_HOST must never override the real hostname unless the insecure test transport is explicitly set to \'1\'');
+  assert.strictEqual(result.apiPort, 443, 'the real production port must be used when the insecure test transport flag is not set');
+});
+
+check('executable: APP_SERVICE_SETTINGS_HOST is honored only together with the insecure test-transport flag', () => {
+  const result = runHostResolution({ APP_SERVICE_SETTINGS_HOST: '127.0.0.1:9999', APP_SERVICE_SETTINGS_INSECURE_TEST_TRANSPORT: '1' });
+  assert.strictEqual(result.apiHostname, '127.0.0.1', 'with the insecure test transport flag set, the overridden host must be honored');
+  assert.strictEqual(result.apiPort, 9999, 'with the insecure test transport flag set, the overridden port must be honored');
+});
+
+// PR #244 review: security.md claimed /api/me's push.publicKey is derived
+// from the private key via ECDH on every read. WebPushSender actually reads
+// the configured SQUAD_HUB_VAPID_PUBLIC_KEY directly (src/service/web-push.js),
+// never re-deriving it -- so a mismatched pair is not automatically caught.
+check('security.md accurately describes publicKey as a configured readback, not an automatic ECDH derivation', () => {
+  assert.match(security, /not\*\* re-derived from the private scalar via ECDH/,
+    'security.md must state the public key is read from config, never re-derived');
+  assert.match(security, /not automatically caught/,
+    'security.md must state a mismatched pair is not automatically caught');
 });
 
 // Issue #187: the bell and the desktop-notification behaviour it drives
