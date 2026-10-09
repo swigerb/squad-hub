@@ -45,6 +45,30 @@
  *      immediately, before anything async -- which a same-session
  *      live-snapshot refresh (no open/close call) never touches.
  *
+ * A fifth regression, found while adding real-call-site coverage for PR
+ * #243's Scout source review (which also found the `app.js`/`detail.js`
+ * stale-import module-link break covered by test/module-link-unit.js):
+ * `openDetail` applied its transcript fetch's result UNCONDITIONALLY once
+ * the `await` settled, with no check at all that the person had not since
+ * closed, reopened (even the identical session), or opened something else
+ * entirely while that fetch was in flight -- unlike `verifyControl`, which
+ * already guarded its own result this way. A slow transcript fetch for an
+ * abandoned session could overwrite the CURRENTLY-open, correct session's
+ * transcript with stale content for a session no longer on screen, and
+ * fire a redundant `verifyControl` call racing the new selection's own.
+ * Fixed by having `invalidateSelection` return the generation it just set,
+ * and a new `selectionStillActive(key, generation)` (detail-control.js)
+ * that `openDetail` checks before applying the transcript or starting
+ * `verifyControl`, the same way `verifyControl` already checks its own
+ * result.
+ *
+ * The tests below marked "(real call sites)" exercise this through the
+ * ACTUAL `openDetail`/`closeDetail` functions -- including the real
+ * `await` on the transcript fetch -- rather than only simulating a
+ * close/reopen with direct `invalidateSelection()`/`state.currentSession`
+ * writes, so a regression in the real call sites themselves (not just the
+ * guard they call) is caught too.
+ *
  * Loaded the same way row-menu-action-unit.js loads app.js's whole dependency
  * graph: `readWebSource()` walks app.js's imports transitively (so
  * `detail-control.js`, reached only via detail.js's own import, is included)
@@ -73,14 +97,29 @@ async function checkAsync(name, fn) {
 }
 
 // A fresh fake element per id, cached so repeated reads see the same object
-// `renderControl` wrote to -- same shape as web-xss-unit.js's fake document.
+// `renderControl` wrote to -- same shape as web-xss-unit.js's fake document,
+// extended (classList/setAttribute/innerHTML/value) for the real-call-site
+// tests below, which drive the actual `openDetail`/`closeDetail` DOM writes
+// rather than only the composer-reducer path the earlier tests exercise.
 function fakeDocument() {
   const byId = {};
   return {
     getElementById(id) {
       if (!byId[id]) {
         byId[id] = {
-          id, textContent: '', className: '', hidden: false, disabled: false, placeholder: '', title: '', dataset: {},
+          id,
+          textContent: '',
+          innerHTML: '',
+          value: '',
+          className: '',
+          hidden: false,
+          disabled: false,
+          placeholder: '',
+          title: '',
+          dataset: {},
+          classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
+          setAttribute() {},
+          removeAttribute() {},
         };
       }
       return byId[id];
@@ -95,12 +134,28 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+/**
+ * Flush several microtask turns. The real-call-site tests below settle a
+ * deferred reply and then need `verifyControl`'s own internal
+ * `Promise.race([ask, timeout])` plus its subsequent `composerReduce`/
+ * `renderControl` continuation to actually run -- more than the single
+ * `await Promise.resolve()` turn the simulated (non-real-call-site) tests
+ * above get away with, because the real call goes through one more promise
+ * layer (`openDetail`'s own `await`, then its un-awaited `verifyControl()`
+ * call, THEN that call's own await).
+ */
+async function tick(n = 4) {
+  for (let i = 0; i < n; i += 1) await Promise.resolve();
+}
+
 const src = readWebSource();
 const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 // Test doubles: both \`api\` and \`refresh\` are plain function declarations
 // (mutable bindings), reassigned here so each test schedules its own
-// deferred replies instead of hitting a real network.
+// deferred replies instead of hitting a real network. \`history\` is faked
+// the same way \`document\` is -- a bare global \`openDetail\`/\`closeDetail\`
+// (via \`applyNav\`) call directly.
 let __apiImpl = async () => { throw new Error('api not stubbed for this call'); };
 let __refreshCalls = 0;
 api = (...args) => __apiImpl(...args);
@@ -109,11 +164,13 @@ function __setApiImpl(fn) { __apiImpl = fn; }
 function __getRefreshCalls() { return __refreshCalls; }
 module.exports = {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
+  openDetail, closeDetail,
   __setApiImpl, __getRefreshCalls,
 };`)(mod, mod.exports);
 
 const {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
+  openDetail, closeDetail,
   __setApiImpl, __getRefreshCalls,
 } = mod.exports;
 
@@ -124,12 +181,47 @@ function session(key, overrides = {}) {
   };
 }
 
+/** Makes `key` findable by the real `openDetail` (it reads `state.overview.groups`). */
+function makeFindable(key, overrides = {}) {
+  const found = session(key, overrides);
+  state.overview.groups = [{ device: found.device, sessions: [found.session] }];
+  return found;
+}
+
+/**
+ * A single `api` double that routes by path substring to its own
+ * independently-controlled deferred reply, with a FRESH deferred per call --
+ * `openDetail` calls `/transcript` and `verifyControl` calls `/control-check`
+ * every time, including across a close+reopen of the same session, and the
+ * real-call-site tests below need to resolve a specific one of several
+ * in-flight calls to the SAME path independently.
+ */
+function apiRouter() {
+  const pending = { transcript: [], controlCheck: [] };
+  function impl(p) {
+    const d = deferred();
+    if (p.includes('/transcript')) pending.transcript.push(d);
+    else if (p.includes('/control-check')) pending.controlCheck.push(d);
+    else throw new Error(`unexpected path: ${p}`);
+    return d.promise;
+  }
+  return {
+    impl,
+    resolveTranscript(i, value) { pending.transcript[i].resolve(value); },
+    resolveControlCheck(i, value) { pending.controlCheck[i].resolve(value); },
+  };
+}
+
+
 function resetComposer() {
   state.composer = composerReduce(undefined, { type: 'reset' });
 }
 
 (async () => {
   global.document = fakeDocument();
+  // `applyNav` (called by the real `openDetail`/`closeDetail` below) writes
+  // to `history` directly as a bare global, exactly like `document`.
+  global.history = { pushState() {}, replaceState() {} };
 
   await checkAsync('a same-session live-snapshot refresh mid-verification does not drop the valid result (stable selection, not object identity)', async () => {
     resetComposer();
@@ -466,6 +558,87 @@ function resetComposer() {
 
     assert.strictEqual(state.composer.control, 'not_synced',
       'a resync success belonging to a closed-and-reopened session re-verified or otherwise touched the new context\u2019s composer');
+  });
+
+  await checkAsync('(real call sites) reopening the SAME session through the actual openDetail/closeDetail discards a verifyControl reply from before the reopen', async () => {
+    resetComposer();
+    const key = 'real-reopen-key';
+    makeFindable(key);
+    const router = apiRouter();
+    __setApiImpl(router.impl);
+
+    // First open: real openDetail, awaiting its own real transcript fetch.
+    const open1 = openDetail(key);
+    await Promise.resolve(); // openDetail reaches its `await api(transcript)`
+    router.resolveTranscript(0, { transcript: [] });
+    await open1; // transcript settles; openDetail fires its own verifyControl()
+    await tick(); // let that verifyControl() call reach its own await
+    assert.strictEqual(state.composer.control, 'verifying', 'the first open did not start a control-check');
+
+    // Real close, then real reopen of the IDENTICAL session, before the
+    // first open's control-check has answered.
+    closeDetail();
+    const open2 = openDetail(key);
+    await Promise.resolve();
+    router.resolveTranscript(1, { transcript: [] });
+    await open2;
+    await Promise.resolve();
+
+    // The FIRST open's control-check (still pending) answers late.
+    router.resolveControlCheck(0, { controllable: true });
+    await tick();
+    assert.strictEqual(state.composer.control, 'verifying',
+      'a control-check reply for the session before it was closed and reopened (real openDetail/closeDetail) was applied to the reopened context');
+
+    // The SECOND open's own control-check answers; this one must apply.
+    router.resolveControlCheck(1, { controllable: true });
+    await tick();
+    assert.strictEqual(state.composer.control, 'synced',
+      'the reopened session\u2019s own control-check result was not applied');
+  });
+
+  await checkAsync('(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now', async () => {
+    resetComposer();
+    const keyA = 'real-abandoned-a';
+    const keyB = 'real-abandoned-b';
+    makeFindable(keyA);
+    const router = apiRouter();
+    __setApiImpl(router.impl);
+
+    // Open A; its transcript fetch is left pending (call index 0).
+    const openA = openDetail(keyA);
+    await Promise.resolve();
+
+    // Before A's transcript ever answers, B becomes the one actually open
+    // (its own session, so it is independently findable) and its OWN
+    // transcript (call index 1) and control-check (call index 0) settle
+    // first, normally.
+    makeFindable(keyB);
+    const openB = openDetail(keyB);
+    await Promise.resolve();
+    router.resolveTranscript(1, { transcript: [{ kind: 'text', text: 'B\u2019s real transcript' }] });
+    await openB;
+    await Promise.resolve();
+    router.resolveControlCheck(0, { controllable: true });
+    await tick();
+    assert.strictEqual(state.composer.control, 'synced', 'B\u2019s own control-check result was not applied');
+    const dtTranscript = global.document.getElementById('dtTranscript');
+    const bRenderedHtml = dtTranscript.innerHTML;
+    assert.ok(bRenderedHtml.includes('B'), 'B\u2019s transcript was never rendered in the first place');
+
+    // NOW A's long-abandoned transcript fetch finally answers.
+    router.resolveTranscript(0, { transcript: [{ kind: 'text', text: 'A\u2019s stale transcript' }] });
+    await openA;
+    await Promise.resolve();
+
+    assert.strictEqual(dtTranscript.innerHTML, bRenderedHtml,
+      'a transcript fetched for a session the person already left (A) overwrote the CURRENTLY open session\u2019s (B) transcript on screen');
+
+    // A's late continuation must not have started its own, redundant
+    // control-check either -- only B's own (already resolved above) should
+    // ever have been asked for.
+    assert.strictEqual(state.composer.control, 'synced',
+      'an abandoned open\u2019s late transcript fetch disturbed the composer of the session actually open now');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -42,8 +42,9 @@ import {
 } from './js/notifications.js';
 import { render, skeletonDevices } from './js/devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc,
+  openDetail, renderControl, openSquadDoc,
 } from './js/detail.js';
+import { syncSession } from './js/detail-control.js';
 import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {

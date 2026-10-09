@@ -1005,10 +1005,12 @@ const MUTATIONS = [
     file: 'web/js/detail-control.js',
     find: `export function invalidateSelection() {
   selectionGeneration += 1;
+  return selectionGeneration;
 }`,
     replace: `export function invalidateSelection() {
-  if (process.env.MUTANT) return; // MUTATION
+  if (process.env.MUTANT) return selectionGeneration; // MUTATION
   selectionGeneration += 1;
+  return selectionGeneration;
 }`,
     mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
   },
@@ -1078,6 +1080,63 @@ const MUTATIONS = [
     && (process.env.MUTANT || generation === selectionGeneration)
   ) await verifyControl(); // MUTATION`,
     mustFail: 'a syncSession success that arrives after close+reopen of the SAME session must not apply or re-verify the new context',
+  },
+  {
+    // Scout's source review of 046b708 (PR #243): the detail-control split
+    // moved `syncSession` out of `web/js/detail.js` into the new
+    // `web/js/detail-control.js`, and `web/js/wiring.js` was updated to
+    // match -- but `web/app.js` was not, and kept importing `syncSession`
+    // from `./js/detail.js`, which no longer exports it. That stops the
+    // browser's module linker before `main()` ever runs: a live boot
+    // failure, reproduced in CI as 11 failing browser-e2e assertions
+    // (run 37901451265) including the very first "the page loads" check.
+    // Restoring exactly that stale import must fail the native-linking
+    // regression test, not merely "some test or other".
+    name: 'app.js imports syncSession from detail.js again, where it no longer lives (PR #243 Scout source review)',
+    file: 'web/app.js',
+    find: `import {
+  openDetail, renderControl, openSquadDoc,
+} from './js/detail.js';
+import { syncSession } from './js/detail-control.js';`,
+    replace: `import {
+  openDetail, syncSession, renderControl, openSquadDoc,
+} from './js/detail.js'; // MUTATION: syncSession moved to detail-control.js`,
+    mustFail: "web/app.js and its entire real module graph link under native ES module resolution (no missing or renamed export)",
+  },
+  {
+    // Companion to the two mutations above, catching a regression in the
+    // REAL call sites rather than the guard they call: `openDetail`
+    // applying its transcript fetch's result unconditionally once the
+    // `await` settled, with no check that the person had not since closed,
+    // reopened, or opened something else while that fetch was in flight.
+    name: 'openDetail applies a transcript fetch result unconditionally again, ignoring whether the selection is still active',
+    file: 'web/js/detail.js',
+    find: `    if (selectionStillActive(key, generation)) renderTranscript(r.transcript || []);
+  } catch (e) {
+    if (selectionStillActive(key, generation)) {
+      $('dtTranscript').innerHTML = \`<div class="t-entry t-kind">could not load the transcript: \${esc(e.message)}</div>\`;
+    }
+  }`,
+    replace: `    if (process.env.MUTANT || selectionStillActive(key, generation)) renderTranscript(r.transcript || []); // MUTATION
+  } catch (e) {
+    if (process.env.MUTANT || selectionStillActive(key, generation)) { // MUTATION
+      $('dtTranscript').innerHTML = \`<div class="t-entry t-kind">could not load the transcript: \${esc(e.message)}</div>\`;
+    }
+  }`,
+    mustFail: '(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now',
+  },
+  {
+    // The other half of the same openDetail guard: even if the transcript
+    // render itself stayed correctly guarded, an abandoned open's late
+    // continuation must not ALSO start its own redundant `verifyControl`
+    // call for whatever session happens to be open by then.
+    name: 'openDetail starts a redundant verifyControl call from an abandoned open, ignoring whether the selection is still active',
+    file: 'web/js/detail.js',
+    find: `  if (selectionStillActive(key, generation)) verifyControl();
+  return true;`,
+    replace: `  if (process.env.MUTANT || selectionStillActive(key, generation)) verifyControl(); // MUTATION
+  return true;`,
+    mustFail: '(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now',
   },
   {
     // The OUTER catch in readSquad is unreachable while every inner reader is

@@ -43,9 +43,34 @@ let controlToken = 0;
  */
 let selectionGeneration = 0;
 
-/** Called by `openDetail`/`closeDetail` to mark the selection superseded. */
+/**
+ * Called by `openDetail`/`closeDetail` to mark the selection superseded.
+ * Returns the new generation so the caller can capture exactly the value
+ * its own call just set, for `selectionStillActive` below.
+ */
 export function invalidateSelection() {
   selectionGeneration += 1;
+  return selectionGeneration;
+}
+
+/**
+ * Whether the selection an earlier `openDetail` call captured -- its own
+ * `key` and the generation `invalidateSelection` handed back at the time --
+ * is STILL the one actually open. `openDetail` awaits the transcript fetch
+ * before doing anything else with the result; if the person closed,
+ * reopened (even the identical session), or opened something else entirely
+ * while that fetch was in flight, this old continuation must not render a
+ * transcript, or start a redundant control-check, for a context that is no
+ * longer the one on screen -- `verifyControl` already guards its OWN
+ * result this way (by `sessionKey` and `controlToken`), but nothing
+ * previously stopped `openDetail`'s transcript render from applying
+ * unconditionally once its fetch settled, even for a session the person
+ * had since left.
+ */
+export function selectionStillActive(key, generation) {
+  return !!state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && generation === selectionGeneration;
 }
 
 /**

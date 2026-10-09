@@ -958,6 +958,20 @@ async function suiteDetailControl() {
 }
 
 /**
+ * Scout's source review of 046b708 (PR #243): `web/app.js` still imported
+ * `syncSession` from `./js/detail.js` after the detail-control split moved
+ * it to `./js/detail-control.js`, which stops the browser's module linker
+ * before `main()` ever runs -- a live boot failure, not a flaky timeout.
+ * Linked natively with `vm.SourceTextModule` against the real on-disk
+ * files, because `readWebSource()`'s `new Function` harness strips
+ * `import`/`export` and so cannot see this class of bug at all.
+ */
+async function suiteModuleLink() {
+  console.log('\n[MODULE LINK] web/app.js\'s real module graph resolves under native ES module linking');
+  runChildSuite(path.join(__dirname, 'module-link-unit.js'), 'module-link');
+}
+
+/**
  * Approval depth and the composer's agent/model selection. Reading a file and
  * rewriting a directory are not the same decision, and a standing permission
  * that does not say what it makes standing is a blank cheque.
@@ -1222,6 +1236,7 @@ async function suitePush() {
   await suiteAcaStatusCard();
   await suiteControlVerification();
   await suiteDetailControl();
+  await suiteModuleLink();
   await suiteApprovalDepth();
   await suiteForget();
   await suiteNarrowedForget();

@@ -11,7 +11,9 @@ import { displayTitle } from './sessionrow.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
 // Circular import, same pattern rowmenu.js/wiring.js already use: see
 // detail-control.js's own top-of-file comment for why this is safe.
-import { verifyControl, syncSession, detailSyncMenuItem, invalidateSelection } from './detail-control.js';
+import {
+  verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, selectionStillActive,
+} from './detail-control.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -83,8 +85,10 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   // closed and reopened) can still be in flight while this function awaits
   // the transcript, before a new `verifyControl` call would otherwise bump
   // `controlToken`. Bumping the generation here, synchronously, closes that
-  // gap regardless of how long the rest of this function takes.
-  invalidateSelection();
+  // gap regardless of how long the rest of this function takes. The
+  // returned generation is captured below so the continuation AFTER the
+  // transcript await can tell whether it is still the active selection.
+  const generation = invalidateSelection();
   applyNav(nav, key);
   state.currentSession = found;
   renderDetailTitle(found);
@@ -143,15 +147,29 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
     const r = await api(`/api/devices/${encodeURIComponent(found.device.deviceId)}/transcript`, {
       method: 'POST', body: { sessionId: found.session.id, limit: 200 },
     });
-    renderTranscript(r.transcript || []);
+    // The person may have closed this session, reopened it (even the
+    // identical one), or opened something else entirely while this fetch
+    // was in flight -- `openDetail` has no `await` between bumping the
+    // generation above and this one, so any such navigation already ran
+    // its own `invalidateSelection` and moved the generation past what
+    // this call captured. Applying a transcript fetched for a context the
+    // person already left behind would silently overwrite whatever the
+    // CURRENT (correct) session's own transcript render just put on
+    // screen with stale content for a different session.
+    if (selectionStillActive(key, generation)) renderTranscript(r.transcript || []);
   } catch (e) {
-    $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
+    if (selectionStillActive(key, generation)) {
+      $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
+    }
   }
 
   // Deliberately AFTER the transcript: a session that cannot be controlled is
   // still worth reading, and blocking the transcript on a control check would
-  // make an unreachable device hide the very history explaining why.
-  verifyControl();
+  // make an unreachable device hide the very history explaining why. Gated
+  // the same way: a superseded selection already has its OWN `verifyControl`
+  // call in flight (started by whichever open/reopen superseded this one),
+  // so starting a second, redundant control-check here would only race it.
+  if (selectionStillActive(key, generation)) verifyControl();
   return true;
 }
 
