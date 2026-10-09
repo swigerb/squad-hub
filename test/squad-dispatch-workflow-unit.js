@@ -89,6 +89,17 @@ check('every input the hub can send is declared by this workflow', () => {
   }
 });
 
+check('hub_correlation_id is declared as an internal workflow_dispatch input', () => {
+  const onBlock = src.slice(src.indexOf('workflow_dispatch:\n    inputs:'), src.indexOf('\npermissions:'));
+  assert.match(onBlock, /\n {6}hub_correlation_id:\n/);
+  assert.match(onBlock, /Hub-issued per-attempt correlation token \(internal\)/);
+});
+
+check('run-name surfaces the hub correlation id through github.event.inputs.hub_correlation_id', () => {
+  assert.match(src, /^run-name: .*\bgithub\.event\.inputs\.hub_correlation_id\b/m);
+  assert.match(src, /Squad dispatch \[corr:\{0\}\]/);
+});
+
 check('the dispatch core is pinned to a 40-character commit SHA, not a branch or tag', () => {
   const m = src.match(/SQUAD_ACA_CORE_REF:\s*([^\s#]+)/);
   assert.ok(m, 'SQUAD_ACA_CORE_REF is not set');
@@ -163,6 +174,16 @@ check('input validation carries a GH_TOKEN so its gh api base-branch check is au
   assert.ok(idx !== -1, 'no "Validate workflow_dispatch inputs" step found');
   const block = src.slice(idx, src.indexOf('Azure login via OIDC'));
   assert.match(block, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+});
+
+check('hub_correlation_id validation rejects a malformed token before Azure is touched', () => {
+  const idx = src.indexOf('Validate hub_correlation_id format');
+  assert.ok(idx !== -1, 'no "Validate hub_correlation_id format" step found');
+  const block = src.slice(idx, src.indexOf('Azure login via OIDC'));
+  assert.match(block, /INPUT_HUB_CORRELATION_ID: \$\{\{ github\.event\.inputs\.hub_correlation_id \|\| '' \}\}/);
+  assert.match(block, /grep -Eq '\^\[A-Za-z0-9\]\{8,64\}\$'/);
+  assert.match(block, /::error::hub_correlation_id must match \^\[A-Za-z0-9\]\{8,64\}\$ when provided\./);
+  assert.match(block, /exit 1/);
 });
 
 check('a claimed lease with no resulting execution is a hard failure, not a quiet success', () => {

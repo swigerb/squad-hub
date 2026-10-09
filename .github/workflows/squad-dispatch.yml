@@ -63,6 +63,11 @@ on:
         type: boolean
         required: false
         default: false
+      hub_correlation_id:
+        description: Hub-issued per-attempt correlation token (internal)
+        required: false
+
+run-name: ${{ github.event.inputs.hub_correlation_id && format('Squad dispatch [corr:{0}]', github.event.inputs.hub_correlation_id) || format('Squad dispatch (run {0})', github.run_id) }}
 
 permissions: {}          # nothing by default; the one job asks for exactly what it needs
 
@@ -163,6 +168,18 @@ jobs:
         run: |
           echo "Not dispatching. Reason: ${{ steps.decide.outputs.reason }}"
           echo "This is a normal outcome and is NOT a failure."
+
+      - name: Validate hub_correlation_id format
+        if: steps.decide.outputs.dispatch == 'true'
+        env:
+          INPUT_HUB_CORRELATION_ID: ${{ github.event.inputs.hub_correlation_id || '' }}
+        run: |
+          set -euo pipefail
+          token="${INPUT_HUB_CORRELATION_ID}"
+          if [ -n "$token" ] && ! printf '%s' "$token" | grep -Eq '^[A-Za-z0-9]{8,64}$'; then
+            echo "::error::hub_correlation_id must match ^[A-Za-z0-9]{8,64}$ when provided."
+            exit 1
+          fi
 
       - name: Validate workflow_dispatch inputs
         id: manual_inputs

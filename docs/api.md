@@ -525,9 +525,12 @@ shape as the dispatch limiter below. The status card (#180, #233) treats
 connected" or an error banner.
 
 `status.state` is `pending` (no matching run has appeared yet), `queued`,
-`in_progress`, or `completed` (with `conclusion` set), or `error` (a status
-lookup failed for this one dispatch — a deleted repo, a revoked installation —
-without hiding any other row).
+`in_progress`, or `completed` (with `conclusion` set), `unsupported` (the
+target repository is still running an older `squad-dispatch.yml` that does not
+declare `hub_correlation_id`, so the hub refuses to guess), or `error` (a
+status lookup failed for this one dispatch — a deleted repo, a revoked
+installation, or an ambiguous correlation receipt — without hiding any other
+row).
 
 **`POST /api/aca/dispatch`** — call `squad-dispatch.yml`'s `workflow_dispatch`
 on a repository the App is installed on:
@@ -549,7 +552,11 @@ always runs on the repository's default branch.
 - `429` — too many dispatches from this account; retry after `retryAfterMs`.
 - Success returns `{ "issue": {...}, "runUrl": "..." }`. `workflow_dispatch`
   itself replies with no run id, so `runUrl` is the workflow's own Actions
-  page until `/api/aca/dispatches` matches up the run it produced.
+  page until `/api/aca/dispatches` proves which run it produced. When the
+  target workflow declares `hub_correlation_id`, the hub generates an internal
+  per-attempt correlation id, sends it only as that workflow input, and later
+  matches the run by the workflow's exact bracket-delimited `run-name`
+  `display_title`; it no longer guesses by timestamp.
 
 ## WebSocket
 
@@ -605,5 +612,4 @@ prefix-bound tokens" in [commands.md](commands.md)) is the **only** device a
 `session` message on it can ever affect: the hub keys every session by
 `{deviceId}:{session.id}`, so one device's token can no more upsert another
 device's session than it can attach as that device in the first place.
-
 

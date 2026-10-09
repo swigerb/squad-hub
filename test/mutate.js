@@ -3280,7 +3280,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v14';`,
+    find: `const CACHE = 'squad-hub-shell-v15';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -4534,14 +4534,14 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     // Must-fix #2: a run on a different branch than the one this dispatch
-    // actually used must never be matched, even if it was created at
-    // plausibly the right time -- otherwise a coincidentally-close run from
-    // an unrelated push could be reported as this dispatch's own status.
+    // actually used must never be matched, even if it carries the same
+    // correlation token -- otherwise a run on the wrong ref could be reported
+    // as this dispatch's own status.
     name: 'resolveRunStatus ignores ref, matching a run on any branch',
     file: 'src/service/github-app.js',
     find: `      .filter((r) => !ref || r.head_branch === ref)`,
     replace: `      .filter((r) => process.env.MUTANT || !ref || r.head_branch === ref) // MUTATION`,
-    mustFail: 'resolveRunStatus matches on ref, ignoring a run on a different branch',
+    mustFail: 'resolveRunStatus matches exactly one run by the dispatch correlation token in display_title',
   },
   {
     // Must-fix #2: a run id already bound to a different recorded dispatch
@@ -4554,15 +4554,28 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'resolveRunStatus never binds a run id already bound to another recorded dispatch',
   },
   {
-    // Must-fix #2: the tolerance window exists specifically to absorb clock
-    // drift and GitHub's whole-second created_at precision -- without it, a
-    // run GitHub timestamps a moment before this process believes it made
-    // the call would be missed entirely.
-    name: 'RUN_MATCH_TOLERANCE_MS is ignored, so a run created a moment early is missed',
+    // Issue #245: the title match must stay anchored to the exact
+    // bracket-delimited receipt format. Bare substring matching would let a
+    // truncated, padded, or embedded token pose as a real receipt.
+    name: 'correlation matching falls back to a bare substring includes() check',
     file: 'src/service/github-app.js',
-    find: `    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;`,
-    replace: `    const minCreatedAt = flooredDispatchedAt - (process.env.MUTANT ? 0 : RUN_MATCH_TOLERANCE_MS); // MUTATION`,
-    mustFail: 'resolveRunStatus tolerates a run GitHub timestamps a couple of seconds early (clock drift)',
+    find: `      .filter((r) => titleRe.test(String(r.display_title || '')));`,
+    replace: `      .filter((r) => process.env.MUTANT ? String(r.display_title || '').includes(correlationId) : titleRe.test(String(r.display_title || ''))); // MUTATION`,
+    mustFail: 'a forged or substring look-alike correlation receipt never matches',
+  },
+  {
+    // Issue #245: multiple exact receipts must be treated as bounded unknown,
+    // never resolved by silently picking whichever run happened to appear
+    // first in the API response.
+    name: 'ambiguous duplicate correlation receipts pick the first run instead of erroring',
+    file: 'src/service/github-app.js',
+    find: `    if (runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }`,
+    replace: `    if (!process.env.MUTANT && runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }`,
+    mustFail: 'an ambiguous duplicate correlation receipt returns error instead of guessing',
   },
   {
     // A GitHub 401/403 is the APP'S OWN credential being rejected, not the
@@ -4582,14 +4595,14 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
     replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
-    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+    mustFail: 'two same-target dispatches with distinct correlation ids each bind to their own run',
   },
   {
     name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
     file: 'src/service/dispatch-tracker.js',
     find: `        if (ids.has(o.id) || o.boundRunId != null) continue;`,
     replace: `        continue; // MUTATION`,
-    mustFail: 'close dispatches by two users bind oldest first, whichever user polls first',
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
   },
   {
     // DispatchTracker must-fix #2: once a record has a bound run, it must
@@ -4598,11 +4611,15 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `        if (r.boundRunId != null) {
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
     replace: `        if (r.boundRunId != null && !process.env.MUTANT) { // MUTATION
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
-    mustFail: 'once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)',
+    mustFail: 'a bound dispatch refreshes queued -> in_progress -> completed without re-searching',
   },
   {
     // DispatchTracker must-fix #2: once a run is matched, it must be
@@ -4617,7 +4634,18 @@ if ($health.accessStore -ne 'durable') {`,
             r.boundRunId = status.runId;
             boundElsewhere.add(status.runId);
           }`,
-    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
+  },
+  {
+    name: 'older workflow records fall through to live run searching instead of short-circuiting to unsupported',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    replace: `        } else if (r.correlationSupported === false && !process.env.MUTANT) { // MUTATION
+          status = UNSUPPORTED_STATUS;
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    mustFail: 'an older installed workflow is reported as unsupported forever and never searched',
   },
   {
     // NIT: `Number("0x10")` is 16 and `Number(true)` is 1 -- `Number.isInteger`

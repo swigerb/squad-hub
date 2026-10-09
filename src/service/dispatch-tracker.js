@@ -10,10 +10,11 @@
  * feeds is an acceptable gap for a status convenience feature, not a safety
  * property. A durable version of this is #178, a different issue.
  *
- * Holds no secret: `owner`, `repo`, `installationId` (a number, not a
- * credential) and a timestamp -- never a token. `installationId` is kept so
- * `GitHubApp.resolveRunStatus` can mint whichever installation token it needs
- * without re-running the allow-list lookup for every status poll.
+ * Holds no GitHub credential: `owner`, `repo`, `installationId` (a number, not
+ * a credential), a timestamp, and the hub's own per-attempt correlation id
+ * when the target workflow supports it. That correlation id is internal-only:
+ * used solely so `GitHubApp.resolveRunStatus` can prove which run belongs to
+ * this record, never returned to a browser or stored as a reusable token.
  */
 
 const crypto = require('crypto');
@@ -29,14 +30,14 @@ const MAX_PER_USER = 50;
  * seconds to a couple of minutes; a record still unmatched an hour later
  * means the run was deleted, the dispatch failed upstream after this record
  * was already written, or something else has gone wrong -- not that GitHub
- * is merely slow. Without this cap, that stuck record sits at the front of
- * `_resolveOrder`'s oldest-first queue forever and `resolveRunStatus`'s own
- * "earliest run at or after this timestamp" search keeps considering it a
- * candidate match for every run that appears afterward, including a much
- * newer dispatch's own run -- stealing it for good, since a bound run is
- * never released. Past this age, `listWithStatus` reports the record as
- * errored instead of searching for it, so it can never bind anything again. */
+ * is merely slow. Past this age, `listWithStatus` reports the record as
+ * errored instead of searching for it, so a dispatch that never receives a
+ * provable run receipt does not stay "pending" forever. */
 const MAX_UNMATCHED_RECORD_AGE_MS = 60 * 60 * 1000;
+const UNSUPPORTED_STATUS = {
+  state: 'unsupported',
+  reason: "this repository's squad-dispatch.yml does not declare hub_correlation_id, so this dispatch's run cannot be proven from here",
+};
 
 class DispatchTracker {
   constructor({ now } = {}) {
@@ -49,16 +50,16 @@ class DispatchTracker {
    * Record a dispatch just made for `userKey`. `dispatchedAt` and `ref`
    * should come from `GitHubApp.dispatch`'s own return value -- the instant
    * right before the `workflow_dispatch` call actually went out, and the ref
-   * it actually used -- not a fresh timestamp taken here, which would run
-   * noticeably later (after the HTTP round trip) and risk excluding the very
-   * run this dispatch produced. `this._now()` is only a fallback for a
-   * caller that does not supply one.
+   * it actually used. `this._now()` is only a fallback for a caller that does
+   * not supply one.
    */
   record(userKey, rec) {
     const list = this._byUser.get(userKey) || [];
     list.push({
       ...rec,
       dispatchedAt: rec.dispatchedAt != null ? rec.dispatchedAt : this._now(),
+      correlationId: rec.correlationId != null ? rec.correlationId : null,
+      correlationSupported: rec.correlationSupported === true,
       id: crypto.randomUUID(),
       /** Once a run is matched for this record, its id is kept here so a
        * later poll never re-runs the matching search (and so never risks
@@ -75,6 +76,16 @@ class DispatchTracker {
    * caller still reading it. */
   list(userKey) {
     return [...(this._byUser.get(userKey) || [])].reverse();
+  }
+
+  _publicRecord(rec, status) {
+    return {
+      owner: rec.owner,
+      repo: rec.repo,
+      ref: rec.ref,
+      dispatchedAt: rec.dispatchedAt,
+      status,
+    };
   }
 
   /** Every run id already bound to some recorded dispatch, across every
@@ -103,14 +114,13 @@ class DispatchTracker {
    * record, live or stale, so two close dispatches on one repo never both
    * claim the same run.
    *
-   * Unmatched records are resolved OLDEST dispatch first (see
-   * `_resolveOrder`), because `resolveRunStatus` picks the earliest run in a
-   * window that, for close dispatches, also covers the other dispatch's run.
-   * Resolving the newest first would let it take the older dispatch's run
-   * and swap the two bindings for good. A record older than
-   * `MAX_UNMATCHED_RECORD_AGE_MS` is skipped entirely rather than searched,
-   * for the same reason: a stale unmatched record must never be given the
-   * chance to claim a newer dispatch's run.
+   * Unmatched records are still resolved OLDEST dispatch first (see
+   * `_resolveOrder`) as a defence-in-depth layer alongside `excludeRunIds`:
+   * even with exact correlation matching, the oldest record should win any
+   * impossible-to-expect contention before a newer one can bind. A record
+   * older than `MAX_UNMATCHED_RECORD_AGE_MS` is skipped entirely rather than
+   * searched, because a stale unmatched record must not sit in "pending"
+   * forever.
    *
    * `boundRunId` is re-checked immediately after the `await` on
    * `resolveRunStatus`, before this record is bound -- two concurrent polls
@@ -135,6 +145,8 @@ class DispatchTracker {
       try {
         if (r.boundRunId != null) {
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {
           status = { state: 'error', reason: 'no matching Actions run appeared within an hour of this dispatch' };
         } else {
@@ -154,7 +166,7 @@ class DispatchTracker {
       }
       if (mine.has(r.id)) statusById.set(r.id, status);
     }
-    return recs.map((r) => ({ ...r, status: statusById.get(r.id) }));
+    return recs.map((r) => this._publicRecord(r, statusById.get(r.id)));
   }
 
   /**
@@ -191,4 +203,9 @@ class DispatchTracker {
   }
 }
 
-module.exports = { DispatchTracker, MAX_PER_USER, MAX_UNMATCHED_RECORD_AGE_MS };
+module.exports = {
+  DispatchTracker,
+  MAX_PER_USER,
+  MAX_UNMATCHED_RECORD_AGE_MS,
+  UNSUPPORTED_STATUS,
+};

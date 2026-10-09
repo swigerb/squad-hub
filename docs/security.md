@@ -188,6 +188,17 @@ does not declare, rather than ignoring it, so the hub reads the workflow's own
 before any side effect (including creating an issue for `newIssue`), any
 requested option that is not declared there.
 
+**Run-status proof is hub-owned and GitHub-only.** When the target workflow
+declares `hub_correlation_id`, the hub generates an unpredictable per-dispatch
+correlation id, stores it only in the authenticated user's in-memory dispatch
+tracker partition, sends it only as that workflow input, and later accepts a
+run as this dispatch's run only when the workflow's exact bracket-delimited
+`run-name` echoes that same token back through the existing GitHub Actions API
+`display_title`. An older workflow that does not declare the input stays
+`unsupported`; the hub does not fall back to timestamp guessing, does not need
+an Azure credential, and does not require any worker/image/model protocol
+change.
+
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
 a repository's issue tracker through this endpoint. `GET /api/aca/repos` and

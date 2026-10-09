@@ -376,8 +376,14 @@ anything; if the dispatch call itself still fails afterward, the error response
 carries the issue the hub already created so it is never silently stranded.
 `workflow_dispatch` itself replies `204` with no run id, so the hub hands back
 the workflow's own Actions page as `runUrl` — the best any caller can do until
-a run appears, which `/api/aca/dispatches` then surfaces by matching it up
-afterward.
+a run appears, which `/api/aca/dispatches` then surfaces by proving it
+afterward. When the target workflow declares `hub_correlation_id`, the hub
+generates a per-attempt correlation id, stores it only in the authenticated
+user's in-memory dispatch bucket, sends it only as that workflow input, and
+later matches the run only when the workflow's exact `run-name` surfaces that
+same token back through the existing GitHub Actions API `display_title`. A
+repository still running an older workflow that does not declare that input is
+left honestly `unsupported`; the hub does not fall back to guessing by time.
 
 The dispatch always runs on the repository's own **default branch** — never on
 a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
@@ -468,4 +474,12 @@ GitHub reject the whole call. A target repository running an older
 `squad-dispatch.yml` that only declares `issue`/`prompt` is unaffected: it
 simply never receives the newer fields.
 
+That same conditional rule now includes the hub-owned `hub_correlation_id`
+input. It is not user input and does not pass through
+`sanitizeDispatchRequest`; the hub generates it per dispatch attempt, scopes it
+to the authenticated user's in-memory tracker partition, sends it only when the
+target workflow declares support, and reads it back only from the run's own
+`display_title` through the GitHub Actions API. No Azure credential is added to
+the hub, no worker/image/model protocol changes are involved, and the browser
+never needs to see the raw token.
 

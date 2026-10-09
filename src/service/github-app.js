@@ -83,14 +83,17 @@ const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const LIST_PAGE_SIZE = 100;
 const MAX_LIST_PAGES = 50;
 
-/** `resolveRunStatus` floors the recorded dispatch timestamp to whole
- * seconds (GitHub's own `created_at` has no sub-second precision, so
- * comparing millisecond-precise would reject a run GitHub reports as created
- * in the very same second as the dispatch) and then subtracts this much
- * more, to absorb ordinary clock drift between this process and GitHub's --
- * a run GitHub timestamps a couple of seconds before this process believes
- * it made the call must still match. */
-const RUN_MATCH_TOLERANCE_MS = 5000;
+const HUB_CORRELATION_INPUT = 'hub_correlation_id';
+const HUB_CORRELATION_TITLE_RE = /^Squad dispatch \[corr:([A-Za-z0-9]{8,64})\]$/;
+const UNSUPPORTED_CORRELATION_REASON = `this repository's ${WORKFLOW_FILE} does not declare ${HUB_CORRELATION_INPUT}, so this dispatch's run cannot be proven from here`;
+
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function correlationTitleRe(correlationId) {
+  return new RegExp(`^Squad dispatch \\[corr:${escapeRegExp(correlationId)}\\]$`);
+}
 
 /**
  * Upstream GitHub status -> the status this hub reports for it. A 401 or 403
@@ -489,9 +492,10 @@ class GitHubApp {
    * issue was created for it, the thrown error carries `.issue` so the
    * caller is not left unable to find an issue this call already made.
    *
-   * Returns `{issue, runUrl, installationId, workflowFile, ref, dispatchedAt}`
-   * -- the last four kept so `DispatchTracker` can resolve a run's status
-   * later without re-doing the allow-list lookup.
+   * Returns `{issue, runUrl, installationId, workflowFile, ref, dispatchedAt,
+   * correlationId, correlationSupported}` -- the non-issue fields kept so
+   * `DispatchTracker` can resolve a run's status later without re-doing the
+   * allow-list lookup.
    */
   async dispatch({
     owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly,
@@ -521,6 +525,10 @@ class GitHubApp {
       );
     }
 
+    const generatedCorrelationId = crypto.randomBytes(16).toString('hex');
+    const correlationSupported = declared.includes(HUB_CORRELATION_INPUT);
+    const correlationId = correlationSupported ? generatedCorrelationId : null;
+
     // ALWAYS the repository's own default branch -- never the
     // caller-supplied `baseBranch`, which travels only as the `base_branch`
     // INPUT above (and only when the workflow declares it, per the check
@@ -541,9 +549,10 @@ class GitHubApp {
       { prompt, model, baseBranch, publishPr, reviewer, watchOnly },
       { issueNumber },
     );
+    if (correlationSupported) inputs[HUB_CORRELATION_INPUT] = correlationId;
 
-    // Captured immediately before the call that actually starts the run --
-    // see `resolveRunStatus`, which matches a run no older than this.
+    // Captured immediately before the call that actually starts the run so
+    // stale unmatched records can still age out if no run ever appears.
     const dispatchedAt = this._now();
     try {
       await this._dispatchWorkflow(owner, repo, ref, inputs, token);
@@ -559,6 +568,8 @@ class GitHubApp {
       workflowFile: WORKFLOW_FILE,
       ref,
       dispatchedAt,
+      correlationId,
+      correlationSupported,
     };
   }
 
@@ -581,22 +592,21 @@ class GitHubApp {
 
   /**
    * The Actions run status for one tracked dispatch, for
-   * `GET /api/aca/dispatches`. Matches the earliest-created run of this
-   * workflow that:
-   *   - was triggered by `workflow_dispatch` (never a run some other trigger
-   *     started, which would otherwise look like this dispatch's own run),
-   *   - was created no earlier than the dispatch's own timestamp, floored to
-   *     whole seconds (GitHub's `created_at` has no finer resolution) minus
-   *     `RUN_MATCH_TOLERANCE_MS` of slack for ordinary clock drift,
-   *   - ran on the same `ref` this dispatch actually used (never a
-   *     coincidentally-close run on a different branch),
-   *   - is not already `excludeRunIds` -- a run id some OTHER recorded
-   *     dispatch has already been bound to, so two close dispatches on one
-   *     repo never both claim the same run.
+   * `GET /api/aca/dispatches`. For workflows that declare
+   * `hub_correlation_id`, the hub proves which run belongs to this dispatch by
+   * matching this record's own correlation id against the run's `display_title`
+   * in the exact, bracket-delimited `run-name:` format the workflow emits.
+   *
+   * `event=workflow_dispatch`, `ref`, and `excludeRunIds` remain as cheap
+   * defence-in-depth filters, but they are not the proof. If the workflow does
+   * not declare `hub_correlation_id`, this method refuses to guess.
    */
   async resolveRunStatus({
-    owner, repo, installationId, dispatchedAt, ref, excludeRunIds,
+    owner, repo, installationId, correlationId, correlationSupported, ref, excludeRunIds,
   }) {
+    if (!correlationSupported || !correlationId) {
+      return { state: 'unsupported', reason: UNSUPPORTED_CORRELATION_REASON };
+    }
     const token = await this._installationToken(installationId, repo);
     const res = await this._request({
       method: 'GET',
@@ -606,14 +616,15 @@ class GitHubApp {
     if (res.status !== 200) {
       throw this._err(upstreamStatus(res.status), `could not read Actions runs for ${owner}/${repo} (GitHub returned ${res.status})`);
     }
-    const flooredDispatchedAt = Math.floor(dispatchedAt / 1000) * 1000;
-    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;
+    const titleRe = correlationTitleRe(correlationId);
     const runs = (res.json.workflow_runs || [])
-      .filter((r) => new Date(r.created_at).getTime() >= minCreatedAt)
       .filter((r) => !ref || r.head_branch === ref)
       .filter((r) => !excludeRunIds || !excludeRunIds.has(r.id))
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      .filter((r) => titleRe.test(String(r.display_title || '')));
     if (!runs.length) return { state: 'pending', reason: 'no run has appeared yet' };
+    if (runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }
     const run = runs[0];
     return {
       state: run.status, // queued | in_progress | completed
@@ -625,5 +636,11 @@ class GitHubApp {
 }
 
 module.exports = {
-  GitHubApp, WORKFLOW_FILE, parseDeclaredWorkflowInputs, upstreamStatus,
+  GitHubApp,
+  WORKFLOW_FILE,
+  HUB_CORRELATION_INPUT,
+  HUB_CORRELATION_TITLE_RE,
+  UNSUPPORTED_CORRELATION_REASON,
+  parseDeclaredWorkflowInputs,
+  upstreamStatus,
 };

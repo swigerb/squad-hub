@@ -942,6 +942,8 @@ class HubService {
           workflowFile: result.workflowFile,
           ref: result.ref,
           dispatchedAt: result.dispatchedAt,
+          correlationId: result.correlationId,
+          correlationSupported: result.correlationSupported,
         });
         return send(200, { issue: result.issue, runUrl: result.runUrl });
       } catch (e) {
