@@ -4,13 +4,22 @@
  * that would otherwise be a hash with a heartbeat.
  *
  * Accepted ONLY from a short allowlist of string fields -- `displayName`,
- * `repo`, `issue`, `executionName`, `jobName` -- each size-capped and checked
- * for the characters that turn a label into something else. A device is a
- * machine the hub does not control, running whatever code its owner deployed,
- * so its metadata is INPUT, not an invariant: a free-form env var or an
- * upstream job description must not be able to smuggle a terminal escape
- * sequence, a raw `<script>` fragment, or several kilobytes of garbage into
- * something every watcher of that subject reads back on every heartbeat.
+ * `repo`, `issue`, `executionName`, `jobName`, `role`, `approvalMode`,
+ * `lastSweepAt` -- each size-capped and checked for the characters that turn
+ * a label into something else. A device is a machine the hub does not
+ * control, running whatever code its owner deployed, so its metadata is
+ * INPUT, not an invariant: a free-form env var or an upstream job
+ * description must not be able to smuggle a terminal escape sequence, a raw
+ * `<script>` fragment, or several kilobytes of garbage into something every
+ * watcher of that subject reads back on every heartbeat.
+ *
+ * `role`, `approvalMode` and `lastSweepAt` (#180/#233) exist so the "Squad on
+ * ACA" status card can report the issue watcher and Ralph by an EXPLICIT,
+ * verified fact a device chooses to send, rather than guessing from its own
+ * `name` -- a label a deployment picks for operators to read, never
+ * contracted to say "I am the issue watcher" or "I just finished a sweep".
+ * None of the three is required: a device that never sends them is reported
+ * honestly as unknown (see `web/js/aca-status.js`), not guessed at.
  *
  * Shared between the device side (`src/cloud-device.js`, reading
  * `SQUAD_HUB_DEVICE_META_JSON`) and the hub side (`src/service/store.js`,
@@ -19,7 +28,26 @@
  */
 
 /** The only fields a device may report. Anything else is silently dropped. */
-const FIELDS = Object.freeze(['displayName', 'repo', 'issue', 'executionName', 'jobName']);
+const FIELDS = Object.freeze([
+  'displayName', 'repo', 'issue', 'executionName', 'jobName',
+  'role', 'approvalMode', 'lastSweepAt',
+]);
+
+/**
+ * `role`'s only accepted values: the two persistent squad-on-aca jobs the
+ * status card looks for. Anything else (an arbitrary, unanticipated string a
+ * device might send) is dropped rather than displayed -- a card that shows
+ * whatever string a device chose to send would just be guessing again, only
+ * with the guess coming from the device instead of the hub.
+ */
+const ROLE_VALUES = Object.freeze(['watch', 'ralph']);
+
+/**
+ * `approvalMode`'s only accepted values. The card says "watch-only" (#180)
+ * ONLY when this is verified `'auto'` -- never inferred from presence or
+ * name alone.
+ */
+const APPROVAL_MODE_VALUES = Object.freeze(['auto', 'manual']);
 
 /** A label, not an essay. Generous for a repo slug or an issue title. */
 const MAX_FIELD_LEN = 200;
@@ -55,6 +83,15 @@ function sanitizeDeviceMeta(input) {
     if (typeof v !== 'string') continue; // non-string: rejected, not coerced
     if (!v.length || v.length > MAX_FIELD_LEN) continue; // empty or oversize
     if (INJECTION_RE.test(v)) continue; // injection-shaped
+    // `role` and `approvalMode` are closed vocabularies, not free text: an
+    // unrecognized value is dropped the same as a malformed one, rather than
+    // displayed verbatim, so the status card never has to parse or trust a
+    // string it was not expecting.
+    if (field === 'role' && !ROLE_VALUES.includes(v)) continue;
+    if (field === 'approvalMode' && !APPROVAL_MODE_VALUES.includes(v)) continue;
+    // `lastSweepAt` is a timestamp, not a label -- a string that does not
+    // parse to a real instant is worth less than having no value at all.
+    if (field === 'lastSweepAt' && !Number.isFinite(Date.parse(v))) continue;
     out[field] = v;
   }
   return Object.keys(out).length ? out : null;
@@ -76,6 +113,8 @@ function parseDeviceMetaEnv(raw) {
 
 module.exports = {
   FIELDS,
+  ROLE_VALUES,
+  APPROVAL_MODE_VALUES,
   MAX_FIELD_LEN,
   MAX_TOTAL_BYTES,
   sanitizeDeviceMeta,

@@ -336,6 +336,63 @@ function apiRequest(port, path, token, opts = {}) {
     assert.ok(!('error' in r.body), 'the 501 path uses `reason`, not `error`, per the issue');
   });
 
+  // #233, a fix-up from #180's review: the web UI's status card must never
+  // call GET /api/aca/repos or GET /api/aca/dispatches on an unconfigured
+  // hub, so it needs a route that answers 200 either way to decide that
+  // first. GET /api/aca/status is that route -- always 200, never 501.
+  await checkAsync('GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured', async () => {
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: null, privateKey: null }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/status', token);
+    await svc.close();
+    assert.strictEqual(r.status, 200, JSON.stringify(r));
+    assert.strictEqual(r.body.enabled, false);
+    assert.ok(typeof r.body.reason === 'string' && r.body.reason.length > 0,
+      'a disabled status must still carry a short human reason');
+  });
+
+  await checkAsync('GET /api/aca/status answers 200 with enabled: true and a null reason when the App is configured', async () => {
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '123', privateKey: FAKE_PRIVATE_KEY_PEM }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/status', token);
+    await svc.close();
+    assert.strictEqual(r.status, 200, JSON.stringify(r));
+    assert.strictEqual(r.body.enabled, true);
+    assert.strictEqual(r.body.reason, null);
+  });
+
+  await checkAsync('GET /api/aca/status never spends the shared read rate-limit budget', async () => {
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '123', privateKey: FAKE_PRIVATE_KEY_PEM }),
+      acaReadRateLimiter: new RateLimiter({ limit: 1, windowMs: 60000 }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    // The read limiter above allows only ONE call/minute. If GET
+    // /api/aca/status spent that budget, the second and third calls here
+    // would 429; since it spends no GitHub API call, it must never check
+    // (let alone exhaust) that limiter at all.
+    const r1 = await apiRequest(addr.port, '/api/aca/status', token);
+    const r2 = await apiRequest(addr.port, '/api/aca/status', token);
+    const r3 = await apiRequest(addr.port, '/api/aca/status', token);
+    await svc.close();
+    assert.strictEqual(r1.status, 200, JSON.stringify(r1));
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2));
+    assert.strictEqual(r3.status, 200, JSON.stringify(r3));
+  });
+
   await checkAsync('POST /api/aca/dispatch also answers 501 when a garbage key disabled the App', async () => {
     const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
     const svc = new HubService({
