@@ -85,6 +85,11 @@ const MAX_LIST_PAGES = 50;
 
 const HUB_CORRELATION_INPUT = 'hub_correlation_id';
 const HUB_CORRELATION_TITLE_RE = /^Squad dispatch \[corr:([A-Za-z0-9]{8,64})\]$/;
+/** The receipt artifact the workflow publishes once ARM confirmed an execution:
+ * `aca-exec-attempt<run_attempt>-<execution name>`. The name charset mirrors
+ * the workflow's own validation, so a captured execution name is always a plain
+ * DNS-label-like string, never free text. */
+const EXEC_RECEIPT_NAME_RE = /^aca-exec-attempt(\d+)-([A-Za-z0-9](?:[A-Za-z0-9-]{0,126}[A-Za-z0-9])?)$/;
 const UNSUPPORTED_CORRELATION_REASON = `this repository's ${WORKFLOW_FILE} does not declare ${HUB_CORRELATION_INPUT}, so this dispatch's run cannot be proven from here`;
 
 function escapeRegExp(s) {
@@ -586,6 +591,7 @@ class GitHubApp {
       state: res.json.status,
       conclusion: res.json.conclusion || null,
       runId: res.json.id,
+      runAttempt: res.json.run_attempt,
       htmlUrl: res.json.html_url,
     };
   }
@@ -630,8 +636,41 @@ class GitHubApp {
       state: run.status, // queued | in_progress | completed
       conclusion: run.conclusion || null,
       runId: run.id,
+      runAttempt: run.run_attempt,
       htmlUrl: run.html_url,
     };
+  }
+
+  /**
+   * The confirmed ACA execution for one Actions run, read from the receipt
+   * artifact the workflow publishes only after the ARM `/start` response
+   * yielded a validated execution name. Uses the Artifacts List API (covered
+   * by the App's existing Actions permission); only the artifact NAME is read,
+   * never its contents. Returns `null` when no current-attempt receipt exists
+   * (still running, older workflow, or expired) -- an honest unknown, not an
+   * error. Artifacts from a different attempt (a manual rerun) are ignored, and
+   * more than one current-attempt receipt is refused rather than guessed.
+   */
+  async resolveExecutionReceipt({ owner, repo, installationId, runId, runAttempt }) {
+    const token = await this._installationToken(installationId, repo);
+    const res = await this._request({
+      method: 'GET',
+      path: `/repos/${owner}/${repo}/actions/runs/${runId}/artifacts?per_page=100`,
+      token,
+    });
+    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), `could not read artifacts for Actions run ${runId} in ${owner}/${repo} (GitHub returned ${res.status})`);
+    }
+    const matches = [];
+    for (const a of (res.json && res.json.artifacts) || []) {
+      if (a.expired) continue;
+      const m = EXEC_RECEIPT_NAME_RE.exec(String(a.name || ''));
+      if (!m || Number(m[1]) !== Number(runAttempt)) continue;
+      matches.push({ executionName: m[2], artifactId: a.id });
+    }
+    if (!matches.length) return null;
+    if (matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess');
+    return matches[0];
   }
 }
 
@@ -640,6 +679,7 @@ module.exports = {
   WORKFLOW_FILE,
   HUB_CORRELATION_INPUT,
   HUB_CORRELATION_TITLE_RE,
+  EXEC_RECEIPT_NAME_RE,
   UNSUPPORTED_CORRELATION_REASON,
   parseDeclaredWorkflowInputs,
   upstreamStatus,

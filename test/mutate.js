@@ -4933,6 +4933,147 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured',
   },
 
+  // -- #245: the confirmed ACA execution receipt ---------------------------
+  {
+    // The captured execution name is only trustworthy because the charset is strict.
+    name: 'the receipt name regex accepts underscores in the execution name',
+    file: 'src/service/github-app.js',
+    find: `(?:[A-Za-z0-9-]{0,126}[A-Za-z0-9])?)$/;`,
+    replace: `(?:[A-Za-z0-9_-]{0,126}[A-Za-z0-9])?)$/; // MUTATION`,
+    mustFail: 'EXEC_RECEIPT_NAME_RE accepts only attempt-number plus a DNS-label-like execution name',
+  },
+  {
+    // An expired artifact is gone; reporting it would be a receipt that cannot be confirmed.
+    name: 'an expired receipt artifact is still reported',
+    file: 'src/service/github-app.js',
+    find: `      if (a.expired) continue;
+`,
+    replace: `      if (!process.env.MUTANT && a.expired) continue; // MUTATION
+`,
+    mustFail: 'resolveExecutionReceipt ignores an expired receipt',
+  },
+  {
+    // A stale artifact from attempt 1 must never be reported for attempt 2.
+    name: 'a receipt from a prior run attempt is accepted after a rerun',
+    file: 'src/service/github-app.js',
+    find: `      if (!m || Number(m[1]) !== Number(runAttempt)) continue;`,
+    replace: `      if (!m || (!process.env.MUTANT && Number(m[1]) !== Number(runAttempt))) continue; // MUTATION`,
+    mustFail: 'resolveExecutionReceipt ignores a receipt left by a prior attempt',
+  },
+  {
+    // More than one receipt must be refused, never guessed.
+    name: 'two receipts are resolved by guessing the first',
+    file: 'src/service/github-app.js',
+    find: `    if (matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess');`,
+    replace: `    if (!process.env.MUTANT && matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess'); // MUTATION`,
+    mustFail: 'resolveExecutionReceipt refuses to guess between two current-attempt receipts',
+  },
+  {
+    // A provider failure must not look like an honest "no receipt".
+    name: 'a failed artifact listing is reported as no receipt',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), \`could not read artifacts for`,
+    replace: `    if (!process.env.MUTANT && res.status !== 200) { // MUTATION
+      throw this._err(upstreamStatus(res.status), \`could not read artifacts for`,
+    mustFail: 'resolveExecutionReceipt surfaces a provider failure instead of returning null',
+  },
+  {
+    // The attempt number is what lets a rerun ignore a stale receipt.
+    name: '_getRun drops the run attempt',
+    file: 'src/service/github-app.js',
+    find: `      runAttempt: res.json.run_attempt,
+`,
+    replace: `      runAttempt: process.env.MUTANT ? undefined : res.json.run_attempt, // MUTATION
+`,
+    mustFail: '_getRun and resolveRunStatus both report the run_attempt',
+  },
+  {
+    // Same, for the freshly matched run.
+    name: 'resolveRunStatus drops the run attempt',
+    file: 'src/service/github-app.js',
+    find: `      runAttempt: run.run_attempt,
+`,
+    replace: `      runAttempt: process.env.MUTANT ? undefined : run.run_attempt, // MUTATION
+`,
+    mustFail: '_getRun and resolveRunStatus both report the run_attempt',
+  },
+  {
+    // A stale name must not be emitted alongside a different attempt's status.
+    name: 'the public record emits executionName regardless of the status attempt',
+    file: 'src/service/dispatch-tracker.js',
+    find: `rec.executionName != null && status && rec.executionAttempt === status.runAttempt`,
+    replace: `rec.executionName != null && (process.env.MUTANT || (status && rec.executionAttempt === status.runAttempt))`,
+    mustFail: 'tracker never keeps a stale executionName while a rerun is queued',
+  },
+  {
+    // The one new field surfaced to the API.
+    name: 'the public record omits executionName',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        ? rec.executionName : null,`,
+    replace: `        ? (process.env.MUTANT ? null : rec.executionName) : null, // MUTATION`,
+    mustFail: 'tracker surfaces a resolved executionName through the public record',
+  },
+  {
+    // Only a started run can have published a receipt.
+    name: 'a receipt is looked up for a run that has not started',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (status.state !== 'in_progress' && status.state !== 'completed') return status;`,
+    replace: `    if (!process.env.MUTANT && status.state !== 'in_progress' && status.state !== 'completed') return status; // MUTATION`,
+    mustFail: 'tracker never looks up a receipt for a queued, pending or unsupported dispatch',
+  },
+  {
+    // Once set, executionName never flip-flops.
+    name: 'a cached executionName is looked up again on every poll',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (r.executionName == null) {
+      try {`,
+    replace: `    if (process.env.MUTANT || r.executionName == null) { // MUTATION
+      try {`,
+    mustFail: 'tracker caches executionName and never re-resolves it on a later poll',
+  },
+  {
+    // Concurrent polls share one in-flight lookup.
+    name: 'overlapping polls each start their own receipt lookup',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (!r._receiptLookup || r._receiptLookupAttempt !== attempt) {`,
+    replace: `        if (process.env.MUTANT || !r._receiptLookup || r._receiptLookupAttempt !== attempt) { // MUTATION`,
+    mustFail: 'overlapping polls share one receipt lookup and agree on executionName',
+  },
+  {
+    // Re-check after the await, as boundRunId does.
+    name: 'a slower receipt lookup overwrites an executionName a concurrent poll already cached',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (receipt && r.executionName == null) {`,
+    replace: `        if (receipt && (process.env.MUTANT || r.executionName == null)) { // MUTATION`,
+    mustFail: 'a concurrent poll that already cached executionName is never overwritten by a slower lookup',
+  },
+  {
+    // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
+    name: 'a cached executionName is trusted across a rerun attempt change',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (status && status.runAttempt != null && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {`,
+    replace: `    if (!process.env.MUTANT && status && status.runAttempt != null && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) { // MUTATION`,
+    mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
+  },
+  {
+    // One record's receipt failure must not hide another's status.
+    name: 'a receipt lookup failure escapes and hides every other dispatch',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        return { ...status, reason: \`execution receipt lookup failed: \${e.message}\` };`,
+    replace: `        if (process.env.MUTANT) throw e; // MUTATION
+        return { ...status, reason: \`execution receipt lookup failed: \${e.message}\` };`,
+    mustFail: 'a failed receipt lookup keeps the run status and never hides another record',
+  },
+  {
+    // Without the attempt, a stale receipt could not be told apart.
+    name: 'the receipt lookup is not given the run attempt',
+    file: 'src/service/dispatch-tracker.js',
+    find: `            runAttempt: attempt,`,
+    replace: `            runAttempt: process.env.MUTANT ? undefined : attempt, // MUTATION`,
+    mustFail: 'tracker surfaces a resolved executionName through the public record and passes the run attempt',
+  },
+
   {
     name: 'report-pr picks the earliest local session instead of the most recent',
     file: 'src/report-pr.js',

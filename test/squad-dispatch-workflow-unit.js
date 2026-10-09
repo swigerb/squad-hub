@@ -195,6 +195,38 @@ check('a claimed lease with no resulting execution is a hard failure, not a quie
   assert.match(block, /exit 1/);
 });
 
+check('a confirmed-execution receipt artifact is published, gated on a confirmed start, with a validated name', () => {
+  const gate = "if: steps.lease.outputs.action == 'start' && steps.start.outputs.exec != ''";
+  const stepBlock = (title) => {
+    const idx = src.indexOf(`- name: ${title}`);
+    assert.ok(idx !== -1, `missing step: ${title}`);
+    const next = src.indexOf('\n      - name:', idx + 1);
+    return src.slice(idx, next === -1 ? undefined : next);
+  };
+  const validate = stepBlock('Validate ACA execution name format');
+  assert.ok(validate.includes(gate));
+  assert.match(validate, /grep -Eq '\^\[A-Za-z0-9\]\(\[A-Za-z0-9-\]\{0,126\}\[A-Za-z0-9\]\)\?\$'/);
+  assert.match(validate, /::error::/);
+  assert.match(validate, /exit 1/);
+  const publish = stepBlock('Publish confirmed ACA execution receipt');
+  assert.ok(publish.includes(gate));
+  assert.match(publish, /uses: actions\/upload-artifact@v4/);
+  assert.ok(publish.includes('name: aca-exec-attempt${{ github.run_attempt }}-${{ steps.start.outputs.exec }}'));
+  assert.match(publish, /retention-days: 1\b/);
+  assert.match(publish, /if-no-files-found: error/);
+  assert.ok(src.indexOf('Start the ACA session job') < src.indexOf('Validate ACA execution name format'));
+  assert.ok(src.indexOf('Validate ACA execution name format') < src.indexOf('Publish confirmed ACA execution receipt'));
+  assert.ok(src.indexOf('Publish confirmed ACA execution receipt') < src.indexOf('A claimed lease MUST have produced an execution'));
+});
+
+check('the receipt step adds no permission scope: the job keeps exactly id-token, contents and issues', () => {
+  const jobIdx = src.indexOf('jobs:');
+  const permsBlock = src.slice(jobIdx, src.indexOf('steps:', jobIdx));
+  const scopes = [...permsBlock.matchAll(/^\s{6}([a-z-]+): (read|write)/gm)].map((m) => m[1]).sort();
+  assert.deepStrictEqual(scopes, ['contents', 'id-token', 'issues']);
+  assert.match(src, /\npermissions: \{\}/);
+});
+
 check('the dispatched ref is always the repository default branch read from the event, never a raw caller override', () => {
   assert.match(src, /DEFAULT_BASE_REF: \$\{\{ github\.event\.repository\.default_branch \|\| 'main' \}\}/);
   // base_branch only ever becomes an OV_ override merged by ralph_build_session_env,

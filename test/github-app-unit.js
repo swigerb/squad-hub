@@ -23,7 +23,7 @@ const crypto = require('crypto');
 const http = require('http');
 
 const {
-  GitHubApp, HUB_CORRELATION_INPUT, parseDeclaredWorkflowInputs, upstreamStatus,
+  GitHubApp, HUB_CORRELATION_INPUT, EXEC_RECEIPT_NAME_RE, parseDeclaredWorkflowInputs, upstreamStatus,
 } = require('../src/service/github-app');
 const { RateLimiter } = require('../src/service/rate-limiter');
 const { DispatchTracker, MAX_UNMATCHED_RECORD_AGE_MS } = require('../src/service/dispatch-tracker');
@@ -117,6 +117,8 @@ function fakeGitHubApp({
   installationsStatus = 200,
   runsStatus = 200,
   runs = null,
+  artifacts = [],
+  artifactsStatus = 200,
   now = () => Date.now(),
 } = {}) {
   const calls = { total: 0, byPath: {} };
@@ -186,6 +188,13 @@ function fakeGitHubApp({
         return json(200, { sha: 'deadbeef', content: Buffer.from(yaml, 'utf8').toString('base64'), encoding: 'base64' });
       }
 
+      const artifactsMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)\/artifacts(\?.*)?$/);
+      if (artifactsMatch && req.method === 'GET') {
+        if (artifactsStatus !== 200) return json(artifactsStatus, { message: 'artifact listing refused in fake' });
+        const list = typeof artifacts === 'function' ? artifacts(Number(artifactsMatch[3])) : artifacts;
+        return json(200, { total_count: list.length, artifacts: list });
+      }
+
       const singleRunMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)$/);
       if (singleRunMatch && req.method === 'GET') {
         const id = Number(singleRunMatch[3]);
@@ -196,6 +205,7 @@ function fakeGitHubApp({
           id: match.id,
           status: match.status,
           conclusion: match.conclusion || null,
+          run_attempt: match.run_attempt || 1,
           html_url: match.html_url || `https://github.com/${singleRunMatch[1]}/${singleRunMatch[2]}/actions/runs/${match.id}`,
         });
       }
@@ -235,6 +245,7 @@ function fakeGitHubApp({
             id: r.id,
             status: r.status,
             conclusion: r.conclusion || null,
+            run_attempt: r.run_attempt || 1,
             html_url: r.html_url || `https://github.com/acme/widgets/actions/runs/${r.id}`,
             created_at: r.created_at || new Date().toISOString(),
             head_branch: r.head_branch || defaultBranch,
@@ -1445,6 +1456,265 @@ function apiRequest(port, path, token, opts = {}) {
     const list = await tracker.listWithStatus('alice', fakeApp);
     assert.strictEqual(list[0].status.runId, CONCURRENTLY_BOUND_RUN_ID);
     assert.strictEqual(liveRecord.boundRunId, CONCURRENTLY_BOUND_RUN_ID);
+  });
+
+  // =========================================================================
+  // Confirmed ACA execution receipt (artifact NAME via the Artifacts List API)
+  // =========================================================================
+
+  const newReceiptApp = async (opts) => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, ...opts });
+    const port = await listen(fake.server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    return { app, ...fake };
+  };
+  const receiptArgs = (runAttempt = 1, runId = 700) => ({
+    owner: 'acme', repo: 'widgets', installationId: 1, runId, runAttempt,
+  });
+  const art = (name, extra = {}) => ({ id: 9000 + Math.floor(Math.random() * 1000), name, expired: false, ...extra });
+
+  check('EXEC_RECEIPT_NAME_RE accepts only attempt-number plus a DNS-label-like execution name', () => {
+    const m = EXEC_RECEIPT_NAME_RE.exec('aca-exec-attempt2-squad-job-abc123');
+    assert.ok(m && m[1] === '2' && m[2] === 'squad-job-abc123');
+    for (const bad of ['aca-exec-attempt-x', 'aca-exec-attemptx-job', 'aca-exec-attempt1--job', 'aca-exec-attempt1-job-',
+      'aca-exec-attempt1-jo_b', 'aca-exec-attempt1-job.x', 'xaca-exec-attempt1-job', 'aca-exec-attempt1-job\n', `aca-exec-attempt1-${'a'.repeat(129)}`]) {
+      assert.ok(!EXEC_RECEIPT_NAME_RE.test(bad), `should reject ${JSON.stringify(bad)}`);
+    }
+  });
+
+  await checkAsync('resolveExecutionReceipt returns the execution name for exactly one current-attempt receipt', async () => {
+    const { app, server, calls } = await newReceiptApp({ artifacts: [art('unrelated-artifact'), art('aca-exec-attempt1-job-abc123', { id: 4711 })] });
+    const r = await app.resolveExecutionReceipt(receiptArgs(1));
+    server.close();
+    assert.deepStrictEqual(r, { executionName: 'job-abc123', artifactId: 4711 });
+    assert.strictEqual(calls.byPath['GET /repos/acme/widgets/actions/runs/700/artifacts'], 1);
+  });
+
+  await checkAsync('resolveExecutionReceipt with no receipt yet is an honest null, not an error', async () => {
+    const { app, server } = await newReceiptApp({ artifacts: [art('something-else')] });
+    const r = await app.resolveExecutionReceipt(receiptArgs(1));
+    server.close();
+    assert.strictEqual(r, null);
+  });
+
+  await checkAsync('resolveExecutionReceipt refuses to guess between two current-attempt receipts', async () => {
+    const { app, server } = await newReceiptApp({ artifacts: [art('aca-exec-attempt1-job-a'), art('aca-exec-attempt1-job-b')] });
+    let err = null; let r;
+    try { r = await app.resolveExecutionReceipt(receiptArgs(1)); } catch (e) { err = e; }
+    server.close();
+    assert.ok(err, `expected an error, got ${JSON.stringify(r)}`);
+    assert.ok(/ambiguous execution receipt/.test(err.message), err.message);
+  });
+
+  await checkAsync('resolveExecutionReceipt ignores a receipt left by a prior attempt after a rerun', async () => {
+    const { app, server } = await newReceiptApp({ artifacts: [art('aca-exec-attempt1-job-old')] });
+    const stale = await app.resolveExecutionReceipt(receiptArgs(2));
+    server.close();
+    assert.strictEqual(stale, null, 'a stale-attempt artifact must never be reported');
+    const both = await newReceiptApp({ artifacts: [art('aca-exec-attempt1-job-old'), art('aca-exec-attempt2-job-new', { id: 5 })] });
+    const r = await both.app.resolveExecutionReceipt(receiptArgs(2));
+    both.server.close();
+    assert.deepStrictEqual(r, { executionName: 'job-new', artifactId: 5 });
+  });
+
+  await checkAsync('resolveExecutionReceipt ignores an expired receipt', async () => {
+    const { app, server } = await newReceiptApp({ artifacts: [art('aca-exec-attempt1-job-gone', { expired: true })] });
+    const r = await app.resolveExecutionReceipt(receiptArgs(1));
+    server.close();
+    assert.strictEqual(r, null);
+  });
+
+  await checkAsync('resolveExecutionReceipt ignores a malformed execution name in an artifact name', async () => {
+    const { app, server } = await newReceiptApp({ artifacts: [art('aca-exec-attempt1-job_bad'), art('aca-exec-attempt1--x')] });
+    const r = await app.resolveExecutionReceipt(receiptArgs(1));
+    server.close();
+    assert.strictEqual(r, null);
+  });
+
+  await checkAsync('resolveExecutionReceipt surfaces a provider failure instead of returning null', async () => {
+    const { app, server } = await newReceiptApp({ artifactsStatus: 500 });
+    let err = null; let r;
+    try { r = await app.resolveExecutionReceipt(receiptArgs(1)); } catch (e) { err = e; }
+    server.close();
+    assert.ok(err, `a non-200 must not look like "no receipt": ${JSON.stringify(r)}`);
+    assert.ok(/artifacts for Actions run 700/.test(err.message), err.message);
+  });
+
+  await checkAsync('_getRun and resolveRunStatus both report the run_attempt', async () => {
+    const corr = 'abababababababababababababababab';
+    const runs = [{ id: 710, status: 'in_progress', head_branch: 'main', display_title: correlationTitle(corr), run_attempt: 3 }];
+    const { app, server } = await newReceiptApp({ runs });
+    const got = await app._getRun('acme', 'widgets', 1, 710);
+    const matched = await app.resolveRunStatus({
+      owner: 'acme', repo: 'widgets', installationId: 1, correlationId: corr, correlationSupported: true, ref: 'main',
+    });
+    server.close();
+    assert.strictEqual(got.runAttempt, 3);
+    assert.strictEqual(matched.runAttempt, 3);
+  });
+
+  const receiptTracker = () => {
+    const tracker = new DispatchTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main',
+      correlationId: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd', correlationSupported: true, dispatchedAt: Date.now() - 1000,
+    });
+    return tracker;
+  };
+  const fakeReceiptApp = (receipt, calls) => ({
+    resolveRunStatus: async () => ({ state: 'in_progress', runId: 800, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+    _getRun: async (o, r, i, runId) => ({ state: 'in_progress', runId, runAttempt: 2, htmlUrl: 'https://example.invalid/r' }),
+    resolveExecutionReceipt: async (args) => {
+      calls.push(args);
+      if (typeof receipt === 'function') return receipt(args);
+      return receipt;
+    },
+  });
+
+  await checkAsync('tracker surfaces a resolved executionName through the public record and passes the run attempt', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    const list = await tracker.listWithStatus('alice', fakeReceiptApp({ executionName: 'job-xyz', artifactId: 1 }, calls));
+    assert.strictEqual(list[0].executionName, 'job-xyz');
+    assert.strictEqual(list[0].status.executionName, 'job-xyz');
+    assert.deepStrictEqual(calls[0], { owner: 'acme', repo: 'widgets', installationId: 1, runId: 800, runAttempt: 2 });
+    assert.ok(!('artifactId' in list[0]) && !('artifactId' in list[0].status), 'the artifact id is not exposed');
+  });
+
+  await checkAsync('tracker leaves executionName null, with no error, while no receipt is published', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    const list = await tracker.listWithStatus('alice', fakeReceiptApp(null, calls));
+    assert.strictEqual(list[0].executionName, null);
+    assert.strictEqual(list[0].status.state, 'in_progress');
+    assert.ok(!list[0].status.reason, 'no receipt yet is not an error');
+    await tracker.listWithStatus('alice', fakeReceiptApp(null, calls));
+    assert.strictEqual(calls.length, 2, 'an unresolved receipt is looked up again on the next poll');
+  });
+
+  await checkAsync('tracker never looks up a receipt for a queued, pending or unsupported dispatch', async () => {
+    const calls = [];
+    const queuedApp = { ...fakeReceiptApp(null, calls), resolveRunStatus: async () => ({ state: 'queued', runId: 801, runAttempt: 1 }) };
+    await receiptTracker().listWithStatus('alice', queuedApp);
+    const pendingApp = { ...fakeReceiptApp(null, calls), resolveRunStatus: async () => ({ state: 'pending', reason: 'none yet' }) };
+    await receiptTracker().listWithStatus('alice', pendingApp);
+    const unsupported = new DispatchTracker();
+    unsupported.record('alice', { owner: 'acme', repo: 'widgets', installationId: 1, correlationSupported: false });
+    await unsupported.listWithStatus('alice', fakeReceiptApp(null, calls));
+    assert.strictEqual(calls.length, 0);
+  });
+
+  await checkAsync('tracker caches executionName and never re-resolves it on a later poll', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    await tracker.listWithStatus('alice', fakeReceiptApp({ executionName: 'job-first', artifactId: 1 }, calls));
+    const again = await tracker.listWithStatus('alice', fakeReceiptApp({ executionName: 'job-second', artifactId: 2 }, calls));
+    assert.strictEqual(calls.length, 1, 'a cached name must not trigger another lookup');
+    assert.strictEqual(again[0].executionName, 'job-first');
+    assert.strictEqual(again[0].status.executionName, 'job-first');
+  });
+
+  await checkAsync('tracker drops a cached executionName when a rerun bumps the run attempt and re-resolves for the new attempt', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    let attempt = 1;
+    const app = {
+      resolveRunStatus: async () => ({ state: 'in_progress', runId: 800, runAttempt: attempt }),
+      _getRun: async (o, r, i, runId) => ({ state: 'in_progress', runId, runAttempt: attempt }),
+      resolveExecutionReceipt: async (args) => {
+        calls.push(args);
+        if (args.runAttempt === 1) return { executionName: 'job-attempt1', artifactId: 1 };
+        return calls.length >= 3 ? { executionName: 'job-attempt2', artifactId: 2 } : null;
+      },
+    };
+    const first = await tracker.listWithStatus('alice', app);
+    assert.strictEqual(first[0].executionName, 'job-attempt1');
+    attempt = 2;
+    const rerun = await tracker.listWithStatus('alice', app);
+    assert.strictEqual(calls.length, 2, 'a rerun must trigger a fresh lookup');
+    assert.strictEqual(calls[1].runAttempt, 2);
+    assert.strictEqual(calls[1].runId, 800);
+    assert.strictEqual(rerun[0].executionName, null, 'the stale attempt-1 name must not survive');
+    assert.strictEqual(rerun[0].status.executionName, undefined);
+    const resolved = await tracker.listWithStatus('alice', app);
+    assert.strictEqual(resolved[0].executionName, 'job-attempt2');
+    assert.strictEqual(resolved[0].status.executionName, 'job-attempt2');
+    const stable = await tracker.listWithStatus('alice', app);
+    assert.strictEqual(stable[0].executionName, 'job-attempt2');
+    assert.strictEqual(calls.length, 3, 'the same attempt is never re-resolved');
+  });
+
+  await checkAsync('tracker never keeps a stale executionName while a rerun is queued, pending or errored', async () => {
+    for (const later of [
+      { state: 'queued', runId: 8, runAttempt: 2 },
+      { state: 'pending', runId: 8, runAttempt: 2 },
+      { state: 'error', runId: 8, runAttempt: 2, reason: 'boom' },
+      { state: 'error', reason: 'no runId at all' },
+    ]) {
+      const tracker = receiptTracker(); let current = { state: 'in_progress', runId: 8, runAttempt: 1 };
+      const app = {
+        resolveRunStatus: async () => current,
+        _getRun: async () => current,
+        resolveExecutionReceipt: async () => ({ executionName: 'old', artifactId: 1 }),
+      };
+      const first = await tracker.listWithStatus('alice', app);
+      assert.strictEqual(first[0].executionName, 'old');
+      current = later;
+      const second = await tracker.listWithStatus('alice', app);
+      assert.strictEqual(second[0].executionName, null, `stale name leaked for ${later.state}`);
+      assert.strictEqual(second[0].status.executionName, undefined);
+    }
+  });
+
+  await checkAsync('overlapping polls share one receipt lookup and agree on executionName', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    let release; const gate = new Promise((r) => { release = r; });
+    const app = fakeReceiptApp(async () => { await gate; return { executionName: 'job-shared', artifactId: 3 }; }, calls);
+    // bind first so both polls take the already-bound path
+    await tracker.listWithStatus('alice', { ...app, resolveExecutionReceipt: async () => null });
+    calls.length = 0;
+    const a = tracker.listWithStatus('alice', app);
+    const b = tracker.listWithStatus('alice', app);
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    const [la, lb] = await Promise.all([a, b]);
+    assert.strictEqual(calls.length, 1, 'concurrent polls must not both query GitHub');
+    assert.strictEqual(la[0].executionName, 'job-shared');
+    assert.strictEqual(lb[0].executionName, 'job-shared');
+  });
+
+  await checkAsync('a concurrent poll that already cached executionName is never overwritten by a slower lookup', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    const live = tracker.list('alice')[0];
+    const app = fakeReceiptApp(async () => { live.executionName = 'job-winner'; live.executionAttempt = 2; return { executionName: 'job-late', artifactId: 4 }; }, calls);
+    const list = await tracker.listWithStatus('alice', app);
+    assert.strictEqual(live.executionName, 'job-winner');
+    assert.strictEqual(list[0].executionName, 'job-winner');
+  });
+
+  await checkAsync('a failed receipt lookup keeps the run status and never hides another record', async () => {
+    const tracker = receiptTracker();
+    tracker.record('alice', {
+      owner: 'acme', repo: 'gadgets', installationId: 1, ref: 'main',
+      correlationId: 'dededededededededededededededede', correlationSupported: true, dispatchedAt: Date.now() - 500,
+    });
+    const calls = [];
+    const app = fakeReceiptApp((args) => {
+      if (args.repo === 'widgets') throw Object.assign(new Error('boom'), { status: 502 });
+      return { executionName: 'job-gadgets', artifactId: 5 };
+    }, calls);
+    const list = await tracker.listWithStatus('alice', app);
+    const widgets = list.find((x) => x.repo === 'widgets');
+    const gadgets = list.find((x) => x.repo === 'gadgets');
+    assert.strictEqual(widgets.status.state, 'in_progress', 'the run status survives a receipt failure');
+    assert.ok(/execution receipt lookup failed: boom/.test(widgets.status.reason), widgets.status.reason);
+    assert.strictEqual(widgets.executionName, null);
+    assert.strictEqual(gadgets.executionName, 'job-gadgets');
+  });
+
+  await checkAsync('a user never sees another user\'s executionName', async () => {
+    const tracker = receiptTracker(); const calls = [];
+    tracker.record('bob', { owner: 'acme', repo: 'widgets', installationId: 1, correlationSupported: false });
+    await tracker.listWithStatus('alice', fakeReceiptApp({ executionName: 'job-alice', artifactId: 6 }, calls));
+    const bob = await tracker.listWithStatus('bob', fakeReceiptApp(null, calls));
+    assert.strictEqual(bob.length, 1);
+    assert.strictEqual(bob[0].executionName, null);
   });
 
   await checkAsync('a minted installation token for a dispatch is scoped to just the target repository', async () => {

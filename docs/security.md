@@ -199,6 +199,22 @@ run as this dispatch's run only when the workflow's exact bracket-delimited
 an Azure credential, and does not require any worker/image/model protocol
 change.
 
+**Confirmed-execution receipt, with no new App permission.** A verified run is
+not yet a confirmed execution. After the ARM `/start` response yields an
+execution name, the workflow validates it against a strict DNS-label-like
+pattern and uploads a one-day artifact named
+`aca-exec-attempt<run_attempt>-<execution name>`. The hub lists that run's
+artifacts with the Artifacts List API, which the App's existing Actions
+permission covers, and reads only the artifact **name**: it never downloads or
+parses artifact contents, and it does not use the Checks or Deployments APIs,
+which would need new App permissions. Names are matched against a strict
+pattern and only for the run's current attempt, so a stale artifact from a
+prior attempt, an expired one, or a malformed name is ignored (`executionName:
+null`); multiple matches are refused rather than guessed. The value is a
+sanitized join key to the canonical `aca-<execution>` identity and is never
+trusted as device or session identity by itself — that registration check is
+unchanged.
+
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
 a repository's issue tracker through this endpoint. `GET /api/aca/repos` and

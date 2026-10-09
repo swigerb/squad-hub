@@ -66,6 +66,20 @@ class DispatchTracker {
        * handing the same run to a different record, or flipping to a
        * different run on a borderline match). */
       boundRunId: null,
+      /** The ACA execution name the workflow's receipt artifact confirmed for
+       * the bound run. Set once per run attempt, never re-resolved within it. It
+       * is sanitized by `EXEC_RECEIPT_NAME_RE` (DNS-label charset only) and is
+       * evidence of a confirmed ARM start, not device/session identity by
+       * itself -- that still needs the canonical `aca-<execution>` registration. */
+      executionName: null,
+      /** The run attempt `executionName` was resolved for. A rerun keeps
+       * `boundRunId` but bumps the attempt, so the name is only trusted while
+       * the status still reports this attempt. */
+      executionAttempt: null,
+      /** In-flight receipt lookup, shared by overlapping polls so they do not
+       * each query GitHub. Never exposed. */
+      _receiptLookup: null,
+      _receiptLookupAttempt: null,
     });
     while (list.length > MAX_PER_USER) list.shift();
     this._byUser.set(userKey, list);
@@ -84,6 +98,13 @@ class DispatchTracker {
       repo: rec.repo,
       ref: rec.ref,
       dispatchedAt: rec.dispatchedAt,
+      // Attempt-aware: the name is only emitted when it was resolved for the
+      // attempt `status` describes (a status with no runAttempt, e.g. an
+      // errored poll, gets null), so it can never disagree with `status`
+      // whatever path touched the cache. The cache is left intact for a
+      // transient error so the name returns once the status does.
+      executionName: rec.executionName != null && status && rec.executionAttempt === status.runAttempt
+        ? rec.executionName : null,
       status,
     };
   }
@@ -164,9 +185,66 @@ class DispatchTracker {
       } catch (e) {
         status = { state: 'error', reason: e.message };
       }
-      if (mine.has(r.id)) statusById.set(r.id, status);
+      if (mine.has(r.id)) {
+        status = await this._withExecutionReceipt(r, status, githubApp);
+        statusById.set(r.id, status);
+      }
     }
     return recs.map((r) => this._publicRecord(r, statusById.get(r.id)));
+  }
+
+  /**
+   * Once a record's run is bound and has started, look up the workflow's
+   * confirmed-execution receipt (`GitHubApp.resolveExecutionReceipt`) and cache
+   * `executionName` on the record. A cached name is never re-resolved for the same run attempt (a rerun
+   * bumps the attempt and drops it), and
+   * concurrent polls share one in-flight lookup and defer to whichever name
+   * landed first. No receipt yet is `executionName: null`, not an error; a
+   * failed lookup only appends to `status.reason` so the run's own status, and
+   * every other row, are unaffected.
+   */
+  async _withExecutionReceipt(r, status, githubApp) {
+    // Drop a previous attempt's cache before any early return, so a rerun that
+    // is still queued/pending/errored never keeps the old name. A status with
+    // no runAttempt cannot be compared and leaves the cache alone;
+    // _publicRecord still withholds the name for it.
+    if (status && status.runAttempt != null && r.executionAttempt != null && r.executionAttempt !== status.runAttempt) {
+      r.executionName = null;
+      r.executionAttempt = null;
+    }
+    if (status && status.runAttempt != null && r._receiptLookup && r._receiptLookupAttempt !== status.runAttempt) {
+      r._receiptLookup = null;
+      r._receiptLookupAttempt = null;
+    }
+    if (!status || status.runId == null || r.boundRunId == null) return status;
+    if (status.state !== 'in_progress' && status.state !== 'completed') return status;
+    if (r.executionName == null) {
+      try {
+        const attempt = status.runAttempt;
+        if (!r._receiptLookup || r._receiptLookupAttempt !== attempt) {
+          const lookup = githubApp.resolveExecutionReceipt({
+            owner: r.owner,
+            repo: r.repo,
+            installationId: r.installationId,
+            runId: r.boundRunId,
+            runAttempt: attempt,
+          }).finally(() => {
+            if (r._receiptLookup === lookup) { r._receiptLookup = null; r._receiptLookupAttempt = null; }
+          });
+          r._receiptLookup = lookup;
+          r._receiptLookupAttempt = attempt;
+        }
+        const receipt = await r._receiptLookup;
+        if (receipt && r.executionName == null) {
+          r.executionName = receipt.executionName;
+          r.executionAttempt = attempt;
+        }
+      } catch (e) {
+        return { ...status, reason: `execution receipt lookup failed: ${e.message}` };
+      }
+    }
+    const valid = r.executionName != null && r.executionAttempt === status.runAttempt;
+    return valid ? { ...status, executionName: r.executionName } : status;
   }
 
   /**

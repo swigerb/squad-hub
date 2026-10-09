@@ -385,6 +385,20 @@ same token back through the existing GitHub Actions API `display_title`. A
 repository still running an older workflow that does not declare that input is
 left honestly `unsupported`; the hub does not fall back to guessing by time.
 
+Proving the run is not the same as proving an execution started. After the ARM
+`/start` response yields an execution name and the workflow has validated it as
+a plain DNS-label-like name, the workflow publishes a one-line, one-day receipt
+artifact named `aca-exec-attempt<run_attempt>-<execution name>`. The hub reads
+only the artifact **name** through the Artifacts List API (covered by the App's
+existing Actions permission; no new permission, no artifact download) and, for a
+run that has started, reports it as `executionName`. That ties a hub dispatch to
+a verified Actions run and to the execution name behind the canonical
+`aca-<execution>` device identity. A receipt from a different run attempt (a
+manual rerun), an expired one, or none at all leaves `executionName` `null`;
+more than one current-attempt receipt is refused rather than guessed. The name
+is a join key only: it never creates or authenticates a device or session,
+which still requires the existing `aca-<execution>` registration.
+
 The dispatch always runs on the repository's own **default branch** — never on
 a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
 **input** above (itself subject to the declared-input check), so the workflow

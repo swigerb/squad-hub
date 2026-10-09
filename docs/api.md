@@ -508,10 +508,23 @@ against GitHub Actions for its current run status:
 {
   "dispatches": [{
     "owner": "me", "repo": "my-repo", "ref": "main", "dispatchedAt": 1730000000000,
-    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123" }
+    "executionName": "my-job-abc123",
+    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123", "executionName": "my-job-abc123" }
   }]
 }
 ```
+
+`executionName` is the ACA execution the workflow confirmed through the ARM
+`/start` response, or `null` if that is not (yet) known. The hub reads it from
+the names of the run's non-expired `aca-exec-attempt<run_attempt>-<execution>`
+artifacts (the Artifacts List API, within the App's existing Actions
+permission), only for a run that is `in_progress` or `completed`, and only an
+artifact for the run's current attempt counts. A missing, expired, or
+stale-attempt receipt is `null`, never a guess; once found it is not
+re-resolved. It matches a DNS-label charset only. It is a join key to the
+canonical `aca-<execution>` device identity, not proof of that identity by
+itself. A failed receipt lookup keeps the run's `state` and adds a note to
+`status.reason`.
 
 `GET /api/aca/repos` and `GET /api/aca/dispatches` share one read-only rate
 limit, per signed-in user (#213): **30 requests/minute**. Each spends the
