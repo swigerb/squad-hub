@@ -200,6 +200,17 @@ export const ACA_DISPATCH_STEPS = ['Dispatched', 'Lease claimed', 'Starting job'
  * prove. Issue #178's release-gate review caught this. So `queued` and
  * `in_progress` only ever move which step is shown as `current` ("probably
  * in flight"); neither ever marks a prior step `done`.
+ *
+ * The returned shape also carries `resolved`: true for exactly the two
+ * TERMINAL outcomes this function can report -- "Dispatch failed" (an
+ * errored dispatch, or a completed run whose conclusion was not `success`)
+ * and "Unknown outcome" (a completed-success run whose attach wait expired)
+ * -- false for every other branch, including `attached`. This is the ONE
+ * place that decides "is this pending dispatch done changing", so
+ * `acaPendingRowHtml`'s rendering and `syncAcaPending`'s poll-exclusion
+ * (aca-pending.js) both read it from here rather than each re-deriving their
+ * own copy of the same three conditions -- the exact divergence a second,
+ * hand-maintained copy would eventually drift from this one.
  */
 export function acaStepsForStatus(status, attached = false, completedWaitExpired = false) {
   const stepsThrough = (doneCount, currentIndex) => ACA_DISPATCH_STEPS.map((label, i) => ({
@@ -208,7 +219,7 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
 
   if (attached) {
     return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(4, -1),
+      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(4, -1),
     };
   }
 
@@ -216,7 +227,7 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
 
   if (st === 'error') {
     return {
-      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true,
+      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true, resolved: true,
       failureReason: (status && status.reason) || 'the dispatch failed', steps: stepsThrough(1, -1),
     };
   }
@@ -233,9 +244,12 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
       // hub now requires to prove an attach (see acaPendingMatch). Shown as
       // an honest "do not know", never silently left reading "Queued on
       // ACA" forever, and never asserted as a failure this hub has no
-      // evidence for.
+      // evidence for. Terminal: there is nothing further this hub can learn
+      // by asking GitHub again, so `resolved` is true and `syncAcaPending`
+      // stops polling for it -- a person can still force one re-check (see
+      // the retry affordance in aca-pending.js).
       return {
-        pillLabel: 'Unknown outcome', pillClass: 'stale', failed: false,
+        pillLabel: 'Unknown outcome', pillClass: 'stale', failed: false, resolved: true,
         failureReason: 'the Actions run finished successfully, but no ACA session attached in time -- check the run directly',
         steps: stepsThrough(1, -1),
       };
@@ -244,6 +258,11 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
       pillLabel: ok ? 'Queued on ACA' : 'Dispatch failed',
       pillClass: ok ? 'q' : 'failed',
       failed: !ok,
+      // Terminal the instant the run's own conclusion was not `success` --
+      // there is no wait to bound here, GitHub has already given its final
+      // word. Still within the bounded wait when `ok` is true, so not
+      // resolved yet -- the branch above handles it once the wait expires.
+      resolved: !ok,
       failureReason: ok ? null : `the Actions run finished (${(status && status.conclusion) || 'no conclusion'}) without the job attaching`,
       // Still only "Dispatched" done -- a successful Actions conclusion is
       // not proof the ACA job itself ran, only that the workflow's own
@@ -259,7 +278,7 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
     // itself has started (see the function doc above). Shown as "Starting
     // job" in flight; nothing before it is marked done.
     return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 2),
+      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 2),
     };
   }
 
@@ -269,7 +288,7 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
     // lease was claimed (that happens inside the job, which has not run
     // yet); shown as "Lease claimed" merely in flight.
     return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 1),
+      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 1),
     };
   }
 
@@ -278,7 +297,7 @@ export function acaStepsForStatus(status, attached = false, completedWaitExpired
   // POST itself already succeeded, so "Dispatched" is done; what is left is
   // the lease being claimed by whichever run this becomes.
   return {
-    pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 1),
+    pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 1),
   };
 }
 

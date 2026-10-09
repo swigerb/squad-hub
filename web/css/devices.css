@@ -181,6 +181,13 @@
 .aca-steps .aca-step.done { color: var(--ok); border-color: var(--ok); }
 .aca-steps .aca-step.now { color: var(--accent); border-color: var(--accent); }
 .aca-fail { color: var(--bad); margin-top: 4px; }
+/* The "Check again" button on a terminally-resolved (failed/unknown-outcome)
+   pending row (#178's follow-up fix) -- forces one more
+   `GET /api/aca/dispatches` re-check without starting a second real job
+   (`retryAcaPending`, aca-pending.js). Small and secondary: it is a rare
+   recovery action on a row that is otherwise done changing, not a primary
+   call to action. */
+.aca-retry { margin-top: 6px; height: 24px; padding: 0 10px; font-size: 12px; }
 
 /* ---------- loading skeletons ---------- */
 /* Rows and cards the shape of what is about to arrive, shown only until the

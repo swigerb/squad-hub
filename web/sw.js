@@ -38,7 +38,14 @@
 // their styling) and #173 (the new /js/device-detail.js split module). Either
 // alone would have been v9; both landing together need a fresh value so an
 // aeroplane device does not keep serving a stale copy of either change.
-const CACHE = 'squad-hub-shell-v11';
+// v11: #178's release-gate fix (trackerId-based dispatch binding,
+// device.meta-based attach correlation, honest step evidence, and the
+// restored no-App existing-issue/command-preview fallback).
+// v12: #178's follow-up fix -- time-ordering-based dispatch-attempt identity
+// (the new /js/aca-match.js module, split out of aca-pending.js for size),
+// and bounded "Check again" polling exclusion once a pending row's outcome
+// is terminally resolved.
+const CACHE = 'squad-hub-shell-v12';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -72,6 +79,7 @@ const SHELL = [
   '/js/ws.js',
   '/js/aca.js',
   '/js/aca-pending.js',
+  '/js/aca-match.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',

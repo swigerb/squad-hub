@@ -31,17 +31,31 @@ const src = readWebSource();
 const browser = { exports: {} };
 new Function('module', `${src}\nmodule.exports = {
   acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
-  acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, api,
+  acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, ACA_START_TOLERANCE_MS,
+  trackAcaDispatch, syncAcaPending, retryAcaPending, state, api,
 };`)(browser);
 const {
   acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
-  acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, api,
+  acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, ACA_START_TOLERANCE_MS,
+  trackAcaDispatch, syncAcaPending, retryAcaPending, state, api,
 } = browser.exports;
 
 const REPO = 'swigerb/squad-on-aca';
 const baseForm = () => ({
   repo: REPO, prompt: 'Update the docs', issueMode: 'new', newIssueTitle: '', publishPr: true, watchOnly: false,
 });
+
+async function checkAsync(name, fn) {
+  try {
+    await fn(); pass += 1;
+    console.log(`  ok   ${name}`);
+    console.log(`RESULT\tok\t${name}`);
+  } catch (e) {
+    fail += 1;
+    console.log(`  FAIL ${name}\n         ${e.message}`);
+    console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  }
+}
 
 // --- acaBuildDispatchBody ----------------------------------------------------
 
@@ -162,12 +176,19 @@ check('an errored dispatch is reported as failed, with the reason shown verbatim
   assert.strictEqual(v.failed, true);
   assert.strictEqual(v.pillClass, 'failed');
   assert.strictEqual(v.failureReason, 'no installation for this repository');
+  // Terminal: there is nothing further to learn by asking GitHub again, so
+  // syncAcaPending must stop polling this entry forever (see aca-pending.js).
+  assert.strictEqual(v.resolved, true);
 });
 
 check('a run that completed without ever attaching is reported as failed', () => {
   const v = acaStepsForStatus({ state: 'completed', conclusion: 'failure' }, false);
   assert.strictEqual(v.failed, true);
   assert.ok(/failure/.test(v.failureReason));
+  // Same terminal contract as the errored-dispatch case above: GitHub has
+  // already given its final word, so this is resolved immediately, not only
+  // once some additional wait expires.
+  assert.strictEqual(v.resolved, true);
 });
 
 check('a run that completed successfully, but the session has not attached yet, is NOT reported failed before the wait expires', () => {
@@ -267,6 +288,21 @@ check('an empty group list never matches, and never throws', () => {
 // must never let one real session resolve more than one pending row.
 
 check('a single matching session only ever satisfies ONE of two repeated-same-issue pending entries', () => {
+  // UPDATED by the follow-up to #178 (see acaPendingMatch's own doc comment,
+  // "ON THE PRE-EXISTING... TEST"): this test ORIGINALLY asserted the OLDER
+  // of two same-issue entries always wins a session either could plausibly
+  // match, mirroring DispatchTracker's own oldest-dispatch-claims-first
+  // server-side tie-break. That was a reasonable choice when nothing else
+  // distinguished the two candidates -- but it is no longer the best
+  // available signal: a session's own `startedAt` IS real evidence about
+  // which dispatch actually produced it (closer in time is more likely to
+  // be the actual cause), where "which entry is older" says nothing about
+  // the SESSION at all. `older` (dispatchedAt 1000) and `newer` (dispatchedAt
+  // 5000) are both timing-eligible for a session that started at 6000, but
+  // `newer` is the CLOSER preceding dispatch -- so it is `newer`, not
+  // `older`, that now wins. The exclusivity guarantee this test exists for
+  // is unchanged: whichever entry wins, the OTHER must never also resolve to
+  // the same session.
   const older = { repo: REPO, issue: 42, dispatchedAt: 1000 };
   const newer = { repo: REPO, issue: 42, dispatchedAt: 5000 };
   const groups = [acaGroup({
@@ -274,21 +310,44 @@ check('a single matching session only ever satisfies ONE of two repeated-same-is
     sessions: [{ id: 's1', startedAt: 6000 }],
   })];
 
-  // Unclaimed: both independently see the one session (acaPendingAttached's
-  // plain yes/no has no notion of exclusivity, by design -- see its own doc
-  // comment; exclusivity only applies through acaPendingMatch's claimedKeys).
+  // Unclaimed, and with no sibling awareness (acaPendingAttached's plain
+  // yes/no, by design -- see its own doc comment): both independently see
+  // the one session. Exclusivity and the closest-preceding tie-break only
+  // apply through acaPendingMatch's `claimedKeys`/`allPending`.
   assert.strictEqual(acaPendingAttached(older, groups), true);
   assert.strictEqual(acaPendingAttached(newer, groups), true);
 
-  // With the session already claimed by the older entry, the newer entry
-  // must NOT also resolve to it -- oldest-dispatch-claims-first, mirroring
-  // DispatchTracker's own server-side rule.
+  const allPending = [older, newer];
+  const matchNewer = acaPendingMatch(newer, groups, new Set(), allPending);
+  assert.strictEqual(matchNewer && matchNewer.key, 's1', 'the CLOSEST preceding entry (newer) should win the one real session');
+  assert.strictEqual(acaPendingMatch(older, groups, new Set(), allPending), null,
+    'the older entry is not the closest preceding dispatch for this session, so it must not also claim it');
+
+  // With the session already claimed (by `newer`, per the above), neither
+  // entry may claim it again -- not `newer` (already has it, so there is
+  // nothing left to find), and not `older` (never eligible for it either).
   const claimed = new Set(['s1']);
-  assert.strictEqual(acaPendingMatch(older, groups, claimed), null, 'the older entry should not re-claim what it already has');
-  const matchOlder = acaPendingMatch(older, groups, new Set());
-  assert.strictEqual(matchOlder && matchOlder.key, 's1');
-  assert.strictEqual(acaPendingMatch(newer, groups, claimed), null,
+  assert.strictEqual(acaPendingMatch(newer, groups, claimed, allPending), null, 'newer should not re-claim what it already has');
+  assert.strictEqual(acaPendingMatch(older, groups, claimed, allPending), null,
     'a repeat dispatch on the same issue must not also consume the first dispatch\'s attached session');
+});
+
+check('a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)', () => {
+  // The genuinely ambiguous case the brief's "leave unknown, do not
+  // fabricate" instruction is actually about: two sibling entries whose
+  // dispatchedAt are EQUALLY the closest preceding value for one candidate
+  // session -- there is no time-based way to prefer one over the other, so
+  // this must resolve to NEITHER rather than guess (unlike the test above,
+  // where `newer` is unambiguously closer).
+  const a = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const b = { repo: REPO, issue: 42, dispatchedAt: 1000 };
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'tied-session', startedAt: 2000 }],
+  })];
+  const allPending = [a, b];
+  assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null);
+  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null);
 });
 
 check('a pre-existing/unrelated aca- session reporting a different issue does not steal a different pending entry\'s claim', () => {
@@ -339,7 +398,106 @@ check('acaPendingMatch picks the earliest-started eligible session among genuine
   assert.strictEqual(match && match.key, 'earlier');
 });
 
-// --- rendering ------------------------------------------------------------
+// --- acaPendingMatch: time-ordering is dispatch-ATTEMPT identity -----------
+//
+// Repo+issue alone proves "the right repository and issue", never "the
+// right OCCASION" -- see acaPendingMatch's own doc comment for the two real
+// bugs this closes (Bug A: a fresh tab binding to a stale historical
+// session; Bug B: a same-issue retry swapping with its own predecessor).
+
+check('a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
+  // An "aca-" session from ten minutes before this dispatch was even made --
+  // left over from an earlier, unrelated run against the same issue. Its
+  // own device is reported ONLINE and its own session has no particular
+  // "finished" marker; only its startedAt is implicated here, which is
+  // exactly the point -- presence/online-ness tells this rule nothing.
+  const groups = [acaGroup({
+    device: { presence: 'online', meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'ancient-online', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
+  })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
+});
+
+check('a fresh tab does not bind to a historical same-issue session whose device has since gone offline (Bug A)', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
+  const groups = [acaGroup({
+    device: { presence: 'offline', meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'ancient-offline', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
+  })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
+});
+
+check('a fresh tab does not bind to a historical same-issue session that has since completed (Bug A)', () => {
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
+  const groups = [acaGroup({
+    device: { presence: 'online', meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'ancient-completed', status: 'completed', startedAt: entry.dispatchedAt - (10 * 60 * 1000) }],
+  })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
+});
+
+check('a session that started just within the clock-drift tolerance before the dispatch still matches', () => {
+  // The flip side of Bug A's fix: ACA_START_TOLERANCE_MS exists precisely so
+  // a session that genuinely IS this dispatch's own job, but whose own
+  // clock reports starting a few seconds "before" this hub believes it
+  // dispatched, is not rejected by the same rule that excludes Bug A.
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
+  const groups = [acaGroup({
+    device: { meta: { repo: REPO, issue: 42 } },
+    sessions: [{ id: 'within-tolerance', startedAt: entry.dispatchedAt - (ACA_START_TOLERANCE_MS - 1) }],
+  })];
+  const match = acaPendingMatch(entry, groups, new Set());
+  assert.strictEqual(match && match.key, 'within-tolerance');
+});
+
+check('a candidate with no meta.repo/meta.issue at all is never treated as a match, colocated with the time-ordering tests above', () => {
+  // Explicit coverage of the "no proof" case alongside the new time-ordering
+  // tests, per the brief -- this already passed before this fix (see the
+  // original "a device whose meta omits repo/issue..." test above) and must
+  // continue to, unaffected by the new rules.
+  const entry = { repo: REPO, issue: 42, dispatchedAt: 1_000_000 };
+  const groups = [acaGroup({ device: {}, sessions: [{ id: 'no-meta', startedAt: entry.dispatchedAt + 1000 }] })];
+  assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
+});
+
+check('a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)', () => {
+  // The single most important regression test for this fix: dispatch A
+  // stalls, the same issue is dispatched again as B. Both real sessions
+  // eventually exist, but GitHub/Azure timing can attach them in EITHER
+  // order. This simulates sessionB (B's own job) attaching FIRST, across
+  // two separate resolution passes -- exactly the ordering `syncAcaPending`
+  // would see in practice, and exactly the ordering the OLD
+  // "earliest-started-wins, processed oldest-entry-first" code bound
+  // WRONGLY to entry A (see acaPendingMatch's own doc comment, "Bug B").
+  const entryA = { repo: REPO, issue: 42, dispatchedAt: 1_000_000, attached: false };
+  const entryB = { repo: REPO, issue: 42, dispatchedAt: 1_100_000, attached: false }; // a genuine retry, 100s later
+  const sessionA = { id: 'sessionA', startedAt: 1_001_000 }; // really A's own job
+  const sessionB = { id: 'sessionB', startedAt: 1_101_000 }; // really B's own job
+
+  // Pass 1: only sessionB has attached so far.
+  const groupsPass1 = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [sessionB] })];
+  const allPending = [entryA, entryB];
+  const claimedKeys = new Set();
+
+  assert.strictEqual(acaPendingMatch(entryA, groupsPass1, claimedKeys, allPending), null,
+    'entry A must NOT claim sessionB -- B is the closer preceding dispatch for sessionB\'s own startedAt');
+  const matchB = acaPendingMatch(entryB, groupsPass1, claimedKeys, allPending);
+  assert.strictEqual(matchB && matchB.key, 'sessionB', 'entry B should correctly claim its own session on the very first poll');
+
+  // Simulate what syncAcaPending does once a match is found.
+  entryB.attached = true;
+  claimedKeys.add('sessionB');
+
+  // Pass 2: sessionA has now also attached. Both sessions are visible, B is
+  // already attached (and excluded from `allPending`'s sibling computation
+  // by acaPendingMatch itself, since it is no longer pending).
+  const groupsPass2 = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [sessionA, sessionB] })];
+  const matchA = acaPendingMatch(entryA, groupsPass2, claimedKeys, allPending);
+  assert.strictEqual(matchA && matchA.key, 'sessionA', 'entry A should now correctly claim ITS OWN session -- no swap');
+});
+
+
 
 check('a pending row names its repository and does not render as clickable session markup', () => {
   const html = acaPendingRowHtml({ localId: 'x', repo: REPO, status: null, dispatchedAt: Date.now() });
@@ -501,6 +659,74 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
         console.log(`  FAIL api() still prefers an \`error\`-shaped body over \`reason\`\n         ${assertErr.message}`);
         console.log(`RESULT\tfail\tapi() still prefers an \`error\`-shaped body over \`reason\`\t${String(assertErr.message).split('\n')[0]}`);
       }
+    }
+
+    // --- syncAcaPending / retryAcaPending: bounded polling (follow-up to
+    // #178) --------------------------------------------------------------
+    // `GET /api/aca/dispatches` must be called exactly once more each time
+    // there is genuinely something new to learn, and NEVER again once every
+    // tracked entry is attached or terminally resolved -- see
+    // acaPendingMatch's sibling module aca-pending.js's own doc comments on
+    // `syncAcaPending` and `retryAcaPending`.
+    {
+      const calls = [];
+      global.fetch = async (url, opts) => {
+        calls.push({ url, method: (opts && opts.method) || 'GET' });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            dispatches: [{ id: 'tracker-err', status: { state: 'error', reason: 'boom' } }],
+          }),
+        };
+      };
+
+      await checkAsync('once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again', async () => {
+        state.acaPending = [{
+          localId: 'x1',
+          repo: REPO,
+          issue: 1,
+          dispatchedAt: Date.now(),
+          owner: REPO.split('/')[0],
+          name: REPO.split('/')[1],
+          trackerId: 'tracker-err',
+          status: null,
+          attached: false,
+          completedAt: null,
+          matchedKey: null,
+          resolved: false,
+        }];
+        state.overview = { groups: [] };
+
+        calls.length = 0;
+        await syncAcaPending();
+        assert.strictEqual(calls.length, 1, 'the first sync, with an unresolved entry, must fetch once');
+        assert.strictEqual(state.acaPending[0].resolved, true,
+          'an errored dispatch status must mark the entry resolved -- the SAME acaStepsForStatus branch the row itself renders from');
+
+        // Two more ticks: a terminally-resolved, unattached entry must cost
+        // nothing at all, forever -- this is the exact #178 follow-up fix
+        // (syncAcaPending's own `!e.attached && !e.resolved` filter).
+        await syncAcaPending();
+        await syncAcaPending();
+        assert.strictEqual(calls.length, 1, 'once resolved, NO further /api/aca/dispatches fetch may ever happen for this entry');
+      });
+
+      await checkAsync('retryAcaPending forces exactly one re-check of a resolved entry, and never dispatches a second job', async () => {
+        calls.length = 0;
+        await retryAcaPending('x1');
+        assert.strictEqual(calls.length, 1, 'retryAcaPending should force exactly one more GET /api/aca/dispatches');
+        assert.ok(calls.every((c) => c.method !== 'POST'), 'retryAcaPending must never call POST /api/aca/dispatch -- it must never start a second real job');
+        assert.ok(calls.every((c) => c.url === '/api/aca/dispatches'), 'retryAcaPending must only ever hit the status-check endpoint');
+        assert.strictEqual(state.acaPending[0].resolved, true,
+          'with nothing changed upstream, the entry resolves back to the same honest terminal outcome -- not an endless unresolved loop');
+
+        calls.length = 0;
+        await syncAcaPending();
+        assert.strictEqual(calls.length, 0, 'retrying one entry must not resume polling for every OTHER already-resolved entry');
+      });
+
+      state.acaPending = [];
     }
 
     global.fetch = realFetch;

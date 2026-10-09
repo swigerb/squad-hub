@@ -236,45 +236,68 @@ A successful dispatch does not yet have a device — the job is still starting
 on GitHub's side of the gap in the table above (own Azure subscription,
 own Actions runner). Squad Hub shows it as a **"Queued on ACA"** row in the
 session list, in the same place a real session would appear, through four
-steps: Dispatched, Lease claimed, Starting job, Attached. The rest of the app
-is entirely WS-push driven (a device's own socket tells the hub the instant
-something changes), but a GitHub Actions run's status is pull-only — nothing
+steps: Dispatched, Lease claimed, Starting job, Attached. Most of the app IS
+WS-push driven (a device's own socket tells the hub the instant something
+changes), and that is genuinely how devices and sessions update here — but
+this is not the only timer in the client: `web/app.js` (around line 176, in
+`main()`) already runs its own unrelated `setInterval(refresh, 15000)` that
+polls the whole `/api/overview`, for the lifetime of every tab, regardless of
+ACA dispatch state. The timer described here is a SEPARATE, ACA-specific
+one, needed because a GitHub Actions run's status is pull-only — nothing
 pushes a message purely because a run moves from queued to in_progress — so
-this is the one place the web UI polls on a plain 15-second timer, calling
-`GET /api/aca/dispatches` only while a tab has an unresolved dispatch of its
+this is the place the web UI polls `GET /api/aca/dispatches` on its own
+15-second cadence, and only while a tab has an unresolved dispatch of its
 own (see below). The row is replaced outright the moment the job's own
 `aca-`-prefixed device attaches with a matching repository — detected
 client-side, with no dedicated endpoint for it, from whichever overview data
 the hub already has (the WS push if the device's own activity arrived first,
 or this same timer's next tick otherwise).
 
-Matching on repository alone is not enough: a hub user can have two
-dispatches queued on the same repository at once, or an unrelated/
-pre-existing `aca-` session can already be running against it. Timing is
-not proof either — a near-time coincidence does not mean two different runs
-are the same run. `aca-pending.js`'s `acaPendingMatch` therefore requires
-**authoritative identity**, not a guess: the server stores the dispatch's
-own `issue` number on its `DispatchTracker` record at dispatch time, and the
-dispatching browser's row remembers that exact record's own `id` (returned
-to the caller as `trackerId` in the `POST /api/aca/dispatch` response). A
-candidate `aca-` device only ever matches a pending row if the device's own
-reported `meta.repo`/`meta.issue` (see [`device-meta.js`](../src/device-meta.js))
-matches that row's `repo`/`issue` **exactly** — never merely "the newest
-session on this repository" or "started after the dispatch, within some
-clock-drift window". A device that omits `meta.issue` entirely (an
-older `squad-on-aca` worker that pre-dates this metadata) is proof of
-nothing and is never treated as a match; it will not auto-attach, and the
-row will eventually report "Unknown outcome" once its bounded wait expires
-(below) rather than silently guessing. When more than one still-eligible
-session genuinely ties on identity, `acaPendingMatch` excludes any session
-another pending row already claimed in the same pass, and prefers the
-earliest-started one as a tie-break, mirroring `DispatchTracker`'s own
-oldest-dispatch-claims-first binding order server-side. Two dispatches
-against the *same issue* (a re-run), a same-repo dispatch alongside an
-unrelated pre-existing device on a *different* issue, and two overlapping
-15-second polls racing each other, each resolve correctly rather than one
-consuming the other's row — see `test/aca-dispatch-dialog-unit.js` and
-`test/browser-e2e-unit.js` for the regression coverage of each case.
+Matching on repository and issue alone is not enough to identify one
+dispatch ATTEMPT: a hub user can have two dispatches queued on the SAME
+issue at once (a retry after an earlier one appeared to stall), and
+`state.acaPending` is per-tab and in-memory, so a freshly-opened tab starts
+with no memory of its own prior dispatches while `state.overview.groups`
+(the hub's live view) can still hold an old, unrelated `aca-` session
+against that same issue from hours or days earlier. `aca-match.js`'s
+`acaPendingMatch` therefore requires **authoritative identity**, not a
+guess, combining two independent proofs:
+
+1. **Repository and issue**, exactly: the server stores the dispatch's own
+   `issue` number on its `DispatchTracker` record at dispatch time, and the
+   dispatching browser's row remembers that exact record's own `id`
+   (returned to the caller as `trackerId` in the `POST /api/aca/dispatch`
+   response). A candidate `aca-` device only ever matches a pending row if
+   the device's own reported `meta.repo`/`meta.issue` (see
+   [`device-meta.js`](../src/device-meta.js)) matches that row's
+   `repo`/`issue` **exactly**. A device that omits `meta.issue` entirely (an
+   older `squad-on-aca` worker that pre-dates this metadata) is proof of
+   nothing and is never treated as a match; it will not auto-attach, and the
+   row will eventually report "Unknown outcome" once its bounded wait
+   expires (below) rather than silently guessing.
+
+2. **Time ordering**, the authoritative fact this hub already has for every
+   pending entry and every session: a session can never belong to a
+   dispatch made *after* the session itself already started
+   (`session.startedAt` must be no earlier than `entry.dispatchedAt` minus a
+   clock-drift tolerance, mirroring the server's own `RUN_MATCH_TOLERANCE_MS`
+   in `github-app.js`). This is what keeps a fresh tab from binding to a
+   stale, unrelated historical session on the same issue — repository and
+   issue alone cannot tell those apart, since neither changes with time.
+   When more than one still-pending entry shares the same repository and
+   issue (a genuine retry), a session binds to whichever entry has the
+   *closest preceding* `dispatchedAt` — not to whichever entry happened to
+   be checked first. This is what keeps two same-issue retries from being
+   able to swap with each other when their own jobs attach out of order:
+   repository and issue proof alone is identical for both of them by
+   construction, so only time ordering can tell a retry's own session apart
+   from its predecessor's. A session already claimed by another pending
+   entry (`claimedKeys`) is never claimed twice; a genuine ambiguity (two
+   sibling entries that tie exactly on "closest preceding") resolves to
+   *neither*, rather than fabricate a guess either way. See `aca-match.js`'s
+   own doc comment above `acaPendingMatch` for the full worked-through
+   scenarios, and `test/aca-dispatch-dialog-unit.js` /
+   `test/browser-e2e-unit.js` for the regression coverage.
 
 The four steps shown — Dispatched, Lease claimed, Starting job, Attached —
 are evidence-honest, not merely decorative: GitHub Actions reaching
@@ -288,16 +311,29 @@ proven. A run that reaches `completed`/`success` with no device ever
 attaching is the one outcome this hub genuinely cannot resolve on its own —
 rather than polling (and reading "Queued on ACA") forever, the row shows an
 honest **"Unknown outcome"** once `ACA_COMPLETED_WAIT_MS` (5 minutes) has
-elapsed since completion with still no attach.
+elapsed since completion with still no attach. A run that errors, or
+completes with any conclusion other than `success`, surfaces "Dispatch
+failed" immediately, with the reason shown verbatim.
+
+Both of those outcomes are **terminal**: once a row shows either one, the
+entry is marked `resolved` and `syncAcaPending` stops fetching
+`GET /api/aca/dispatches` for it forever — a tab left open after every job it
+ever dispatched has either attached or given its final honest answer never
+touches that endpoint again, even though the 15-second interval itself keeps
+ticking for the lifetime of the tab. The row stays visible (it is still
+meaningful — a failed or unknown-outcome job is not nothing), and offers a
+**"Check again"** button that forces exactly one more status re-check
+without ever starting a second real job (`retryAcaPending` only ever calls
+`GET /api/aca/dispatches` again, never `POST /api/aca/dispatch`).
 
 This tracking is **per browser tab and in-memory**, the same durability
 `DispatchTracker` itself documents server-side: reloading the page loses the
 row (the hub still ran the job; only the rendering of "it's in progress" is
 lost), and `GET /api/aca/dispatches` is polled only while a tab actually has
-an unresolved dispatch of its own — never on an ordinary page load, so a hub
-with no GitHub App configured never calls an `/api/aca/*` route merely by
-being open (`GET /api/aca/repos` is called only when the dialog itself is
-opened, which is a deliberate action, not a page load).
+an entry that is both unattached and unresolved — never on an ordinary page
+load, so a hub with no GitHub App configured never calls an `/api/aca/*`
+route merely by being open (`GET /api/aca/repos` is called only when the
+dialog itself is opened, which is a deliberate action, not a page load).
 
 ### Who may start a run
 

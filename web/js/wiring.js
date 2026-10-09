@@ -26,6 +26,7 @@ import {
   setRailCollapsed, applyTheme, nextTheme, toggleFavorite, saveView, refresh,
 } from './ws.js';
 import { openAca, wireAca } from './aca.js';
+import { retryAcaPending } from './aca-pending.js';
 import { openPeople, wireAccess } from './access.js';
 import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
@@ -272,6 +273,16 @@ export function wire() {
     const star = e.target.closest('[data-star]');
     if (star) {
       toggleFavorite(star.dataset.star);
+      return;
+    }
+    // A terminally-resolved "Queued on ACA" row's own "Check again" button
+    // (aca-pending.js's acaPendingRowHtml) -- claimed before the row-open
+    // check below for the same reason the star is, though a pending row is
+    // never itself `[data-session]` so this is mostly belt-and-suspenders.
+    // Never dispatches a new job -- see retryAcaPending's own doc comment.
+    const retry = e.target.closest('[data-aca-retry]');
+    if (retry) {
+      retryAcaPending(retry.dataset.acaRetry).then(render);
       return;
     }
     const row = e.target.closest('[data-session]');

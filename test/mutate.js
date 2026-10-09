@@ -2942,6 +2942,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/ws.js',
   '/js/aca.js',
   '/js/aca-pending.js',
+  '/js/aca-match.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
@@ -2987,7 +2988,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v11';`,
+    find: `const CACHE = 'squad-hub-shell-v12';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6061,6 +6062,29 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an errored dispatch is reported as failed, with the reason shown verbatim',
   },
   {
+    // The follow-up fix's bounded-polling mechanism depends entirely on
+    // this: if an errored dispatch were not marked `resolved`, syncAcaPending
+    // would poll /api/aca/dispatches for it forever even though the row
+    // already shows its final "Dispatch failed" answer.
+    name: 'acaStepsForStatus stops marking an errored dispatch resolved (terminal polling would never stop)',
+    file: 'web/js/aca.js',
+    find: `      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true, resolved: true,
+      failureReason: (status && status.reason) || 'the dispatch failed', steps: stepsThrough(1, -1),`,
+    replace: `      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true, resolved: process.env.MUTANT ? false : true, // MUTATION
+      failureReason: (status && status.reason) || 'the dispatch failed', steps: stepsThrough(1, -1),`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    // Same mechanism, the other terminal branch: a completed run whose
+    // conclusion was NOT success must also be marked resolved, or the
+    // "Dispatch failed" row would keep being polled forever too.
+    name: 'acaStepsForStatus stops marking a non-success completed run resolved',
+    file: 'web/js/aca.js',
+    find: `      resolved: !ok,`,
+    replace: `      resolved: process.env.MUTANT ? false : !ok, // MUTATION`,
+    mustFail: 'a run that completed without ever attaching is reported as failed',
+  },
+  {
     name: 'acaStepsForStatus stops reporting a completed-but-unattached run as failed',
     file: 'web/js/aca.js',
     find: `    const ok = (status && status.conclusion) === 'success';`,
@@ -6075,12 +6099,12 @@ if ($health.accessStore -ne 'durable') {`,
     // attaches. Only "Dispatched" may ever be asserted done here.
     name: 'acaStepsForStatus stops being honest about in_progress evidence (falsely marks "Lease claimed" done)',
     file: 'web/js/aca.js',
-    find: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 2),
+    find: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 2),
     };
   }
 
   if (st === 'queued') {`,
-    replace: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(process.env.MUTANT ? 2 : 1, 2), // MUTATION
+    replace: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(process.env.MUTANT ? 2 : 1, 2), // MUTATION
     };
   }
 
@@ -6090,12 +6114,12 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'acaStepsForStatus stops being honest about queued evidence (falsely marks "Lease claimed" done)',
     file: 'web/js/aca.js',
-    find: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(1, 1),
+    find: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 1),
     };
   }
 
   // \`pending\``,
-    replace: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, steps: stepsThrough(process.env.MUTANT ? 2 : 1, 1), // MUTATION
+    replace: `      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(process.env.MUTANT ? 2 : 1, 1), // MUTATION
     };
   }
 
@@ -6115,7 +6139,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'acaPendingMatch stops requiring an aca-kind device',
-    file: 'web/js/aca-pending.js',
+    file: 'web/js/aca-match.js',
     find: `    if (!g || !g.device || g.device.kind !== 'aca') continue;`,
     replace: `    if (!g || !g.device || (!process.env.MUTANT && g.device.kind !== 'aca')) continue; // MUTATION`,
     mustFail: 'does not match a non-aca device, even with matching meta',
@@ -6126,7 +6150,7 @@ if ($health.accessStore -ne 'durable') {`,
     // never a guess -- a device that omits repo/issue must be skipped
     // entirely, not treated as an automatic match.
     name: 'acaPendingMatch stops requiring the candidate device to report meta at all',
-    file: 'web/js/aca-pending.js',
+    file: 'web/js/aca-match.js',
     find: `    const meta = g.device.meta || null;
     if (!meta || !meta.repo || !meta.issue) continue; // no proof available -- never guessed`,
     replace: `    const meta = g.device.meta || null; // MUTATION: proof requirement removed below
@@ -6135,7 +6159,7 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     name: 'acaPendingMatch stops requiring the repository to match',
-    file: 'web/js/aca-pending.js',
+    file: 'web/js/aca-match.js',
     find: `    if (!metaRepo || metaRepo.toLowerCase() !== want) continue;`,
     replace: `    if (!metaRepo || (!process.env.MUTANT && metaRepo.toLowerCase() !== want)) continue; // MUTATION`,
     mustFail: 'does not match a different repository',
@@ -6145,7 +6169,7 @@ if ($health.accessStore -ne 'durable') {`,
     // -- an unrelated (or re-dispatched) session reporting the SAME
     // repository but a DIFFERENT issue must never match either.
     name: 'acaPendingMatch stops requiring the issue number to match',
-    file: 'web/js/aca-pending.js',
+    file: 'web/js/aca-match.js',
     find: `    const metaIssue = Number(meta.issue);
     if (!Number.isInteger(metaIssue) || metaIssue !== wantIssue) continue;`,
     replace: `    const metaIssue = Number(meta.issue);
@@ -6157,7 +6181,7 @@ if ($health.accessStore -ne 'durable') {`,
     // second pending entry on the same repository (or an unrelated session)
     // consume an already-claimed session too.
     name: 'acaPendingMatch stops excluding an already-claimed session',
-    file: 'web/js/aca-pending.js',
+    file: 'web/js/aca-match.js',
     find: `      if (claimedKeys && key && claimedKeys.has(key)) continue;`,
     replace: `      if (!process.env.MUTANT && claimedKeys && key && claimedKeys.has(key)) continue; // MUTATION`,
     mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
@@ -6167,10 +6191,46 @@ if ($health.accessStore -ne 'durable') {`,
     // in iteration order") is what keeps this consistent with
     // DispatchTracker's own oldest-first binding rule server-side.
     name: 'acaPendingMatch stops preferring the earliest-started session',
-    file: 'web/js/aca-pending.js',
+    file: 'web/js/aca-match.js',
     find: `      if (!best || startedAt < best.startedAt) best = { key, startedAt };`,
     replace: `      if (!best || (!process.env.MUTANT && startedAt < best.startedAt)) best = { key, startedAt }; // MUTATION`,
     mustFail: 'acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule',
+  },
+  {
+    // The follow-up fix's Bug A: a fresh tab's brand-new entry must never
+    // bind to a session that started long before it was even dispatched --
+    // without this, an ancient/offline/completed historical session on the
+    // same issue would falsely satisfy a fresh dispatch.
+    name: 'acaPendingMatch stops requiring the session to have started at or after the dispatch (Bug A)',
+    file: 'web/js/aca-match.js',
+    find: `      if (startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue;`,
+    replace: `      if (!process.env.MUTANT && startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue; // MUTATION`,
+    mustFail: 'a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)',
+  },
+  {
+    // The follow-up fix's Bug B: among `entry`'s OTHER same-issue siblings,
+    // only a STRICTLY closer-or-tied preceding dispatchedAt may beat `entry`
+    // for a session -- never merely whichever entry asked first. Forcing
+    // `otherEligible` to empty (ignoring every sibling) reproduces the exact
+    // same-issue-retry swap this fix exists to prevent: whichever entry is
+    // asked first would win every session, regardless of which sibling's own
+    // dispatchedAt is actually closer.
+    name: 'acaPendingMatch stops narrowing to the closest-preceding sibling entry (Bug B)',
+    file: 'web/js/aca-match.js',
+    find: `        const otherEligible = others.filter((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS);`,
+    replace: `        const otherEligible = process.env.MUTANT ? [] : others.filter((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS); // MUTATION`,
+    mustFail: 'a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)',
+  },
+  {
+    // A genuine tie between two siblings (neither is a strictly closer
+    // preceding dispatch) must resolve to NEITHER -- not silently let
+    // `entry` win just because it happens to be the one asking. This is the
+    // deliberate "leave ambiguous/unprovable attach unknown" case.
+    name: 'acaPendingMatch stops leaving a genuine closest-preceding tie unresolved',
+    file: 'web/js/aca-match.js',
+    find: `        if (maxOtherDispatchedAt >= entryDispatchedAt) continue; // a closer-or-tied sibling wins instead`,
+    replace: `        if (process.env.MUTANT ? maxOtherDispatchedAt > entryDispatchedAt : maxOtherDispatchedAt >= entryDispatchedAt) continue; // MUTATION: ties no longer excluded`,
+    mustFail: 'a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)',
   },
   {
     // #178's release-gate review, Gate 3: a completed-success Actions run
@@ -6178,8 +6238,12 @@ if ($health.accessStore -ne 'durable') {`,
     // outcome" rather than polling (and lying "Queued on ACA") forever.
     name: 'acaPendingRowHtml stops bounding the completed-but-unattached wait',
     file: 'web/js/aca-pending.js',
-    find: `  const waitExpired = !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS));`,
-    replace: `  const waitExpired = process.env.MUTANT ? false : !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS)); // MUTATION`,
+    find: `function acaWaitExpired(entry) {
+  return !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS));
+}`,
+    replace: `function acaWaitExpired(entry) {
+  return process.env.MUTANT ? false : !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS)); // MUTATION
+}`,
     mustFail: 'a completed-success row with no attach past the bounded wait reports an honest unknown outcome, not a lie about success',
   },
   {
@@ -6227,15 +6291,51 @@ if ($health.accessStore -ne 'durable') {`,
     // startAcaPolling's gate lives inside a `setInterval` callback, never
     // called from anywhere a unit test's sandboxed `new Function` eval can
     // reach (same shape as devices.js's app-badge entry above: no DOM/timer
-    // harness this suite builds today). Covered instead by
+    // harness this suite builds today). Its condition now also excludes
+    // terminally `resolved` entries (the follow-up fix's bounded-polling
+    // change), same reachability limit applies. Covered instead by
     // browser-e2e-unit.js watching that `/api/aca/dispatches` is never
-    // called while nothing is pending, across several real ticks.
-    name: 'startAcaPolling stops skipping the tick when nothing is pending (not unit-testable today)',
+    // called while nothing is pending/unresolved, across several real ticks.
+    name: 'startAcaPolling stops skipping the tick when nothing is pending or unresolved (not unit-testable today)',
     file: 'web/js/aca-pending.js',
     find: '',
     replace: '',
     mustFail: null,
     skip: true,
+  },
+  {
+    // The follow-up fix to #178: once every tracked entry is attached or
+    // terminally resolved (failed / unknown-outcome), syncAcaPending must
+    // never call GET /api/aca/dispatches again for that tab -- otherwise a
+    // "Dispatch failed"/"Unknown outcome" row keeps costing a real network
+    // round trip, forever, for as long as the tab stays open.
+    name: 'syncAcaPending stops excluding terminally-resolved entries from the dispatches poll',
+    file: 'web/js/aca-pending.js',
+    find: `  const pending = state.acaPending.filter((e) => !e.attached && !e.resolved);`,
+    replace: `  const pending = state.acaPending.filter((e) => !e.attached && (process.env.MUTANT || !e.resolved)); // MUTATION`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    // Without recomputing `resolved` from the SAME acaStepsForStatus the row
+    // itself renders from, a terminal entry would never stop being polled in
+    // the first place -- the whole bounded-polling fix depends on this
+    // assignment actually running every sync.
+    name: 'syncAcaPending stops recomputing an entry\'s resolved flag from its latest status',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;`,
+    replace: `    entry.resolved = process.env.MUTANT ? false : !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved; // MUTATION`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    // retryAcaPending's entire purpose is the "Check again" affordance: it
+    // must re-mark exactly the ONE entry the user clicked as unresolved so
+    // the very next sync can re-check it, never leaving it stuck resolved
+    // forever (which would make the button a no-op lie).
+    name: 'retryAcaPending stops re-marking the clicked entry as unresolved',
+    file: 'web/js/aca-pending.js',
+    find: `  entry.resolved = false;`,
+    replace: `  if (!process.env.MUTANT) entry.resolved = false; // MUTATION`,
+    mustFail: 'retryAcaPending forces exactly one re-check of a resolved entry, and never dispatches a second job',
   },
   {
     // acaSetMode() hides the whole #acaForm when the GitHub App is not

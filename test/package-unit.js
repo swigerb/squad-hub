@@ -759,9 +759,13 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // Bumped to v11 for #178's release-gate fix (trackerId-based dispatch
   // binding, device.meta-based attach correlation, honest step evidence,
   // and the restored no-App existing-issue/command-preview fallback --
-  // web/js/aca.js, web/js/aca-pending.js, web/index.html).
+  // web/js/aca.js, web/js/aca-pending.js, web/index.html), and again to v12
+  // for #178's follow-up fix (time-ordering-based dispatch-attempt identity
+  // in acaPendingMatch/aca-match.js, bounded "Check again" polling exclusion
+  // once an entry is terminally resolved -- web/js/aca.js,
+  // web/js/aca-pending.js, web/js/aca-match.js, web/index.html).
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v11';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v12';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
