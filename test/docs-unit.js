@@ -474,6 +474,27 @@ check('security.md\'s VAPID transfer procedure validates the readback\'s shape a
   assert.match(recommendedScript, /if \(stored\[key\] !== existing\[key\]\) \{/, 'the script must compare each pre-existing key\'s readback value against its original value, not just count keys');
 });
 
+// Re-review (follow-up to #244): Azure's real List Application Settings
+// operation returns the FULL StringDictionary on a read, including whatever
+// is currently stored under SQUAD_HUB_VAPID_PRIVATE_KEY -- it is not
+// redacted. The in-memory ECDH check in step 2 only proves the freshly
+// generated pair is internally self-consistent BEFORE the write; it proves
+// nothing about what actually landed in App Service after the PUT. The
+// readback block must therefore compare the stored private key against the
+// generated one too, not just the public half -- this is a distinct
+// assertion from the step-3 write-merge block, which only ever assigns
+// privateKey into the object being written, never compares it back.
+check('security.md\'s VAPID transfer procedure compares the stored private key against the generated one on readback, not just the public half', () => {
+  assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  const readbackBlock = recommendedScript.slice(recommendedScript.indexOf("const readback = await settingsRequest('POST');"));
+  assert.match(readbackBlock, /stored\.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey/, 'the readback block must compare the stored private key against the freshly generated privateKey, not just the write-merge assignment');
+  // The refusal message itself must never echo either actual key value --
+  // only ever the fact that they did not match.
+  const mismatchMsgMatch = readbackBlock.match(/console\.error\('MISMATCH -- the stored private key does not match what was just generated\.[^']*'\);/);
+  assert.ok(mismatchMsgMatch, 'expected an explicit private-key MISMATCH refusal message, distinct from the public-key one');
+  assert.ok(!/\$\{|privateKey\s*\+|'\s*\+\s*privateKey|'\s*\+\s*stored/.test(mismatchMsgMatch[0]), 'the private-key MISMATCH message must never interpolate or concatenate the actual key values into the printed message');
+});
+
 // Scout review (follow-up to #244, Finding 2d): an earlier revision ran the
 // public/private correspondence check as a SEPARATE manual procedure that
 // told the operator to paste the private key into the shell environment --
@@ -535,6 +556,12 @@ const { spawn } = require('child_process');
           requests.lists.push(req.method + ' ' + req.url);
           const callIdx = listCallIndex;
           listCallIndex += 1;
+          if (scenario.stallRead && callIdx === (scenario.stallReadCallIndex || 0)) {
+            // Deliberately never respond -- simulates a peer that accepts
+            // the connection but never finishes, so the script's own
+            // request timeout is what must eventually fire, not this stub.
+            return;
+          }
           if (scenario.malformedRaw !== undefined && callIdx === 0) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(scenario.malformedRaw);
@@ -561,6 +588,19 @@ const { spawn } = require('child_process');
             res.end(JSON.stringify({ properties: decoy }));
             return;
           }
+          if (scenario.forcePrivateMismatchOnSecondRead && callIdx >= 1) {
+            const decoy = Object.assign({}, storedProperties, { SQUAD_HUB_VAPID_PRIVATE_KEY: 'DECOY-NOT-THE-REAL-PRIVATE-KEY' });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: decoy }));
+            return;
+          }
+          if (scenario.forcePrivateMissingOnSecondRead && callIdx >= 1) {
+            const decoy = Object.assign({}, storedProperties);
+            delete decoy.SQUAD_HUB_VAPID_PRIVATE_KEY;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ properties: decoy }));
+            return;
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ properties: storedProperties }));
           return;
@@ -570,6 +610,13 @@ const { spawn } = require('child_process');
           try { parsed = JSON.parse(body); } catch (e) { parsed = null; }
           requests.writes.push({ url: req.url, method: req.method, body: parsed });
           if (parsed && parsed.properties) storedProperties = parsed.properties;
+          if (scenario.stallWrite) {
+            // The write body has already been fully received by this stub
+            // (pushed into requests.writes above) before we decide never to
+            // respond -- mirrors a PUT whose body reached the real server
+            // before the connection stalled on the way back.
+            return;
+          }
           res.writeHead(scenario.writeStatus || 200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ properties: storedProperties }));
           return;
@@ -596,7 +643,12 @@ const { spawn } = require('child_process');
   child.stdout.on('data', (d) => { childStdout += d; });
   child.stderr.on('data', (d) => { childStderr += d; });
   const status = await new Promise((resolve) => {
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) { /* already gone */ } resolve(124); }, 8000);
+    // Default kill timer is generous relative to a fast scenario, but for
+    // stall scenarios the caller raises driverKillTimeoutMs comfortably
+    // above the script's own REQUEST_TIMEOUT_MS so the script's own bound
+    // is what fires first, not this outer safety net.
+    const killTimeoutMs = scenario.driverKillTimeoutMs || 8000;
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) { /* already gone */ } resolve(124); }, killTimeoutMs);
     child.on('close', (code) => { clearTimeout(timer); resolve(code); });
   });
 
@@ -613,8 +665,13 @@ const { spawn } = require('child_process');
 
 function runVapidScenario(scenario) {
   assert.ok(recommendedScript, 'no direct settings-API transfer procedure found');
+  // The outer spawnSync timeout must stay comfortably above the driver's
+  // own kill timer (itself above the script's own REQUEST_TIMEOUT_MS for
+  // stall scenarios), so a stall scenario proves the SCRIPT's own bound,
+  // never the test harness's.
+  const outerTimeoutMs = Math.max(20000, (scenario.driverKillTimeoutMs || 8000) + 7000);
   const r = spawnSync(process.execPath, ['-e', vapidDriverSource()], {
-    cwd: ROOT, encoding: 'utf8', timeout: 20000,
+    cwd: ROOT, encoding: 'utf8', timeout: outerTimeoutMs,
     env: Object.assign({}, process.env, {
       __VAPID_SCENARIO__: JSON.stringify(scenario),
       __VAPID_SCRIPT__: recommendedScript,
@@ -700,6 +757,48 @@ check('executable: the script detects and reports a readback public-key mismatch
   assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the mismatch');
 });
 
+// Re-review (follow-up to #244): the private half IS returned verbatim by
+// Azure's real List Application Settings operation, so a PUT that silently
+// drops/corrupts/truncates it must be caught on readback -- not waved
+// through because "only the public half is ever safe to compare". These
+// three scenarios extend forceMismatchOnSecondRead's shape to the private
+// key specifically, proving the new check actually bites at runtime (not
+// just via a text regex against the script's source).
+check('executable: the script detects a stored private key that does not match what was generated, even though the public key matches, and never leaks either key value', () => {
+  const result = runVapidScenario({ initialProperties: {}, forcePrivateMismatchOnSecondRead: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit after detecting the private-key mismatch');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /MISMATCH/, 'expected the script to report MISMATCH');
+  assert.match(combined, /private key does not match/, 'expected an explicit refusal naming the private key, not a generic failure');
+  assert.ok(!/Pair stored and verified/.test(combined), 'a private-key mismatch must never produce the success message');
+  assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the mismatch -- MISMATCH does not mean no write');
+  const writtenPrivateKey = result.requests.writes[0].body.properties.SQUAD_HUB_VAPID_PRIVATE_KEY;
+  assert.ok(writtenPrivateKey, 'sanity: the write must have carried a private key');
+  assert.ok(!combined.includes(writtenPrivateKey), 'the generated private key must never appear in stdout or stderr, even on a mismatch');
+  assert.ok(!combined.includes('DECOY-NOT-THE-REAL-PRIVATE-KEY'), 'the decoy stored private key must never appear in stdout or stderr either');
+});
+
+check('executable: the script detects a missing stored private key on readback, even though the public key matches, and never leaks either key value', () => {
+  const result = runVapidScenario({ initialProperties: {}, forcePrivateMissingOnSecondRead: true });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit when the stored private key is missing on readback');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /MISMATCH/, 'expected the script to report MISMATCH');
+  assert.match(combined, /private key does not match/, 'expected an explicit refusal naming the private key, not a generic failure');
+  assert.ok(!/Pair stored and verified/.test(combined), 'a missing private key on readback must never produce the success message');
+  assert.strictEqual(result.requests.writes.length, 1, 'the write itself must still have happened before the readback caught the missing key -- MISMATCH does not mean no write');
+  const writtenPrivateKey = result.requests.writes[0].body.properties.SQUAD_HUB_VAPID_PRIVATE_KEY;
+  assert.ok(writtenPrivateKey, 'sanity: the write must have carried a private key');
+  assert.ok(!combined.includes(writtenPrivateKey), 'the generated private key must never appear in stdout or stderr, even when readback is missing it');
+});
+
+check('executable: a legitimately correct write passes the new private-key readback check too (no false negative)', () => {
+  const result = runVapidScenario({ initialProperties: { UNRELATED_SETTING: 'keep-me' } });
+  assert.strictEqual(result.status, 0, 'expected success; stderr=' + result.stderr);
+  assert.match(result.stdout, /Pair stored and verified/, 'a correct write on both halves must still succeed cleanly');
+  assert.ok(!/MISMATCH/.test(result.stdout + result.stderr), 'a correct write must never report a MISMATCH');
+  assert.strictEqual(result.requests.writes.length, 1, 'exactly one write on the success path');
+});
+
 // Security review follow-up (N2): `typeof res.body.properties !== 'object'`
 // alone is true for a plain object AND for an array (`typeof [] ===
 // 'object'`), so a `properties: []` response -- not a shape Azure's real API
@@ -711,6 +810,36 @@ check('executable: the script refuses safely, with no write, when properties is 
   assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit');
   assert.match(result.stdout + result.stderr, /Refusing/, 'expected an explicit safe refusal, not a silent pass');
   assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when properties is an array');
+});
+
+// Re-review (follow-up to #244, Gap 2): settingsRequest() has no bound on
+// how long it will wait for a peer that accepts the connection but never
+// finishes responding -- that must never hang the operator's shell
+// forever, and must never claim "no write happened" when the hung request
+// was itself the PUT (the write could already have reached the server
+// before the response stalled). driverKillTimeoutMs is raised well above
+// the script's own REQUEST_TIMEOUT_MS (15000ms, see security.md) so these
+// scenarios prove the SCRIPT's own bound fires first, not the test
+// harness's outer safety net or spawnSync's own timeout.
+check('executable: a stalled initial read times out, refuses safely, and reports that no write has happened yet', () => {
+  const result = runVapidScenario({ initialProperties: {}, stallRead: true, driverKillTimeoutMs: 20000 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit on a stalled read');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /timed out/, 'expected an explicit timeout message, not a hang or crash');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
+  assert.match(combined, /no write has happened yet/, 'a stalled READ (before any write) may safely say no write has happened yet');
+  assert.strictEqual(result.requests.writes.length, 0, 'no write may happen when the very first read never completes');
+});
+
+check('executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened', () => {
+  const result = runVapidScenario({ initialProperties: {}, stallWrite: true, driverKillTimeoutMs: 20000 });
+  assert.notStrictEqual(result.status, 0, 'expected a non-zero (refusal) exit on a stalled write');
+  const combined = result.stdout + result.stderr;
+  assert.match(combined, /timed out/, 'expected an explicit timeout message, not a hang or crash');
+  assert.ok(!/UnhandledPromiseRejection/i.test(combined), 'a timeout must never surface as an unhandled promise rejection / crash dump');
+  assert.ok(!/no write has happened yet/.test(combined), 'a stalled WRITE must never use the read-timeout\'s "no write has happened yet" language -- the PUT body may already have reached the server');
+  assert.match(combined, /may or may not have been updated/, 'a stalled write must explicitly say the outcome is unknown, not assert either way');
+  assert.strictEqual(result.requests.writes.length, 1, 'the stub already received the full PUT body before the response stalled, same as a real server that received the write before the connection dropped');
 });
 
 // Security review follow-up (N1): APP_SERVICE_SETTINGS_HOST must have no

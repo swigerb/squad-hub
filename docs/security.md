@@ -614,6 +614,12 @@ const apiPort = hostParts[1] ? Number(hostParts[1]) : (insecureTestTransport ? 8
 // Azure's real read operation (List Application Settings) is a POST to
 // .../list despite being a read; the write operation (Update Application
 // Settings) is a PUT with no /list suffix. Never swap these.
+//
+// A peer that accepts the TCP connection but never finishes sending a
+// response must never hang the operator's shell forever with no feedback --
+// 15 seconds is comfortably above a normal Azure round trip but short
+// enough to fail fast and say so.
+const REQUEST_TIMEOUT_MS = 15000;
 function settingsRequest(method, body) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
@@ -640,6 +646,21 @@ function settingsRequest(method, body) {
       });
     });
     req.on('error', reject);
+    // In this script, 'POST' is always a read (List Application Settings)
+    // and happens before any write in this call -- safe to say nothing was
+    // written by it. 'PUT' is the write itself: the request body may
+    // already have reached the server before the response stalled, so that
+    // case must never claim "no write happened" -- only that the outcome is
+    // unknown and must be investigated, same honesty already required of a
+    // step-4 MISMATCH after a successful PUT (see below).
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy();
+      if (method === 'PUT') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }
+    });
     if (payload) req.write(payload);
     req.end();
   });
@@ -682,10 +703,13 @@ function readProperties(res, label) {
 
   // 2. Generate the new pair -- it lives only in this process's memory from
   // here on -- then prove the two halves actually correspond BEFORE ever
-  // writing anything, using Node's own ECDH. App Service's real API never
-  // hands the private half back, so this in-memory check is the only place
-  // correspondence can ever be proven -- never by trusting a network
-  // round-trip. This is the same check an earlier revision of this doc ran
+  // writing anything, using Node's own ECDH. This in-memory check is still
+  // valuable: it catches a buggy generator before any network call ever
+  // happens. But it is NOT a substitute for verifying what is actually
+  // stored after the write -- Azure's real List Application Settings
+  // operation DOES return the private value verbatim on a read, so step 4
+  // below reads it back and compares it, in memory only, never logging or
+  // printing it. This is the same check an earlier revision of this doc ran
   // as a separate, paste-based manual step; it is now folded in here so the
   // private half never leaves this one protected process at all.
   const { publicKey, privateKey } = generateVapidKeys();
@@ -710,14 +734,24 @@ function readProperties(res, label) {
     process.exit(1);
   }
 
-  // 4. Read back and validate -- status, shape, the public half, AND every
-  // pre-existing key by name and value. Only the public half is ever safe to
-  // compare this way -- the private half is never read back, logged, or
-  // compared outside the process that just wrote it.
+  // 4. Read back and validate -- status, shape, BOTH halves of the pair,
+  // AND every pre-existing key by name and value. Azure's real List
+  // Application Settings operation returns the full StringDictionary,
+  // including the private value just written -- it is not redacted -- so
+  // this compares it too, in memory only, never logging or printing it:
+  // the in-memory ECDH check in step 2 only proves the freshly generated
+  // pair is internally self-consistent BEFORE the write; it proves nothing
+  // about what is actually now stored after the PUT. A PUT that silently
+  // drops, truncates, or corrupts the private value would otherwise still
+  // report success.
   const readback = await settingsRequest('POST');
   const stored = readProperties(readback, 'read back the settings just written');
   if (stored.SQUAD_HUB_VAPID_PUBLIC_KEY !== publicKey) {
     console.error('MISMATCH -- the stored public key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }
+  if (stored.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey) {
+    console.error('MISMATCH -- the stored private key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
     process.exit(1);
   }
   for (const key of Object.keys(existing)) {
@@ -747,8 +781,11 @@ function readProperties(res, label) {
 - `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout`, a log
   captured anywhere durable, a file, a bare command-line argument, or a
   system clipboard — the script above only ever places it in the HTTPS
-  request body sent directly to the settings API, after proving in memory
-  (step 2) that it actually corresponds to the generated public half.
+  request body sent directly to the settings API (step 3), after proving in
+  memory (step 2) that it actually corresponds to the generated public half,
+  and then reads it back for an in-memory-only comparison (step 4) — in
+  every case only the comparison's match/no-match result is ever printed,
+  never the value itself.
 - **Refuse to replace only one half of an existing pair**, and refuse to
   regenerate when a complete pair is already configured (both enforced by
   the script's own first step) — a public key paired with a private key
@@ -768,6 +805,16 @@ function readProperties(res, label) {
   but it also means simply re-running this script is **not** the recovery
   path here. Use the "Explicit rotation" procedure below instead to
   deliberately replace the pair that is now actually stored.
+- **A request timeout carries the same "do not assume" honesty, but for the
+  opposite reason when it is the PUT that stalls.** `settingsRequest()`
+  bounds every call so a peer that accepts the connection but never finishes
+  responding cannot hang the operator's shell forever. A timeout on a read
+  (steps 1 or 4) safely reports that nothing has been written by that call,
+  because reads never write. But a timeout on the step-3 PUT cannot make
+  that same claim — the request body may already have reached the server
+  before the response stalled — so that message explicitly says the outcome
+  is unknown and to investigate before relying on it, never that "no write
+  happened".
 
 **`SQUAD_HUB_PUBLIC_URL` must be `https:`.** The Push API itself refuses to
 register a subscription from an insecure context (`localhost` is the one

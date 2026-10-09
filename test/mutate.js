@@ -6614,6 +6614,60 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') { // MUTATION: array shape rejection removed`,
     mustFail: 'executable: the script refuses safely, with no write, when properties is an array instead of an object',
   },
+  {
+    // Re-review (follow-up to #244, Gap 1): Azure's real List Application
+    // Settings operation returns the private value verbatim on read -- it
+    // is not redacted. The in-memory ECDH check in step 2 only proves the
+    // freshly generated pair is internally self-consistent BEFORE the
+    // write; it proves nothing about what actually landed in App Service
+    // after the PUT. Dropping the readback comparison of the stored private
+    // key reproduces exactly the bug the re-review flagged: a PUT that
+    // silently drops/corrupts/truncates the private value would still
+    // report "Pair stored and verified".
+    name: 'the recommended VAPID transfer script never compares the stored private key against the generated one on readback',
+    file: 'docs/security.md',
+    find: `  if (stored.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey) {
+    console.error('MISMATCH -- the stored private key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }`,
+    replace: `  // MUTATION: private key readback comparison removed`,
+    mustFail: 'executable: the script detects a stored private key that does not match what was generated, even though the public key matches, and never leaks either key value',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 2): settingsRequest() must bound how
+    // long it waits for a response -- a peer that accepts the connection
+    // but never finishes responding must never hang the operator's shell
+    // forever with no feedback. Removing the timeout reproduces exactly
+    // that unbounded hang.
+    name: 'the recommended VAPID transfer script has no bound on how long it waits for a response (no timeout)',
+    file: 'docs/security.md',
+    find: `    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy();
+      if (method === 'PUT') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }
+    });`,
+    replace: `    // MUTATION: request timeout removed`,
+    mustFail: 'executable: a stalled initial read times out, refuses safely, and reports that no write has happened yet',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 2): a timed-out PUT must never
+    // claim "no write happened" -- the request body may already have
+    // reached the server before the response stalled. Reusing the read
+    // timeout's safe "no write has happened yet" language for a stalled PUT
+    // reproduces exactly the false safety claim the re-review flagged.
+    name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled PUT, same as a stalled read',
+    file: 'docs/security.md',
+    find: `      if (method === 'PUT') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }`,
+    replace: `      reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: PUT timeout falsely claims no write happened, same as a read timeout`,
+    mustFail: 'executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened',
+  },
 ];
 
 /**
