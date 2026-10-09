@@ -288,21 +288,19 @@ check('an empty group list never matches, and never throws', () => {
 // must never let one real session resolve more than one pending row.
 
 check('a single matching session only ever satisfies ONE of two repeated-same-issue pending entries', () => {
-  // UPDATED by the follow-up to #178 (see acaPendingMatch's own doc comment,
-  // "ON THE PRE-EXISTING... TEST"): this test ORIGINALLY asserted the OLDER
-  // of two same-issue entries always wins a session either could plausibly
-  // match, mirroring DispatchTracker's own oldest-dispatch-claims-first
-  // server-side tie-break. That was a reasonable choice when nothing else
-  // distinguished the two candidates -- but it is no longer the best
-  // available signal: a session's own `startedAt` IS real evidence about
-  // which dispatch actually produced it (closer in time is more likely to
-  // be the actual cause), where "which entry is older" says nothing about
-  // the SESSION at all. `older` (dispatchedAt 1000) and `newer` (dispatchedAt
-  // 5000) are both timing-eligible for a session that started at 6000, but
-  // `newer` is the CLOSER preceding dispatch -- so it is `newer`, not
-  // `older`, that now wins. The exclusivity guarantee this test exists for
-  // is unchanged: whichever entry wins, the OTHER must never also resolve to
-  // the same session.
+  // REWRITTEN by a Scout review on commit 23a1af5: a PRIOR revision of this
+  // function broke the tie between two same-issue siblings by picking
+  // whichever one's `dispatchedAt` was numerically CLOSEST to the
+  // candidate session's `startedAt`. That review proved closeness is not
+  // proof of provenance (see acaPendingMatch's own doc comment's "REVIEW
+  // HISTORY" section for the concrete counter-example: a genuinely slow-
+  // starting older dispatch loses to an unrelated, merely-closer newer
+  // one). There is no safe ranking to replace it with, so there is none:
+  // when BOTH `older` and `newer` are independently rule-1-eligible for the
+  // one real session, this hub cannot prove which of them actually owns it
+  // -- the match resolves to NEITHER, and the row stays pending rather than
+  // guessing. This is the exclusivity guarantee this test exists for, by a
+  // safer mechanism than before: nobody is ever WRONGLY marked attached.
   const older = { repo: REPO, issue: 42, dispatchedAt: 1000 };
   const newer = { repo: REPO, issue: 42, dispatchedAt: 5000 };
   const groups = [acaGroup({
@@ -311,51 +309,64 @@ check('a single matching session only ever satisfies ONE of two repeated-same-is
   })];
 
   // Unclaimed, and with no sibling awareness (acaPendingAttached's plain
-  // yes/no, by design -- see its own doc comment): both independently see
-  // the one session. Exclusivity and the closest-preceding tie-break only
-  // apply through acaPendingMatch's `claimedKeys`/`allPending`.
+  // yes/no, by design -- see its own doc comment): each independently sees
+  // the one session, since rule 1 alone has no way to rule either out.
+  // Ambiguity is only ever detected through acaPendingMatch's own
+  // `allPending` sibling-awareness, never through the plain wrapper.
   assert.strictEqual(acaPendingAttached(older, groups), true);
   assert.strictEqual(acaPendingAttached(newer, groups), true);
 
   const allPending = [older, newer];
-  const matchNewer = acaPendingMatch(newer, groups, new Set(), allPending);
-  assert.strictEqual(matchNewer && matchNewer.key, 's1', 'the CLOSEST preceding entry (newer) should win the one real session');
   assert.strictEqual(acaPendingMatch(older, groups, new Set(), allPending), null,
-    'the older entry is not the closest preceding dispatch for this session, so it must not also claim it');
+    'older is also rule-1-eligible for newer\'s only candidate session, so this must stay ambiguous rather than guess');
+  assert.strictEqual(acaPendingMatch(newer, groups, new Set(), allPending), null,
+    'newer is also rule-1-eligible for older\'s only candidate session, so this must stay ambiguous rather than guess');
 
-  // With the session already claimed (by `newer`, per the above), neither
-  // entry may claim it again -- not `newer` (already has it, so there is
-  // nothing left to find), and not `older` (never eligible for it either).
-  const claimed = new Set(['s1']);
-  assert.strictEqual(acaPendingMatch(newer, groups, claimed, allPending), null, 'newer should not re-claim what it already has');
-  assert.strictEqual(acaPendingMatch(older, groups, claimed, allPending), null,
-    'a repeat dispatch on the same issue must not also consume the first dispatch\'s attached session');
+  // Once `older` has reached its own TERMINAL resolved state (its run
+  // errored upstream, say), it stops competing: it already gave its own
+  // final, honest answer and can no longer silently block `newer` from
+  // claiming a session that genuinely is its own.
+  const olderResolved = { ...older, resolved: true };
+  const stillAmbiguous = [olderResolved, newer];
+  const matchNewer = acaPendingMatch(newer, groups, new Set(), stillAmbiguous);
+  assert.strictEqual(matchNewer && matchNewer.key, 's1',
+    'once the sibling has reached its own terminal resolved state, it must stop blocking the still-active entry');
+  assert.strictEqual(acaPendingMatch(olderResolved, groups, new Set(), stillAmbiguous), null,
+    'a resolved entry keeps whatever its own terminal answer already was -- it is not re-matched just because a sibling resolved');
+
+  // `claimedKeys` enforces the OTHER half of this entry's exclusivity
+  // guarantee: once a session has already been claimed by some other
+  // pending entry this pass, nobody else -- not even an otherwise
+  // unambiguous, genuinely-matching entry -- may also claim it.
+  const alreadyClaimed = new Set(['s1']);
+  assert.strictEqual(acaPendingMatch(newer, groups, alreadyClaimed, stillAmbiguous), null,
+    'a session already claimed by another entry this pass can never ALSO satisfy this one, even once it is otherwise unambiguous');
 });
 
-check('a closely-spaced same-issue retry does not let the newer dispatch steal the older dispatch\'s own session (reviewer-found regression)', () => {
-  // The Squad reviewer's confirmed regression on rule 2's original
-  // "closest-preceding-wins" tie-break: that rule picked whichever
-  // same-issue sibling's `dispatchedAt` was numerically CLOSEST to (and
-  // still timing-eligible for) a candidate session's `startedAt`, with
-  // "timing-eligible" meaning only rule 1's own one-sided check
-  // (`session.startedAt >= sibling.dispatchedAt - ACA_START_TOLERANCE_MS`).
-  // That check has no upper bound -- it never required the sibling's own
-  // dispatch to have happened AT OR BEFORE the session started, only "not
-  // meaningfully before" it. So when two same-issue retries are dispatched
-  // less than `ACA_START_TOLERANCE_MS` (5s) apart -- a plausible
-  // impatient-retry/double-submit scenario, nothing prevents it -- a
-  // session that is genuinely the OLDER entry's own job (started shortly
-  // after the older entry's own dispatch, before the newer entry was even
-  // dispatched) could still be awarded to the NEWER entry, purely because
-  // the newer entry's `dispatchedAt` was numerically closer to the
-  // session's `startedAt`, even though the newer dispatch happened AFTER
-  // the session had already started.
+check('a closely-spaced same-issue retry stays pending for both siblings rather than guessing which one a session belongs to (Scout review on 23a1af5)', () => {
+  // A Scout review on commit 23a1af5 found an EARLIER fix for this same
+  // scenario still wrong: it let same-issue siblings be ranked by whether
+  // their own `dispatchedAt` fell before or after the candidate session's
+  // `startedAt`, with the closest at-or-before dispatch declared the
+  // winner. That is still a proximity-based guess, just a more elaborate
+  // one -- and the review's own counter-example proves it wrong: dispatch A
+  // goes out, genuinely stalls, and its own real job does not start until
+  // WELL AFTER dispatch B (an unrelated later retry of the same issue) has
+  // also gone out. Ranking "closest preceding dispatch wins" then hands the
+  // session to B, not A, even though it is genuinely A's own late-starting
+  // job. Time-order proximity is not proof of attempt identity in EITHER
+  // direction (not "closest", not "closest at-or-before, else least-late").
   //
-  // older dispatched at t=0; newer dispatched only 4s later (t=4000),
-  // still inside the 5s `ACA_START_TOLERANCE_MS` window. The one real
-  // session started at t=500 -- i.e. AFTER older's own dispatch, and
-  // BEFORE newer was even dispatched -- so it can only possibly be
-  // older's own job, never newer's.
+  // older dispatched at t=0; newer dispatched only 4s later (t=4000), still
+  // inside the 5s ACA_START_TOLERANCE_MS window. The one real session
+  // started at t=500. Both are independently rule-1-eligible for it
+  // (`older` trivially -- 500 is after its own dispatch; `newer` through
+  // the cross-clock drift allowance, since there is no upper bound on how
+  // late a session may legitimately start after ITS OWN dispatch, and
+  // nothing here can tell "newer's own job, somehow already running
+  // 3.5s before newer was dispatched" apart from "older's own job,
+  // running normally" using time alone). The honest answer is: stays
+  // pending for both, not a guess in either direction.
   const older = { repo: REPO, issue: 1, dispatchedAt: 0, attached: false };
   const newer = { repo: REPO, issue: 1, dispatchedAt: 4000, attached: false };
   const sessionOlder = { id: 'sessionOlder', startedAt: 500 };
@@ -365,24 +376,25 @@ check('a closely-spaced same-issue retry does not let the newer dispatch steal t
   })];
   const allPending = [older, newer];
 
-  const matchOlder = acaPendingMatch(older, groupsPass1, new Set(), allPending);
-  assert.strictEqual(matchOlder && matchOlder.key, 'sessionOlder',
-    'older is the only dispatch that precedes this session -- it must win it');
+  assert.strictEqual(acaPendingMatch(older, groupsPass1, new Set(), allPending), null,
+    'newer is also rule-1-eligible for sessionOlder (no upper bound on how late a session may start), so this must stay ambiguous');
   assert.strictEqual(acaPendingMatch(newer, groupsPass1, new Set(), allPending), null,
-    'newer\'s own dispatch happened AFTER sessionOlder already started -- it must never claim it, no matter how numerically close dispatchedAt looks');
+    'older is also rule-1-eligible for sessionOlder, so newer must not win it either -- neither guesses');
 
-  // Once older has genuinely claimed sessionOlder, when newer's OWN real
-  // session later attaches, newer must resolve to that session, never
-  // re-claim older's -- proving the fix does not just suppress the match,
-  // it correctly re-routes newer to its actual job.
-  const claimedKeys = new Set(['sessionOlder']);
-  const sessionNewer = { id: 'sessionNewer', startedAt: 4500 }; // genuinely newer's own job
+  // Once a genuinely SEPARATE session for `newer` later attaches, it is
+  // claimed through `claimedKeys` exclusivity (not through this function's
+  // ambiguity logic) -- proving the remaining ambiguity is scoped to
+  // `sessionOlder` only, not a global deadlock between the two entries.
+  const claimedKeys = new Set(['sessionNewer']);
+  const sessionNewer = { id: 'sessionNewer', startedAt: 4500 };
   const groupsPass2 = [acaGroup({
     device: { meta: { repo: REPO, issue: 1 } },
     sessions: [sessionOlder, sessionNewer],
   })];
-  const matchNewer = acaPendingMatch(newer, groupsPass2, claimedKeys, allPending);
-  assert.strictEqual(matchNewer && matchNewer.key, 'sessionNewer', 'newer must resolve to its OWN session, never re-claim older\'s');
+  assert.strictEqual(acaPendingMatch(newer, groupsPass2, claimedKeys, allPending), null,
+    'sessionNewer is already claimed, and sessionOlder is still genuinely ambiguous between both siblings');
+  assert.strictEqual(acaPendingMatch(older, groupsPass2, claimedKeys, allPending), null,
+    'sessionOlder remains ambiguous for older too, for the same reason');
 });
 
 check('an unrelated same-issue sibling does not tighten the candidate entry\'s own eligibility window', () => {
@@ -405,7 +417,18 @@ check('an unrelated same-issue sibling does not tighten the candidate entry\'s o
     'the unrelated retry is far outside its own normal eligibility window for sessionA and must not claim it');
 });
 
-check('three same-issue siblings prefer the closest real preceding dispatch over a drift-excused after-start sibling', () => {
+check('three same-issue siblings all stay pending -- no ranking decides a winner among rule-1-eligible candidates (ground-truth delayed-A regression)', () => {
+  // The exact shape of the brief's ground-truth repro: dispatch A goes out,
+  // then stalls/waits; dispatch B (an unrelated retry of the same issue)
+  // goes out later; the one real session that eventually appears is
+  // GENUINELY A's own job, just slow to start -- but is numerically closer
+  // in time to B's own `dispatchedAt`. A PRIOR fix ranked siblings by
+  // "closest real preceding dispatch, else least-late after-start
+  // candidate" and would have confidently (and wrongly) awarded this
+  // session to B. There is no safe ranking that gets this right in every
+  // case, because the hub genuinely cannot tell these two stories apart
+  // from timing alone -- so now NOBODY wins: all three same-issue siblings
+  // stay pending rather than any of them guessing.
   const a = { repo: REPO, issue: 42, dispatchedAt: 0, attached: false };
   const b = { repo: REPO, issue: 42, dispatchedAt: 800, attached: false };
   const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
@@ -416,15 +439,14 @@ check('three same-issue siblings prefer the closest real preceding dispatch over
   const allPending = [a, b, c];
 
   assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null,
-    'A loses because B is the closer real preceding dispatch for this session');
-  const matchB = acaPendingMatch(b, groups, new Set(), allPending);
-  assert.strictEqual(matchB && matchB.key, 'sessionB',
-    'B should win among three siblings: it genuinely dispatched before sessionB started, only 100ms earlier');
+    'A is rule-1-eligible (it dispatched before the session started) but so are B and C -- ambiguous, not a loss to a "closer" sibling');
+  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null,
+    'B is no longer declared the winner merely for being the closest real preceding dispatch -- A might genuinely be the slow starter');
   assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null,
-    'C is only drift-excused after-start and must not outrank B merely because its raw dispatchedAt is larger');
+    'C is only drift-excused after-start, and remains ineligible to win against two other genuinely-competing siblings');
 });
 
-check('four same-issue siblings fall back to the least-late eligible retry when every candidate is after-start', () => {
+check('four same-issue siblings all stay pending when every candidate is only drift-excused after-start', () => {
   const a = { repo: REPO, issue: 42, dispatchedAt: 1_300, attached: false };
   const b = { repo: REPO, issue: 42, dispatchedAt: 1_500, attached: false };
   const c = { repo: REPO, issue: 42, dispatchedAt: 1_700, attached: false };
@@ -435,15 +457,14 @@ check('four same-issue siblings fall back to the least-late eligible retry when 
   })];
   const allPending = [a, b, c, d];
 
-  const matchA = acaPendingMatch(a, groups, new Set(), allPending);
-  assert.strictEqual(matchA && matchA.key, 'least-late',
-    'when no candidate genuinely precedes the session, the least-late eligible dispatch should win the fallback comparison');
-  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null,
-    'B is later after-start than A, so it must lose the fallback comparison');
-  assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null,
-    'C is even later after-start than B and must also lose');
-  assert.strictEqual(acaPendingMatch(d, groups, new Set(), allPending), null,
-    'D is the latest after-start retry and must not win merely for having the largest raw dispatchedAt');
+  // A PRIOR fix fell back to "the least-late eligible dispatch wins" when
+  // every candidate was only drift-excused after-start. That fallback is
+  // just as much a proximity guess as the primary ranking it backstopped --
+  // removed for the same reason. All four stay genuinely ambiguous.
+  assert.strictEqual(acaPendingMatch(a, groups, new Set(), allPending), null);
+  assert.strictEqual(acaPendingMatch(b, groups, new Set(), allPending), null);
+  assert.strictEqual(acaPendingMatch(c, groups, new Set(), allPending), null);
+  assert.strictEqual(acaPendingMatch(d, groups, new Set(), allPending), null);
 });
 
 check('a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)', () => {
@@ -575,40 +596,59 @@ check('a candidate with no meta.repo/meta.issue at all is never treated as a mat
   assert.strictEqual(acaPendingMatch(entry, groups, new Set()), null);
 });
 
-check('a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)', () => {
-  // The single most important regression test for this fix: dispatch A
-  // stalls, the same issue is dispatched again as B. Both real sessions
-  // eventually exist, but GitHub/Azure timing can attach them in EITHER
-  // order. This simulates sessionB (B's own job) attaching FIRST, across
-  // two separate resolution passes -- exactly the ordering `syncAcaPending`
-  // would see in practice, and exactly the ordering the OLD
-  // "earliest-started-wins, processed oldest-entry-first" code bound
-  // WRONGLY to entry A (see acaPendingMatch's own doc comment, "Bug B").
-  const entryA = { repo: REPO, issue: 42, dispatchedAt: 1_000_000, attached: false };
-  const entryB = { repo: REPO, issue: 42, dispatchedAt: 1_100_000, attached: false }; // a genuine retry, 100s later
+check('a same-issue retry resolves correctly once ambiguity clears, and never swaps which entry claims which session (Bug B, out-of-order attach)', () => {
+  // dispatch A stalls; the same issue is dispatched again as B 100s later.
+  // Both real sessions eventually exist, but GitHub/Azure timing can attach
+  // them in EITHER order, and -- per the ground-truth delayed-A repro above
+  // -- this hub cannot assume A's own job failed to start just because B's
+  // dispatch is closer in time to whichever session shows up first. This
+  // simulates sessionB (B's own job) attaching FIRST, across several
+  // resolution passes, proving: (1) while both entries are still live,
+  // competing candidates, the match stays honestly ambiguous rather than
+  // guessing; (2) once A's OWN run is independently known to have failed
+  // (the authoritative, non-timing fact that actually resolves this), B can
+  // then correctly claim its own session; (3) A's own session can still
+  // later correctly attach to A -- no swap, in either direction.
+  const entryA = { repo: REPO, issue: 42, dispatchedAt: 1_000_000, attached: false, resolved: false };
+  const entryB = { repo: REPO, issue: 42, dispatchedAt: 1_100_000, attached: false, resolved: false }; // a genuine retry, 100s later
   const sessionA = { id: 'sessionA', startedAt: 1_001_000 }; // really A's own job
   const sessionB = { id: 'sessionB', startedAt: 1_101_000 }; // really B's own job
 
-  // Pass 1: only sessionB has attached so far.
+  // Pass 1: only sessionB has attached so far. A remains a live, unresolved
+  // sibling, so -- per the ground-truth delayed-A repro -- this hub cannot
+  // tell whether sessionB is genuinely B's prompt job or A's own slow one.
   const groupsPass1 = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [sessionB] })];
   const allPending = [entryA, entryB];
   const claimedKeys = new Set();
 
   assert.strictEqual(acaPendingMatch(entryA, groupsPass1, claimedKeys, allPending), null,
-    'entry A must NOT claim sessionB -- B is the closer preceding dispatch for sessionB\'s own startedAt');
+    'A remains a live competing sibling for sessionB -- but ambiguous, not a confident (and possibly wrong) win for A either');
+  assert.strictEqual(acaPendingMatch(entryB, groupsPass1, claimedKeys, allPending), null,
+    'B must not confidently claim sessionB while A is still a live, unresolved competing sibling -- that is exactly the unsafe guess being removed');
+
+  // A's own run is independently found to have failed upstream (a real,
+  // authoritative fact unrelated to timing proximity) -- syncAcaPending
+  // would set this from the GitHub Actions run status it already polls.
+  // A no longer competes: it already gave its own final, honest answer.
+  entryA.resolved = true;
+
   const matchB = acaPendingMatch(entryB, groupsPass1, claimedKeys, allPending);
-  assert.strictEqual(matchB && matchB.key, 'sessionB', 'entry B should correctly claim its own session on the very first poll');
+  assert.strictEqual(matchB && matchB.key, 'sessionB',
+    'once A has reached its own terminal resolved state, it stops blocking B from claiming its own genuinely-arriving session');
 
   // Simulate what syncAcaPending does once a match is found.
   entryB.attached = true;
   claimedKeys.add('sessionB');
 
-  // Pass 2: sessionA has now also attached. Both sessions are visible, B is
-  // already attached (and excluded from `allPending`'s sibling computation
-  // by acaPendingMatch itself, since it is no longer pending).
+  // Pass 2: sessionA has now also attached. B is already attached (excluded
+  // from the sibling pool by acaPendingMatch itself, since it is no longer
+  // pending), and A -- despite its OWN resolved flag -- is still allowed to
+  // claim its own session once nothing else competes for it: `resolved`
+  // only stops an entry from blocking OTHER siblings, it never stops the
+  // entry itself from correctly reconnecting to its own real device.
   const groupsPass2 = [acaGroup({ device: { meta: { repo: REPO, issue: 42 } }, sessions: [sessionA, sessionB] })];
   const matchA = acaPendingMatch(entryA, groupsPass2, claimedKeys, allPending);
-  assert.strictEqual(matchA && matchA.key, 'sessionA', 'entry A should now correctly claim ITS OWN session -- no swap');
+  assert.strictEqual(matchA && matchA.key, 'sessionA', 'entry A should still correctly claim ITS OWN session once unambiguous -- no swap');
 });
 
 
@@ -841,6 +881,167 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       });
 
       state.acaPending = [];
+    }
+
+    // --- offline bound: a failed GET must never extend an already-expired
+    // local wait bound (ground-truth regression) ---------------------------
+    {
+      await checkAsync('an entry whose local wait bound already expired resolves from known status BEFORE any fetch, so a failing network can never keep it "pending" forever', async () => {
+        const calls = [];
+        global.fetch = async (url, opts) => {
+          calls.push({ url, method: (opts && opts.method) || 'GET' });
+          throw new Error('network down');
+        };
+        state.acaPending = [{
+          localId: 'offline-1',
+          repo: REPO,
+          issue: 2,
+          dispatchedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 60_000),
+          trackerId: 'tracker-offline-1',
+          status: { state: 'completed', conclusion: 'success' },
+          completedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 1000),
+          attached: false,
+          matchedKey: null,
+          resolved: false, // not yet locally re-evaluated -- exactly the state an old tab left open across an outage would be in
+        }];
+        state.overview = { groups: [] };
+
+        await syncAcaPending();
+        assert.strictEqual(calls.length, 0,
+          'the entry\'s own bound was already expired, so this must resolve from local knowledge alone -- it never even needs to ask the (failing) network');
+        assert.strictEqual(state.acaPending[0].resolved, true,
+          'an expired completed-success wait resolves to the honest "unknown outcome" terminal state entirely from local data');
+
+        // A further tick, still fully offline: must stay resolved, and must
+        // still never call the network for this entry.
+        await syncAcaPending();
+        assert.strictEqual(calls.length, 0, 'once resolved locally, no amount of further offline polling may ever call the network for this entry');
+      });
+
+      state.acaPending = [];
+    }
+
+    // --- "Check again" on a failed recheck restores terminal state, and
+    // does NOT leave auto-retry silently on (ground-truth regression) ------
+    {
+      await checkAsync('a failed one-shot "Check again" restores the previous terminal state, costs exactly one request, and never leaves auto-retry running for the next two ticks', async () => {
+        const calls = [];
+        global.fetch = async (url, opts) => {
+          calls.push({ url, method: (opts && opts.method) || 'GET' });
+          throw new Error('network down');
+        };
+
+        const recheckEntry = {
+          localId: 'offline-2',
+          repo: REPO,
+          issue: 3,
+          dispatchedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 60_000),
+          trackerId: 'tracker-offline-2',
+          status: { state: 'completed', conclusion: 'success' },
+          completedAt: Date.now() - (ACA_COMPLETED_WAIT_MS + 1000),
+          attached: false,
+          matchedKey: null,
+          resolved: true, // already closed out by an earlier (successful) poll
+        };
+        // A second, genuinely-still-live entry must be entirely unaffected by
+        // the first entry's failed recheck: it has no completedAt at all, so
+        // its own bound was never even started, let alone expired.
+        const liveEntry = {
+          localId: 'offline-3',
+          repo: REPO,
+          issue: 4,
+          dispatchedAt: Date.now(),
+          trackerId: 'tracker-offline-3',
+          status: null,
+          completedAt: null,
+          attached: false,
+          matchedKey: null,
+          resolved: false,
+        };
+        state.acaPending = [recheckEntry, liveEntry];
+        state.overview = { groups: [] };
+
+        calls.length = 0;
+        await retryAcaPending('offline-2');
+        assert.strictEqual(calls.length, 1, 'the explicit "Check again" click must attempt exactly one GET /api/aca/dispatches');
+        assert.ok(calls.every((c) => c.method !== 'POST'), 'a failed recheck must never fall back to POST /api/aca/dispatch -- no duplicate job, ever');
+        assert.strictEqual(recheckEntry.resolved, true,
+          'a failed one-shot recheck must restore the entry\'s previous terminal state, not leave it stuck "unresolved" forever');
+        assert.strictEqual(liveEntry.resolved, false,
+          'an unrelated, genuinely-still-live entry must be completely unaffected by another entry\'s failed recheck');
+
+        // Remove the genuinely-still-live sibling before the next check:
+        // IT legitimately needs its own further fetches regardless of this
+        // fix (it has never completed, so its own wait bound never started,
+        // let alone expired) -- that is correct, unrelated behavior, and
+        // would otherwise make the next assertion about `recheckEntry`
+        // alone impossible to isolate from `liveEntry`'s own, independent
+        // polling need.
+        state.acaPending = [recheckEntry];
+
+        // Two further automatic poll ticks: since the recheck above already
+        // restored `resolved`, these must cost NOTHING for this entry --
+        // this is the fix for "a failed GET leaves auto-retry on": before
+        // this fix, `resolved` stayed false forever after a failed recheck,
+        // so every subsequent ACA_POLL_MS tick kept re-fetching with no
+        // bound (1 explicit + 2 ticks => 3 requests, forever, for just this
+        // one entry). After the fix, exactly the 1 explicit request above is
+        // ever made for it.
+        await syncAcaPending();
+        await syncAcaPending();
+        assert.strictEqual(calls.length, 1,
+          'a failed recheck must not leave auto-retry running -- the next two ticks must add zero further requests, not two more');
+      });
+
+      state.acaPending = [];
+    }
+
+    // --- cross-tab siblings: an unseen OTHER tab's dispatch for the same
+    // issue must prevent a false attach here too (ground-truth regression,
+    // repro 3) --------------------------------------------------------------
+    {
+      await checkAsync('a fresh tab does not falsely attach to a session when another, unseen tab\'s dispatch for the same issue is equally eligible (Scout review on 23a1af5)', async () => {
+        const [owner, name] = REPO.split('/');
+        global.fetch = async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            dispatches: [{
+              id: 'other-tab-tracker', owner, repo: name, issue: 5, dispatchedAt: 20_000,
+              status: { state: 'queued' },
+            }],
+          }),
+        });
+
+        const localEntry = {
+          localId: 'cross-1',
+          repo: REPO,
+          issue: 5,
+          dispatchedAt: 10_000,
+          trackerId: 'tracker-cross-1',
+          status: null,
+          completedAt: null,
+          attached: false,
+          matchedKey: null,
+          resolved: false,
+        };
+        state.acaPending = [localEntry];
+        // The one real session: genuinely ambiguous between this tab's own
+        // entry (dispatchedAt 10,000) and the other tab's unseen dispatch
+        // (dispatchedAt 20,000) -- both are rule-1-eligible for startedAt
+        // 25,000, and nothing about timing alone can prove which produced it.
+        state.overview = {
+          groups: [acaGroup({ device: { meta: { repo: REPO, issue: 5 } }, sessions: [{ id: 'cross-session', startedAt: 25_000 }] })],
+        };
+
+        await syncAcaPending();
+        assert.strictEqual(localEntry.attached, false,
+          'this tab\'s own entry must NOT falsely attach -- the other tab\'s unseen same-issue dispatch makes this genuinely ambiguous');
+        assert.strictEqual(localEntry.matchedKey, null);
+      });
+
+      state.acaPending = [];
+      state.overview = { groups: [] };
     }
 
     global.fetch = realFetch;

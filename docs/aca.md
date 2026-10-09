@@ -285,36 +285,36 @@ guess, combining two independent proofs:
    stale, unrelated historical session on the same issue — repository and
    issue alone cannot tell those apart, since neither changes with time.
    When more than one still-pending entry shares the same repository and
-   issue (a genuine retry), that same loose eligibility check still applies
-   to *each* entry independently: if the session is within the normal 5s
-   cross-process clock-drift window for an entry, that entry stays in play.
-   Only *after* that does ACA apply a tighter same-process refinement among
-   siblings. If any candidate is still within the 1s retry-precedence window,
-   ACA ranks that tighter subset first; otherwise it falls back to the full
-   rule-1-eligible set. In either case, a dispatch that happened at-or-before
-   the session's own `startedAt` always outranks one that happened after the
-   session started and is only still eligible because clock drift could excuse
-   it. Within the at-or-before group ACA prefers the latest `dispatchedAt`
-   (closest real preceding cause); if every candidate is after-start, ACA
-   prefers the earliest `dispatchedAt` (the least-late drift-excused fit).
-   This is what prevents a retry dispatched a few seconds later from stealing
-   a session that had already begun before the retry was even dispatched,
-   while still preserving the normal 5s entry-vs-session tolerance for a
-   candidate's own eligibility. Put differently: the tighter
-   retry-precedence tolerance is used only to rank already-eligible same-issue
-   siblings, never to re-check a candidate's own admission just because some
-   unrelated sibling exists. This is what keeps two same-issue retries from
-   being able to swap with each other when their own jobs attach out of
-   order, including when they are dispatched close together: repository and
-   issue proof alone is identical for both of them by construction, so only
-   time ordering can tell a retry's own session apart from its predecessor's.
-   A session already claimed by another pending entry (`claimedKeys`) is never
-   claimed twice; a genuine ambiguity (two sibling entries that tie exactly on
-   that before/after-aware ranking) resolves to *neither*, rather than
-   fabricate a guess either way. See `aca-match.js`'s
+   issue (a genuine retry, or a sibling dispatch this tab never tracked
+   locally — see "cross-tab siblings" below), time-order proximity is
+   **not** proof of which one actually produced a given session: an earlier
+   revision of this logic ranked such siblings by whichever one's own
+   `dispatchedAt` was numerically closest to the session's `startedAt`, and
+   a review found that ranking confidently wrong on realistic timings — a
+   dispatch that genuinely started slowly can still lose to an unrelated,
+   merely-closer-looking later retry. There is no ranking that is actually
+   proof rather than a guess, so this hub uses none: when a session is
+   independently eligible (by the before/after rule above) for **more than
+   one** pending same-issue entry, it matches *neither* — every affected row
+   stays pending until an authoritative fact resolves it (the device's own
+   verified run/execution identity, if `squad-on-aca` ever reports one), or
+   until the losing siblings' own bounded waits expire and they are reported
+   as an honest unknown outcome instead (see "Unknown outcome" below). A
+   sibling that has already reached that terminal state stops counting as a
+   live competitor, so it cannot block a still-active entry forever. A
+   session already claimed by another pending entry (`claimedKeys`) is never
+   claimed twice. **Cross-tab siblings:** a browser tab's own pending list is
+   per-tab and has no memory of a dispatch made from a different tab (or
+   device) signed in as the same person, so the hub also folds in every
+   other in-flight dispatch this authenticated user has made recently
+   (`GET /api/aca/dispatches`) before applying the ambiguity check above,
+   specifically so an unseen other tab's own dispatch for the same issue is
+   treated as a competing sibling rather than letting this tab falsely
+   attach to a session that actually belongs to it. See `aca-match.js`'s
    own doc comment above `acaPendingMatch` for the full worked-through
-   scenarios, and `test/aca-dispatch-dialog-unit.js` /
-   `test/browser-e2e-unit.js` for the regression coverage.
+   scenarios (including the exact numeric repro and its review history), and
+   `test/aca-dispatch-dialog-unit.js` / `test/browser-e2e-unit.js` for the
+   regression coverage.
 
 The four steps shown — Dispatched, Lease claimed, Starting job, Attached —
 are evidence-honest, not merely decorative: GitHub Actions reaching
@@ -337,11 +337,23 @@ entry is marked `resolved` and `syncAcaPending` stops fetching
 `GET /api/aca/dispatches` for it forever — a tab left open after every job it
 ever dispatched has either attached or given its final honest answer never
 touches that endpoint again, even though the 15-second interval itself keeps
-ticking for the lifetime of the tab. The row stays visible (it is still
-meaningful — a failed or unknown-outcome job is not nothing), and offers a
-**"Check again"** button that forces exactly one more status re-check
-without ever starting a second real job (`retryAcaPending` only ever calls
-`GET /api/aca/dispatches` again, never `POST /api/aca/dispatch`).
+ticking for the lifetime of the tab. This terminal state is decided from
+whatever status is already known locally **before** that endpoint is even
+asked again, not only after a successful reply: a dropped connection, a 429,
+or a de-configured GitHub App can never *extend* an already-expired bounded
+wait just because the network happened to be unavailable at that moment, nor
+can it leave the row "pending" forever — it already has enough locally-known
+evidence to report the same honest terminal answer regardless of whether
+that request succeeds.
+
+The row stays visible (it is still meaningful — a failed or unknown-outcome
+job is not nothing), and offers a **"Check again"** button that forces
+exactly one more status re-check without ever starting a second real job
+(`retryAcaPending` only ever calls `GET /api/aca/dispatches` again, never
+`POST /api/aca/dispatch`). If that one re-check's request itself fails, the
+row is restored to the same terminal state it already had — never left stuck
+"unresolved", which would otherwise silently re-enable the 15-second
+auto-poll for a row that already gave its final answer.
 
 This tracking is **per browser tab and in-memory**, the same durability
 `DispatchTracker` itself documents server-side: reloading the page loses the

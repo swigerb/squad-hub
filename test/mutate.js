@@ -6531,59 +6531,59 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)',
   },
   {
-    // Rule 2's sibling refinement only works if the tighter
-    // "closest-preceding" subset is actually computed. If every eligible
-    // sibling is treated as though none of them were tightly preceding, rule 2
-    // falls back to the looser rule-1-eligibility set and reintroduces the
-    // original same-issue-retry swap this fix exists to prevent.
-    name: 'acaPendingMatch stops narrowing to the closest-preceding sibling entry (Bug B)',
+    // Rule 2's sibling filter must exclude an entry's already-TERMINAL
+    // (resolved) same-issue siblings, or an ancient/never-resolving sibling
+    // would permanently block a still-active one from ever attaching, since
+    // rule 1 deliberately has no upper time bound on a slow job's start.
+    name: 'acaPendingMatch stops excluding resolved siblings from the ambiguity check',
     file: 'web/js/aca-match.js',
-    find: `const otherPreceding = otherEligible.filter(precedes);`,
-    replace: `const otherPreceding = process.env.MUTANT ? [] : otherEligible.filter(precedes); // MUTATION`,
-    mustFail: 'a same-issue retry resolves correctly even when the NEWER dispatch\'s own session attaches first (Bug B, out-of-order attach)',
+    find: `  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && !e.resolved`,
+    replace: `  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && (process.env.MUTANT || !e.resolved) // MUTATION`,
+    mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
   },
   {
-    // A same-issue sibling must not make `entry` itself re-pass the tighter
-    // retry-precedence refinement. If the "use the tighter rule 2 window"
-    // branch runs merely because SOME sibling exists, an otherwise-eligible
-    // entry whose own session started a few seconds "early" (well within the
-    // established 5s cross-process tolerance) regresses to a false negative
-    // as soon as any unrelated same-issue retry is also pending.
-    name: 'acaPendingMatch wrongly tightens entry eligibility merely because a sibling exists',
+    // Ground-truth regression: there is no safe ranking among rule-1-eligible
+    // same-issue siblings. If rule 2 is weakened to let `entry` win merely
+    // because IT started closer (or any other proximity-based tie-break),
+    // the delayed-A-vs-unrelated-B repro (A dispatched 10000, waits; B
+    // dispatched 20000; the real session -- A's own, just slow -- starts
+    // 25000) is wrongly awarded to B again.
+    name: 'acaPendingMatch stops treating a rule-1-eligible sibling as disqualifying (ground-truth delayed-A regression)',
     file: 'web/js/aca-match.js',
-    find: `if ((otherPreceding.length || entryPrecedes) && !entryPrecedes) continue;`,
-    replace: `if ((process.env.MUTANT ? others.length : (otherPreceding.length || entryPrecedes)) && !entryPrecedes) continue; // MUTATION`,
-    mustFail: 'an unrelated same-issue sibling does not tighten the candidate entry\'s own eligibility window',
+    find: `      if (others.some((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS)) continue;`,
+    replace: `      if (!process.env.MUTANT && others.some((e) => startedAt >= (e.dispatchedAt || 0) - ACA_START_TOLERANCE_MS)) continue; // MUTATION`,
+    mustFail: 'three same-issue siblings all stay pending -- no ranking decides a winner among rule-1-eligible candidates (ground-truth delayed-A regression)',
   },
   {
-    // A drift-excused after-start retry must never outrank a candidate whose
-    // dispatch genuinely happened before the session started. Flipping that
-    // primary rank reintroduces the 3-sibling regression where a larger raw
-    // dispatchedAt steals the session.
-    name: 'acaPendingMatch starts preferring drift-excused after-start retries over real preceding ones',
+    // Rule 1 is the standalone gate that keeps a session from binding to a
+    // dispatch made AFTER it already started -- it must apply regardless of
+    // whether `entry` has any siblings at all (the common, no-retry case).
+    name: 'acaPendingMatch stops requiring the session to have started at or after the dispatch for a sibling-free entry',
     file: 'web/js/aca-match.js',
-    find: `            return [isAfterStart ? 1 : 0, isAfterStart ? dispatchedAt : -dispatchedAt];`,
-    replace: `            return [isAfterStart ? 0 : 1, isAfterStart ? dispatchedAt : -dispatchedAt]; // MUTATION`,
-    mustFail: 'three same-issue siblings prefer the closest real preceding dispatch over a drift-excused after-start sibling',
+    find: `      if (startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue;`,
+    replace: `      if (!process.env.MUTANT && startedAt < (entry.dispatchedAt || 0) - ACA_START_TOLERANCE_MS) continue; // MUTATION`,
+    mustFail: 'a fresh tab does not bind to a historical same-issue session that started long before this dispatch (Bug A)',
   },
   {
-    // When every eligible sibling is after-start, the fallback comparison must
-    // pick the least-late dispatch, not the latest raw dispatchedAt.
-    name: 'acaPendingMatch stops preferring the least-late after-start retry in fallback mode',
+    // `entry` must never be compared against ITSELF as though it were a
+    // competing sibling: it is always rule-1-eligible for its own candidate
+    // session (that is how it got this far), so without this exclusion
+    // EVERY match would be permanently "ambiguous" against itself.
+    name: 'acaPendingMatch stops excluding entry itself from its own sibling-ambiguity check',
     file: 'web/js/aca-match.js',
-    find: `            return [isAfterStart ? 1 : 0, isAfterStart ? dispatchedAt : -dispatchedAt];`,
-    replace: `            return [isAfterStart ? 1 : 0, isAfterStart ? -dispatchedAt : -dispatchedAt]; // MUTATION`,
-    mustFail: 'four same-issue siblings fall back to the least-late eligible retry when every candidate is after-start',
+    find: `  const others = (allPending || []).filter((e) => e && e !== entry && !e.attached && !e.resolved`,
+    replace: `  const others = (allPending || []).filter((e) => e && (process.env.MUTANT || e !== entry) && !e.attached && !e.resolved // MUTATION`,
+    mustFail: 'a single matching session only ever satisfies ONE of two repeated-same-issue pending entries',
   },
   {
-    // A genuine tie between two siblings (neither has a strictly better
-    // before/after-aware timing rank) must resolve to NEITHER -- not silently
-    // let `entry` win just because it happens to be the one asking.
-    name: 'acaPendingMatch stops leaving a genuine timing-rank tie unresolved',
+    // The earliest-started eligible, unclaimed session must still win among
+    // genuine ties for a SINGLE candidate entry with no competing siblings --
+    // rule 2's ambiguity check must never fire when `others` is empty.
+    name: 'acaPendingMatch stops picking the earliest-started session among genuine ties',
     file: 'web/js/aca-match.js',
-    find: `        if (bestOther && compareTimingRank(bestOther, entry) <= 0) continue; // a better-or-tied sibling wins instead`,
-    replace: `        if (bestOther && (process.env.MUTANT ? compareTimingRank(bestOther, entry) < 0 : compareTimingRank(bestOther, entry) <= 0)) continue; // MUTATION: ties no longer excluded`,
-    mustFail: 'a session startedAt before EITHER sibling entry\'s tolerance window matches neither (no fabricated guess)',
+    find: `      if (!best || startedAt < best.startedAt) best = { key, startedAt };`,
+    replace: `      if (!best || (process.env.MUTANT ? startedAt > best.startedAt : startedAt < best.startedAt)) best = { key, startedAt }; // MUTATION`,
+    mustFail: 'acaPendingMatch picks the earliest-started eligible session among genuine ties, matching the oldest-dispatch-claims-first rule',
   },
   {
     // #178's release-gate review, Gate 3: a completed-success Actions run
@@ -6662,22 +6662,107 @@ if ($health.accessStore -ne 'durable') {`,
     // never call GET /api/aca/dispatches again for that tab -- otherwise a
     // "Dispatch failed"/"Unknown outcome" row keeps costing a real network
     // round trip, forever, for as long as the tab stays open.
-    name: 'syncAcaPending stops excluding terminally-resolved entries from the dispatches poll',
+    name: 'syncAcaPending stops excluding terminally-resolved entries from the pre-fetch gate',
     file: 'web/js/aca-pending.js',
-    find: `  const pending = state.acaPending.filter((e) => !e.attached && !e.resolved);`,
-    replace: `  const pending = state.acaPending.filter((e) => !e.attached && (process.env.MUTANT || !e.resolved)); // MUTATION`,
+    find: `  const pendingBeforeFetch = state.acaPending.filter((e) => !e.attached && !e.resolved);`,
+    replace: `  const pendingBeforeFetch = state.acaPending.filter((e) => !e.attached && (process.env.MUTANT || !e.resolved)); // MUTATION`,
     mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
   },
   {
-    // Without recomputing `resolved` from the SAME acaStepsForStatus the row
-    // itself renders from, a terminal entry would never stop being polled in
-    // the first place -- the whole bounded-polling fix depends on this
-    // assignment actually running every sync.
-    name: 'syncAcaPending stops recomputing an entry\'s resolved flag from its latest status',
+    // OFFLINE BOUND (ground-truth regression): every still-unattached entry
+    // must have `resolved` re-derived from local knowledge BEFORE this
+    // function ever attempts `GET /api/aca/dispatches` -- otherwise a
+    // dropped connection or a 501 could leave an already-expired wait bound
+    // stuck "pending" forever, since the only other place `resolved` is set
+    // lives inside the fetch's success path.
+    name: 'syncAcaPending stops pre-resolving entries from local knowledge before the network call',
     file: 'web/js/aca-pending.js',
-    find: `    entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;`,
-    replace: `    entry.resolved = process.env.MUTANT ? false : !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved; // MUTATION`,
+    find: `  for (const entry of state.acaPending) {
+    if (entry.attached || entry.forceRecheck) continue;
+    entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;
+  }`,
+    replace: `  for (const entry of state.acaPending) {
+    if (entry.attached || entry.forceRecheck) continue;
+    if (!process.env.MUTANT) entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved; // MUTATION
+  }`,
+    mustFail: 'an entry whose local wait bound already expired resolves from known status BEFORE any fetch, so a failing network can never keep it "pending" forever',
+  },
+  {
+    // OFFLINE BOUND, failure path: a REJECTED `GET /api/aca/dispatches` must
+    // still re-resolve every still-unattached entry from local knowledge --
+    // the exact step the old code's bare `catch { return; }` skipped,
+    // leaving an already-expired entry's `resolved` stuck false forever
+    // whenever the network stayed down, and leaving a failed explicit
+    // "Check again" recheck (`forceRecheck`) with no path back to a
+    // terminal state either.
+    name: 'syncAcaPending stops restoring terminal state from local knowledge when the dispatches fetch fails',
+    file: 'web/js/aca-pending.js',
+    find: `    for (const entry of state.acaPending) {
+      if (entry.attached) continue;
+      entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;`,
+    replace: `    for (const entry of state.acaPending) {
+      if (entry.attached) continue;
+      if (!process.env.MUTANT) entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved; // MUTATION`,
+    mustFail: 'a failed one-shot "Check again" restores the previous terminal state, costs exactly one request, and never leaves auto-retry running for the next two ticks',
+  },
+  {
+    // Without recomputing `resolved` from the SAME acaStepsForStatus the row
+    // itself renders from -- on the SUCCESS path, from the freshly-fetched
+    // status -- a terminal entry would never stop being polled in the first
+    // place -- the whole bounded-polling fix depends on this assignment
+    // actually running every sync.
+    name: 'syncAcaPending stops recomputing an entry\'s resolved flag from its freshly-fetched status',
+    file: 'web/js/aca-pending.js',
+    find: `  const stillPending = state.acaPending.filter((e) => !e.attached && !e.resolved);
+  for (const entry of stillPending) {
+    if (entry.forceRecheck) delete entry.forceRecheck;
+    if (!entry.trackerId) continue;
+    const d = byId.get(entry.trackerId);
+    if (!d) continue;
+    entry.status = d.status;
+    const completed = !!(d.status && d.status.state === 'completed');
+    if (completed) {
+      if (!entry.completedAt) entry.completedAt = Date.now();
+    } else {
+      entry.completedAt = null;
+    }
+    // The SAME function the render path uses (acaStepsForStatus, aca.js),
+    // fed the SAME waitExpired computation (acaWaitExpired, above) -- never
+    // a second, hand-maintained copy of "is this terminal" that could
+    // silently disagree with what the row itself shows.
+    entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;
+  }`,
+    replace: `  const stillPending = state.acaPending.filter((e) => !e.attached && !e.resolved);
+  for (const entry of stillPending) {
+    if (entry.forceRecheck) delete entry.forceRecheck;
+    if (!entry.trackerId) continue;
+    const d = byId.get(entry.trackerId);
+    if (!d) continue;
+    entry.status = d.status;
+    const completed = !!(d.status && d.status.state === 'completed');
+    if (completed) {
+      if (!entry.completedAt) entry.completedAt = Date.now();
+    } else {
+      entry.completedAt = null;
+    }
+    // The SAME function the render path uses (acaStepsForStatus, aca.js),
+    // fed the SAME waitExpired computation (acaWaitExpired, above) -- never
+    // a second, hand-maintained copy of "is this terminal" that could
+    // silently disagree with what the row itself shows.
+    if (!process.env.MUTANT) entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved; // MUTATION
+  }`,
     mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    // Cross-tab siblings: an unseen OTHER tab's own in-flight dispatch for
+    // the SAME repo+issue must be folded into the sibling pool BEFORE
+    // matching runs, or a fresh tab can falsely attach to a session that
+    // genuinely belongs to that other tab's dispatch (ground-truth repro 3).
+    name: 'syncAcaPending stops enriching the sibling pool with cross-tab dispatches',
+    file: 'web/js/aca-pending.js',
+    find: `    if (foreign.length) allPending = order.concat(foreign);`,
+    replace: `    if (!process.env.MUTANT && foreign.length) allPending = order.concat(foreign); // MUTATION`,
+    mustFail: 'a fresh tab does not falsely attach to a session when another, unseen tab\'s dispatch for the same issue is equally eligible (Scout review on 23a1af5)',
   },
   {
     // retryAcaPending's entire purpose is the "Check again" affordance: it
