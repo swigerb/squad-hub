@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-243-evidence-and-model-preflight",
+  "sessionId": "fix-pr-243-evidence-and-model-preflight",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T19:07:48.366Z",
+  "lastHeartbeatAt": "2026-10-09T19:07:48.366Z",
+  "updatedAt": "2026-10-09T19:07:48.366Z",
+  "terminalReason": null,
+  "executionRef": null
+}
