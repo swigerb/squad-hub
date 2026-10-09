@@ -225,9 +225,13 @@
   display: flex; align-items: center; gap: 10px;
   padding: 12px 14px; border-bottom: 1px solid var(--line);
 }
+.device { position: relative; }
 .device:last-child { border-bottom: 0; }
 .device-main { flex: 1; min-width: 0; }
-.device-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-name {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: flex; align-items: center; gap: 4px;
+}
 .device-meta { color: var(--faint); font-size: 12px; }
 .add { background: transparent; border: 1px solid var(--line); color: var(--dim);
   border-radius: 8px; width: 28px; height: 28px; cursor: pointer; }
@@ -245,11 +249,27 @@
   background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
 }
 
+/* The disclosure chevron beside a device's name (#173): same zero-background
+   button shape the rail's own section headers use (see `.devsec .chev`
+   further below), so a control that opens a panel reads the same wherever it
+   appears. A fixed 16px line box keeps it on the same center line as the
+   name text beside it, however tall its own svg glyph happens to render. */
+.dev-expand {
+  background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
+  color: var(--dim); display: inline-flex; align-items: center;
+  width: 16px; height: 16px; flex: 0 0 auto;
+}
+.dev-expand:hover { color: var(--text); }
+.dev-expand .chev { width: 12px; height: 12px; transition: transform .12s; }
+.dev-expand[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+
 /* Load meters. Rendered ONLY for devices that report telemetry -- an empty bar
    at zero would make "not reporting" and "idle" look identical. */
 .meters { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
 .meter { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
-.meter-label { width: 26px; flex: 0 0 auto; }
+.meter-label {
+  width: 46px; flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .meter-track {
   flex: 1; height: 5px; border-radius: 999px;
   background: var(--panel-2); border: 1px solid var(--line); overflow: hidden;
@@ -258,6 +278,28 @@
 .meter.warm .meter-fill { background: var(--warn); }
 .meter.hot .meter-fill { background: var(--bad); }
 .meter-value { width: 30px; text-align: right; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* ---------- expandable device details (#173) ---------- */
+/* The panel a device's own disclosure chevron opens: each volume free of
+   total, cores and RAM, versions (with a mismatch warning), file access and
+   track-all, and the device token's label and expiry. A plain two-column
+   table, right-aligned values, matching the reference mockup's own `.devx`
+   layout -- this is the one place in the rail dense enough to want a table
+   rather than another `.device-meta` line. */
+.device-detail {
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 12px; color: var(--dim);
+}
+.device-detail table { width: 100%; border-collapse: collapse; }
+.device-detail td { padding: 2px 0; vertical-align: top; }
+.device-detail td:first-child { color: var(--faint); padding-right: 10px; }
+.device-detail td:last-child { text-align: right; color: var(--text); }
+/* A daemon running a different squad-hub version than the hub it is talking
+   to -- worth the same amber as every other "notice this" marker in the app
+   (see `.agent-mismatch` above), not the quieter faint/dim this panel
+   otherwise uses throughout. */
+.warnline { color: var(--warn); font-weight: 600; }
 
 /* The rail collapses to reclaim width, and remembers that it did.
 

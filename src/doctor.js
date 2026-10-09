@@ -54,6 +54,32 @@ function availableAgents(timeoutMs = 15000) {
   return { ok: true, reason: null, agents };
 }
 
+/**
+ * The installed Copilot CLI's own version, for the device detail panel
+ * (#173): "squad-hub 0.6.0 · hub is 0.7.0" needs a Copilot CLI line beside
+ * it, and `copilot --version` is the only place that number comes from.
+ *
+ * Best-effort, like every other probe here: a `copilot` not on PATH, a slow
+ * or hung process, or output in a shape this has never seen all return
+ * `null` rather than throwing -- a device that cannot tell its own CLI
+ * version is not a reason to drop the whole heartbeat.
+ */
+function copilotCliVersion(timeoutMs = 5000) {
+  const command = process.env.SQUAD_HUB_AGENT || 'copilot';
+  let r;
+  try {
+    r = spawnSync(command, ['--version'], {
+      encoding: 'utf8', timeout: timeoutMs, windowsHide: true, shell: process.platform === 'win32',
+    });
+  } catch {
+    return null;
+  }
+  if (!r || r.error) return null;
+  const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  const m = out.match(/(\d+\.\d+\.\d+)/);
+  return m ? m[1] : null;
+}
+
 function looksLikeUrl(u) {
   try {
     const p = new URL(u);
@@ -396,4 +422,6 @@ async function runDoctor({
   return { healthy: failed.length === 0, checks, failedCount: failed.length, warnedCount: warned.length };
 }
 
-module.exports = { runDoctor, findOnPath, pingHub, nodeVersionCheck, findCopilotLoginEvidence, availableAgents };
+module.exports = {
+  runDoctor, findOnPath, pingHub, nodeVersionCheck, findCopilotLoginEvidence, availableAgents, copilotCliVersion,
+};

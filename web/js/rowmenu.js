@@ -27,8 +27,18 @@ export function rowMenuItems(s, device, { pinned = false } = {}) {
   const live = NON_TERMINAL_STATUSES.has(s.status);
   const unreachable = isDeviceUnreachable(device);
   const pr = s.pullRequest && typeof s.pullRequest.url === 'string' ? s.pullRequest.url : null;
-  // No surface reports an Aspire dashboard URL today -- gated the same way
-  // `pullRequest` is so wiring one up later is additive, not a new code path.
+  // Checked (#170 follow-up): no session field, store sanitizer, daemon
+  // heartbeat or ACA dispatch path (src/service/store.js, src/daemon.js,
+  // src/service/hub-service.js) reports an Aspire dashboard URL anywhere in
+  // this codebase today -- unlike `pullRequest`, which has a dedicated
+  // `sanitizePullRequest` and a device-reported field to validate. There is
+  // nothing real to wire this to yet, and fabricating a URL pattern here
+  // would be worse than hiding the item: a broken or misleading link that
+  // *looks* wired up. Gated the same way `pullRequest` is, so a future issue
+  // that adds the real field/plumbing makes this additive, not a new code
+  // path -- and until then, "the menu shows the right items per state" (the
+  // #170 acceptance criterion) is satisfied by simply not offering a link
+  // that cannot go anywhere.
   const aspire = typeof s.aspireUrl === 'string' && s.aspireUrl ? s.aspireUrl : null;
 
   const identity = [

@@ -116,6 +116,74 @@ check('an old-daemon heartbeat with no kind preserves an existing local kind', (
 });
 
 // ---------------------------------------------------------------------------
+// Disk telemetry, versions and token fields on the device record (#173)
+// ---------------------------------------------------------------------------
+
+check('registerDevice validates and caps a reported volume list, same as device metadata', () => {
+  const s = new Store();
+  const over = Array.from({ length: 30 }, (_, i) => ({ label: `v${i}`, totalBytes: 100, freeBytes: 50 }));
+  const rec = s.registerDevice('u', {
+    deviceId: 'disky-1', name: 'disky', platform: 'linux', diskVolumes: over,
+  });
+  assert.strictEqual(rec.diskVolumes.length, 16, 'the hub re-validates a device-reported volume list, not just trusts it');
+});
+
+check('registerDevice keeps diskVolumes as null, distinct from an empty array, when a device omits the field entirely', () => {
+  const s = new Store();
+  const rec = s.registerDevice('u', { deviceId: 'disky-2', name: 'disky', platform: 'linux' });
+  assert.strictEqual(rec.diskVolumes, null);
+});
+
+check('a heartbeat that omits diskVolumes leaves the existing record untouched', () => {
+  const s = new Store();
+  s.registerDevice('u', {
+    deviceId: 'disky-3', name: 'disky', platform: 'linux',
+    diskVolumes: [{ label: 'C:', totalBytes: 100, freeBytes: 50 }],
+  });
+  s.heartbeat('u', 'disky-3', { telemetry: true });
+  const rec = s.getDevice('u', 'disky-3');
+  assert.strictEqual(rec.diskVolumes.length, 1, 'an old-daemon heartbeat with no diskVolumes field must not wipe the last known disk report');
+});
+
+check('a heartbeat that reports file access turning off clears diskVolumes back to null', () => {
+  const s = new Store();
+  s.registerDevice('u', {
+    deviceId: 'disky-4', name: 'disky', platform: 'linux',
+    diskVolumes: [{ label: 'C:', totalBytes: 100, freeBytes: 50 }],
+  });
+  s.heartbeat('u', 'disky-4', { diskVolumes: null });
+  const rec = s.getDevice('u', 'disky-4');
+  assert.strictEqual(rec.diskVolumes, null);
+});
+
+check('registerDevice sanitizes version, cliVersion and tokenLabel as short strings, dropping injection-shaped ones', () => {
+  const s = new Store();
+  const rec = s.registerDevice('u', {
+    deviceId: 'ver-1', name: 'v', platform: 'linux',
+    version: '0.7.0', cliVersion: '1.0.73', tokenLabel: '<script>bad</script>', tokenExpiresAt: 123,
+  });
+  assert.strictEqual(rec.version, '0.7.0');
+  assert.strictEqual(rec.cliVersion, '1.0.73');
+  assert.strictEqual(rec.tokenLabel, null, 'an injection-shaped token label must be dropped, not stored verbatim');
+  assert.strictEqual(rec.tokenExpiresAt, 123);
+});
+
+check('a heartbeat updates version and cliVersion, so an in-place upgrade is noticed without a reconnect', () => {
+  const s = new Store();
+  s.registerDevice('u', { deviceId: 'ver-2', name: 'v', platform: 'linux', version: '0.6.0' });
+  s.heartbeat('u', 'ver-2', { version: '0.7.0', cliVersion: '1.0.73' });
+  const rec = s.getDevice('u', 'ver-2');
+  assert.strictEqual(rec.version, '0.7.0');
+  assert.strictEqual(rec.cliVersion, '1.0.73');
+});
+
+check('overview() reports the hub\'s own running version, for the device-rail mismatch warning', () => {
+  const s = new Store();
+  const { hubVersion } = s.overview('u');
+  assert.strictEqual(hubVersion, require('../package.json').version);
+});
+
+// ---------------------------------------------------------------------------
 // sanitizeDeviceMeta / parseDeviceMetaEnv
 // ---------------------------------------------------------------------------
 

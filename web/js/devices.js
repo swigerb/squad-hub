@@ -1,5 +1,7 @@
 import { state } from './api.js';
-import { $, esc, ago } from './util.js';
+import {
+  $, esc, ago, humanBytes, meter, applyMeterFills, clamp01,
+} from './util.js';
 import {
   buildView, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses,
 } from './list.js';
@@ -11,6 +13,7 @@ import { syncDetailHeader } from './detail.js';
 import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
 import { openAca } from './aca.js';
+import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
 // card updates or disappears the moment its approval is answered -- and now
@@ -112,59 +115,6 @@ export function availableCount(devices = []) {
   return devices.filter((d) => d.presence !== 'offline').length;
 }
 
-/** Bytes as something a person reads, for the RAM meter. */
-export function humanBytes(n) {
-  if (!Number.isFinite(n) || n < 0) return '';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
-
-/**
- * One meter, or nothing at all.
- *
- * A device that does not report telemetry renders NO meter, rather than an
- * empty bar at zero. "Not reporting" and "idle" look identical on a bar at
- * zero, and they are entirely different facts.
- *
- * The fill width is carried as `data-pct`, not a `style="width:…"` attribute:
- * under the enforced CSP an inline style attribute written into markup like
- * this needs a style-src exception, and `applyMeterFills` below sets it
- * through the CSSOM instead -- a JavaScript property assignment, which is not
- * inline style and needs none.
- */
-export function meter(label, fraction, detail = '') {
-  if (fraction == null || !Number.isFinite(fraction)) return '';
-  const pct = Math.round(clamp01(fraction) * 100);
-  const level = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : '';
-  return `
-    <div class="meter ${level}" title="${esc(label)} ${pct}%${detail ? ` (${esc(detail)})` : ''}">
-      <span class="meter-label">${esc(label)}</span>
-      <span class="meter-track"><span class="meter-fill" data-pct="${pct}"></span></span>
-      <span class="meter-value">${pct}%</span>
-    </div>`;
-}
-
-/**
- * Give each meter-fill span the width its markup could not carry.
- *
- * Called once after `deviceList`'s markup is written, so it has to run AFTER
- * `innerHTML` replaces the DOM -- a fill rendered before that point would
- * only ever be thrown away with the nodes it was set on.
- */
-export function applyMeterFills(container) {
-  for (const el of container.querySelectorAll('.meter-fill[data-pct]')) {
-    el.style.width = `${el.getAttribute('data-pct')}%`;
-  }
-}
-
-export function clamp01(n) {
-  if (!Number.isFinite(n)) return 0;
-  return n < 0 ? 0 : n > 1 ? 1 : n;
-}
-
 /**
  * How an ACA execution names itself in the rail (#172).
  *
@@ -205,8 +155,11 @@ export function deviceExecutionId(d) {
 
 export function deviceCard(d, opts = {}) {
   const t = d.telemetrySample || null;
-  const meters = t
-    ? `<div class="meters">${meter('CPU', t.cpu)}${meter('RAM', t.mem, `${humanBytes(t.memUsedBytes)} of ${humanBytes(t.memTotalBytes)}`)}</div>`
+  const disk = fullestVolume(d.diskVolumes);
+  const diskFraction = disk ? clamp01(1 - (disk.freeBytes || 0) / disk.totalBytes) : null;
+  const diskLabel = disk && disk.label ? `Disk ${disk.label}` : 'Disk';
+  const meters = t || disk
+    ? `<div class="meters">${meter('CPU', t && t.cpu)}${meter('RAM', t && t.mem, t ? `${humanBytes(t.memUsedBytes)} of ${humanBytes(t.memTotalBytes)}` : '')}${meter(diskLabel, diskFraction, disk ? `${humanBytes(disk.freeBytes)} free of ${humanBytes(disk.totalBytes)}` : '')}</div>`
     : '';
   const displayName = deviceDisplayName(d);
   const execId = deviceExecutionId(d);
@@ -216,15 +169,26 @@ export function deviceCard(d, opts = {}) {
     execId ? esc(execId) : '',
     Number.isFinite(sessionCount) && sessionCount > 0 ? `${sessionCount} session${sessionCount === 1 ? '' : 's'}` : '',
   ].filter(Boolean).join(' &middot; ');
+  const detailHtml = deviceDetailHtml(d, opts);
+  // Only shown when there is something behind it to disclose.
+  const expandBtn = detailHtml
+    ? `<button type="button" class="dev-expand" data-expand-device="${esc(d.deviceId)}"
+         aria-expanded="${isDeviceExpanded(d.deviceId) ? 'true' : 'false'}" aria-controls="devx-${esc(d.deviceId)}"
+         title="Show volumes, specs, versions and token details">${SECTION_CHEVRON}</button>`
+    : '';
   return `
     <div class="device ${isCloudKind(d.kind) ? 'cloud' : ''}">
       <span class="dot ${esc(d.presence)}"></span>
       <div class="device-main">
-        <div class="device-name" title="${esc(displayName)}">${esc(displayName)}${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}</div>
+        <div class="device-name" title="${esc(displayName)}">
+          ${expandBtn}
+          <span>${esc(displayName)}</span>${isCloudKind(d.kind) ? '<span class="kind-pill" title="On-demand, always available">cloud</span>' : ''}
+        </div>
         <div class="device-meta">
           ${metaLine}
         </div>
         ${meters}
+        ${detailHtml}
       </div>
       <button class="add" data-spawn="${esc(d.deviceId)}" title="Start a session here">+</button>
       <button class="add danger" data-remove-device="${esc(d.deviceId)}"
@@ -322,10 +286,10 @@ export function localDevicesEmptyHtml() {
  * button cannot nest inside another button. `role="button"` plus the
  * `onkeydown` handler in connect.js give it the same keyboard behavior.
  */
-function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle) {
+function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle, hubVersion) {
   const collapsed = isSectionCollapsed(key);
   const body = list.length
-    ? list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0 })).join('')
+    ? list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0, hubVersion })).join('')
     : (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
   return `
     <div class="devsec" data-sec="${key}" role="button" tabindex="0"
@@ -357,7 +321,7 @@ function acaJobsRowHtml() {
 }
 
 export function render() {
-  const { groups, devices, counts } = state.overview;
+  const { groups, devices, counts, hubVersion } = state.overview;
 
   $('deviceCount').textContent = counts.devices || 0;
 
@@ -477,9 +441,9 @@ export function render() {
   const sessionCounts = sessionCountsByDevice(groups);
   $('deviceList').innerHTML = `
     ${acaJobsRowHtml()}
-    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job')}
-    ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device')}
-    ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device')}`;
+    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job', hubVersion)}
+    ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}
+    ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}`;
   applyMeterFills($('deviceList'));
   const availPill = $('deviceAvailable');
   if (availPill) {

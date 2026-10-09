@@ -16,6 +16,7 @@
 const { EventEmitter } = require('events');
 const { MemoryBacking } = require('./store-backing');
 const { sanitizeDeviceMeta } = require('../device-meta');
+const { sanitizeDiskVolumes } = require('../disk-meta');
 const { sanitizePullRequest } = require('../pull-request');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
@@ -38,6 +39,21 @@ const TRANSCRIPT_CACHE_LIMIT = 500;
  * and forgetting to defend it is a visible omission rather than a silent one.
  */
 const SESSION_LIST_FIELDS = ['pendingApprovals', 'expiredApprovals', 'answeredApprovals'];
+
+/**
+ * A short label a device reported -- a version string, a token label -- kept
+ * only if it is a plausible one. Same injection posture as the rest of what a
+ * device sends: a non-string, an oversize value, or anything injection-shaped
+ * (a control character, or the two characters that turn a label into markup)
+ * is dropped rather than stored, so a malformed or hostile device cannot put
+ * a terminal escape or a stray tag into something every watcher reads back.
+ */
+const SHORT_STRING_INJECTION_RE = /[\x00-\x1f\x7f<>]/;
+function sanitizeShortString(v, maxLen = 100) {
+  if (typeof v !== 'string' || !v.length || v.length > maxLen) return null;
+  if (SHORT_STRING_INJECTION_RE.test(v)) return null;
+  return v;
+}
 
 /**
  * Map what a device reports to the three kinds the roster actually
@@ -280,13 +296,26 @@ class Store extends EventEmitter {
       trackAll: !!device.trackAll,
       telemetry: !!device.telemetry,
       telemetrySample: device.telemetrySample || null,
+      // Validated the same way device metadata is: a device is a machine the
+      // hub does not control, so its reported volume list is input, never an
+      // invariant (#173). `undefined` (an old daemon that never sends this
+      // field) keeps whatever was already on the record rather than wiping it
+      // on the next heartbeat that happens not to mention it.
+      diskVolumes: 'diskVolumes' in device ? sanitizeDiskVolumes(device.diskVolumes) : (existing.diskVolumes ?? null),
       // What the device says its CLI will accept. `null` means "could not
       // tell", which is not the same as "none" -- the UI hides the picker for
       // the first and would be wrong to claim the second.
       agents: Array.isArray(device.agents) && device.agents.length ? device.agents : (existing.agents || null),
       models: Array.isArray(device.models) && device.models.length ? device.models : (existing.models || null),
       modes: Array.isArray(device.modes) && device.modes.length ? device.modes : (existing.modes || null),
-      version: device.version || null,
+      version: sanitizeShortString(device.version) || existing.version || null,
+      cliVersion: sanitizeShortString(device.cliVersion) || existing.cliVersion || null,
+      // The device token's own label and expiry (#173), read off the socket's
+      // own credential -- see `_attachDevice` in hub-service.js -- not off
+      // anything the device itself sent, so a device cannot claim a token
+      // identity that was never minted for it.
+      tokenLabel: sanitizeShortString(device.tokenLabel) || existing.tokenLabel || null,
+      tokenExpiresAt: Number.isFinite(device.tokenExpiresAt) ? device.tokenExpiresAt : (existing.tokenExpiresAt || null),
       registeredAt: existing.registeredAt || Date.now(),
       lastSeen: Date.now(),
     };
@@ -304,6 +333,12 @@ class Store extends EventEmitter {
     Object.assign(rec, patch, {
       kind: ('kind' in patch) ? resolveDeviceKind(rec.deviceId, patch.kind, meta) : rec.kind,
       meta,
+      version: 'version' in patch ? (sanitizeShortString(patch.version) || rec.version) : rec.version,
+      cliVersion: 'cliVersion' in patch ? (sanitizeShortString(patch.cliVersion) || rec.cliVersion) : rec.cliVersion,
+      diskVolumes: 'diskVolumes' in patch ? sanitizeDiskVolumes(patch.diskVolumes) : rec.diskVolumes,
+      tokenLabel: 'tokenLabel' in patch ? (sanitizeShortString(patch.tokenLabel) || rec.tokenLabel || null) : rec.tokenLabel,
+      tokenExpiresAt: 'tokenExpiresAt' in patch && Number.isFinite(patch.tokenExpiresAt)
+        ? patch.tokenExpiresAt : rec.tokenExpiresAt,
       lastSeen: Date.now(),
     });
     this._persist(subject);
@@ -749,6 +784,11 @@ class Store extends EventEmitter {
         sessions: sessions.length,
         actionNeeded: sessions.filter((s) => (s.pendingApprovals || []).length > 0).length,
       },
+      // What THIS HUB is running, so the device rail can warn when a
+      // daemon's own `version` field (#173) disagrees with it -- a mismatch
+      // that otherwise shows up only as "something about that machine feels
+      // off" with no way to tell what.
+      hubVersion: require('../../package.json').version,
     };
   }
 

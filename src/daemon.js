@@ -800,10 +800,22 @@ class Daemon extends EventEmitter {
         models,
         modes,
         ...config.publicView(cfg),
+        // Sent on every heartbeat, not only at register, so the hub notices a
+        // version change (an in-place upgrade, a container redeployed with a
+        // newer image) without waiting for a reconnect (#173).
+        version: require('../package.json').version,
+        // Best-effort and cached: see `_copilotCliVersion` below for why this
+        // is not re-spawned on every heartbeat.
+        cliVersion: this._copilotCliVersion(),
         // Absent, not zeroed, when telemetry is off. A roster can then tell
         // "this device does not report load" from "this device is idle" --
         // which are very different things to show on a meter.
         telemetrySample: cfg.reportTelemetry ? this._telemetry().sample() : null,
+        // Disk (#173), like CPU/RAM, is only sampled when telemetry
+        // reporting is on; `diskSample` then applies its own second gate
+        // (file access off/scoped/all) on top of that -- see its doc
+        // comment on `telemetry.diskSample` for why that second gate exists.
+        diskVolumes: cfg.reportTelemetry ? require('./telemetry').diskSample(cfg) : null,
       },
       sessions: [...this.sessions.values()].map((s) => s.toJSON()),
     };
@@ -825,6 +837,29 @@ class Daemon extends EventEmitter {
   }
 
   /**
+   * The installed Copilot CLI's version, probed once and cached for the rest
+   * of the process.
+   *
+   * Unlike CPU and memory, this never changes while the daemon is running --
+   * nobody upgrades the Copilot CLI out from under a live process -- so
+   * spawning it again on every heartbeat (every `heartbeatSeconds`, 15 by
+   * default) would only ever confirm the same answer at the cost of a child
+   * process forever. `undefined` means "not probed yet" and is distinct from
+   * `null`, which means "probed, and it could not be determined" -- the
+   * second must not be retried every heartbeat either.
+   */
+  _copilotCliVersion() {
+    if (this._cliVersionCache === undefined) {
+      try {
+        this._cliVersionCache = require('./doctor').copilotCliVersion();
+      } catch {
+        this._cliVersionCache = null;
+      }
+    }
+    return this._cliVersionCache;
+  }
+
+  /**
    * Attach this device to a hub service. Outbound only: the daemon dials out,
    * so nothing has to be opened on a laptop or dev box.
    */
@@ -839,7 +874,7 @@ class Daemon extends EventEmitter {
       const snap = this.snapshot();
       this.link.send({
         type: 'register',
-        device: { ...snap.device, version: require('../package.json').version },
+        device: snap.device,
         sessions: snap.sessions,
       });
     });

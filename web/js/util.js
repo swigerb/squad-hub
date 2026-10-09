@@ -3,6 +3,59 @@ export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => 
 
 export const $ = (id) => document.getElementById(id);
 
+/** Bytes as something a person reads, for the RAM meter. */
+export function humanBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+export function clamp01(n) {
+  if (!Number.isFinite(n)) return 0;
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+/**
+ * One meter, or nothing at all.
+ *
+ * A device that does not report telemetry renders NO meter, rather than an
+ * empty bar at zero. "Not reporting" and "idle" look identical on a bar at
+ * zero, and they are entirely different facts.
+ *
+ * The fill width is carried as `data-pct`, not a `style="width:…"` attribute:
+ * under the enforced CSP an inline style attribute written into markup like
+ * this needs a style-src exception, and `applyMeterFills` below sets it
+ * through the CSSOM instead -- a JavaScript property assignment, which is not
+ * inline style and needs none.
+ */
+export function meter(label, fraction, detail = '') {
+  if (fraction == null || !Number.isFinite(fraction)) return '';
+  const pct = Math.round(clamp01(fraction) * 100);
+  const level = pct >= 90 ? 'hot' : pct >= 70 ? 'warm' : '';
+  return `
+    <div class="meter ${level}" title="${esc(label)} ${pct}%${detail ? ` (${esc(detail)})` : ''}">
+      <span class="meter-label">${esc(label)}</span>
+      <span class="meter-track"><span class="meter-fill" data-pct="${pct}"></span></span>
+      <span class="meter-value">${pct}%</span>
+    </div>`;
+}
+
+/**
+ * Give each meter-fill span the width its markup could not carry.
+ *
+ * Called once after `deviceList`'s markup is written, so it has to run AFTER
+ * `innerHTML` replaces the DOM -- a fill rendered before that point would
+ * only ever be thrown away with the nodes it was set on.
+ */
+export function applyMeterFills(container) {
+  for (const el of container.querySelectorAll('.meter-fill[data-pct]')) {
+    el.style.width = `${el.getAttribute('data-pct')}%`;
+  }
+}
+
 /**
  * Copy a string to the clipboard, with a fallback for when the clipboard API
  * is unavailable or refused.
