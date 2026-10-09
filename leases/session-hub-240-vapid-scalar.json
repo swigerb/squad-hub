@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-hub-240-vapid-scalar",
+  "sessionId": "hub-240-vapid-scalar",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-09T01:03:57.648Z",
+  "lastHeartbeatAt": "2026-10-09T01:03:57.648Z",
+  "updatedAt": "2026-10-09T01:03:57.648Z",
+  "terminalReason": null,
+  "executionRef": null
+}
