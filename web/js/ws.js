@@ -344,7 +344,7 @@ export function saveView() {
   try { localStorage.setItem(VIEW_KEY, JSON.stringify(currentViewParams())); }
   catch { /* private browsing, quota, whatever -- never fatal */ }
   syncUrlFromState();
-  pushPrefs();
+  pushPrefs('view');
 }
 
 /** Fill the controls from the restored state, so the UI matches what it does. */

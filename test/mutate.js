@@ -3006,7 +3006,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v11';`,
+    find: `const CACHE = 'squad-hub-shell-v12';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6020,12 +6020,14 @@ if ($health.accessStore -ne 'durable') {`,
     // over whatever the hub actually had saved.
     name: 'a failed initial prefs pull retries as a destructive PUT again (#236 finding 1)',
     file: 'web/js/prefs-sync.js',
-    find: `    prefsPullInFlight = false;
+    find: `  } catch {
     schedulePullRetry();
-    return;`,
-    replace: `    prefsPullInFlight = false;
+    return;
+  }`,
+    replace: `  } catch {
     scheduleRetry(); // MUTATION
-    return;`,
+    return;
+  }`,
     mustFail: 'a failed initial GET schedules another GET, not a PUT of fresh-client defaults',
   },
   {
@@ -6034,9 +6036,8 @@ if ($health.accessStore -ne 'durable') {`,
     // client's just-booted defaults and clobbers the view the hub had saved.
     name: 'first-sync migration skips applying the saved server view before its own push (#236 finding 2)',
     file: 'web/js/prefs-sync.js',
-    find: `    if (applyServerView) reconcileView();
-    pushPrefs();`,
-    replace: `    pushPrefs(); // MUTATION`,
+    find: `  if (!urlHasView && server.view && !pendingViewChanged) {`,
+    replace: `  if (false) { // MUTATION (never reconciles the server's saved view before its own push)`,
     mustFail: 'first sync ever applies the server’s saved view, and its own PUT uploads that view back, not the client default',
   },
   {
@@ -6045,9 +6046,65 @@ if ($health.accessStore -ne 'durable') {`,
     // resolution -- the pull started reading before the edit happened.
     name: 'a dirty GET/PUT race loses the local edit again (#236 finding 3)',
     file: 'web/js/prefs-sync.js',
-    find: `  } else if (!localEditDuringPull) {`,
-    replace: `  } else { // MUTATION (dropped the localEditDuringPull guard)`,
+    find: `  state.favorites = new Set([...basePins, ...state.favorites]);`,
+    replace: `  state.favorites = basePins; // MUTATION (drops any local edit that raced this pull)`,
     mustFail: 'a pin added while the pull is still in flight survives that pull’s resolution',
+  },
+  {
+    // Scout's re-review of 1313f74 ("remaining prefs outbox ordering"),
+    // schedule 1a: a pin explicitly UNfavorited before hydration is a
+    // tombstone -- without it, the server's older (nonempty) copy of that
+    // pin resurrects it the instant hydration's merge runs.
+    name: 'a pin removed before hydration is resurrected by the server\u2019s older copy again (outbox-order 1a)',
+    file: 'web/js/prefs-sync.js',
+    find: `  for (const k of pendingPinRemovals) basePins.delete(k);`,
+    replace: `  // MUTATION (ignores the removal tombstone)`,
+    mustFail: 'a pin REMOVED before hydration is not resurrected by the server’s older (nonempty) copy of it',
+  },
+  {
+    // Same schedule, for a cleared name instead of a removed pin.
+    name: 'a name cleared before hydration is resurrected by the server\u2019s older copy again (outbox-order 1b)',
+    file: 'web/js/prefs-sync.js',
+    find: `  for (const k of pendingNameClears) delete baseNames[k];`,
+    replace: `  // MUTATION (ignores the clear tombstone)`,
+    mustFail: 'a name CLEARED before hydration is not resurrected by the server’s older (nonempty) copy of it',
+  },
+  {
+    // Schedule 1c: a view edit that raced hydration must still beat the
+    // server's own (older) saved view -- without the `pendingViewChanged`
+    // guard, the server's stale view silently wins the race.
+    name: 'a view edit racing hydration is overwritten by the server\u2019s saved view again (outbox-order 1c)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (!urlHasView && server.view && !pendingViewChanged) {`,
+    replace: `  if (!urlHasView && server.view) { // MUTATION (ignores a view edit that raced the pull)`,
+    mustFail: 'a view edit before hydration beats the server’s (nonempty, older) saved view',
+  },
+  {
+    // Schedule 2: two edits in quick succession must never produce two
+    // concurrent PUTs -- without the in-flight guard, a second edit starts
+    // its own competing write instead of being coalesced into one follow-up.
+    name: 'a second edit starts a competing, concurrent PUT again instead of coalescing (outbox-order 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `function queuePush() {
+  if (writeInFlight) { writePending = true; return; }
+  writeInFlight = true;
+  pushPrefsNow();
+}`,
+    replace: `function queuePush() {
+  writeInFlight = true; // MUTATION (dropped the in-flight guard)
+  pushPrefsNow();
+}`,
+    mustFail: 'two edits in quick succession are serialized -- never two concurrent PUTs -- and the later edit is never lost',
+  },
+  {
+    // Schedule 3: a later edit that arrives while an EARLIER write is
+    // failing/retrying must go out immediately, not wait out that earlier
+    // write's own 15-second retry timer.
+    name: 'a later edit waits out an earlier failed write\u2019s retry timer again instead of going out immediately (outbox-order 3)',
+    file: 'web/js/prefs-sync.js',
+    find: `    if (writePending) { writePending = false; queuePush(); } // don't wait out the timer if there is already more to send`,
+    replace: `    // MUTATION (later edit now waits for the 15s retry timer instead)`,
+    mustFail: 'an edit that lands WHILE an earlier write is still failing is coalesced into an immediate retry, not dropped until the 15s timer',
   },
   {
     // PR #236 review, finding 4: `copyToClipboard` never throws -- it
