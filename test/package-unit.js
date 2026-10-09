@@ -756,12 +756,12 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped to v10 merging #170 (/js/rowmenu.js, /js/sessionrow.js; row menu
-  // click handlers, pin/rename sync and `.more` button markup) with #173's
-  // /js/device-detail.js: both independently bumped to v9, so the merge
-  // needs a fresh value none of the merged branches already claimed.
+  // Bumped to v11 for PR #236's review-fix pass: `/js/ws.js`'s prefs-sync
+  // logic (pull-retry, migration view-reconcile, dirty-race guard) moved out
+  // to a new `/js/prefs-sync.js` to stay under the per-file size budget,
+  // which is a new shipped file the previous v10 shell never listed.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v10';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v11';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

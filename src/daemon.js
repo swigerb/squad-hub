@@ -807,6 +807,16 @@ class Daemon extends EventEmitter {
         // Best-effort and cached: see `_copilotCliVersion` below for why this
         // is not re-spawned on every heartbeat.
         cliVersion: this._copilotCliVersion(),
+        // Explicit, not inferred from `version` (PR #236 review finding 5): a
+        // single-row "Remove" narrows `/forget` to exactly one `sessionId`
+        // (#170), forwarded live to whichever daemon actually holds that
+        // session. An OLD daemon simply does not recognize `sessionId` at
+        // all and falls back to its only other mode -- forget every ended
+        // session it carries -- so the hub must be told, in plain fact, that
+        // THIS running code understands the narrowed form, rather than
+        // guessed at from a version string a production rollout can still
+        // leave behind for a long time after this ships.
+        capabilities: { narrowedForget: true },
         // Absent, not zeroed, when telemetry is off. A roster can then tell
         // "this device does not report load" from "this device is idle" --
         // which are very different things to show on a meter.

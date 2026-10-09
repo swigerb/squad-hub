@@ -1697,6 +1697,142 @@ async function watchCsp(pg) {
       await page.click('#dtStar');
     });
 
+    // -------------------------------------------------------------------
+    // #170: pins, renames and the saved view sync through `/api/prefs`, not
+    // just `localStorage` -- the whole point is that a SECOND client signed
+    // in as the SAME person sees them too. `browser.newPage()` opens a new
+    // page in a brand-new, fully isolated browser CONTEXT (its own
+    // localStorage/cookies/IndexedDB, per Playwright's own contract), so a
+    // pin that shows up there did not leak in sideways through shared
+    // storage -- it can only have come from the server this test's own
+    // `svc` is serving `/api/prefs` from.
+    // -------------------------------------------------------------------
+    await check('a pin set on one client is still there for a second client signed in as the same person (#170)', async () => {
+      const clientBToken = auth.mintDevToken('t1', 'u1', 'test person, second client');
+      const pageB = await browser.newPage();
+      try {
+        await gotoSettled(pageB, `${origin}/?token=${clientBToken}`);
+        await pageB.waitForSelector('[data-session]', { timeout: 20000 });
+        const pinnedOnB = await pageB.evaluate(
+          (key) => !!document.querySelector(`[data-star="${CSS.escape(key)}"]`)?.classList.contains('on'),
+          firstSessionKey,
+        );
+        assert.strictEqual(pinnedOnB, false, 'precondition: the session must start unpinned on the second client too');
+
+        // Pin it on the FIRST client's list view (not the detail header this
+        // time -- the row star, `onclick` -> `toggleFavorite` -> the same
+        // `/api/prefs` PUT either control pushes).
+        await gotoSettled(page, origin);
+        await page.waitForSelector(`[data-star="${firstSessionKey}"]`, { timeout: 20000 });
+        await page.click(`[data-star="${firstSessionKey}"]`);
+        // The PUT itself is debounced (prefs-sync.js); give it a moment to
+        // actually leave the first client before asking the server.
+        await page.waitForTimeout(1200);
+
+        // The second client only ever reads prefs at its own page load
+        // (`loadPrefs()` runs once from app.js's startup) -- there is no
+        // websocket broadcast of a prefs change, so a RELOAD is what proves
+        // persistence here, not a live push.
+        await gotoSettled(pageB, `${origin}/?token=${clientBToken}`);
+        await pageB.waitForSelector('[data-session]', { timeout: 20000 });
+        const pinnedOnBAfter = await until(async () => {
+          const on = await pageB.evaluate(
+            (key) => !!document.querySelector(`[data-star="${CSS.escape(key)}"]`)?.classList.contains('on'),
+            firstSessionKey,
+          );
+          return on ? true : null;
+        }, 'the second client to see the pin the first client set', 10000);
+        assert.strictEqual(pinnedOnBAfter, true,
+          'a pin made on one client never reached a second client signed in as the same person');
+      } finally {
+        // Leave the server-side prefs clean for whatever check runs next --
+        // toggle the row star back off through the same UI path used to set
+        // it, rather than guessing the token's header shape here.
+        await page.click(`[data-star="${firstSessionKey}"]`).catch(() => {});
+        await pageB.close();
+      }
+    });
+
+    await check('a rename made on one client is still there after a reload, and for a second client (#170)', async () => {
+      const newName = `Renamed by e2e ${Date.now()}`;
+      await gotoSettled(page, origin);
+      await page.waitForSelector(`[data-more="${firstSessionKey}"]`, { timeout: 20000 });
+      page.once('dialog', (dialog) => dialog.accept(newName));
+      await page.click(`[data-more="${firstSessionKey}"]`);
+      await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+      await page.click('#rowMenu [data-row-action="rename"]');
+      await until(async () => {
+        const t = await page.evaluate(
+          (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',
+          firstSessionKey,
+        );
+        return t === newName ? true : null;
+      }, 'the renamed row to show the new name');
+
+      // Reload the SAME client: a rename that only lived in an in-memory
+      // object would vanish here even though localStorage still had it, so
+      // this also proves `saveNames()` actually ran.
+      await gotoSettled(page, origin);
+      await page.waitForSelector('[data-session]', { timeout: 20000 });
+      const afterReload = await page.evaluate(
+        (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',
+        firstSessionKey,
+      );
+      assert.strictEqual(afterReload, newName, 'the rename did not survive a reload of the same client');
+
+      // And a brand-new client, signed in as the same person, by the same
+      // /api/prefs path the pin-sync check above just proved.
+      const clientCToken = auth.mintDevToken('t1', 'u1', 'test person, third client');
+      const pageC = await browser.newPage();
+      try {
+        await gotoSettled(pageC, `${origin}/?token=${clientCToken}`);
+        await pageC.waitForSelector('[data-session]', { timeout: 20000 });
+        const onC = await pageC.evaluate(
+          (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',
+          firstSessionKey,
+        );
+        assert.strictEqual(onC, newName, 'a rename made on one client never reached a second client signed in as the same person');
+      } finally {
+        await pageC.close();
+      }
+    });
+
+    await check('the row ⋯ menu is fully keyboard-operable: Enter opens it, arrows move focus, Esc closes it (#170)', async () => {
+      await gotoSettled(page, origin);
+      await page.waitForSelector(`[data-more="${firstSessionKey}"]`, { timeout: 20000 });
+
+      // Reach the ⋯ button and activate it with the keyboard, not a click --
+      // a native <button> already answers Enter/Space, but that is exactly
+      // the assumption worth proving against the REAL handler rather than
+      // taking the browser's word for it.
+      await page.focus(`[data-more="${firstSessionKey}"]`);
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+
+      const firstFocused = await page.evaluate(() => document.activeElement?.dataset?.rowAction || null);
+      assert.ok(firstFocused, 'opening the menu with Enter did not move focus onto one of its own items');
+
+      // ArrowDown/ArrowUp cycle focus among the menu's own enabled buttons
+      // (moveRowMenuFocus in wiring.js) -- never leaving the menu, never
+      // landing on a disabled item.
+      await page.keyboard.press('ArrowDown');
+      const secondFocused = await page.evaluate(() => document.activeElement?.dataset?.rowAction || null);
+      assert.ok(secondFocused, 'ArrowDown did not keep focus on a row-menu item');
+      assert.notStrictEqual(secondFocused, firstFocused, 'ArrowDown did not move focus to the next item');
+
+      await page.keyboard.press('ArrowUp');
+      const backToFirst = await page.evaluate(() => document.activeElement?.dataset?.rowAction || null);
+      assert.strictEqual(backToFirst, firstFocused, 'ArrowUp did not move focus back to the previous item');
+
+      // Esc closes it -- the same global handler that closes every other
+      // popup -- and must not also reopen the session detail underneath.
+      await page.keyboard.press('Escape');
+      const hiddenAfterEsc = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+      assert.strictEqual(hiddenAfterEsc, true, 'Escape did not close the row menu');
+      const detailHiddenAfterEsc = await page.evaluate(() => document.getElementById('detailScrim').hidden);
+      assert.strictEqual(detailHiddenAfterEsc, true, 'closing the row menu with Esc also opened the session detail');
+    });
+
     await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
       await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
       await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });

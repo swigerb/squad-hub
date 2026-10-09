@@ -6,9 +6,21 @@
 // still needed.
 
 import {
-  esc, isDeviceUnreachable, NON_TERMINAL_STATUSES, STOP_UNREACHABLE_REASON,
+  esc, isDeviceUnreachable, NON_TERMINAL_STATUSES, STOP_UNREACHABLE_REASON, copyToClipboard,
+  toast, deviceSupportsNarrowedForget,
 } from './util.js';
 import { acaSessionRepo } from './aca.js';
+import { state, api } from './api.js';
+import { toggleFavorite, renameSession } from './prefs-sync.js';
+import { openDetail } from './detail.js';
+import { openAca } from './aca.js';
+import { displayTitle } from './sessionrow.js';
+import { refresh } from './ws.js';
+// Circular import, same as `prefs-sync.js`'s own back-reference into `ws.js`:
+// `closeRowMenu` is a hoisted `export function` declaration in `wiring.js`,
+// never read at either module's top level, so by the time `onRowMenuAction`
+// below actually calls it, `wiring.js`'s module body has long finished.
+import { closeRowMenu } from './wiring.js';
 
 /**
  * The per-row ⋯ menu's contents (#170): what to offer, and in what state,
@@ -84,4 +96,106 @@ export function rowMenuHtml(items) {
     <button type="button" data-row-action="${esc(it.action)}" class="${it.danger ? 'danger' : ''}"
             ${it.disabled ? 'disabled' : ''} ${it.href ? `data-href="${esc(it.href)}"` : ''}
             ${it.title ? `title="${esc(it.title)}"` : ''}>${esc(it.glyph)} ${esc(it.label)}</button>`)).join('');
+}
+
+/** The session (and its device, when it has one) a row-menu key names, by
+ * scanning `state.overview`'s current groups -- there is no other index. */
+export function findSessionByKey(key) {
+  for (const g of (state.overview.groups || [])) {
+    for (const s of (g.sessions || [])) if ((s.key || s.id) === key) return { device: g.device, session: s };
+  }
+  return null;
+}
+
+/** What a row-menu click actually does, split out of `wiring.js` (part of
+ * #170) to keep that file under the size budget `test/package-unit.js`
+ * holds every web/js module to. */
+export async function onRowMenuAction(key, action, href) {
+  const found = findSessionByKey(key);
+  if (!found) { closeRowMenu(); return; }
+  const { device, session } = found;
+  if (action === 'open') { closeRowMenu(); openDetail(key); return; }
+  if (action === 'pin') { closeRowMenu(); toggleFavorite(key); return; }
+  if (action === 'rename') {
+    closeRowMenu();
+    const raw = session.prompt || session.id || '';
+    const current = displayTitle(session, state.names);
+    // Blank unless already renamed -- prompting with the raw prompt back at
+    // you would read as "this IS the name".
+    const name = window.prompt('Rename this session', current === raw ? '' : current);
+    if (name === null) return; // canceled
+    renameSession(key, name);
+    return;
+  }
+  if (action === 'copylink') {
+    closeRowMenu();
+    // `copyToClipboard` never throws (see its own doc comment in util.js) --
+    // it settles `true`/`false` instead, so the only way to report a real
+    // failure truthfully is to read that return value (PR #236 review
+    // finding 4: a `try`/`catch` here toasted "Link copied" unconditionally,
+    // because there was never a rejection to catch).
+    const copied = await copyToClipboard(`${location.origin}/?session=${encodeURIComponent(key)}`);
+    toast(copied ? 'Link copied' : 'Could not copy the link');
+    return;
+  }
+  if (action === 'aca') { closeRowMenu(); openAca({ device, session }); return; }
+  if (action === 'pr' || action === 'aspire') {
+    closeRowMenu();
+    if (href) window.open(href, '_blank', 'noopener');
+    return;
+  }
+  if (action === 'stop') {
+    closeRowMenu();
+    if (!device) return;
+    if (!window.confirm('Stop this session?')) return;
+    try {
+      await api(`/api/devices/${encodeURIComponent(device.deviceId)}/stop`, {
+        method: 'POST', body: { sessionId: session.id },
+      });
+      await refresh();
+    } catch (e) { toast(`Could not stop: ${e.message}`); }
+    return;
+  }
+  if (action === 'remove') {
+    closeRowMenu();
+    if (!device) return;
+    /**
+     * PR #236 review finding 5: a device that is not OFFLINE has a live
+     * socket, and a narrowed `/forget` is forwarded straight to its own
+     * daemon (see `hub-service.js`). An older daemon (still what the
+     * production ACA worker installs until a fleet catches up on this
+     * change) does not recognize `sessionId` at all and falls back to
+     * forgetting every ended session it carries -- a single-row click would
+     * silently become a device-wide wipe. `deviceSupportsNarrowedForget`
+     * is the daemon's own explicit, reported confirmation that it is safe;
+     * absent that, this asks for genuinely informed consent to the wider
+     * sweep instead of guessing from a version number or failing silently.
+     * An OFFLINE device never reaches a daemon at all (the hub handles the
+     * forget itself, already narrowed), so it needs no such check.
+     */
+    const narrowOk = device.presence === 'offline' || deviceSupportsNarrowedForget(device);
+    if (!narrowOk) {
+      const sweep = window.confirm(
+        'This device can\u2019t confirm it supports removing a single session.\n\n'
+        + 'Continuing will remove ALL of this device\u2019s ended sessions, not just this one. '
+        + 'Cancel to leave this session where it is.',
+      );
+      if (!sweep) return;
+      try {
+        await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, { method: 'POST', body: {} });
+        await refresh();
+      } catch (e) { toast(`Could not remove: ${e.message}`); }
+      return;
+    }
+    if (!window.confirm('Remove this session\u2019s record from the list?')) return;
+    try {
+      // `sessionId` narrows the sweep to exactly this one row (#170), on a
+      // reachable OR an unreachable device -- see `forgetSessions` in
+      // daemon.js and its reachable-device passthrough in hub-service.js.
+      await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, {
+        method: 'POST', body: { sessionId: session.id },
+      });
+      await refresh();
+    } catch (e) { toast(`Could not remove: ${e.message}`); }
+  }
 }

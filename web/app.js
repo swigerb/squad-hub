@@ -48,9 +48,10 @@ import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
   connect, setAvatar, setConn, takeDeepLinkSession, takeShortcut, resolveDeepLink, showOffline,
-  registerServiceWorker, refresh, loadView, saveView, toggleFavorite, syncControls,
-  applyTheme, nextTheme, setRailCollapsed, loadPrefs, renameSession,
+  registerServiceWorker, refresh, loadView, saveView, syncControls,
+  applyTheme, nextTheme, setRailCollapsed,
 } from './js/ws.js';
+import { loadPrefs, renameSession, toggleFavorite } from './js/prefs-sync.js';
 import {
   acaRepoName, acaSessionRepo, acaTitle, acaNewIssueLink, acaComment, acaIssueLink, openAca,
 } from './js/aca.js';

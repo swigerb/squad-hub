@@ -87,6 +87,18 @@ check('an ended session is removed', () => {
   assert.strictEqual(d.sessions.has('a'), false);
 });
 
+/*
+ * PR #236 review, finding 5: the hub can only ever safely narrow a forget to
+ * one session if the daemon on the other end has actually said it honors
+ * `sessionId` -- never by guessing from `device.version`. A current daemon
+ * must report that on every register/heartbeat (`src/service/hub-service.js`
+ * refuses a narrowed forget unless this is present and literally `true`).
+ */
+check('a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)', () => {
+  const d = daemonWith([]);
+  assert.deepStrictEqual(d.snapshot().device.capabilities, { narrowedForget: true });
+});
+
 check('every terminal status is eligible, not just done', () => {
   const d = daemonWith([
     fakeSession('done', { status: STATUS.DONE }),

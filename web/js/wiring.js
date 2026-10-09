@@ -7,7 +7,7 @@
 // share. Behavior is unchanged byte-for-byte from the original.
 
 import { state, api } from './api.js';
-import { $, esc, toast, undoToast, copyToClipboard } from './util.js';
+import { $, esc, toast, undoToast } from './util.js';
 import { enhanceAllSelects, closeAllSelectPills } from './dropdowns.js';
 import {
   forgetWindowMs, forgetTargets, forgetSummary, forgetUndoLabel, newMenuState,
@@ -23,8 +23,9 @@ import {
   openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession,
 } from './detail.js';
 import {
-  setRailCollapsed, applyTheme, nextTheme, toggleFavorite, saveView, refresh, renameSession,
+  setRailCollapsed, applyTheme, nextTheme, saveView, refresh,
 } from './ws.js';
+import { toggleFavorite } from './prefs-sync.js';
 import { openAca, wireAca } from './aca.js';
 import { openPeople, wireAccess } from './access.js';
 import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
@@ -32,8 +33,7 @@ import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
 import { wirePush, syncPushMenuItem } from './push.js';
-import { rowMenuItems, rowMenuHtml } from './rowmenu.js';
-import { displayTitle } from './sessionrow.js';
+import { rowMenuItems, rowMenuHtml, findSessionByKey, onRowMenuAction } from './rowmenu.js';
 
 /** A persistent warning the user cannot miss and can dismiss once read. */
 export function showBanner(text) {
@@ -104,13 +104,6 @@ function togglePopup(menuId, btnId, force) {
 let rowMenuKey = null;
 let rowMenuBtn = null;
 
-function findSessionByKey(key) {
-  for (const g of (state.overview.groups || [])) {
-    for (const s of (g.sessions || [])) if ((s.key || s.id) === key) return { device: g.device, session: s };
-  }
-  return null;
-}
-
 /** Closed on every refresh, Esc, a click outside it, or any other popup
  * opening -- a popup like any other, it just has no one fixed trigger. */
 export function closeRowMenu() {
@@ -169,65 +162,6 @@ function moveRowMenuFocus(delta) {
   const at = items.indexOf(document.activeElement);
   const next = items[(at < 0 ? (delta > 0 ? 0 : -1) : at + delta + items.length) % items.length];
   if (next) next.focus();
-}
-
-async function onRowMenuAction(key, action, href) {
-  const found = findSessionByKey(key);
-  if (!found) { closeRowMenu(); return; }
-  const { device, session } = found;
-  if (action === 'open') { closeRowMenu(); openDetail(key); return; }
-  if (action === 'pin') { closeRowMenu(); toggleFavorite(key); return; }
-  if (action === 'rename') {
-    closeRowMenu();
-    const raw = session.prompt || session.id || '';
-    const current = displayTitle(session, state.names);
-    // Blank unless already renamed -- prompting with the raw prompt back at
-    // you would read as "this IS the name".
-    const name = window.prompt('Rename this session', current === raw ? '' : current);
-    if (name === null) return; // canceled
-    renameSession(key, name);
-    return;
-  }
-  if (action === 'copylink') {
-    closeRowMenu();
-    try {
-      await copyToClipboard(`${location.origin}/?session=${encodeURIComponent(key)}`);
-      toast('Link copied');
-    } catch { toast('Could not copy the link'); }
-    return;
-  }
-  if (action === 'aca') { closeRowMenu(); openAca({ device, session }); return; }
-  if (action === 'pr' || action === 'aspire') {
-    closeRowMenu();
-    if (href) window.open(href, '_blank', 'noopener');
-    return;
-  }
-  if (action === 'stop') {
-    closeRowMenu();
-    if (!device) return;
-    if (!window.confirm('Stop this session?')) return;
-    try {
-      await api(`/api/devices/${encodeURIComponent(device.deviceId)}/stop`, {
-        method: 'POST', body: { sessionId: session.id },
-      });
-      await refresh();
-    } catch (e) { toast(`Could not stop: ${e.message}`); }
-    return;
-  }
-  if (action === 'remove') {
-    closeRowMenu();
-    if (!device) return;
-    if (!window.confirm('Remove this session\u2019s record from the list?')) return;
-    try {
-      // `sessionId` narrows the sweep to exactly this one row (#170), on a
-      // reachable OR an unreachable device -- see `forgetSessions` in
-      // daemon.js and its reachable-device passthrough in hub-service.js.
-      await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, {
-        method: 'POST', body: { sessionId: session.id },
-      });
-      await refresh();
-    } catch (e) { toast(`Could not remove: ${e.message}`); }
-  }
 }
 
 /**

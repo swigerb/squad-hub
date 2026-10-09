@@ -2959,6 +2959,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/detail.js',
   '/js/transcript.js',
   '/js/ws.js',
+  '/js/prefs-sync.js',
   '/js/aca.js',
   '/js/access.js',
   '/js/install.js',
@@ -3005,7 +3006,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v10';`,
+    find: `const CACHE = 'squad-hub-shell-v11';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -5995,6 +5996,87 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  if (authBuf.length !== AUTH_SECRET_LEN) {`,
     replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
     mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
+  },
+  {
+    // PR #236 review, finding 1: a failed initial prefs GET must retry as
+    // another GET. Routing it through the local-edit retry path instead means
+    // a fresh client, the moment it reconnects, PUTs its own empty defaults
+    // over whatever the hub actually had saved.
+    name: 'a failed initial prefs pull retries as a destructive PUT again (#236 finding 1)',
+    file: 'web/js/prefs-sync.js',
+    find: `    prefsPullInFlight = false;
+    schedulePullRetry();
+    return;`,
+    replace: `    prefsPullInFlight = false;
+    scheduleRetry(); // MUTATION
+    return;`,
+    mustFail: 'a failed initial GET schedules another GET, not a PUT of fresh-client defaults',
+  },
+  {
+    // PR #236 review, finding 2: a first-ever migration must adopt the
+    // server's saved view before its own first PUT, or that PUT ships the
+    // client's just-booted defaults and clobbers the view the hub had saved.
+    name: 'first-sync migration skips applying the saved server view before its own push (#236 finding 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `    if (applyServerView) reconcileView();
+    pushPrefs();`,
+    replace: `    pushPrefs(); // MUTATION`,
+    mustFail: 'first sync ever applies the server’s saved view, and its own PUT uploads that view back, not the client default',
+  },
+  {
+    // PR #236 review, finding 3: a pin/rename/view change that lands while a
+    // pull is still in flight must survive that pull's own, now-stale,
+    // resolution -- the pull started reading before the edit happened.
+    name: 'a dirty GET/PUT race loses the local edit again (#236 finding 3)',
+    file: 'web/js/prefs-sync.js',
+    find: `  } else if (!localEditDuringPull) {`,
+    replace: `  } else { // MUTATION (dropped the localEditDuringPull guard)`,
+    mustFail: 'a pin added while the pull is still in flight survives that pull’s resolution',
+  },
+  {
+    // PR #236 review, finding 4: `copyToClipboard` never throws -- it
+    // settles true/false instead -- so the only way to report a real
+    // failure truthfully is to read that return value. Toasting success
+    // unconditionally silently turns off the whole point of the check.
+    name: 'copylink toasts "Link copied" unconditionally again, even on a real clipboard failure (#236 finding 4)',
+    file: 'web/js/rowmenu.js',
+    find: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`);
+    toast(copied ? 'Link copied' : 'Could not copy the link');`,
+    replace: `    await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`); // MUTATION
+    toast('Link copied');`,
+    mustFail: 'copylink toasts an honest failure, never "Link copied", when the clipboard write really fails (PR #236 finding 4)',
+  },
+  {
+    // PR #236 review, finding 5: a daemon that never claims
+    // `capabilities.narrowedForget` must be refused a narrowed single-row
+    // forget outright -- old 0.6.0 daemons ignore `sessionId` and would
+    // bulk-forget every ended session on the device, not just the one row.
+    name: 'a reachable device without narrowedForget is forwarded a narrowed forget again (#236 finding 5)',
+    file: 'src/service/hub-service.js',
+    find: `&& !(device.capabilities && device.capabilities.narrowedForget === true)) {`,
+    replace: `&& false /* MUTATION */) {`,
+    mustFail: 'an old daemon (no capabilities reported) refuses a narrowed single-row forget with 409',
+  },
+  {
+    // PR #236 review, finding 5 (daemon side): the capability must be
+    // reported on every register/heartbeat, or the hub never has anything
+    // to gate on and the 409 refusal above can never fire for real daemons.
+    name: 'the daemon stops reporting narrowedForget, so the hub never knows a current daemon supports it (#236 finding 5)',
+    file: 'src/daemon.js',
+    find: `capabilities: { narrowedForget: true },`,
+    replace: `capabilities: undefined, // MUTATION`,
+    mustFail: 'a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)',
+  },
+  {
+    // PR #236 review, finding 5 (store side): deliberately NO fallback to
+    // the previous value, unlike version/cliVersion -- a daemon that stops
+    // claiming the capability (a downgrade/rollback) must lose it on its
+    // very next heartbeat, not keep benefiting from a stale claim.
+    name: 'a dropped narrowedForget capability falls back to the stale previous value instead of being revoked (#236 finding 5)',
+    file: 'src/service/store.js',
+    find: `capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,`,
+    replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
+    mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
   },
 ];
 
