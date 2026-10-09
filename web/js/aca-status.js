@@ -35,54 +35,121 @@ export const ACA_PHASE = {
 export const ACA_POLL_MS = 30000;
 
 /**
- * The persistent "squad-aca watcher" device, picked out of the roster by
- * name rather than by kind: it is an ordinary cloud device, the same kind as
- * any other long-lived daemon, with no field anywhere that marks it as THE
- * watcher. The hub has nothing else to go on -- `src/device-meta.js`
- * allowlists only `displayName`, `repo`, `issue`, `executionName` and
- * `jobName`, none of which say "I am the issue watcher" -- so this matches
- * squad-on-aca's own naming convention for that device instead.
- *
- * Matched case-insensitively so a differently-cased deployment still shows
- * up; `offline` devices are forgotten entirely after a day (`src/service/
- * store.js`), so there is nothing to prefer among several -- the first match
- * is the only one that can exist.
+ * Split a device's own name (or a job-shaped metadata field) into lowercase
+ * alphanumeric tokens, so "the job name contains `squad-aca-watch`" can be
+ * checked as a run of whole tokens rather than a raw substring. A substring
+ * match (`/watcher/i.test(name)`) is exactly what let a real production
+ * device (`aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5`, which never
+ * contains the literal word "watcher") render as "Not connected" (#233) --
+ * and in the other direction, a substring match is just as able to pick an
+ * unrelated implementation session whose own slug happens to contain
+ * "watcher" or "ralph" as plain English words.
  */
-export function findWatcherDevice(devices = []) {
-  return devices.find((d) => /watcher/i.test(d && d.name)) || null;
-}
-
-/** The persistent "squad-aca ralph" device: the triage sweep over
- * `squad-aca`-labeled issues, the same way `findWatcherDevice` finds the
- * issue watcher. */
-export function findRalphDevice(devices = []) {
-  return devices.find((d) => /ralph/i.test(d && d.name)) || null;
+function nameTokens(name) {
+  return String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
 /**
- * The issue watcher's row: its presence, and that it never runs a session --
- * the entire reason a device like it exists is to sit and watch, never to
- * take work. "watch-only" is said about every watcher found, connected or
- * not, because that is true of the role, not of the moment.
+ * The established squad-on-aca Container App Job naming convention for the
+ * two persistent jobs this card looks for: `squad`, `aca`, then the role
+ * word, as three CONSECUTIVE tokens -- matching the real production device
+ * name above (`..., 'ca', 'squad', 'aca', 'watch', '0000016', ...`) -- with
+ * whatever Azure-generated revision/replica suffix follows. Requiring the
+ * exact token `role` immediately after `aca` immediately after `squad`,
+ * rather than "the name mentions `watcher` somewhere", is what keeps an
+ * arbitrary implementation session (dispatched under a name like
+ * `squad-aca-session-<slug>`, never `squad-aca-<role>`) from masquerading as
+ * the job it is not.
+ */
+function matchesAcaJobConvention(tokens, role) {
+  for (let i = 0; i < tokens.length - 2; i += 1) {
+    if (tokens[i] === 'squad' && tokens[i + 1] === 'aca' && tokens[i + 2] === role) return true;
+  }
+  return false;
+}
+
+/**
+ * Find the one persistent ACA device that fills `role` (`'watch'` or
+ * `'ralph'`, see `src/device-meta.js`'s `ROLE_VALUES`), preferring an
+ * EXPLICIT, verified fact over a name guess:
+ *
+ * 1. `meta.role` sent by the device itself -- sanitized and restricted to
+ *    `ROLE_VALUES` before it ever reaches the hub's store (#233), so a
+ *    device that claims `watch` or `ralph` here is asserting its own job
+ *    identity, not merely hoping its name parses that way.
+ * 2. Failing that (today's real squad-on-aca deployments send no metadata
+ *    at all -- `meta: null`), the established job-naming convention above,
+ *    checked against `meta.jobName`, `meta.executionName` and the device's
+ *    own `name`, in that order of how likely each is to BE the Container
+ *    App Job name rather than an operator-chosen label.
+ *
+ * Only `kind: 'aca'` devices are considered for either path: the watcher and
+ * Ralph are categorically ACA jobs (`src/service/store.js`'s
+ * `resolveDeviceKind`), so a `local` or plain `cloud` device claiming either
+ * role by name coincidence is never in scope to begin with.
+ */
+function findAcaRoleDevice(devices, role) {
+  const pool = (devices || []).filter((d) => d && d.kind === 'aca');
+  const byMeta = pool.find((d) => d.meta && d.meta.role === role);
+  if (byMeta) return byMeta;
+  return pool.find((d) => {
+    const candidates = [d.meta && d.meta.jobName, d.meta && d.meta.executionName, d.name];
+    return candidates.some((c) => matchesAcaJobConvention(nameTokens(c), role));
+  }) || null;
+}
+
+/** The persistent issue-watcher ACA job, found by `findAcaRoleDevice`. */
+export function findWatcherDevice(devices = []) {
+  return findAcaRoleDevice(devices, 'watch');
+}
+
+/** The persistent Ralph (triage sweep) ACA job, found the same way. */
+export function findRalphDevice(devices = []) {
+  return findAcaRoleDevice(devices, 'ralph');
+}
+
+/**
+ * The issue watcher's row: its presence, and -- ONLY when verified --
+ * "watch-only", the fact that it never runs a session itself.
+ *
+ * "watch-only" is appended ONLY when `meta.approvalMode` is the VERIFIED
+ * value `'auto'` (#233; see `src/device-meta.js`'s `APPROVAL_MODE_VALUES`).
+ * Presence or the device's role alone proves no such mode -- a watcher can
+ * exist under manual approval too -- and today's real production record
+ * reports no `approvalMode` at all (`meta: null`), so claiming "watch-only"
+ * for every watcher found, as #180's first pass did, asserted a mode no
+ * device had actually confirmed. Absent metadata is reported as plain
+ * presence, not a guessed label.
  */
 export function acaWatcherLine(devices = []) {
   const d = findWatcherDevice(devices);
   if (!d) return 'Not connected';
   const presence = d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline';
-  return `${presence} \u00b7 watch-only`;
+  const mode = d.meta && d.meta.approvalMode;
+  return mode === 'auto' ? `${presence} \u00b7 watch-only` : presence;
 }
 
 /**
- * Ralph's row: when it last did anything, from the same `lastSeen` heartbeat
- * every other device reports -- not a separate "last sweep" fact the hub has
- * no way to be told, since Ralph's sweeps are an internal loop the hub never
- * observes directly.
+ * Ralph's row: the last CONFIRMED triage sweep when a device reports one,
+ * else the honest truth that only a heartbeat has been seen.
+ *
+ * `lastSeen` is a wire-protocol heartbeat every device reports merely by
+ * staying connected (`src/service/store.js`'s `registerDevice`/`heartbeat`)
+ * -- it proves Ralph's PROCESS is alive, not that a sweep over
+ * `squad-aca`-labeled issues ever completed. #180's first pass formatted
+ * `lastSeen` as "Last sweep", which mislabels a heartbeat as proof of work
+ * (#233). `meta.lastSweepAt` (sanitized as a real parseable instant by
+ * `src/device-meta.js`) is the only fact that actually says a sweep ran;
+ * when a device never sends it, the row says so plainly instead of
+ * reusing the heartbeat under a name it did not earn.
  */
 export function acaRalphLine(devices = []) {
   const d = findRalphDevice(devices);
   if (!d) return 'Not connected';
-  if (!d.lastSeen) return 'No sweeps yet';
-  return `Last sweep ${ago(d.lastSeen)}`;
+  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;
+  if (Number.isFinite(sweptAt)) return `Last sweep ${ago(sweptAt)}`;
+  if (!d.lastSeen) return 'Last seen unknown \u00b7 no sweep confirmed';
+  return `Last seen ${ago(d.lastSeen)} \u00b7 no sweep confirmed`;
 }
 
 /**

@@ -45,22 +45,45 @@ function dev(over = {}) {
   };
 }
 
+/** An ACA device fixture, matching the shape `src/service/store.js` actually
+ * sends: `kind: 'aca'`, and `meta: null` unless a test supplies one -- the
+ * same as every real squad-on-aca deployment today. */
+function acaDev(over = {}) {
+  return dev({ kind: 'aca', meta: null, ...over });
+}
+
+/**
+ * The exact, real production record (#233's Scout review): an online ACA
+ * device named by its Container App Job revision, with no metadata at all.
+ * `findWatcherDevice`'s old `/watcher/i` match returned null for this real
+ * record because the name contains "watch", never the literal word
+ * "watcher" -- the bug this whole revision exists to fix.
+ */
+const REAL_WATCH_DEVICE_NAME = 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5';
+
 // ---------------------------------------------------------------------------
 // findWatcherDevice / findRalphDevice
 // ---------------------------------------------------------------------------
 
-check('findWatcherDevice matches a device named "squad-aca watcher"', () => {
-  const d = dev({ name: 'squad-aca watcher' });
+check('findWatcherDevice matches the REAL production device name/shape (#233)', () => {
+  const d = acaDev({ name: REAL_WATCH_DEVICE_NAME, presence: 'online', meta: null });
   assert.strictEqual(findWatcherDevice([dev({ name: 'laptop' }), d]), d);
 });
 
 check('findWatcherDevice matches case-insensitively', () => {
-  const d = dev({ name: 'SQUAD-ACA WATCHER' });
+  const d = acaDev({ name: REAL_WATCH_DEVICE_NAME.toUpperCase() });
+  assert.strictEqual(findWatcherDevice([d]), d);
+});
+
+check('findWatcherDevice prefers an explicit, sanitized meta.role over any name match', () => {
+  // Named like Ralph, but explicitly self-reports the watch role: the
+  // verified fact wins over the name-based convention fallback.
+  const d = acaDev({ name: 'aca-ca-squad-aca-ralph--0000020-abc', meta: { role: 'watch' } });
   assert.strictEqual(findWatcherDevice([d]), d);
 });
 
 check('findWatcherDevice returns null when no watcher device exists', () => {
-  assert.strictEqual(findWatcherDevice([dev({ name: 'laptop' }), dev({ name: 'squad-aca ralph' })]), null);
+  assert.strictEqual(findWatcherDevice([dev({ name: 'laptop' }), acaDev({ name: 'aca-ca-squad-aca-ralph--1-abc-def' })]), null);
 });
 
 check('findWatcherDevice treats an empty roster as "no watcher", not a crash', () => {
@@ -68,53 +91,107 @@ check('findWatcherDevice treats an empty roster as "no watcher", not a crash', (
   assert.strictEqual(findWatcherDevice(), null);
 });
 
-check('findRalphDevice matches a device named "squad-aca ralph"', () => {
-  const d = dev({ name: 'squad-aca ralph' });
-  assert.strictEqual(findRalphDevice([dev({ name: 'squad-aca watcher' }), d]), d);
+check('findWatcherDevice ignores a non-ACA device even if its name matches the convention', () => {
+  // kind: 'cloud', not 'aca' -- the watcher/Ralph jobs are categorically ACA
+  // jobs, so a same-named cloud daemon is out of scope, not a coincidental
+  // match.
+  const d = dev({ name: REAL_WATCH_DEVICE_NAME, kind: 'cloud' });
+  assert.strictEqual(findWatcherDevice([d]), null);
+});
+
+check('findWatcherDevice never matches an arbitrary implementation session containing "watcher"/"ralph" as a substring', () => {
+  // Real dispatched implementation-session job names (see #233's own PR
+  // history): "squad-aca-session-<slug>", never "squad-aca-watch" or
+  // "squad-aca-ralph". A slug that happens to mention "watcher" in plain
+  // English must not be picked up by a looser substring match.
+  const sessionDevices = [
+    acaDev({ name: 'aca-ca-squad-aca-session-fix-pr-233-live-status-truth--1-abc' }),
+    acaDev({ name: 'aca-ca-squad-aca-session-project-watcher-dashboard--2-def' }),
+    acaDev({ name: 'aca-ca-squad-aca-session-ralph-feature-notes--3-ghi' }),
+  ];
+  assert.strictEqual(findWatcherDevice(sessionDevices), null);
+  assert.strictEqual(findRalphDevice(sessionDevices), null);
+});
+
+check('findRalphDevice matches the established "squad-aca-ralph" job naming convention', () => {
+  const d = acaDev({ name: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z' });
+  assert.strictEqual(findRalphDevice([acaDev({ name: REAL_WATCH_DEVICE_NAME }), d]), d);
 });
 
 check('findRalphDevice returns null when no Ralph device exists', () => {
-  assert.strictEqual(findRalphDevice([dev({ name: 'squad-aca watcher' })]), null);
+  assert.strictEqual(findRalphDevice([acaDev({ name: REAL_WATCH_DEVICE_NAME })]), null);
 });
 
 // ---------------------------------------------------------------------------
-// acaWatcherLine
+// acaWatcherLine -- presence, and "watch-only" gated on VERIFIED approvalMode
 // ---------------------------------------------------------------------------
 
 check('acaWatcherLine says "Not connected" with no watcher device', () => {
   assert.strictEqual(acaWatcherLine([]), 'Not connected');
 });
 
-check('acaWatcherLine reports an online watcher as "Online · watch-only"', () => {
-  const line = acaWatcherLine([dev({ name: 'squad-aca watcher', presence: 'online' })]);
+check('acaWatcherLine reports plain presence with no approvalMode metadata at all (today\'s real record)', () => {
+  // The actual production shape: meta: null. Claiming "watch-only" here
+  // would be inventing a fact no device confirmed.
+  const line = acaWatcherLine([acaDev({ name: REAL_WATCH_DEVICE_NAME, presence: 'online', meta: null })]);
+  assert.strictEqual(line, 'Online');
+});
+
+check('acaWatcherLine reports plain presence when approvalMode is explicitly "manual"', () => {
+  const line = acaWatcherLine([acaDev({
+    name: REAL_WATCH_DEVICE_NAME, presence: 'online', meta: { approvalMode: 'manual' },
+  })]);
+  assert.strictEqual(line, 'Online');
+});
+
+check('acaWatcherLine appends "watch-only" ONLY with a VERIFIED approvalMode of "auto"', () => {
+  const line = acaWatcherLine([acaDev({
+    name: REAL_WATCH_DEVICE_NAME, presence: 'online', meta: { approvalMode: 'auto' },
+  })]);
   assert.strictEqual(line, 'Online \u00b7 watch-only');
 });
 
-check('acaWatcherLine reports a stale watcher as "Stale · watch-only"', () => {
-  const line = acaWatcherLine([dev({ name: 'squad-aca watcher', presence: 'stale' })]);
+check('acaWatcherLine reports a stale watcher\'s presence correctly alongside a verified approvalMode', () => {
+  const line = acaWatcherLine([acaDev({
+    name: REAL_WATCH_DEVICE_NAME, presence: 'stale', meta: { approvalMode: 'auto' },
+  })]);
   assert.strictEqual(line, 'Stale \u00b7 watch-only');
 });
 
-check('acaWatcherLine reports an offline watcher as "Offline · watch-only"', () => {
-  const line = acaWatcherLine([dev({ name: 'squad-aca watcher', presence: 'offline' })]);
+check('acaWatcherLine reports an offline watcher\'s presence correctly alongside a verified approvalMode', () => {
+  const line = acaWatcherLine([acaDev({
+    name: REAL_WATCH_DEVICE_NAME, presence: 'offline', meta: { approvalMode: 'auto' },
+  })]);
   assert.strictEqual(line, 'Offline \u00b7 watch-only');
 });
 
 // ---------------------------------------------------------------------------
-// acaRalphLine
+// acaRalphLine -- a heartbeat is not proof of a sweep
 // ---------------------------------------------------------------------------
 
 check('acaRalphLine says "Not connected" with no Ralph device', () => {
   assert.strictEqual(acaRalphLine([]), 'Not connected');
 });
 
-check('acaRalphLine says "No sweeps yet" when Ralph has never reported a heartbeat', () => {
-  const line = acaRalphLine([dev({ name: 'squad-aca ralph', lastSeen: 0 })]);
-  assert.strictEqual(line, 'No sweeps yet');
+check('acaRalphLine is honest about a heartbeat-only device with no lastSeen at all', () => {
+  const line = acaRalphLine([acaDev({ name: 'aca-ca-squad-aca-ralph--1-a-b', lastSeen: 0, meta: null })]);
+  assert.strictEqual(line, 'Last seen unknown \u00b7 no sweep confirmed');
 });
 
-check('acaRalphLine reports "Last sweep <ago>" from the device\'s own lastSeen', () => {
-  const line = acaRalphLine([dev({ name: 'squad-aca ralph', lastSeen: Date.now() - 4 * 60 * 1000 })]);
+check('acaRalphLine reports "Last seen <ago> · no sweep confirmed" for a bare heartbeat (no lastSweepAt)', () => {
+  const line = acaRalphLine([acaDev({
+    name: 'aca-ca-squad-aca-ralph--1-a-b', lastSeen: Date.now() - 4 * 60 * 1000, meta: null,
+  })]);
+  assert.strictEqual(line, 'Last seen 4m ago \u00b7 no sweep confirmed');
+});
+
+check('acaRalphLine reports "Last sweep <ago>" ONLY from a confirmed meta.lastSweepAt', () => {
+  const line = acaRalphLine([acaDev({
+    name: 'aca-ca-squad-aca-ralph--1-a-b',
+    lastSeen: Date.now() - 60 * 1000, // a much more recent heartbeat
+    meta: { lastSweepAt: new Date(Date.now() - 4 * 60 * 1000).toISOString() },
+  })]);
+  // The confirmed sweep time wins over the newer, but merely-heartbeat, lastSeen.
   assert.strictEqual(line, 'Last sweep 4m ago');
 });
 
@@ -210,8 +287,12 @@ check('acaStatusModel keeps NOT_CONNECTED and preserves a supplied reason', () =
 
 check('acaStatusModel builds watcher/ralph/lastDispatch for CONNECTED', () => {
   const devices = [
-    dev({ name: 'squad-aca watcher', presence: 'online' }),
-    dev({ name: 'squad-aca ralph', lastSeen: Date.now() - 60 * 1000 }),
+    acaDev({ name: REAL_WATCH_DEVICE_NAME, presence: 'online', meta: { approvalMode: 'auto' } }),
+    acaDev({
+      name: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z',
+      lastSeen: Date.now() - 60 * 1000,
+      meta: { lastSweepAt: new Date(Date.now() - 60 * 1000).toISOString() },
+    }),
   ];
   const dispatches = [{ owner: 'swigerb', repo: 'squad-hub', status: { state: 'queued' } }];
   const model = acaStatusModel({ phase: ACA_PHASE.CONNECTED, devices, dispatches });
@@ -226,6 +307,19 @@ check('acaStatusModel handles CONNECTED with no watcher/ralph/dispatches yet', (
   assert.strictEqual(model.watcher, 'Not connected');
   assert.strictEqual(model.ralph, 'Not connected');
   assert.strictEqual(model.lastDispatch, 'No dispatches yet');
+});
+
+check('acaStatusModel is honest about CONNECTED with a real-shaped watcher/ralph and no metadata', () => {
+  // The actual production shape (#233): online devices, kind 'aca', meta:
+  // null -- no approvalMode, no lastSweepAt. Neither row may claim more
+  // than presence/heartbeat.
+  const devices = [
+    acaDev({ name: REAL_WATCH_DEVICE_NAME, presence: 'online', meta: null }),
+    acaDev({ name: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z', lastSeen: Date.now() - 2 * 60 * 1000, meta: null }),
+  ];
+  const model = acaStatusModel({ phase: ACA_PHASE.CONNECTED, devices });
+  assert.strictEqual(model.watcher, 'Online');
+  assert.strictEqual(model.ralph, 'Last seen 2m ago \u00b7 no sweep confirmed');
 });
 
 // ---------------------------------------------------------------------------

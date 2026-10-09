@@ -36,7 +36,7 @@ if (!chromium) {
   process.exit(0);
 }
 
-const { Authenticator, MODES } = require('../src/service/auth');
+const { Authenticator, MODES, subjectKey } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { GitHubOAuth } = require('../src/service/github-oauth');
 const { GitHubApp } = require('../src/service/github-app');
@@ -1999,6 +1999,98 @@ async function watchCsp(pg) {
         await pageAca.close();
         await svcAca.close();
         ghServer.close();
+      }
+    });
+
+    // ---- "Squad on ACA" status card: real device shape, approval mode, and
+    // sweep-vs-heartbeat wording (#180, #233) ---------------------------------
+    // A Scout review on commit 69cd12d found the card lying in three ways: it
+    // matched watcher/Ralph devices against `/watcher/i` and `/ralph/i`, which
+    // the ACTUAL production device name --
+    // `aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5` -- never matches (it
+    // says "watch", not "watcher"), so the real card showed "Not connected"
+    // against a device that genuinely was connected; it always labeled the
+    // watcher "watch-only" regardless of the device's real approval mode; and
+    // it displayed Ralph's bare heartbeat as "Last sweep", which proves only
+    // that Ralph is alive, not that a sweep ran. This check registers devices
+    // shaped exactly like real production records -- through the same
+    // `store.registerDevice` a real device socket calls, never by poking the
+    // DOM or faking a fetch response -- and drives a real browser against the
+    // resulting `/api/overview` to prove the rendered card tells the truth.
+    await check('the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)', async () => {
+      const authAca2 = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca-2', deviceSecret: 'e2e-aca-2-dev' });
+      const svcAca2 = new HubService({ auth: authAca2, serveWeb: true });
+      const addrAca2 = await svcAca2.listen(0, '127.0.0.1');
+      const originAca2 = `http://127.0.0.1:${addrAca2.port}`;
+      const tokenAca2 = authAca2.mintDevToken('t-aca2', 'u-aca2', 'aca person 2');
+      const subject = subjectKey('t-aca2', 'u-aca2');
+
+      // The literal name Scout's review quoted from the real record, with no
+      // approval metadata reported -- the "unknown, never a false label" case.
+      svcAca2.store.registerDevice(subject, {
+        deviceId: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5',
+        name: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5',
+        platform: 'linux',
+        meta: null,
+      });
+      // The established "squad-aca-ralph" job naming convention, heartbeating
+      // (lastSeen set by registerDevice itself) but never reporting a
+      // confirmed `lastSweepAt` -- the heartbeat-is-not-a-sweep case.
+      svcAca2.store.registerDevice(subject, {
+        deviceId: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z',
+        name: 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z',
+        platform: 'linux',
+        meta: null,
+      });
+
+      const pageAca2 = await browser.newPage();
+      const errorsAca2 = [];
+      pageAca2.on('console', (m) => { if (m.type() === 'error') errorsAca2.push(m.text()); });
+      pageAca2.on('pageerror', (e) => errorsAca2.push(`pageerror: ${e.message}`));
+      try {
+        await gotoSettled(pageAca2, `${originAca2}/?token=${tokenAca2}`);
+        await pageAca2.waitForSelector('#acaStatusCard .acacard', { timeout: 10000 });
+
+        await until(async () => {
+          const t = await pageAca2.textContent('#acaStatusCard').catch(() => null);
+          return t && /Issue watcher/.test(t) ? true : null;
+        }, 'the watcher row to render at all');
+
+        const textNoMeta = await pageAca2.textContent('#acaStatusCard');
+        assert.doesNotMatch(textNoMeta, /Issue watcher[^\n]*Not connected/,
+          'the real production device name (no "watcher" substring) was not matched -- the exact bug Scout flagged');
+        assert.doesNotMatch(textNoMeta, /watch-only/,
+          'watch-only was claimed with no approvalMode reported at all -- that is a guess, not a verified fact');
+        assert.doesNotMatch(textNoMeta, /Ralph[^\n]*Last sweep/,
+          'a bare heartbeat was reported as "Last sweep" -- heartbeat proves liveness, not that a sweep ran');
+        assert.match(textNoMeta, /no sweep confirmed/,
+          'Ralph heartbeating with no lastSweepAt must say so honestly, not imply a sweep happened');
+
+        // Now report the device-side facts a real device would send on its
+        // next heartbeat: a VERIFIED auto approval mode, and a VERIFIED sweep
+        // timestamp -- through the same heartbeat path a real daemon uses.
+        svcAca2.store.heartbeat(subject, 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5', {
+          meta: { approvalMode: 'auto' },
+        });
+        svcAca2.store.heartbeat(subject, 'aca-ca-squad-aca-ralph--0000031-9a8b7c6d-x1y2z', {
+          meta: { lastSweepAt: new Date().toISOString() },
+        });
+
+        await until(async () => {
+          const t = await pageAca2.textContent('#acaStatusCard').catch(() => null);
+          return t && /watch-only/.test(t) ? true : null;
+        }, 'watch-only to appear once the device verifies approvalMode: auto', 10000);
+        const textWithMeta = await pageAca2.textContent('#acaStatusCard');
+        assert.match(textWithMeta, /Last sweep/,
+          'a verified lastSweepAt must render as "Last sweep", not a bare heartbeat label');
+        assert.doesNotMatch(textWithMeta, /no sweep confirmed/,
+          'a verified lastSweepAt is still being reported as unconfirmed');
+
+        const broken2 = errorsAca2.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken2, [], `the real-shaped-device page reported errors: ${broken2.join(' | ')}`);
+      } finally {
+        await pageAca2.close();
+        await svcAca2.close();
       }
     });
 
