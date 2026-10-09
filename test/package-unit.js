@@ -111,6 +111,13 @@ check('every asset index.html references is shipped', () => {
   assert.deepStrictEqual(missing, [], `referenced but not shipped: ${missing.join(', ')}`);
 });
 
+check('the detail header markup ships the rename pencil and no longer ships the old dtMenu/dtSync popup', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'web/index.html'), 'utf8');
+  assert.match(html, /id="dtRename"/, 'the detail header rename pencil is missing from web/index.html');
+  assert.ok(!/id="dtMenu"/.test(html), 'the old detail-header dtMenu popup is still in web/index.html');
+  assert.ok(!/id="dtSync"/.test(html), 'the old detail-header dtSync button is still in web/index.html');
+});
+
 // ---------------------------------------------------------------------------
 // Home-screen install -- the failure mode here is SILENT
 // ---------------------------------------------------------------------------

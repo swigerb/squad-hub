@@ -3,10 +3,11 @@ import {
   esc, num, truncateWords, statusLabel, statusPillClass,
   isStaleSession, isDeviceUnreachable, cleanupControls, $,
 } from './util.js';
-import { controlBanner, composerReduce } from './composer.js';
+import { controlBanner, canSync, composerReduce } from './composer.js';
 import { refresh, resolveDeepLink } from './ws.js';
-import { toggleFavorite } from './prefs-sync.js';
+import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
+import { displayTitle } from './sessionrow.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
 
 // ---------------------------------------------------------------------------
@@ -55,15 +56,27 @@ export function urlSessionKey() {
   return new URLSearchParams(location.search).get('session');
 }
 
+/**
+ * The header title: a custom name when one was set, else the prompt (falling
+ * back to the id) -- the exact same rule `displayTitle` already applies to
+ * the row and the sidebar (#181 part 2 closes this: the header used to
+ * ignore a rename entirely). The raw prompt stays one hover away via
+ * `title`, matching the row's own convention in sessionrow.js.
+ */
+function renderDetailTitle(found) {
+  const raw = found.session.prompt || found.session.id || '';
+  const shown = displayTitle(found.session, state.names);
+  const el = $('dtTitle');
+  el.textContent = truncateWords(shown, 80);
+  if (shown !== raw) el.title = raw; else el.removeAttribute('title');
+}
+
 export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const found = findSession(key);
   if (!found) return false;
   applyNav(nav, key);
   state.currentSession = found;
-  // Cut at a word boundary. `slice(0, 80)` alone ended titles mid-word --
-  // "...as the Squad team, using y" -- which reads as a rendering fault rather
-  // than as a long prompt.
-  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  renderDetailTitle(found);
   // The status pill (#169) shares its words and state mapping with the row's
   // `statusBadge` via `statusLabel`/`statusPillClass` (one source), so the
   // detail header and the row it was opened from can never read two
@@ -180,7 +193,7 @@ export function renderSidebar() {
   const selectedKey = state.currentSession ? sessionKey(state.currentSession.session) : null;
   const entries = sidebarEntries((state.overview && state.overview.groups) || [], filterText);
   list.innerHTML = entries.length
-    ? entries.map((e) => sidebarRow(e, selectedKey)).join('')
+    ? entries.map((e) => sidebarRow(e, selectedKey, state.names)).join('')
     : '<div class="dt-side-empty">No sessions match this filter</div>';
 }
 
@@ -204,7 +217,7 @@ export function syncDetailHeader() {
   const found = findSession(key);
   if (!found) return;
   state.currentSession = found;
-  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  renderDetailTitle(found);
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
@@ -235,6 +248,11 @@ export function initDetailRouting() {
   $('dtBackPhone').onclick = back;
 
   $('dtSidebarFilter').oninput = () => renderSidebar();
+  $('dtRename').onclick = () => {
+    const current = state.currentSession;
+    if (!current) return;
+    promptRenameSession(sessionKey(current.session), current.session);
+  };
 
   $('detailSidebarList').onclick = (e) => {
     const row = e.target.closest('[data-session]');
@@ -360,8 +378,6 @@ async function verifyControl() {
 export async function syncSession() {
   const current = state.currentSession;
   if (!current) return;
-  const btn = $('dtSync');
-  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
   try {
     await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/resync`, {
       method: 'POST', body: { sessionId: current.session.id },
@@ -371,11 +387,24 @@ export async function syncSession() {
     state.composer = composerReduce(state.composer, { type: 'verify-result', outcome: { error: e.message } });
     renderControl();
     return;
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Sync session'; }
   }
   // Only now is the question worth asking again.
   await verifyControl();
+}
+
+/**
+ * Whether the detail header's ⋯ menu should also offer "Sync session"
+ * (#181 part 2): the exact same condition the detail controls already expose
+ * (`canSync` AND the device is reachable), read from the one place it is
+ * computed. The list row's own ⋯ menu never calls this -- it has no
+ * composer/control-check state for a session that is not open -- so it can
+ * never gain an item nothing can act on.
+ */
+export function detailSyncMenuItem() {
+  const current = state.currentSession;
+  if (!current) return null;
+  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;
+  return { action: 'sync', label: 'Sync session', glyph: '↻' };
 }
 
 export function renderControl() {
@@ -394,9 +423,6 @@ export function renderControl() {
   // label. `Forget stale session` (see renderCleanup) is the real next step
   // for an unreachable device; Sync stays for the case it was built for, a
   // reachable device whose session the hub has lost track of.
-  const current = state.currentSession;
-  const deviceUnreachable = !!(current && isDeviceUnreachable(current.device));
-  $('dtSync').hidden = !b.canSync || deviceUnreachable;
   $('dtInput').disabled = !b.enabled;
   $('dtSend').disabled = !b.enabled;
   $('dtInput').placeholder = b.enabled

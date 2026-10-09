@@ -20,8 +20,9 @@ import {
 } from './notifications.js';
 import { render } from './devices.js';
 import {
-  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession,
+  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession, detailSyncMenuItem,
 } from './detail.js';
+import { sessionKey } from './list.js';
 import {
   setRailCollapsed, applyTheme, nextTheme, saveView, refresh,
 } from './ws.js';
@@ -74,7 +75,7 @@ function toggleMenu(force) {
  * intends and every stray click produces.
  */
 const POPUP_BUTTON = {
-  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn', dtMenu: 'dtMoreBtn',
+  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn',
 };
 
 function togglePopup(menuId, btnId, force) {
@@ -106,28 +107,30 @@ let rowMenuBtn = null;
 
 /** Closed on every refresh, Esc, a click outside it, or any other popup
  * opening -- a popup like any other, it just has no one fixed trigger. */
-export function closeRowMenu() {
+export function closeRowMenu({ restoreFocus = false } = {}) {
   if (rowMenuKey === null) return;
   const m = $('rowMenu');
+  const btn = rowMenuBtn;
   if (m) m.hidden = true;
-  if (rowMenuBtn) rowMenuBtn.setAttribute('aria-expanded', 'false');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
   rowMenuKey = null;
   rowMenuBtn = null;
+  if (restoreFocus && btn && typeof btn.focus === 'function') btn.focus();
 }
 
-function openRowMenu(key, btn) {
+export function openRowMenu(key, btn, { extra = [] } = {}) {
   const reopening = rowMenuKey === key;
   toggleMenu(false);
   togglePopup('newMenu', 'newMoreBtn', false);
   togglePopup('tidyMenu', 'tidyBtn', false);
   togglePopup('inboxMenu', 'bellBtn', false);
-  togglePopup('dtMenu', 'dtMoreBtn', false);
   closeRowMenu();
   if (reopening) return; // a second click on the SAME ⋯ closes it again
 
   const found = findSessionByKey(key);
   if (!found) return;
   const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(key) });
+  if (extra.length) items.push({ sep: true }, ...extra);
   const m = $('rowMenu');
   m.innerHTML = rowMenuHtml(items);
   m.hidden = false;
@@ -361,6 +364,7 @@ export function wire() {
   $('rowMenu').onclick = (e) => {
     const b = e.target.closest('[data-row-action]');
     if (!b || b.disabled || !rowMenuKey) return;
+    if (b.dataset.rowAction === 'sync') { closeRowMenu(); syncSession(); return; }
     onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
   };
   $('rowMenu').onkeydown = (e) => {
@@ -407,7 +411,13 @@ export function wire() {
   };
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
   initDetailRouting();
-  $('dtMoreBtn').onclick = (e) => { e.stopPropagation(); togglePopup('dtMenu', 'dtMoreBtn'); };
+  $('dtMoreBtn').onclick = (e) => {
+    e.stopPropagation();
+    const current = state.currentSession;
+    if (!current) return;
+    const extraItem = detailSyncMenuItem();
+    openRowMenu(sessionKey(current.session), e.currentTarget, { extra: extraItem ? [extraItem] : [] });
+  };
 
   $('bellBtn').onclick = async (e) => {
     e.stopPropagation();
@@ -462,7 +472,6 @@ export function wire() {
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
     if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
-    if (!$('dtMenu').hidden && !e.target.closest('#dtMoreBtn') && !e.target.closest('#dtMenu')) togglePopup('dtMenu', 'dtMoreBtn', false);
     if (!$('rowMenu').hidden && !e.target.closest('#rowMenu') && !e.target.closest('[data-more]')) closeRowMenu();
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
     if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
@@ -530,15 +539,12 @@ export function wire() {
     $('dtSend').click();
   };
 
-  $('dtSync').onclick = () => { togglePopup('dtMenu', 'dtMoreBtn', false); syncSession(); };
-
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     toggleMenu(false);
     togglePopup('newMenu', 'newMoreBtn', false);
     togglePopup('tidyMenu', 'tidyBtn', false);
-    togglePopup('dtMenu', 'dtMoreBtn', false);
-    closeRowMenu();
+    closeRowMenu({ restoreFocus: true });
     $('filterbarEnd').classList.remove('open');
     $('filterToggle').setAttribute('aria-expanded', 'false');
     for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;

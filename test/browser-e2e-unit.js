@@ -1968,10 +1968,91 @@ async function watchCsp(pg) {
       // Esc closes it -- the same global handler that closes every other
       // popup -- and must not also reopen the session detail underneath.
       await page.keyboard.press('Escape');
-      const hiddenAfterEsc = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+      const afterEsc = await page.evaluate((key) => ({
+        hidden: document.getElementById('rowMenu').hidden,
+        focusReturned: document.activeElement?.dataset?.more === key,
+      }), firstSessionKey);
+      const hiddenAfterEsc = afterEsc.hidden;
       assert.strictEqual(hiddenAfterEsc, true, 'Escape did not close the row menu');
+      assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the row ⋯ button that opened the menu');
       const detailHiddenAfterEsc = await page.evaluate(() => document.getElementById('detailScrim').hidden);
       assert.strictEqual(detailHiddenAfterEsc, true, 'closing the row menu with Esc also opened the session detail');
+    });
+
+    await check('the detail header rename pencil updates the header, the detail sidebar and the list row through one shared rename path (#181 part 2)', async () => {
+      const newName = `Header rename ${Date.now()}`;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        page.once('dialog', (dialog) => dialog.accept(newName));
+        await page.click('#dtRename');
+        await until(async () => {
+          const t = await page.textContent('#dtTitle');
+          return String(t || '').trim() === newName ? true : null;
+        }, 'the detail header title to show the new name');
+
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        const sidebarTitle = await until(async () => {
+          const t = await page.evaluate(
+            (key) => document.querySelector(`#detailSidebarList [data-session="${CSS.escape(key)}"] .dt-side-title`)?.textContent || '',
+            firstSessionKey,
+          );
+          return t === newName ? true : null;
+        }, 'the detail sidebar row to show the renamed title');
+        assert.strictEqual(sidebarTitle, true, 'the detail sidebar did not pick up the renamed title');
+
+        await page.click('#dtBack');
+        await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+        const rowTitle = await until(async () => {
+          const t = await page.evaluate(
+            (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',
+            firstSessionKey,
+          );
+          return t === newName ? true : null;
+        }, 'the list row to keep the same renamed title');
+        assert.strictEqual(rowTitle, true, 'the list row did not agree with the header rename');
+      } finally {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        page.once('dialog', (dialog) => dialog.accept(''));
+        await page.click('#dtRename');
+        await until(async () => {
+          const t = await page.textContent('#dtTitle');
+          return String(t || '').trim() !== newName ? true : null;
+        }, 'the detail header rename cleanup to restore the raw title');
+      }
+    });
+
+    await check('the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await until(async () => {
+        const label = await page.textContent('#dtControlLabel');
+        return label && label !== 'Checking control…' ? label.trim() : null;
+      }, 'the detail control check to settle before reading the header menu');
+      await page.click('#dtMoreBtn');
+      await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+      const menuState = await page.evaluate(() => ({
+        dtMenuExists: document.getElementById('dtMenu') !== null,
+        actions: [...document.querySelectorAll('#rowMenu [data-row-action]')].map((b) => b.dataset.rowAction),
+        detailOpen: !document.getElementById('detailScrim').hidden,
+      }));
+      assert.strictEqual(menuState.dtMenuExists, false, 'the old abbreviated #dtMenu still exists in the DOM');
+      for (const action of ['pin', 'rename', 'copylink']) {
+        assert.ok(menuState.actions.includes(action), `the shared row menu is missing its "${action}" action in the detail header`);
+      }
+      assert.ok(!menuState.actions.includes('sync'),
+        'Sync session should be absent once the detail page is already synced and controllable');
+      await page.keyboard.press('Escape');
+      const afterEsc = await page.evaluate(() => ({
+        rowMenuHidden: document.getElementById('rowMenu').hidden,
+        detailOpen: !document.getElementById('detailScrim').hidden,
+        focusReturned: document.activeElement?.id === 'dtMoreBtn',
+      }));
+      assert.strictEqual(afterEsc.rowMenuHidden, true, 'Escape did not close the shared row menu from the detail header');
+      assert.strictEqual(afterEsc.detailOpen, true, 'Escape closed the detail page instead of just the header menu');
+      assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the detail header ⋯ button');
     });
 
     await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
@@ -1983,7 +2064,9 @@ async function watchCsp(pg) {
         // it one frame before measuring.
         await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
         const centers = await page.evaluate((w) => {
-          const ids = w <= 900 ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtStatusPill'] : ['dtStar', 'dtTitle', 'dtStatusPill', 'dtAca'];
+          const ids = w <= 900
+            ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill']
+            : ['dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca'];
           return ids.map((id) => {
             const el = document.getElementById(id);
             if (!el || el.offsetParent === null) return null;

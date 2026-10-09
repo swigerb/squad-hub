@@ -62,6 +62,12 @@
 }
 .detail-head-line .star:hover { background: var(--panel-2); color: var(--text); }
 .detail-head-line .star.on { color: var(--warn); }
+.detail-head-line .pen-btn {
+  flex: 0 0 auto; width: 24px; height: 24px; display: inline-flex;
+  align-items: center; justify-content: center; background: transparent;
+  border: 0; color: var(--faint); font-size: 13px; cursor: pointer; border-radius: 6px;
+}
+.detail-head-line .pen-btn:hover { background: var(--panel-2); color: var(--text); }
 .back-btn {
   flex: 0 0 auto; width: 32px; height: 32px; display: inline-flex;
   align-items: center; justify-content: center; border-radius: 8px;

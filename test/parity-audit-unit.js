@@ -72,7 +72,7 @@ const CHECKS = [
   ['S4', 'collapsible rail + counted pill', () => /railToggle/.test(html) && /deviceAvailable/.test(html), 'available count'],
 
   ['S5', 'verify before enabling composer', () => /controlsEnabled/.test(app) && /control-check/.test(daemon), 'controls are DISABLED before'],
-  ['S5', 'Not synced + Sync session', () => /NOT_SYNCED/.test(app) && /dtSync/.test(html), 'Not synced'],
+  ['S5', 'Not synced + Sync session', () => /NOT_SYNCED/.test(app) && /detailSyncMenuItem/.test(app) && /dtMoreBtn/.test(html), 'Not synced'],
   ['S5', 'Sync resumes under same session id', () => /resyncSession/.test(daemon), 'UNDER THE SAME session id'],
   ['S5', "Control couldn't be verified, draft kept", () => /couldn't be verified/.test(app), 'draft survives a verification'],
   ['S5', 'approval expiry resolves as Expired', () => /expiredApprovals/.test(acp) && /Expired/.test(app), 'expired approval is shown'],

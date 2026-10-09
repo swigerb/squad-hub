@@ -924,6 +924,13 @@ const MUTATIONS = [
     mustFail: 'the session detail panel reads activeMember from the same field the row does',
   },
   {
+    name: 'the detail header menu always offers Sync session again, even when the session is already synced (#181 part 2)',
+    file: 'web/js/detail.js',
+    find: `  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;`,
+    replace: `  if (!isDeviceUnreachable(current.device) && !process.env.MUTANT && !canSync(state.composer.control)) return null; // MUTATION`,
+    mustFail: 'the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)',
+  },
+  {
     // The OUTER catch in readSquad is unreachable while every inner reader is
     // itself safe -- so mutating it proves nothing. Mutate the layer that
     // actually does the work instead: if readFileSafe stops swallowing a
@@ -2046,6 +2053,13 @@ const MUTATIONS = [
     find: `  if (!s.startedAt) return true;`,
     replace: `  if (!s.startedAt) return !process.env.MUTANT; // MUTATION`,
     mustFail: 'a session with no start time is kept, not filtered out',
+  },
+  {
+    name: 'the detail sidebar ignores a custom session name again (#181 part 2)',
+    file: 'web/js/list.js',
+    find: `  const title = truncateWords(displayTitle(s, names), 60);`,
+    replace: `  const title = truncateWords(process.env.MUTANT ? (s.prompt || s.id) : displayTitle(s, names), 60); // MUTATION`,
+    mustFail: 'sidebarRow uses the same renamed displayTitle as the main row',
   },
   {
     name: 'an unknown window key empties the entire list',
@@ -6127,6 +6141,13 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name',
   },
   {
+    name: 'canceling the shared rename prompt still rewrites state.names again (#181 part 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (name === null) return; // canceled`,
+    replace: `  if (false) return; // MUTATION`,
+    mustFail: 'rename cancel leaves state.names unchanged',
+  },
+  {
     // An explicit NAME SET during the hydration gap must still reach the
     // merged state once the migrated-authoritative-baseline branch is the
     // one actually taken (NOT the legacy first-sync union branch, which the
@@ -6149,6 +6170,13 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `    await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`); // MUTATION
     toast('Link copied');`,
     mustFail: 'copylink toasts an honest failure, never "Link copied", when the clipboard write really fails (PR #236 finding 4)',
+  },
+  {
+    name: 'the row-menu rename path stops delegating to the shared prompt helper again (#181 part 2)',
+    file: 'web/js/rowmenu.js',
+    find: `    promptRenameSession(key, session);`,
+    replace: `    return; // MUTATION`,
+    mustFail: 'rename stores the trimmed new name through the shared promptRenameSession path',
   },
   {
     // PR #236 review, finding 5: a daemon that never claims
