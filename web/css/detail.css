@@ -77,7 +77,14 @@
 .back-btn .i { width: 16px; height: 16px; }
 .phone-only { display: none; }
 .detail-head-line .detail-actions { align-items: center; height: 32px; }
-.detail-head-line .detail-actions button { height: 32px; box-sizing: border-box; }
+/* #243/#181: "Run on ACA…" is long enough that a squeezed flex item wraps it
+   onto three lines instead of shrinking -- nowrap + flex-shrink:0 means these
+   buttons keep their natural width and single-line label at every breakpoint;
+   it is the ROW around them (see the 900px block below) that gives way on a
+   phone, not the label text inside them. */
+.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;
+}
 
 /* The status pill: fully rounded, 22px tall, a tinted fill and a leading dot
    rather than a clickable-looking outline -- a status is a fact, not a
@@ -114,6 +121,21 @@
   .detail-layout { grid-template-columns: 1fr; }
   .detail-sidebar { display: none; }
   .phone-only { display: inline-flex; }
+
+  /* #243: below the point where the title row and "Run on ACA…" / Stop / ⋯
+     fit on one 32px line without clipping (measured: a 390px phone, with the
+     back arrow, star, title, pencil and status pill already in the row,
+     leaves well under the ~220px the three actions need), the actions get
+     their OWN right-aligned 32px line box under the title row instead of
+     sharing it. Every control keeps the exact same id, markup, menu contents
+     and keyboard/focus/Escape behavior -- only which line box it renders on
+     changes, and only at this width. 900px and 1280px are untouched: the
+     `flex-wrap` below only wraps when `.detail-actions` cannot fit on the
+     title's line, and its 100% flex-basis forces that at every width this
+     media query applies to, so desktop alignment above 900px is unaffected. */
+  .detail-head-line { flex-wrap: wrap; row-gap: 6px; }
+  .detail-head-line .spacer { display: none; }
+  .detail-head-line .detail-actions { flex: 1 1 100%; justify-content: flex-end; }
 }
 /* Grows with what is in it rather than reserving a fixed slab. A 260px
    minimum meant a two-word reply sat at the top of an empty black rectangle

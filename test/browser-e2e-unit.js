@@ -2312,6 +2312,53 @@ async function watchCsp(pg) {
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
+    // #243: `offsetParent !== null` only proves an element is laid out, not
+    // that it is readable or reachable -- an element can be squeezed to zero
+    // width, wrapped onto three lines, or pushed past the right edge of the
+    // viewport and still have a non-null offsetParent. This reads the actual
+    // rendered geometry instead, which is what caught the real regression
+    // (the title unreadable, "Run on ACA…" wrapping onto 3 lines inside its
+    // 32px button, and Stop/⋯ pushed off the right edge) that the offsetParent
+    // checks above and in the capture test below did not.
+    await check('at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const bounds = await page.evaluate(() => {
+        const vw = document.documentElement.clientWidth;
+        const rectOf = (id) => {
+          const el = document.getElementById(id);
+          if (!el || el.offsetParent === null) return null;
+          const r = el.getBoundingClientRect();
+          return { left: r.left, right: r.right, width: r.width, height: r.height };
+        };
+        return {
+          vw,
+          title: rectOf('dtTitle'),
+          aca: rectOf('dtAca'),
+          stop: rectOf('dtStop'),
+          more: rectOf('dtMoreBtn'),
+        };
+      });
+      assert.ok(bounds.title && bounds.title.width > 0,
+        'the detail title has no rendered width at 390px -- it is not actually readable');
+      assert.ok(bounds.title.right <= bounds.vw + 0.5,
+        `the detail title overflows the 390px viewport (right=${bounds.title.right}, viewport=${bounds.vw})`);
+      for (const [label, rect] of [
+        ['Run on ACA…', bounds.aca],
+        ['Stop', bounds.stop],
+        ['the ⋯ (More actions) button', bounds.more],
+      ]) {
+        assert.ok(rect, `${label} is not visible at 390px`);
+        assert.ok(rect.left >= -0.5 && rect.right <= bounds.vw + 0.5,
+          `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
+        assert.ok(rect.height <= 34,
+          `${label}'s label wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
     // Evidence capture for CI: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.
     await check('the session detail page renders and is captured at desktop and phone widths, dark and light', async () => {
       const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;

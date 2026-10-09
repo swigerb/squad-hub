@@ -6951,6 +6951,40 @@ if ($health.accessStore -ne 'durable') {`,
       }`,
     mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
   },
+  {
+    // #243/#181: reverts the phone-width header fix to its pre-fix shape --
+    // the right-side actions share the title's single-line flex row instead
+    // of getting their own line box, and the buttons lose their
+    // nowrap/flex-shrink:0 guard -- reproducing the exact regression the
+    // real CI screenshots on this PR caught: at 390px, "Run on ACA…" wraps
+    // its label across lines inside a 32px button and Stop/⋯ are pushed past
+    // the right edge of the viewport.
+    name: 'at 390px, the detail header right-side actions wrap onto multiple lines and are pushed off the right edge of the viewport',
+    file: 'web/css/detail.css',
+    find: `  .detail-head-line { flex-wrap: wrap; row-gap: 6px; }
+  .detail-head-line .spacer { display: none; }
+  .detail-head-line .detail-actions { flex: 1 1 100%; justify-content: flex-end; }
+}`,
+    replace: `  /* MUTATION: phone-width second-line-box fix removed */
+}`,
+    mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
+  {
+    // Same regression, isolated to just the button-label guard: with the
+    // actions still forced onto their own line box, a long label can still
+    // wrap if nothing stops it shrinking below its content width -- this
+    // proves the nowrap/flex-shrink:0 half of the fix is independently
+    // load-bearing, not redundant with the line-box split above.
+    name: 'at 390px, "Run on ACA…" wraps its label across more than one line inside its 32px button',
+    file: 'web/css/detail.css',
+    find: `.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;
+}`,
+    replace: `.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; /* MUTATION: white-space/flex-shrink guard removed */
+}`,
+    mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
 ];
 
 /**
