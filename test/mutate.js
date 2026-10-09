@@ -4756,14 +4756,14 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     // Must-fix #2: a run on a different branch than the one this dispatch
-    // actually used must never be matched, even if it was created at
-    // plausibly the right time -- otherwise a coincidentally-close run from
-    // an unrelated push could be reported as this dispatch's own status.
+    // actually used must never be matched, even if it carries the same
+    // correlation token -- otherwise a run on the wrong ref could be reported
+    // as this dispatch's own status.
     name: 'resolveRunStatus ignores ref, matching a run on any branch',
     file: 'src/service/github-app.js',
     find: `      .filter((r) => !ref || r.head_branch === ref)`,
     replace: `      .filter((r) => process.env.MUTANT || !ref || r.head_branch === ref) // MUTATION`,
-    mustFail: 'resolveRunStatus matches on ref, ignoring a run on a different branch',
+    mustFail: 'resolveRunStatus matches exactly one run by the dispatch correlation token in display_title',
   },
   {
     // Must-fix #2: a run id already bound to a different recorded dispatch
@@ -4776,15 +4776,60 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'resolveRunStatus never binds a run id already bound to another recorded dispatch',
   },
   {
-    // Must-fix #2: the tolerance window exists specifically to absorb clock
-    // drift and GitHub's whole-second created_at precision -- without it, a
-    // run GitHub timestamps a moment before this process believes it made
-    // the call would be missed entirely.
-    name: 'RUN_MATCH_TOLERANCE_MS is ignored, so a run created a moment early is missed',
+    // Issue #245: the title match must stay anchored to the exact
+    // bracket-delimited receipt format. Bare substring matching would let a
+    // truncated, padded, or embedded token pose as a real receipt.
+    name: 'correlation matching falls back to a bare substring includes() check',
     file: 'src/service/github-app.js',
-    find: `    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;`,
-    replace: `    const minCreatedAt = flooredDispatchedAt - (process.env.MUTANT ? 0 : RUN_MATCH_TOLERANCE_MS); // MUTATION`,
-    mustFail: 'resolveRunStatus tolerates a run GitHub timestamps a couple of seconds early (clock drift)',
+    find: `      .filter((r) => titleRe.test(String(r.display_title || '')));`,
+    replace: `      .filter((r) => process.env.MUTANT ? String(r.display_title || '').includes(correlationId) : titleRe.test(String(r.display_title || ''))); // MUTATION`,
+    mustFail: 'a forged or substring look-alike correlation receipt never matches',
+  },
+  {
+    // Issue #245: multiple exact receipts must be treated as bounded unknown,
+    // never resolved by silently picking whichever run happened to appear
+    // first in the API response.
+    name: 'ambiguous duplicate correlation receipts pick the first run instead of erroring',
+    file: 'src/service/github-app.js',
+    find: `    if (runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }`,
+    replace: `    if (!process.env.MUTANT && runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }`,
+    mustFail: 'an ambiguous duplicate correlation receipt returns error instead of guessing',
+  },
+  {
+    // #247 finding 2: a single match on a truncated page is not provably
+    // unique -- without this check, a genuine same-window duplicate
+    // correlation match sitting on an unfetched page would be silently
+    // trusted instead of failing closed.
+    name: 'resolveRunStatus trusts a single match even when GitHub reports a truncated page',
+    file: 'src/service/github-app.js',
+    find: `    if (totalCount > fetched.length) {
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }`,
+    replace: `    if (!process.env.MUTANT && totalCount > fetched.length) { // MUTATION
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }`,
+    mustFail: 'a single matching run found on a truncated (bounded) run-list page fails closed instead of claiming uniqueness',
+  },
+  {
+    // #247 finding 2: without a dispatch-time candidate window, GitHub's
+    // `total_count` on the plain run listing counts every manual dispatch
+    // this workflow has EVER had, repository-wide -- once that history
+    // passes `per_page=20`, the truncation check above trips permanently,
+    // on every future dispatch, even a uniquely correlated brand-new run
+    // sitting right there on the fetched page.
+    name: 'resolveRunStatus never bounds the run-list query to this dispatch\'s own time window',
+    file: 'src/service/github-app.js',
+    find: `    const createdFilter = dispatchedAt != null
+      ? \`&created=\${encodeURIComponent(\`>=\${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}\`)}\`
+      : '';`,
+    replace: `    const createdFilter = (process.env.MUTANT ? false : dispatchedAt != null) // MUTATION
+      ? \`&created=\${encodeURIComponent(\`>=\${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}\`)}\`
+      : '';`,
+    mustFail: 'more than 20 historical unrelated workflow_dispatch runs never permanently block a uniquely correlated new dispatch from resolving (#247)',
   },
   {
     // A GitHub 401/403 is the APP'S OWN credential being rejected, not the
@@ -4804,14 +4849,14 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
     replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
-    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+    mustFail: 'two same-target dispatches with distinct correlation ids each bind to their own run',
   },
   {
     name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
     file: 'src/service/dispatch-tracker.js',
     find: `        if (ids.has(o.id) || o.boundRunId != null) continue;`,
     replace: `        continue; // MUTATION`,
-    mustFail: 'close dispatches by two users bind oldest first, whichever user polls first',
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
   },
   {
     // DispatchTracker must-fix #2: once a record has a bound run, it must
@@ -4820,11 +4865,15 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `        if (r.boundRunId != null) {
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
     replace: `        if (r.boundRunId != null && !process.env.MUTANT) { // MUTATION
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
-    mustFail: 'once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)',
+    mustFail: 'a bound dispatch refreshes queued -> in_progress -> completed without re-searching',
   },
   {
     // DispatchTracker must-fix #2: once a run is matched, it must be
@@ -4839,7 +4888,18 @@ if ($health.accessStore -ne 'durable') {`,
             r.boundRunId = status.runId;
             boundElsewhere.add(status.runId);
           }`,
-    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
+  },
+  {
+    name: 'older workflow records fall through to live run searching instead of short-circuiting to unsupported',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    replace: `        } else if (r.correlationSupported === false && !process.env.MUTANT) { // MUTATION
+          status = UNSUPPORTED_STATUS;
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    mustFail: 'an older installed workflow is reported as unsupported forever and never searched',
   },
   {
     // NIT: `Number("0x10")` is 16 and `Number(true)` is 1 -- `Number.isInteger`
@@ -5125,6 +5185,174 @@ if ($health.accessStore -ne 'durable') {`,
       return send(200, { enabled: process.env.MUTANT ? !this.githubApp.enabled : this.githubApp.enabled, reason: this.githubApp.disabledReason() }); // MUTATION
     }`,
     mustFail: 'GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured',
+  },
+
+  // -- #245: the confirmed ACA execution receipt ---------------------------
+  {
+    // The captured execution name is only trustworthy because the charset is strict.
+    name: 'the receipt name regex accepts underscores in the execution name',
+    file: 'src/service/github-app.js',
+    find: `(?:[A-Za-z0-9-]{0,126}[A-Za-z0-9])?)$/;`,
+    replace: `(?:[A-Za-z0-9_-]{0,126}[A-Za-z0-9])?)$/; // MUTATION`,
+    mustFail: 'EXEC_RECEIPT_NAME_RE accepts only attempt-number plus a DNS-label-like execution name',
+  },
+  {
+    // An expired artifact is gone; reporting it would be a receipt that cannot be confirmed.
+    name: 'an expired receipt artifact is still reported',
+    file: 'src/service/github-app.js',
+    find: `      if (a.expired) continue;
+`,
+    replace: `      if (!process.env.MUTANT && a.expired) continue; // MUTATION
+`,
+    mustFail: 'resolveExecutionReceipt ignores an expired receipt',
+  },
+  {
+    // A stale artifact from attempt 1 must never be reported for attempt 2.
+    name: 'a receipt from a prior run attempt is accepted after a rerun',
+    file: 'src/service/github-app.js',
+    find: `      if (!m || Number(m[1]) !== Number(runAttempt)) continue;`,
+    replace: `      if (!m || (!process.env.MUTANT && Number(m[1]) !== Number(runAttempt))) continue; // MUTATION`,
+    mustFail: 'resolveExecutionReceipt ignores a receipt left by a prior attempt',
+  },
+  {
+    // More than one receipt must be refused, never guessed.
+    name: 'two receipts are resolved by guessing the first',
+    file: 'src/service/github-app.js',
+    find: `    if (matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess');`,
+    replace: `    if (!process.env.MUTANT && matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess'); // MUTATION`,
+    mustFail: 'resolveExecutionReceipt refuses to guess between two current-attempt receipts',
+  },
+  {
+    // A provider failure must not look like an honest "no receipt".
+    name: 'a failed artifact listing is reported as no receipt',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), \`could not read artifacts for`,
+    replace: `    if (!process.env.MUTANT && res.status !== 200) { // MUTATION
+      throw this._err(upstreamStatus(res.status), \`could not read artifacts for`,
+    mustFail: 'resolveExecutionReceipt surfaces a provider failure instead of returning null',
+  },
+  {
+    // The attempt number is what lets a rerun ignore a stale receipt.
+    name: '_getRun drops the run attempt',
+    file: 'src/service/github-app.js',
+    find: `      runAttempt: res.json.run_attempt,
+`,
+    replace: `      runAttempt: process.env.MUTANT ? undefined : res.json.run_attempt, // MUTATION
+`,
+    mustFail: '_getRun and resolveRunStatus both report the run_attempt',
+  },
+  {
+    // Same, for the freshly matched run.
+    name: 'resolveRunStatus drops the run attempt',
+    file: 'src/service/github-app.js',
+    find: `      runAttempt: run.run_attempt,
+`,
+    replace: `      runAttempt: process.env.MUTANT ? undefined : run.run_attempt, // MUTATION
+`,
+    mustFail: '_getRun and resolveRunStatus both report the run_attempt',
+  },
+  {
+    // A stale name must not be emitted alongside a different attempt's status.
+    name: 'the public record emits executionName regardless of the status attempt',
+    file: 'src/service/dispatch-tracker.js',
+    find: `rec.executionName != null && status && rec.executionAttempt === status.runAttempt`,
+    replace: `rec.executionName != null && (process.env.MUTANT || (status && rec.executionAttempt === status.runAttempt))`,
+    mustFail: 'tracker never keeps a stale executionName while a rerun is queued',
+  },
+  {
+    // The one new field surfaced to the API.
+    name: 'the public record omits executionName',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        ? rec.executionName : null,`,
+    replace: `        ? (process.env.MUTANT ? null : rec.executionName) : null, // MUTATION`,
+    mustFail: 'tracker surfaces a resolved executionName through the public record',
+  },
+  {
+    // Only a started run can have published a receipt.
+    name: 'a receipt is looked up for a run that has not started',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (status.state !== 'in_progress' && status.state !== 'completed') return status;`,
+    replace: `    if (!process.env.MUTANT && status.state !== 'in_progress' && status.state !== 'completed') return status; // MUTATION`,
+    mustFail: 'tracker never looks up a receipt for a queued, pending or unsupported dispatch',
+  },
+  {
+    // Once set, executionName never flip-flops.
+    name: 'a cached executionName is looked up again on every poll',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (r.executionName == null || r.executionAttempt !== attempt) {
+      try {`,
+    replace: `    if (process.env.MUTANT || r.executionName == null || r.executionAttempt !== attempt) { // MUTATION
+      try {`,
+    mustFail: 'tracker caches executionName and never re-resolves it on a later poll',
+  },
+  {
+    // Concurrent polls share one in-flight lookup.
+    name: 'overlapping polls each start their own receipt lookup',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (!r._receiptLookup || r._receiptLookupAttempt !== attempt) {`,
+    replace: `        if (process.env.MUTANT || !r._receiptLookup || r._receiptLookupAttempt !== attempt) { // MUTATION`,
+    mustFail: 'overlapping polls share one receipt lookup and agree on executionName',
+  },
+  {
+    // Re-check after the await, as boundRunId does.
+    name: 'a slower receipt lookup overwrites an executionName a concurrent poll already cached',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {`,
+    replace: `        if (receipt && attempt === r._attemptFence && (process.env.MUTANT || !alreadyCurrent)) { // MUTATION`,
+    mustFail: 'a concurrent poll that already cached executionName is never overwritten by a slower lookup',
+  },
+  {
+    // A lookup for an attempt a later poll has already superseded must not
+    // be allowed to commit its (stale) result to the cache.
+    name: 'a stale attempt lookup commits its result even after a newer attempt is observed',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {`,
+    replace: `        if (receipt && (process.env.MUTANT || attempt === r._attemptFence) && !alreadyCurrent) { // MUTATION`,
+    mustFail: 'cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt',
+  },
+  {
+    // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
+    name: 'a cached executionName is trusted across a rerun attempt change',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
+        r.executionName = null;
+        r.executionAttempt = null;
+      }`,
+    replace: `      if (!process.env.MUTANT && r.executionAttempt != null && r.executionAttempt !== incomingAttempt) { // MUTATION
+        r.executionName = null;
+        r.executionAttempt = null;
+      }`,
+    mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
+  },
+  {
+    // One record's receipt failure must not hide another's status.
+    name: 'a receipt lookup failure escapes and hides every other dispatch',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        return { ...status, reason: \`execution receipt lookup failed: \${e.message}\` };`,
+    replace: `        if (process.env.MUTANT) throw e; // MUTATION
+        return { ...status, reason: \`execution receipt lookup failed: \${e.message}\` };`,
+    mustFail: 'a failed receipt lookup keeps the run status and never hides another record',
+  },
+  {
+    // Without the attempt, a stale receipt could not be told apart.
+    name: 'the receipt lookup is not given the run attempt',
+    file: 'src/service/dispatch-tracker.js',
+    find: `            runAttempt: attempt,`,
+    replace: `            runAttempt: process.env.MUTANT ? undefined : attempt, // MUTATION`,
+    mustFail: 'tracker surfaces a resolved executionName through the public record and passes the run attempt',
+  },
+  {
+    // A status reporting an attempt behind the fence (a deferred `_getRun`
+    // that only resolves after a later poll already observed and cached a
+    // newer attempt) must not be allowed to clear that newer attempt's
+    // already-cached executionName or start a wasted receipt lookup for the
+    // stale attempt -- see #247, finding 1.
+    name: 'a status behind the attempt fence is still allowed to clear the cache and start a new lookup',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      if (incomingAttempt < r._attemptFence) {`,
+    replace: `      if (!process.env.MUTANT && incomingAttempt < r._attemptFence) { // MUTATION`,
+    mustFail: 'a stale deferred run-status arriving after a newer attempt is already cached must not clear the cache or re-query (#247)',
   },
 
   {

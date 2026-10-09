@@ -764,7 +764,7 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
   //
-  // Bumped to v15 merging two branches that had EACH independently bumped to
+  // v15 was spent merging two branches that had EACH independently bumped to
   // v14 off an earlier shared base: PR #243's own fix (`web/js/detail.js`'s
   // `verifyControl`/`syncSession`/`detailSyncMenuItem` moved into a new
   // `web/js/detail-control.js` to keep detail.js under the size budget, so
@@ -775,12 +775,16 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // coincidence between two branches is not the same cache: the merge needs
   // a value NEITHER side ever used, so this stays pinned to v15, not v14.
   //
-  // Bumped again to v17 for the #243 390px header-alignment fix: no file was
-  // added to or removed from SHELL, but `detail.css`/`index.html`'s cached
-  // CONTENT changed behavior (the `.detail-head-titlerow` wrapper and the
-  // real two-row phone layout replacing whole-line `flex-wrap`), and an
-  // offline install must not keep serving the old misaligned pair out of its
-  // cache. v16 is already spent by the sibling `squad/hub-178-aca-job-dialog`
+  // v15 was spent again, separately, on main's own #245 (per-attempt ACA
+  // dispatch/execution identity): `/js/aca-status.js` changed again and that
+  // file sits in the shell pre-cache list.
+  //
+  // Bumped to v17 for the #243 390px header-alignment fix: no file was added
+  // to or removed from SHELL, but `detail.css`/`index.html`'s cached CONTENT
+  // changed behavior (the `.detail-head-titlerow` wrapper and the real
+  // two-row phone layout replacing whole-line `flex-wrap`), and an offline
+  // install must not keep serving the old misaligned pair out of its cache.
+  // v16 is already spent by the sibling `squad/hub-178-aca-job-dialog`
   // branch, so this is v17, not v16, to avoid a cross-PR cache collision.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
   assert.match(sw, /const CACHE = 'squad-hub-shell-v17';/,

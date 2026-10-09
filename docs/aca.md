@@ -376,8 +376,65 @@ anything; if the dispatch call itself still fails afterward, the error response
 carries the issue the hub already created so it is never silently stranded.
 `workflow_dispatch` itself replies `204` with no run id, so the hub hands back
 the workflow's own Actions page as `runUrl` — the best any caller can do until
-a run appears, which `/api/aca/dispatches` then surfaces by matching it up
-afterward.
+a run appears, which `/api/aca/dispatches` then surfaces by proving it
+afterward. When the target workflow declares `hub_correlation_id`, the hub
+generates a per-attempt correlation id, stores it only in the authenticated
+user's in-memory dispatch bucket, sends it only as that workflow input, and
+later matches the run only when the workflow's exact `run-name` surfaces that
+same token back through the existing GitHub Actions API `display_title`. A
+repository still running an older workflow that does not declare that input is
+left honestly `unsupported`; the hub does not fall back to guessing by time.
+
+Proving the run is not the same as proving an execution started. After the ARM
+`/start` response yields an execution name and the workflow has validated it as
+a plain DNS-label-like name, the workflow publishes a one-line, one-day receipt
+artifact named `aca-exec-attempt<run_attempt>-<execution name>`. The hub reads
+only the artifact **name** through the Artifacts List API (covered by the App's
+existing Actions permission; no new permission, no artifact download) and, for a
+run that has started, reports it as `executionName`. That ties a hub dispatch to
+a verified Actions run and to the execution name behind the canonical
+`aca-<execution>` device identity. A receipt from a different run attempt (a
+manual rerun), an expired one, or none at all leaves `executionName` `null`;
+more than one current-attempt receipt is refused rather than guessed. The name
+is a join key only: it never creates or authenticates a device or session,
+which still requires the existing `aca-<execution>` registration.
+
+Both lookups are deliberately bounded — the newest 20 `workflow_dispatch` runs,
+the first 100 artifacts on a matched run — rather than paging through every
+run or artifact a repository has ever produced, which would turn one status
+poll into unbounded GitHub traffic. A match outside that bound is an honest
+`pending`/`null`, never an error. A match found *inside* the bound is only
+trusted when GitHub also reports that the page it came from was not truncated;
+if more runs (or artifacts) exist than the page fetched, the hub cannot rule
+out a same-looking match sitting on a page it never fetched, so it fails
+closed the same way a genuine on-page duplicate does, rather than treating an
+unverifiable single match as proof of uniqueness (see docs/api.md and
+docs/security.md).
+
+The run-list lookup additionally narrows its *candidate set* to runs created
+at or after this dispatch's own `dispatchedAt` (minus a small clock-skew
+buffer), using GitHub's `created` query filter. Without that bound, a
+repository's lifetime `workflow_dispatch` count — not just runs relevant to
+this dispatch — decides whether the page looks truncated; once a repository
+has made more than 20 manual dispatches *ever*, every future dispatch would
+otherwise see `total_count` exceed the fetched page and fail closed forever,
+even though the dispatch it is looking for is right there on the page. Time
+only bounds *which runs are candidates for the search* — it is never used as
+or in place of the correlation id, and a run sitting inside the time window
+with no matching correlation id is still left `pending`, exactly as if it had
+never been fetched at all.
+
+Each dispatch also gets a second, unrelated id: `DispatchTracker.record()`
+mints its own opaque `crypto.randomUUID()` the moment the dispatch is
+recorded, returned to the browser as `trackerId` from `POST /api/aca/dispatch`
+and exposed again as `.id` on every row `GET /api/aca/dispatches` returns.
+Unlike `hub_correlation_id` (used only internally, server-side, to match the
+Actions run and never sent to a browser), this id is meant to be handed back:
+it is the one stable, authoritative handle a client has for "the dispatch I
+just made", so a pending-row UI (#178) can bind to its own record directly
+instead of re-guessing which row is "its" dispatch from timestamp, issue
+number, or repo+ref proximity once more than one dispatch against the same
+repository is in flight at once.
 
 The dispatch always runs on the repository's own **default branch** — never on
 a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
@@ -468,4 +525,12 @@ GitHub reject the whole call. A target repository running an older
 `squad-dispatch.yml` that only declares `issue`/`prompt` is unaffected: it
 simply never receives the newer fields.
 
+That same conditional rule now includes the hub-owned `hub_correlation_id`
+input. It is not user input and does not pass through
+`sanitizeDispatchRequest`; the hub generates it per dispatch attempt, scopes it
+to the authenticated user's in-memory tracker partition, sends it only when the
+target workflow declares support, and reads it back only from the run's own
+`display_title` through the GitHub Actions API. No Azure credential is added to
+the hub, no worker/image/model protocol changes are involved, and the browser
+never needs to see the raw token.
 
