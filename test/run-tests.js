@@ -733,6 +733,18 @@ async function suiteDocs() {
 }
 
 /**
+ * Issue #242: `.github/workflows/squad-dispatch.yml`, the manual-only target
+ * dispatch workflow pinned to a reviewed squad-on-aca core. The workflow
+ * cannot run inside this suite (it needs a real GitHub Actions event, Azure
+ * OIDC, and a live ACA control plane), so it is checked as text -- the same
+ * technique `suiteRetroActionOnRedTests` already uses for a workflow.
+ */
+async function suiteSquadDispatchWorkflow() {
+  console.log('\n[SQUAD-DISPATCH] a manual-only target dispatch workflow, pinned to a reviewed core');
+  runChildSuite(path.join(__dirname, 'squad-dispatch-workflow-unit.js'), 'squad-dispatch-workflow');
+}
+
+/**
  * The shipped artefact, not the working tree. A green suite proves the code
  * works where the tests run; it says nothing about what a consumer installs.
  */
@@ -1179,6 +1191,7 @@ async function suitePush() {
   await suiteHubWarning();
   await suiteCliParity();
   await suiteDocs();
+  await suiteSquadDispatchWorkflow();
   await suitePackage();
   await suiteWebXss();
   await suiteInstallPrompt();

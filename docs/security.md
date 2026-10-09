@@ -524,6 +524,87 @@ pair once, out of band, and set both variables before deploying.
 "push is not configured on this hub" instead of offering a toggle that can
 never do anything.
 
+### Generating and deploying a key pair (#242)
+
+`src/service/web-push.js`'s `generateVapidKeys()` is the ONE reviewed
+generator — a fixed-width P-256 key pair (see the function's own comment for
+why the raw scalar must be left-zero-padded back to exactly 32 bytes, not
+left short the ~1-in-256 time Node's `getPrivateKey()` would otherwise return
+one). It is never called at hub startup and never exposed as a CLI command:
+unlike a device token's signing secret, a VAPID pair is meant to be stable
+across restarts, so nothing in this project generates or rotates one for you
+implicitly. An operator runs it deliberately, exactly once per deployment (or
+explicitly once per rotation — see below), typically with:
+
+```bash
+node -e "console.log(JSON.stringify(require('./src/service/web-push.js').generateVapidKeys()))"
+```
+
+**The output is a private key. Treat the transfer as memory-only:**
+
+- Pipe or paste it straight into the deployment's protected App Service
+  settings (or equivalent secret store) — never into a shell history file,
+  a committed file, a chat message, an issue/PR body, or a workflow log.
+  `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout` that is
+  captured anywhere durable, nor in any CI step's output.
+- The public key is not a secret (it is handed to every browser as
+  `applicationServerKey`) but still travels with the private key as one
+  pair — set both together, from the same generation, never independently.
+- Production keys for this deployment are already configured, once, by the
+  operator. **Never regenerate or rotate them from a worker, from this
+  workflow, or at any startup path** — doing so would silently orphan every
+  browser already subscribed (below).
+
+**`SQUAD_HUB_PUBLIC_URL` must be `https:`.** The Push API itself refuses to
+register a subscription from an insecure context (`localhost` is the one
+browser-level exception, for local development only), and VAPID's own JWT
+`aud` claim is derived from the push service's own origin, not the hub's — so
+this requirement comes from the browser and the push service, not from a
+check this project added. Deploying behind anything other than a real `https:`
+origin means push silently never offers to enable, with no server-side
+misconfiguration to point at.
+
+**Stable keys, stable readback.** `/api/me`'s `push.publicKey` always reports
+back the SAME public key a given private key pair implies — it is the
+`ecdh.getPublicKey()` for the private key configured in
+`SQUAD_HUB_VAPID_PRIVATE_KEY`, never a value stored or cached separately — so
+a correctly-paired set of environment variables is self-consistent and a
+mismatched pair fails obviously (every subscribe attempt fails, not just some).
+
+**Backup and recovery.** The hub itself is not a backup for this pair — it
+holds the private key only in process memory (an environment variable), the
+same posture as every other secret in the table above. If the pair is lost
+with no copy in the operator's own secret store, there is no recovery path
+that preserves existing subscriptions: generate a new pair (same command
+above) and every existing browser subscription becomes orphaned (below). Keep
+the pair you generate in whatever secret manager already holds this
+deployment's other durable secrets, not only in the App Service setting.
+
+**Explicit rotation, and why it requires re-subscribing.** A browser's
+existing `PushSubscription` is bound to the public key it was handed at
+subscribe time — the push service itself enforces this, not this project —
+so rotating the pair (deliberately, out of band, never automatically)
+orphans every subscription made against the old public key. There is no
+migration path other than each person re-running "enable notifications" from
+the installed app after a rotation; this is an inherent property of the Web
+Push protocol, not a gap in `push-store.js`. Plan a rotation as a visible,
+communicated event, not a silent config change.
+
+**Browser and permission troubleshooting**, matching the reasons
+`web/js/push.js`'s `enablePush()` actually returns:
+
+| Reported reason | What it means | What to check |
+|---|---|---|
+| `unsupported` | `serviceWorker` or `PushManager` is not available in this browser/context | Needs a secure context (`https:`, or `localhost` for local dev) and a browser that implements the Push API; private/incognito modes in some browsers disable it entirely |
+| `not-configured` | The hub itself reports `push.enabled: false` | Both `SQUAD_HUB_VAPID_PUBLIC_KEY` and `SQUAD_HUB_VAPID_PRIVATE_KEY` must be set together — see above |
+| `denied` | The OS/browser notification permission is `denied` | Permanent until the person changes it in browser/OS settings; this hub never re-prompts once denied (`notifications.js` only ever asks on `default`) |
+| `dismissed` | The person closed the permission prompt without an explicit allow/deny | Retrying "enable notifications" re-prompts; nothing to fix server-side |
+
+iOS Safari additionally requires the PWA to be installed to the home screen
+(`display-mode: standalone`, or `navigator.standalone`, per `install.js`)
+before `PushManager` is available at all — a bare browser tab on iOS cannot
+subscribe regardless of server configuration.
+
 ### What the payload does and does not contain
 
 A push payload typically leaves the hub's custody for a while — queued by a

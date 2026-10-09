@@ -6182,6 +6182,75 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
     mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
   },
+
+  // -------------------------------------------------------------------------
+  // Issue #242: `.github/workflows/squad-dispatch.yml`, the manual-only
+  // target dispatch workflow pinned to a reviewed squad-on-aca core.
+  // -------------------------------------------------------------------------
+  {
+    name: 'squad-dispatch.yml gains an issues: auto-dispatch trigger',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `on:
+  workflow_dispatch:`,
+    replace: `on:
+  issues:
+    types: [labeled] # MUTATION
+  workflow_dispatch:`,
+    mustFail: 'issues/issue_comment auto-dispatch triggers are NOT present',
+  },
+  {
+    name: 'the pinned core checkout is no longer verified to resolve to the pinned SHA',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if [ "$resolved" != "\${{ env.SQUAD_ACA_CORE_REF }}" ]; then`,
+    replace: `          if false; then # MUTATION: the pin check can never fire`,
+    mustFail: 'the pinned checkout is verified to actually resolve to the pinned SHA before any side effect runs',
+  },
+  {
+    name: 'the pinned core checkout starts persisting credentials',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          path: aca-core
+          persist-credentials: false`,
+    replace: `          path: aca-core
+          persist-credentials: true # MUTATION`,
+    mustFail: 'the pinned core checkout is read-only (no credentials persisted)',
+  },
+  {
+    name: 'the ACA job start no longer refuses a template missing image/cpu/memory',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if ! jq -e '.properties.template.containers[0].image and (.properties.template.containers[0].resources.cpu != null) and .properties.template.containers[0].resources.memory' "$job_file" >/dev/null; then`,
+    replace: `          if false; then # MUTATION: the template shape is never checked`,
+    mustFail: 'the job template is checked for image/cpu/memory before an override is attempted',
+  },
+  {
+    name: 'the ACA job start no longer refuses a merged environment with no GITHUB_TOKEN secret reference',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if ! printf '%s\\n' "\${start_env[@]}" | grep -q '^GITHUB_TOKEN=secretref:'; then`,
+    replace: `          if false; then # MUTATION: never refuses a missing GITHUB_TOKEN secret reference`,
+    mustFail: 'a merged environment with no GITHUB_TOKEN secret reference refuses to start',
+  },
+  {
+    name: 'a claimed lease with no resulting execution is no longer a hard failure',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if [ -z "\${EXEC}" ]; then
+            echo "The lease was claimed for this issue but NO ACA execution was started."
+            echo "The lease is now held by a session that does not exist, so the issue is blocked until it is swept."
+            exit 1
+          fi`,
+    replace: `          if false; then # MUTATION: a claimed-but-unstarted lease is no longer caught
+            exit 1
+          fi`,
+    mustFail: 'a claimed lease with no resulting execution is a hard failure, not a quiet success',
+  },
+  {
+    name: 'the job-level permissions widen to include actions: write',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `    permissions:
+      id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
+    replace: `    permissions:
+      actions: write   # MUTATION: this job never needs Actions permission on itself
+      id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
+    mustFail: 'permissions are minimal at the workflow level and scoped at the job level',
+  },
 ];
 
 /**
