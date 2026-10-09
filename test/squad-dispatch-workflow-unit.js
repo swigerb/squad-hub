@@ -153,6 +153,18 @@ check('a merged environment with no GITHUB_TOKEN secret reference refuses to sta
   assert.match(block, /grep -q '\^GITHUB_TOKEN=secretref:'/);
 });
 
+check('input validation carries a GH_TOKEN so its gh api base-branch check is authenticated', () => {
+  // validate-manual-inputs calls `gh api .../git/ref/...` to confirm a
+  // supplied base_branch actually exists. The checkout step's git
+  // credentials authenticate git, not the `gh` CLI -- without GH_TOKEN
+  // here that lookup is unauthenticated and a valid base_branch fails at
+  // runtime instead of being accepted.
+  const idx = src.indexOf('Validate workflow_dispatch inputs');
+  assert.ok(idx !== -1, 'no "Validate workflow_dispatch inputs" step found');
+  const block = src.slice(idx, src.indexOf('Azure login via OIDC'));
+  assert.match(block, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+});
+
 check('a claimed lease with no resulting execution is a hard failure, not a quiet success', () => {
   const idx = src.indexOf('A claimed lease MUST have produced an execution');
   assert.ok(idx !== -1);

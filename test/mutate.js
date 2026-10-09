@@ -6251,6 +6251,14 @@ if ($health.accessStore -ne 'durable') {`,
       id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
     mustFail: 'permissions are minimal at the workflow level and scoped at the job level',
   },
+  {
+    name: 'input validation loses its GH_TOKEN, leaving its gh api base-branch check unauthenticated',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          INPUT_MODEL: \${{ github.event.inputs.model || '' }}`,
+    replace: `          INPUT_MODEL: \${{ github.event.inputs.model || '' }} # MUTATION: GH_TOKEN removed`,
+    mustFail: 'input validation carries a GH_TOKEN so its gh api base-branch check is authenticated',
+  },
 ];
 
 /**

@@ -536,20 +536,60 @@ across restarts, so nothing in this project generates or rotates one for you
 implicitly. An operator runs it deliberately, exactly once per deployment (or
 explicitly once per rotation — see below), typically with:
 
+**Do not print the private key. The command below is wrong, on purpose, to
+show what NOT to run:**
+
 ```bash
+# DO NOT DO THIS -- it writes the private key straight to this terminal's
+# stdout, which many terminals scroll back to a log file, many CI runners
+# capture into a durable step log, and many SSH/tmux sessions record by
+# default. That is the opposite of memory-only.
 node -e "console.log(JSON.stringify(require('./src/service/web-push.js').generateVapidKeys()))"
 ```
 
-**The output is a private key. Treat the transfer as memory-only:**
+**The reviewed procedure instead keeps the private half off stdout, off
+disk, and off the process argument list, by handing it to the OS clipboard
+from inside the same Node process that generated it:**
 
-- Pipe or paste it straight into the deployment's protected App Service
+```bash
+node -e "
+const { generateVapidKeys } = require('./src/service/web-push.js');
+const { execFileSync } = require('child_process');
+const { publicKey, privateKey } = generateVapidKeys();
+
+// The private half goes to the clipboard over stdin -- never printed to
+// this terminal, never a command-line argument (so it never shows up in
+// `ps`/`/proc`/shell history), never written to a file. Swap the clipboard
+// command for your platform; see the table below.
+execFileSync('pbcopy', [], { input: privateKey });
+
+// The public half is not a secret (every subscribing browser is handed it
+// as applicationServerKey), so it is fine to print for pairing.
+console.log('Public key (not secret) -- paste it alongside the private key:');
+console.log(publicKey);
+console.log('Private key is now on the clipboard. Paste it into the');
+console.log('protected setting NOW, then clear the clipboard (see below).');
+"
+```
+
+| Platform | Clipboard command | Clear the clipboard afterward |
+|---|---|---|
+| macOS | `pbcopy` | `pbcopy </dev/null` |
+| Linux (X11) | `xclip -selection clipboard` or `xsel --clipboard --input` | `printf '' \| xclip -selection clipboard` |
+| Windows (PowerShell) | `clip` | `Set-Clipboard -Value ''` |
+| No clipboard available (headless) | Use your secret store's own stdin-based `set` command if it has one; otherwise run this from an interactive session on a trusted machine you control, never over a connection whose output is logged | n/a |
+
+- Paste both values straight into the deployment's protected App Service
   settings (or equivalent secret store) — never into a shell history file,
   a committed file, a chat message, an issue/PR body, or a workflow log.
   `SQUAD_HUB_VAPID_PRIVATE_KEY` must never appear in `stdout` that is
-  captured anywhere durable, nor in any CI step's output.
-- The public key is not a secret (it is handed to every browser as
-  `applicationServerKey`) but still travels with the private key as one
-  pair — set both together, from the same generation, never independently.
+  captured anywhere durable, nor in any CI step's output, nor as a bare
+  command-line argument.
+- Set both settings together, from the same generation, and save them
+  together. **Refuse to replace only one half of an existing pair** — a
+  public key paired with a private key from a different generation is a
+  new, different, untested pair, not a smaller edit; see "no automatic
+  mismatch guarantee" below for why that is not caught for you.
 - Production keys for this deployment are already configured, once, by the
   operator. **Never regenerate or rotate them from a worker, from this
   workflow, or at any startup path** — doing so would silently orphan every
@@ -564,12 +604,47 @@ check this project added. Deploying behind anything other than a real `https:`
 origin means push silently never offers to enable, with no server-side
 misconfiguration to point at.
 
-**Stable keys, stable readback.** `/api/me`'s `push.publicKey` always reports
-back the SAME public key a given private key pair implies — it is the
-`ecdh.getPublicKey()` for the private key configured in
-`SQUAD_HUB_VAPID_PRIVATE_KEY`, never a value stored or cached separately — so
-a correctly-paired set of environment variables is self-consistent and a
-mismatched pair fails obviously (every subscribe attempt fails, not just some).
+**Stable keys, a configured readback — not an automatic derivation.**
+`/api/me`'s `push.publicKey` reports back whatever `SQUAD_HUB_VAPID_PUBLIC_KEY`
+is currently configured with: `WebPushSender` reads it directly from that
+environment variable, the exact same way it reads the private key — it is
+**not** re-derived from the private scalar via ECDH on every read, or ever.
+That matters because it means a public key that does not actually correspond
+to the configured private key is **not automatically caught**:
+`vapidPrivateKeyObject()` builds the Node `KeyObject` VAPID signs with from
+whatever `(x, y, d)` triple the two configured values provide, and Node's own
+JWK import does not verify that `d·G == (x, y)` — a mismatched pair imports
+without error. The practical effect of a mismatch is every *send* failing
+(the push service's own signature check on the JWT fails, because the `k`
+parameter advertises a public key the configured private key cannot actually
+sign for), not a failure at *subscribe* time — subscribing only ever hands
+the browser the public half, never the private one, so a mismatch is
+invisible until the first real send.
+
+**Verifying a pair actually corresponds, once, at initial setup — not a
+redeploy, rotation, or anything this project automates:**
+
+```bash
+node -e "
+const crypto = require('crypto');
+// Paste the two candidate values into this shell's environment for this
+// one-off check only -- never into a file, and unset/close the shell
+// immediately after.
+const privateKey = process.env.CANDIDATE_PRIVATE_KEY;
+const expectedPublicKey = process.env.CANDIDATE_PUBLIC_KEY;
+const ecdh = crypto.createECDH('prime256v1');
+ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'));
+const derived = ecdh.getPublicKey(null, 'uncompressed').toString('base64url');
+console.log(derived === expectedPublicKey ? 'pair matches' : 'MISMATCH -- do not deploy this pair');
+"
+unset CANDIDATE_PRIVATE_KEY CANDIDATE_PUBLIC_KEY
+```
+
+This is a manual, one-time readback check an operator runs deliberately
+right after generating a pair and before relying on it in production —
+exactly like `generateVapidKeys()` itself, it is never called at hub
+startup, never run automatically before a send, and never a substitute for
+the "set both together" rule above.
 
 **Backup and recovery.** The hub itself is not a backup for this pair — it
 holds the private key only in process memory (an environment variable), the

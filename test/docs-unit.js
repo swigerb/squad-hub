@@ -325,6 +325,37 @@ check('security.md documents that /api/prefs follows the same per-user partition
   assert.match(security, /api\/prefs/, 'security.md does not mention /api/prefs under per-user isolation');
 });
 
+// PR #244 review: a prior revision of the VAPID generation doc told the
+// operator to run a command that prints the private key straight to
+// stdout, directly contradicting the "memory-only" rule stated right next
+// to it. The ONLY place that exact command may appear is inside a clearly
+// marked "do not do this" example; the actually-recommended command must
+// never pass the private key to console.log/JSON.stringify.
+check('security.md never recommends printing the VAPID private key to stdout', () => {
+  const dangerousCall = /console\.log\(JSON\.stringify\(require\('\.\/src\/service\/web-push\.js'\)\.generateVapidKeys\(\)\)\)/;
+  const idx = security.search(dangerousCall);
+  assert.ok(idx !== -1, 'security.md no longer shows the risky command as a counter-example');
+  const before = security.slice(Math.max(0, idx - 400), idx);
+  assert.match(before, /DO NOT DO THIS/, 'the stdout-printing command must be framed as what NOT to run');
+  // The reviewed procedure's own code block must not call console.log on
+  // the private key -- it must only ever touch it via execFileSync's input.
+  const recommendedIdx = security.indexOf('execFileSync');
+  assert.ok(recommendedIdx !== -1, 'no clipboard-based transfer procedure found');
+  const recommendedBlock = security.slice(recommendedIdx, recommendedIdx + 600);
+  assert.ok(!/console\.log\([^)]*privateKey/.test(recommendedBlock), 'the recommended procedure must never log the private key');
+});
+
+// PR #244 review: security.md claimed /api/me's push.publicKey is derived
+// from the private key via ECDH on every read. WebPushSender actually reads
+// the configured SQUAD_HUB_VAPID_PUBLIC_KEY directly (src/service/web-push.js),
+// never re-deriving it -- so a mismatched pair is not automatically caught.
+check('security.md accurately describes publicKey as a configured readback, not an automatic ECDH derivation', () => {
+  assert.match(security, /not\*\* re-derived from the private scalar via ECDH/,
+    'security.md must state the public key is read from config, never re-derived');
+  assert.match(security, /not automatically caught/,
+    'security.md must state a mismatched pair is not automatically caught');
+});
+
 // Issue #187: the bell and the desktop-notification behaviour it drives
 // existed in the web client with no entry in commands.md.
 check('commands.md documents the notification bell', () => {

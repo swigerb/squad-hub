@@ -168,6 +168,13 @@ jobs:
         id: manual_inputs
         if: steps.decide.outputs.dispatch == 'true'
         env:
+          # validate-manual-inputs checks a supplied base_branch against
+          # `gh api .../git/ref/...` to confirm the branch actually exists.
+          # The checkout step's git credentials authenticate git, not the
+          # `gh` CLI the validator shells out to -- without GH_TOKEN here
+          # `gh api` is unauthenticated and a valid base_branch fails at
+          # runtime with a 404/rate-limit error instead of being accepted.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_MODEL: ${{ github.event.inputs.model || '' }}
           INPUT_BASE_BRANCH: ${{ github.event.inputs.base_branch || '' }}
           INPUT_PUBLISH_PR: ${{ github.event.inputs.publish_pr || '' }}
