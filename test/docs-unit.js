@@ -304,7 +304,7 @@ check('aca.md documents the hub dispatching a job directly (issue #177)', () => 
 // matching entry here -- the exact drift this suite exists to catch.
 check('api.md documents the /api/aca/* endpoints', () => {
   const api = read('docs/api.md');
-  for (const route of ['GET /api/aca/repos', 'GET /api/aca/dispatches', 'POST /api/aca/dispatch']) {
+  for (const route of ['GET /api/aca/status', 'GET /api/aca/repos', 'GET /api/aca/dispatches', 'POST /api/aca/dispatch']) {
     assert.ok(api.includes(route), `api.md does not document ${route}`);
   }
   assert.match(api, /501/, 'api.md does not say the aca routes answer 501 when the App is not configured');

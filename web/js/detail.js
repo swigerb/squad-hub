@@ -11,7 +11,7 @@ import { displayTitle } from './sessionrow.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
 // Circular import, same pattern rowmenu.js/wiring.js already use: see
 // detail-control.js's own top-of-file comment for why this is safe.
-import { verifyControl, syncSession, detailSyncMenuItem } from './detail-control.js';
+import { verifyControl, syncSession, detailSyncMenuItem, invalidateSelection } from './detail-control.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -77,6 +77,14 @@ function renderDetailTitle(found) {
 export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const found = findSession(key);
   if (!found) return false;
+  // Invalidate BEFORE anything else awaits, including the transcript fetch
+  // below -- not only once `verifyControl` itself starts. Scout's review of
+  // 34256a0: a reply for the PREVIOUS selection (even this same session,
+  // closed and reopened) can still be in flight while this function awaits
+  // the transcript, before a new `verifyControl` call would otherwise bump
+  // `controlToken`. Bumping the generation here, synchronously, closes that
+  // gap regardless of how long the rest of this function takes.
+  invalidateSelection();
   applyNav(nav, key);
   state.currentSession = found;
   renderDetailTitle(found);
@@ -156,6 +164,10 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
  * entry that got it here.
  */
 export function closeDetail({ nav = NAV.PUSH } = {}) {
+  // Same reasoning as `openDetail`'s call: a verify/resync reply already in
+  // flight for the session being closed must never be applied after this
+  // point, even if nothing new ever reopens it.
+  invalidateSelection();
   state.currentSession = null;
   applyNav(nav, null);
   hideDetailPage();

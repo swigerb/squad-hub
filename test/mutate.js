@@ -152,6 +152,34 @@ const MUTATIONS = [
     mustFail: 'oversize metadata object is refused outright',
   },
   {
+    // #233: `role` is a closed vocabulary the "Squad on ACA" status card
+    // trusts as a VERIFIED identity claim -- an arbitrary string must be
+    // dropped the same as a malformed one, not displayed as the device's
+    // self-reported role.
+    name: 'an unrecognized role value is accepted instead of dropped',
+    file: 'src/device-meta.js',
+    find: `    if (field === 'role' && !ROLE_VALUES.includes(v)) continue;`,
+    replace: `    if (!process.env.MUTANT && field === 'role' && !ROLE_VALUES.includes(v)) continue; // MUTATION`,
+    mustFail: 'an unrecognized role value is dropped, not displayed verbatim',
+  },
+  {
+    // #233: "watch-only" is said ONLY for a VERIFIED `approvalMode: 'auto'`
+    // -- accepting any string here would let an unrecognized value be
+    // silently treated as verified by a caller who merely checks truthiness.
+    name: 'an unrecognized approvalMode value is accepted instead of dropped',
+    file: 'src/device-meta.js',
+    find: `    if (field === 'approvalMode' && !APPROVAL_MODE_VALUES.includes(v)) continue;`,
+    replace: `    if (!process.env.MUTANT && field === 'approvalMode' && !APPROVAL_MODE_VALUES.includes(v)) continue; // MUTATION`,
+    mustFail: 'an unrecognized approvalMode value is dropped, never treated as auto',
+  },
+  {
+    name: 'an unparseable lastSweepAt string is accepted instead of dropped',
+    file: 'src/device-meta.js',
+    find: `    if (field === 'lastSweepAt' && !Number.isFinite(Date.parse(v))) continue;`,
+    replace: `    if (!process.env.MUTANT && field === 'lastSweepAt' && !Number.isFinite(Date.parse(v))) continue; // MUTATION`,
+    mustFail: 'an unparseable lastSweepAt is dropped rather than displayed as a bogus date',
+  },
+  {
     // This mutation degrades the ERROR CODE but does not breach isolation: the
     // command still cannot reach another user's device, because connection
     // routing is also partitioned by subject. Defence in depth, recorded as
@@ -2617,6 +2645,251 @@ const MUTATIONS = [
   },
 
   // -------------------------------------------------------------------------
+  // #180: Squad on ACA status card
+  // -------------------------------------------------------------------------
+  {
+    name: 'findAcaRoleDevice ignores devices outside kind: "aca", matching by name alone',
+    file: 'web/js/aca-status.js',
+    find: `  const pool = (devices || []).filter((d) => d && d.kind === 'aca');`,
+    replace: `  const pool = process.env.MUTANT ? (devices || []).filter(Boolean) : (devices || []).filter((d) => d && d.kind === 'aca'); // MUTATION`,
+    mustFail: 'findWatcherDevice ignores a non-ACA device even if its name matches the convention',
+  },
+  {
+    name: 'findAcaRoleDevice stops preferring an explicit, verified meta.role over the name fallback',
+    file: 'web/js/aca-status.js',
+    find: `  const metaMatches = pool.filter((d) => d.meta && d.meta.role === role);
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);`,
+    replace: `  const metaMatches = process.env.MUTANT ? [] : pool.filter((d) => d.meta && d.meta.role === role); // MUTATION
+  if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);`,
+    mustFail: 'findWatcherDevice prefers an explicit, sanitized meta.role over any name match',
+  },
+  {
+    // #233's third review: a device that verifies itself as the OTHER role
+    // must never also be picked up by the opposite role's name fallback.
+    name: 'findAcaRoleDevice stops excluding a device that explicitly claims the OTHER role from the name fallback',
+    file: 'web/js/aca-status.js',
+    find: `    if (d.meta && d.meta.role && d.meta.role !== role) return false;`,
+    replace: `    if (!process.env.MUTANT && d.meta && d.meta.role && d.meta.role !== role) return false; // MUTATION`,
+    mustFail: 'a device explicitly self-reporting meta.role "watch" is never ALSO picked up as Ralph by name coincidence',
+  },
+  {
+    // The bug #233 exists to fix: a real production device name
+    // ("...squad-aca-watch--0000016-...") is never matched by a plain
+    // substring test for the word "watcher".
+    name: 'matchesAcaJobConvention reverts to a loose substring match, which misses the real production device name',
+    file: 'web/js/aca-status.js',
+    find: `function matchesAcaJobConvention(tokens, role) {
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `function matchesAcaJobConvention(tokens, role) {
+  if (process.env.MUTANT) return tokens.some((t) => t.includes(role === 'watch' ? 'watch' : 'ralph') || t === role); // MUTATION
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    mustFail: 'findWatcherDevice never matches an arbitrary implementation session containing "watcher"/"ralph" as a substring',
+  },
+  {
+    name: 'matchesAcaJobConvention stops requiring the role token immediately after "squad","aca", matching an arbitrary implementation session',
+    file: 'web/js/aca-status.js',
+    find: `  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;`,
+    replace: `  if ((process.env.MUTANT ? tokens[i + 2] !== role : tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role)) return false; // MUTATION`,
+    mustFail: 'findWatcherDevice requires the literal "squad","aca" tokens immediately before the role word, not merely the role word somewhere',
+  },
+  {
+    // #233's third review, finding 3: the token run must be ANCHORED to the
+    // real revision-suffix shape, not merely present anywhere in the name --
+    // otherwise a slug like "squad-aca-watch-extra" (the role run anchored to
+    // the START of the name, satisfying that anchor, but followed by the
+    // plain word "extra", never a revision number and never the end of the
+    // name) would still masquerade as the watcher.
+    name: 'matchesAcaJobConvention stops anchoring the role token to the end of the name or a numeric revision suffix',
+    file: 'web/js/aca-status.js',
+    find: `  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `  const next = tokens[i + 3];
+  return process.env.MUTANT || next === undefined || /^[0-9]+$/.test(next); // MUTATION
+}`,
+    mustFail: 'findWatcherDevice still requires the role token itself to be followed by nothing or a numeric revision, even at a known START position',
+  },
+  {
+    // A FOURTH Scout review (#233): anchoring only what the run is FOLLOWED
+    // by (a number or the end) still let the run be found at ANY token
+    // position -- an adversarial implementation-session slug could embed the
+    // real "squad","aca",role run in its middle and tack on a fabricated,
+    // revision-shaped numeric suffix to satisfy that check too. The real
+    // convention only ever has the run starting the whole name, or starting
+    // immediately after the real Azure-generated "aca","ca" prefix; these
+    // are the only two START positions now considered.
+    name: 'matchesAcaJobConvention stops anchoring the run to a known START position, scanning every token position for it again',
+    file: 'web/js/aca-status.js',
+    find: `  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    replace: `  if (process.env.MUTANT) { // MUTATION: the start-position anchor is gone, scanning resumes at every index
+    for (let j = 0; j <= tokens.length - 3; j += 1) {
+      if (tokens[j] === 'squad' && tokens[j + 1] === 'aca' && tokens[j + 2] === role) {
+        const n = tokens[j + 3];
+        if (n === undefined || /^[0-9]+$/.test(n)) return true;
+      }
+    }
+    return false;
+  }
+  const hasKnownPrefix = tokens[0] === 'aca' && tokens[1] === 'ca';
+  const i = hasKnownPrefix ? 2 : 0;
+  if (tokens.length < i + 3) return false;
+  if (tokens[i] !== 'squad' || tokens[i + 1] !== 'aca' || tokens[i + 2] !== role) return false;
+  const next = tokens[i + 3];
+  return next === undefined || /^[0-9]+$/.test(next);
+}`,
+    mustFail: 'findWatcherDevice rejects an embedded canonical run padded with a fabricated revision-shaped suffix, anchored to known job identity only (#233 fourth review)',
+  },
+  {
+    // #233's third review, finding 2: the FIRST roster match is not
+    // necessarily the CURRENT one -- an old offline revision can precede a
+    // new online one in the array.
+    name: 'pickFreshestAcaDevice stops ranking by presence, returning the first candidate regardless of whether it is actually live',
+    file: 'web/js/aca-status.js',
+    find: `    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (curRank !== bestRank) return curRank > bestRank ? cur : best;`,
+    replace: `    const bestRank = ACA_PRESENCE_RANK[best.presence] ?? -1;
+    const curRank = ACA_PRESENCE_RANK[cur.presence] ?? -1;
+    if (!process.env.MUTANT && curRank !== bestRank) return curRank > bestRank ? cur : best; // MUTATION`,
+    mustFail: 'findWatcherDevice prefers presence over mere recency: an online-but-older record beats an offline-but-more-recently-seen one',
+  },
+  {
+    name: 'pickFreshestAcaDevice stops preferring the more recently seen device when presence ties',
+    file: 'web/js/aca-status.js',
+    find: `    return (cur.lastSeen || 0) > (best.lastSeen || 0) ? cur : best;`,
+    replace: `    return (process.env.MUTANT ? false : (cur.lastSeen || 0) > (best.lastSeen || 0)) ? cur : best; // MUTATION`,
+    mustFail: 'findWatcherDevice prefers the more recently seen record when both candidates are equally online',
+  },
+  {
+    name: 'the watcher row reports every presence as Online',
+    file: 'web/js/aca-status.js',
+    find: `  const presence = d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline';`,
+    replace: `  const presence = process.env.MUTANT ? 'Online' : d.presence === 'online' ? 'Online' : d.presence === 'stale' ? 'Stale' : 'Offline'; // MUTATION`,
+    mustFail: 'acaWatcherLine reports an offline watcher\'s presence correctly alongside a verified approvalMode',
+  },
+  {
+    // #233: "watch-only" must be invented from nothing -- it has to come
+    // from a VERIFIED, sanitized approvalMode of exactly "auto", never from
+    // presence or the device's role alone.
+    name: 'acaWatcherLine claims "watch-only" for every watcher found, regardless of approvalMode',
+    file: 'web/js/aca-status.js',
+    find: `  const mode = d.meta && d.meta.approvalMode;
+  return mode === 'auto' ? \`\${presence} \\u00b7 watch-only\` : presence;`,
+    replace: `  const mode = d.meta && d.meta.approvalMode;
+  return process.env.MUTANT ? \`\${presence} \\u00b7 watch-only\` : (mode === 'auto' ? \`\${presence} \\u00b7 watch-only\` : presence); // MUTATION`,
+    mustFail: 'acaWatcherLine reports plain presence with no approvalMode metadata at all (today\'s real record)',
+  },
+  {
+    name: 'acaWatcherLine treats any approvalMode string (not just the verified "auto") as watch-only',
+    file: 'web/js/aca-status.js',
+    find: `  return mode === 'auto' ? \`\${presence} \\u00b7 watch-only\` : presence;`,
+    replace: `  return (process.env.MUTANT ? mode : mode === 'auto') ? \`\${presence} \\u00b7 watch-only\` : presence; // MUTATION`,
+    mustFail: 'acaWatcherLine reports plain presence when approvalMode is explicitly "manual"',
+  },
+  {
+    // #233: a bare heartbeat (`lastSeen`) is not proof Ralph's triage sweep
+    // ever ran -- only a confirmed `meta.lastSweepAt` is.
+    name: 'acaRalphLine mislabels a bare heartbeat as a confirmed "Last sweep"',
+    file: 'web/js/aca-status.js',
+    find: `  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;
+  if (Number.isFinite(sweptAt)) return \`Last sweep \${ago(sweptAt)}\`;
+  if (!d.lastSeen) return 'Last seen unknown \\u00b7 no sweep confirmed';
+  return \`Last seen \${ago(d.lastSeen)} \\u00b7 no sweep confirmed\`;`,
+    replace: `  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;
+  if (Number.isFinite(sweptAt)) return \`Last sweep \${ago(sweptAt)}\`;
+  if (!d.lastSeen) return process.env.MUTANT ? 'Last sweep unknown ago' : 'Last seen unknown \\u00b7 no sweep confirmed'; // MUTATION
+  return process.env.MUTANT ? \`Last sweep \${ago(d.lastSeen)}\` : \`Last seen \${ago(d.lastSeen)} \\u00b7 no sweep confirmed\`; // MUTATION`,
+    mustFail: 'acaRalphLine reports "Last seen <ago> · no sweep confirmed" for a bare heartbeat (no lastSweepAt)',
+  },
+  {
+    name: 'acaRalphLine stops parsing a confirmed meta.lastSweepAt, falling back to the heartbeat instead',
+    file: 'web/js/aca-status.js',
+    find: `  const sweptAt = d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN;`,
+    replace: `  const sweptAt = process.env.MUTANT ? NaN : (d.meta && d.meta.lastSweepAt ? Date.parse(d.meta.lastSweepAt) : NaN); // MUTATION`,
+    mustFail: 'acaRalphLine reports "Last sweep <ago>" ONLY from a confirmed meta.lastSweepAt',
+  },
+  {
+    name: 'a non-success conclusion is reported as plain "completed", hiding the failure',
+    file: 'web/js/aca-status.js',
+    find: `    case 'completed': return s.conclusion && s.conclusion !== 'success' ? \`completed (\${s.conclusion})\` : 'completed';`,
+    replace: `    case 'completed': return (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) ? \`completed (\${s.conclusion})\` : 'completed'; // MUTATION`,
+    mustFail: 'acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"',
+  },
+  {
+    name: 'an error state drops its own reason text',
+    file: 'web/js/aca-status.js',
+    find: `    case 'error': return s.reason ? \`error: \${s.reason}\` : 'error';`,
+    replace: `    case 'error': return (s.reason && !process.env.MUTANT) ? \`error: \${s.reason}\` : 'error'; // MUTATION`,
+    mustFail: 'acaDispatchStatusLabel labels an error state with its reason',
+  },
+  {
+    // Security-sensitive: a dispatch's owner/repo is the same kind of
+    // untrusted metadata device names already are (src/device-meta.js), and
+    // an error's `reason` can carry upstream GitHub API text verbatim.
+    name: 'the last-dispatch line stops escaping owner/repo before rendering them',
+    file: 'web/js/aca-status.js',
+    find: `  return \`\${esc(d.owner)}/\${esc(d.repo)} \\u00b7 \${label}\`;`,
+    replace: `  return process.env.MUTANT ? \`\${d.owner}/\${d.repo} \\u00b7 \${label}\` : \`\${esc(d.owner)}/\${esc(d.repo)} \\u00b7 \${label}\`; // MUTATION`,
+    mustFail: 'acaLastDispatchLine escapes owner/repo, since device and dispatch metadata is untrusted',
+  },
+  {
+    name: 'the last-dispatch line stops escaping the status label (and its untrusted error reason)',
+    file: 'web/js/aca-status.js',
+    find: `  const label = esc(acaDispatchStatusLabel(d.status));`,
+    replace: `  const label = process.env.MUTANT ? acaDispatchStatusLabel(d.status) : esc(acaDispatchStatusLabel(d.status)); // MUTATION`,
+    mustFail: 'acaLastDispatchLine escapes an untrusted error reason carried in the status label',
+  },
+  {
+    name: 'a not-connected phase with no reason given claims the App IS configured',
+    file: 'web/js/aca-status.js',
+    find: `    return { phase: ACA_PHASE.NOT_CONNECTED, reason: reason || 'the GitHub App is not configured' };`,
+    replace: `    return { phase: ACA_PHASE.NOT_CONNECTED, reason: (process.env.MUTANT ? reason : reason || 'the GitHub App is not configured') }; // MUTATION`,
+    mustFail: 'acaStatusModel keeps NOT_CONNECTED and falls back to a default reason',
+  },
+  {
+    name: 'an absent/falsy phase stops defaulting the card to Checking',
+    file: 'web/js/aca-status.js',
+    find: `  if (phase === ACA_PHASE.CHECKING || !phase) return { phase: ACA_PHASE.CHECKING };`,
+    replace: `  if ((phase === ACA_PHASE.CHECKING || !phase) && !process.env.MUTANT) return { phase: ACA_PHASE.CHECKING }; // MUTATION`,
+    mustFail: 'acaStatusModel defaults to CHECKING with no phase given',
+  },
+  {
+    // The Not-connected note renders a reason string that can originate from
+    // `e.body.reason` -- an upstream error message, not UI-authored copy --
+    // so the HTML template itself must not trust it either.
+    name: 'the Not-connected card note stops escaping the reason text',
+    file: 'web/js/aca-status.js',
+    find: `        <p class="acacard-note">\${esc(model.reason)}.</p>`,
+    replace: `        <p class="acacard-note">\${process.env.MUTANT ? model.reason : esc(model.reason)}.</p> <!-- MUTATION -->`,
+    mustFail: 'acaStatusCardHtml escapes an untrusted reason string in the Not-connected note',
+  },
+  {
+    name: 'the Connected card drops its Retry link',
+    file: 'web/js/aca-status.js',
+    find: `        <a class="acacard-link" href="#" data-action="aca-retry">Retry</a> &middot;`,
+    replace: `        <a class="acacard-link" href="#"\${process.env.MUTANT ? '' : ' data-action="aca-retry"'}>Retry</a> &middot; <!-- MUTATION -->`,
+    mustFail: 'acaStatusCardHtml renders Connected with watcher/Ralph/last-dispatch rows and Retry/Learn more',
+  },
+
+  // -------------------------------------------------------------------------
   // S5: control verification
   // -------------------------------------------------------------------------
   {
@@ -3037,6 +3310,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
+  '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
@@ -3082,7 +3356,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v14';`,
+    find: `const CACHE = 'squad-hub-shell-v15';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -4690,6 +4964,21 @@ if ($health.accessStore -ne 'durable') {`,
       try {
         return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
     mustFail: 'GET /api/aca/dispatches is rate-limited per signed-in user',
+  },
+  {
+    // #233: GET /api/aca/status must always answer 200, with enabled:false
+    // when the App is not configured -- a flipped condition here would
+    // report enabled:true on an unconfigured hub, sending the web UI on to
+    // call GET /api/aca/repos, which would 501.
+    name: 'GET /api/aca/status reports enabled backwards',
+    file: 'src/service/hub-service.js',
+    find: `    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: this.githubApp.enabled, reason: this.githubApp.disabledReason() });
+    }`,
+    replace: `    if (p === '/api/aca/status' && req.method === 'GET') {
+      return send(200, { enabled: process.env.MUTANT ? !this.githubApp.enabled : this.githubApp.enabled, reason: this.githubApp.disabledReason() }); // MUTATION
+    }`,
+    mustFail: 'GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured',
   },
 
   {

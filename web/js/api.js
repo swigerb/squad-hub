@@ -59,6 +59,12 @@ export async function api(path, opts = {}) {
   if (!res.ok) {
     const e = new Error((body && body.error) || `HTTP ${res.status}`);
     e.status = res.status;
+    // A route that answers with `reason` instead of `error` -- every
+    // `/api/aca/*` route does this for its 501 "not configured" case (#177)
+    // -- would otherwise lose that text entirely: `e.message` above only
+    // ever looks at `error`. The whole parsed body is kept so a caller that
+    // cares can still read it.
+    e.body = body;
     throw e;
   }
   return body;

@@ -27,6 +27,28 @@ const CONTROL_TIMEOUT_MS = 8000;
 let controlToken = 0;
 
 /**
+ * Bumped IMMEDIATELY by `openDetail`/`closeDetail` -- before either awaits
+ * anything, including the transcript fetch -- so a verify/resync reply
+ * already in flight for the PREVIOUS selection can never be applied after
+ * an open, a close, or a close-then-reopen of the identical session. Scout's
+ * review of 34256a0: `openDetail` sets `state.currentSession` and only
+ * starts a new `verifyControl` call (which bumps `controlToken`) after
+ * awaiting the transcript, so a stale reply for the same session key can
+ * land in that gap and pass a same-key, same-token check. This generation
+ * is the one thing that always changes at the instant of navigation,
+ * independent of when (or whether) a new verification actually starts.
+ * `syncDetailHeader`'s live-snapshot reassignment of `state.currentSession`
+ * (no open/close call) never touches it, so same-session snapshot churn
+ * mid-verification is still tolerated exactly as before.
+ */
+let selectionGeneration = 0;
+
+/** Called by `openDetail`/`closeDetail` to mark the selection superseded. */
+export function invalidateSelection() {
+  selectionGeneration += 1;
+}
+
+/**
  * Ask the device whether it can take a control command for this session.
  *
  * The answer comes from the machine running the agent, not from the hub --
@@ -45,6 +67,7 @@ export async function verifyControl() {
   const current = state.currentSession;
   if (!current) return;
   const key = sessionKey(current.session);
+  const generation = selectionGeneration;
   const token = (controlToken += 1);
   state.composer = composerReduce(state.composer, { type: 'verify-start' });
   renderControl();
@@ -56,25 +79,35 @@ export async function verifyControl() {
 
   const outcome = await Promise.race([ask, timeout]);
 
-  // Reject when the panel closed, a DIFFERENT session is now open, or a
-  // newer `verifyControl` call has since started for this session. A
-  // same-session live-snapshot refresh is none of those.
+  // Reject when the panel closed, a DIFFERENT session is now open, a newer
+  // `verifyControl` call has since started for this session, OR the
+  // selection was invalidated (closed, reopened -- same or different
+  // session) since this call began. A same-session live-snapshot refresh is
+  // none of those: it changes only the `state.currentSession` object and
+  // `sessionKey` still matches, and it never calls `invalidateSelection`.
   const stillSameSelection = state.currentSession && sessionKey(state.currentSession.session) === key;
-  if (!stillSameSelection || token !== controlToken) return;
+  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;
 
   state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
   renderControl();
 }
 
 /**
- * The session key `syncSession` is currently resyncing, or `null`. Moving
- * `Sync session` into the shared `#rowMenu` dropped the guard the old
- * dedicated `#dtSync` button gave for free (it disabled itself while
- * pending). A popup item is rebuilt fresh every open, so reopening it mid-sync
- * could fire a second one. This flag restores one in-flight resync per
- * target, tracked by key so it survives the same live-snapshot churn above.
+ * The session keys `syncSession` is currently resyncing. Moving `Sync
+ * session` into the shared `#rowMenu` dropped the guard the old dedicated
+ * `#dtSync` button gave for free (it disabled itself while pending). A
+ * popup item is rebuilt fresh every open, so reopening it mid-sync could
+ * fire a second one for the SAME target. A single scalar is not enough,
+ * though: Scout's review of 34256a0 reproduced starting Sync for A,
+ * navigating to B and starting Sync for B, then returning to A and
+ * clicking Sync again before either had returned -- B's start overwrote a
+ * scalar lock, so A's second click was no longer blocked and fired a
+ * second resync for A while B still had exactly one in flight. A `Set`
+ * keyed by target, where each target's own settlement only ever deletes
+ * its own key, is a real per-target lock that survives navigating away and
+ * back, independent of what any other target is doing.
  */
-let syncInFlightKey = null;
+const syncInFlightKeys = new Set();
 
 /**
  * `Sync session` -- restart the engine, keeping the session id, then re-check.
@@ -88,27 +121,40 @@ export async function syncSession() {
   // Already resyncing this target: `detailSyncMenuItem` disables the menu
   // item while true, and the row-menu click handler also checks `b.disabled`
   // itself (see wiring.js), so this only guards a caller bypassing the UI.
-  if (syncInFlightKey === key) return;
-  syncInFlightKey = key;
+  if (syncInFlightKeys.has(key)) return;
+  syncInFlightKeys.add(key);
+  // Captured before awaiting anything, same reasoning as `verifyControl`:
+  // closing or reopening this (or any) session before the resync settles
+  // must stop its result from reaching a since-superseded context.
+  const generation = selectionGeneration;
   try {
     await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/resync`, {
       method: 'POST', body: { sessionId: current.session.id },
     });
     await refresh();
   } catch (e) {
-    // A different session selected while this was in flight: its failure is
-    // no longer anyone's business.
-    if (state.currentSession && sessionKey(state.currentSession.session) === key) {
+    // A different session selected, or this one closed and reopened, while
+    // this was in flight: its failure is no longer anyone's business.
+    if (
+      state.currentSession
+      && sessionKey(state.currentSession.session) === key
+      && generation === selectionGeneration
+    ) {
       state.composer = composerReduce(state.composer, { type: 'verify-result', outcome: { error: e.message } });
       renderControl();
     }
     return;
   } finally {
-    if (syncInFlightKey === key) syncInFlightKey = null;
+    syncInFlightKeys.delete(key);
   }
   // Only now is the question worth asking again -- and only for the still-open
-  // session, same stale-selection guard as `verifyControl` above.
-  if (state.currentSession && sessionKey(state.currentSession.session) === key) await verifyControl();
+  // session (same selection, not merely the same key), same stale-context
+  // guard as `verifyControl` above.
+  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && generation === selectionGeneration
+  ) await verifyControl();
 }
 
 /**
@@ -123,7 +169,7 @@ export function detailSyncMenuItem() {
   const current = state.currentSession;
   if (!current) return null;
   if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;
-  const pending = syncInFlightKey === sessionKey(current.session);
+  const pending = syncInFlightKeys.has(sessionKey(current.session));
   return {
     action: 'sync',
     label: pending ? 'Syncing…' : 'Sync session',

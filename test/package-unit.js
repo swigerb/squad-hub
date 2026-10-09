@@ -763,13 +763,19 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped to v14 for the fix to PR #243's Scout review: `web/js/detail.js`'s
+  //
+  // Bumped to v15 merging two branches that had EACH independently bumped to
+  // v14 off an earlier shared base: PR #243's own fix (`web/js/detail.js`'s
   // `verifyControl`/`syncSession`/`detailSyncMenuItem` moved into a new
-  // `web/js/detail-control.js` (kept detail.js under the size budget), so
-  // the shell's cached file SET changed shape -- the previous v13 shell never
-  // cached that new file at all.
+  // `web/js/detail-control.js` to keep detail.js under the size budget, so
+  // the shell's cached file SET changed shape) and main's #180/#233 ACA
+  // status card branch merged with #236 (`/js/aca-status.js`,
+  // `/js/sessionrow.js`, `/js/rowmenu.js`, `/js/prefs-sync.js` -- see those
+  // commits' own history for why each needed a fresh shell). A same-numbered
+  // coincidence between two branches is not the same cache: the merge needs
+  // a value NEITHER side ever used, so this stays pinned to v15, not v14.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v14';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
