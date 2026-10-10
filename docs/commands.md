@@ -561,7 +561,9 @@ the tool-call count, the result of each Squad health check, and — for a
 device that reports them — the issue, pull request and Aspire dashboard links.
 Anything the device did not report reads *not reported*; nothing is inferred.
 A long working directory wraps, in the page header and here, instead of
-widening the page.
+widening the page. On a phone the header's buttons wrap onto a second line
+rather than shrink, and a long status such as *Unreachable — device offline*
+ends in an ellipsis so the session title stays readable.
 
 Under **Approval history** is every permission request in the session that is
 no longer waiting, newest first: what it was for, whether it was allowed,

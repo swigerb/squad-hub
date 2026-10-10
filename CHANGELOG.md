@@ -73,7 +73,11 @@ pull request; this entry documents what has landed on `main` so far.
   and **Deny**; it goes only when the device confirms, and the pop-up and
   the bell work as before. A disabled **Files** tab is a placeholder for a
   [design spike](docs/design/files-tab-spike.md). Fixes unreadable code
-  surfaces for a system that prefers light with no saved theme. See
+  surfaces for a system that prefers light with no saved theme. The session
+  header keeps **Run on ACA…**, **Stop** and the rest whole and inside the
+  page at 1280, 900 and 390px, light or dark; on a phone a long status such
+  as "Unreachable — device offline" ends in an ellipsis so the title stays
+  readable. See
   [docs/commands.md#the-session-page-chat-squad-and-info](docs/commands.md#the-session-page-chat-squad-and-info).
 
 ### Documentation

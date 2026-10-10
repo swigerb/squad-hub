@@ -115,6 +115,19 @@
 .dt-pill.review { color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, var(--panel-2)); }
 .dt-pill.failed { color: var(--bad); background: color-mix(in srgb, var(--bad) 18%, var(--panel-2)); }
 .dt-pill.stale { color: var(--faint); background: var(--panel-2); font-style: italic; font-weight: 600; }
+/* #182: on a phone the title row has about 214px for the title AND the status
+   once the back arrow, star and pencil are in it. "Unreachable — device
+   offline" alone took ~190 of them and left the title 42px. The pill gives way
+   first, with an ellipsis (the full text stays in the DOM), so the title keeps
+   room to be read; every other status fits whole. A block box is what lets
+   text-overflow clip it, which the pill's usual inline-flex cannot. */
+@media (max-width: 480px) {
+  .detail-head-titlerow .dt-pill {
+    display: block; max-width: 150px; line-height: 22px;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .detail-head-titlerow .dt-pill::before { display: inline-block; vertical-align: middle; margin: -2px 6px 0 0; }
+}
 
 .detail-head { display: flex; flex-direction: column; gap: 4px; }
 /* `position: relative` so `.menu.anchored` (the kebab's dropdown) anchors to

@@ -7634,6 +7634,28 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `    /* MUTATION */`,
     mustFail: 'a system that prefers light, with no saved choice, still flips the code surfaces',
   },
+  {
+    name: '#182: the status pill no longer gives way, so a long status leaves the title a sliver on a phone',
+    file: 'web/css/detail.css',
+    find: `    display: block; max-width: 150px; line-height: 22px;`,
+    replace: `    display: block; line-height: 22px; /* MUTATION */`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    name: '#182: the header actions are pushed off the page in the dark theme only',
+    file: 'web/css/detail-tabs.css',
+    find: `  .dt-appr { padding: 10px 12px; }`,
+    replace: `  .dt-appr { padding: 10px 12px; }
+  @media (prefers-color-scheme: dark) { .detail-actions button { position: relative; left: 300px; } } /* MUTATION */`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    name: '#182: the tab bar outgrows a phone while a permission request waits',
+    file: 'web/css/detail-tabs.css',
+    find: `  .dt-tab { padding: 0 10px; }`,
+    replace: `  .dt-tab { padding: 0 40px; } /* MUTATION */`,
+    mustFail: 'the session header still fits, with the tabs, while a permission request waits, at 1280, 900 and 390px, light and dark (#182)',
+  },
 ];
 
 /**

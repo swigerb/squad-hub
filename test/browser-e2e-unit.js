@@ -2657,6 +2657,142 @@ async function watchCsp(pg) {
       }
     });
 
+    // #182/#243: the integrated session header, measured the way a person sees
+    // it, at all three widths and in BOTH colour schemes: every control inside
+    // the viewport and not pushing the page sideways, no label wrapped or cut,
+    // nothing overlapping a neighbour or the summary line, one shared centre
+    // line for the title row (and for the whole header at 1280px), and the More
+    // menu opening inside the page. `actions` are the buttons this fixture must
+    // show, so a control that quietly disappeared cannot pass as "fits".
+    const headerFit182 = async (what, actions, shot) => {
+      const ids = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+      const titleRow = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill'];
+      try {
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ colorScheme: scheme });
+          for (const width of [1280, 900, 390]) {
+            const at = `${what} at ${width}px in the ${scheme} theme`;
+            await page.setViewportSize({ width, height: 844 });
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const m = await page.evaluate((list) => {
+              const rgb = (getComputedStyle(document.body).backgroundColor.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+              const controls = [];
+              for (const id of list) {
+                const el = document.getElementById(id);
+                if (!el || el.offsetParent === null) continue;
+                const r = el.getBoundingClientRect();
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                controls.push({
+                  id, left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+                  cut: el.scrollWidth - el.clientWidth,
+                  lines: new Set([...range.getClientRects()].filter((q) => q.width > 0).map((q) => Math.round(q.top))).size,
+                });
+              }
+              const bar = document.getElementById('dtTabs');
+              return {
+                brightness: (rgb[0] + rgb[1] + rgb[2]) / 3,
+                vw: document.documentElement.clientWidth,
+                scroll: document.documentElement.scrollWidth,
+                metaTop: document.getElementById('dtMeta').getBoundingClientRect().top,
+                controls,
+                barCut: bar.scrollWidth - bar.clientWidth,
+                tabs: [...bar.querySelectorAll('[role="tab"]')].map((t) => {
+                  const r = t.getBoundingClientRect();
+                  return { id: t.id, left: r.left, right: r.right, height: r.height };
+                }),
+              };
+            }, ids);
+            // A theme that did not apply would make the light and dark passes the same pass twice.
+            assert.ok(scheme === 'light' ? m.brightness > 140 : m.brightness < 80,
+              `${at}: the page is not in the ${scheme} theme (background brightness ${Math.round(m.brightness)})`);
+            const by = Object.fromEntries(m.controls.map((c) => [c.id, c]));
+            for (const id of [...titleRow.slice(width <= 900 ? 0 : 1), ...actions]) {
+              assert.ok(by[id], `${at}: ${id} is not showing`);
+            }
+            assert.ok(m.scroll <= m.vw, `${at}: the page scrolls sideways (${m.scroll} > ${m.vw})`);
+            for (const c of m.controls) {
+              assert.ok(c.left >= -0.5 && c.right <= m.vw + 0.5,
+                `${at}: ${c.id} is outside the viewport (left=${Math.round(c.left)}, right=${Math.round(c.right)}, viewport=${m.vw})`);
+              assert.ok(c.bottom - c.top <= 34, `${at}: ${c.id} is ${Math.round(c.bottom - c.top)}px tall, so it wrapped`);
+              assert.ok(c.bottom <= m.metaTop + 0.5, `${at}: ${c.id} overlaps the summary line (${Math.round(c.bottom)} > ${Math.round(m.metaTop)})`);
+              if (['dtAca', 'dtForget', 'dtStop', 'dtStatusPill'].includes(c.id)) {
+                assert.strictEqual(c.lines, 1, `${at}: the label of ${c.id} wraps onto ${c.lines} lines`);
+              }
+              // The status pill may end in an ellipsis on a phone; a button label may not.
+              if (['dtAca', 'dtForget', 'dtStop'].includes(c.id)) {
+                assert.ok(c.cut <= 1, `${at}: the label of ${c.id} is cut off by ${c.cut}px`);
+              }
+            }
+            assert.strictEqual(m.tabs.length, 4, `${at}: the tab bar does not show Chat, Squad, Info and Files`);
+            assert.ok(m.barCut <= 1, `${at}: the tab bar has to scroll sideways (${m.barCut}px)`);
+            for (const t of m.tabs) {
+              assert.ok(t.left >= -0.5 && t.right <= m.vw + 0.5 && t.height <= 48, `${at}: the ${t.id} tab is outside the viewport or wrapped`);
+            }
+            assert.ok(by.dtTitle.right - by.dtTitle.left >= 60,
+              `${at}: only ${Math.round(by.dtTitle.right - by.dtTitle.left)}px is left for the title`);
+            for (let i = 0; i < m.controls.length; i += 1) {
+              for (let j = i + 1; j < m.controls.length; j += 1) {
+                const a = m.controls[i];
+                const b = m.controls[j];
+                const across = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                const down = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                assert.ok(!(across > 0.5 && down > 0.5), `${at}: ${a.id} and ${b.id} overlap`);
+              }
+            }
+            const center = (c) => (c.top + c.bottom) / 2;
+            const spread = (list) => Math.max(...list.map(center)) - Math.min(...list.map(center));
+            const first = m.controls.filter((c) => titleRow.includes(c.id));
+            const right = m.controls.filter((c) => !titleRow.includes(c.id));
+            if (width > 900) {
+              assert.ok(spread(m.controls) <= 1, `${at}: the header is not one line (centres span ${spread(m.controls).toFixed(1)}px)`);
+            } else {
+              assert.ok(spread(first) <= 1, `${at}: the title row is not one line (centres span ${spread(first).toFixed(1)}px)`);
+              assert.ok(right.every((c) => c.top >= Math.max(...first.map((f) => f.bottom)) - 0.5),
+                `${at}: the actions share the title row instead of sitting under it`);
+            }
+
+            if (process.env.SQUAD_HUB_SCREENSHOT_DIR) {
+              await page.screenshot({ path: path.join(process.env.SQUAD_HUB_SCREENSHOT_DIR, `detail-header-${shot}-${width}-${scheme}.png`), clip: { x: 0, y: 0, width: m.vw, height: 420 } });
+            }
+            await page.click('#dtMoreBtn');
+            await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+            const menu = await page.evaluate(() => {
+              const r = document.getElementById('rowMenu').getBoundingClientRect();
+              return { left: r.left, right: r.right, top: r.top, vw: document.documentElement.clientWidth };
+            });
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('#rowMenu', { state: 'hidden', timeout: 5000 });
+            assert.ok(menu.left >= -0.5 && menu.right <= menu.vw + 0.5 && menu.top >= -0.5,
+              `${at}: the More menu opens outside the page (left=${Math.round(menu.left)}, right=${Math.round(menu.right)}, top=${Math.round(menu.top)}, viewport=${menu.vw})`);
+          }
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    };
+
+    await check('the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)', async () => {
+      const subject = subjectKey('t1', 'u1');
+      const deviceId = 'header-fit-fixture';
+      const device = svc.store.registerDevice(subject, { deviceId, name: 'Header fit fixture', platform: 'linux' });
+      svc.store.upsertSession(subject, deviceId, {
+        id: 'header-fit-session', status: 'idle', repo: 'acme/widgets',
+        prompt: 'Header fit fixture with a long session title that has to be cut short rather than push the actions off the page',
+      });
+      device.lastSeen = Date.now() - svc.store.staleAfterMs - 1000;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(`${deviceId}:header-fit-session`)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await page.waitForSelector('#dtForget:not([hidden])', { timeout: 5000 });
+        await headerFit182('an unreachable session', ['dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'], 'unreachable');
+      } finally {
+        svc.store.removeDevice(subject, deviceId);
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
+    });
+
     // ---- #182: detail tabs, the inline approval card, the Info history -------
     // Everything below runs against REAL sessions on the real device, answered
     // through the hub's real approve route. What is asserted is what the agent
@@ -3205,6 +3341,19 @@ async function watchCsp(pg) {
         }
         // Leave nothing pending, or the pop-up would cover the next check.
         await page.click('#dtTab-chat');
+        await page.click('#dtApprovals [data-answer="reject_once"]');
+        await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0, 'the denied card to go');
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('the session header still fits, with the tabs, while a permission request waits, at 1280, 900 and 390px, light and dark (#182)', async () => {
+      live182.header = await gated182('header', 'git status', { repo: true });
+      await openGated182(live182.header);
+      try {
+        await page.waitForSelector('#dtApprovals .dt-appr', { timeout: 20000 });
+        await headerFit182('a session waiting for permission', ['dtAca', 'dtStop', 'dtMoreBtn'], 'approval');
         await page.click('#dtApprovals [data-answer="reject_once"]');
         await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0, 'the denied card to go');
       } finally {
