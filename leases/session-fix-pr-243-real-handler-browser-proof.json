@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-243-real-handler-browser-proof",
+  "sessionId": "fix-pr-243-real-handler-browser-proof",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-10T01:08:05.870Z",
+  "lastHeartbeatAt": "2026-10-10T01:08:05.870Z",
+  "updatedAt": "2026-10-10T01:08:05.870Z",
+  "terminalReason": null,
+  "executionRef": null
+}
