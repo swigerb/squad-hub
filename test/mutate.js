@@ -6962,9 +6962,11 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'run-tests stops invoking suiteEscapeFocus in sequence',
     file: 'test/run-tests.js',
     find: `  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
   await suiteEscapeFocus();
   await suiteApprovalDepth();`,
     replace: `  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
   if (process.env.MUTANT) await Promise.resolve(); // MUTATION
   await suiteApprovalDepth();`,
     mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',

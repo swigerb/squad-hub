@@ -36,7 +36,7 @@ if (!chromium) {
   process.exit(0);
 }
 
-const { Authenticator, MODES } = require('../src/service/auth');
+const { Authenticator, MODES, subjectKey } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { GitHubOAuth } = require('../src/service/github-oauth');
 const { GitHubApp } = require('../src/service/github-app');
@@ -2324,6 +2324,8 @@ async function watchCsp(pg) {
           return other && other.dataset.session;
         }, keyA);
         assert.ok(keyB, 'there is no second session to navigate to for this fixture');
+        const sessionB = svc.store.getSession(subjectKey('t1', 'u1'), keyB);
+        assert.ok(sessionB && sessionB.id, 'session B has no device-local session id');
 
         await page.click(`#detailSidebarList [data-session="${keyB}"]`);
         await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
@@ -2367,7 +2369,7 @@ async function watchCsp(pg) {
         await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
         await page.click('#rowMenu [data-row-action="sync"]');
         await until(async () => resyncCalls.length > 0 || null, 'the fresh Sync click on B to reach the device');
-        assert.deepStrictEqual(resyncCalls, [keyB],
+        assert.deepStrictEqual(resyncCalls, [sessionB.id],
           'a fresh Sync click on the session actually open (B) did not reach the device exactly once, for the right target');
       } finally {
         await page.unroute('**/resync').catch(() => {});
