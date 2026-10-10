@@ -648,7 +648,7 @@ prompt: |
   `<literal CURRENT_DATETIME value from your prompt>`. Substitute the actual CURRENT_DATETIME value; never write placeholder text.
 ```
 
-**Scribe Spawn Template** (only when durable decisions require merging; background, never wait). `model` is `agentModelOverrides.scribe` from `.squad/config.json`. It replaces the Scribe spawn in `.squad/templates/after-agent-reference.md` — pass it on every Scribe spawn:
+**Scribe Spawn Template** (only when durable decisions require merging; background, never wait). Read `.squad/templates/after-agent-reference.md` and use its full Scribe spawn prompt unchanged, subject to this repository's existing state and governance rules. This parameter overlay supplies the canonical member name and `model` from `agentModelOverrides.scribe` in `.squad/config.json`; it is not a replacement task list:
 
 ```
 agent_type: "general-purpose"
@@ -656,23 +656,9 @@ model: "claude-haiku-5.5"
 mode: "background"
 name: "scribe"
 description: "📋 Scribe: Log session & merge decisions"
-prompt: |
-  You are the Scribe. Read .squad/agents/scribe/charter.md.
-  TEAM ROOT: {team_root}
-  CURRENT_DATETIME: <resolved CURRENT_DATETIME literal>
-  STATE_BACKEND: {state_backend}
-
-  Tasks (in order):
-  0. PRE-CHECK: Run `squad_state_health` when available. If state tools are unavailable, stop without mutating files or git state.
-  0b. PRE-CHECK: Read `decisions.md` and list `decisions/inbox` with state tools. Record measurements.
-  1. DECISION INBOX: Use `squad_state_list` and `squad_state_read` on `decisions/inbox`, merge accepted durable decisions into `decisions.md` with `squad_state_write`, delete processed inbox entries with `squad_state_delete`, and deduplicate. Before splicing an inbox body beneath an `###` entry, DEMOTE its headings so its shallowest heading lands at `####` (`##` -> `####`). Preserve relative structure. Never emit an `##` under an `###`.
-  2. VERIFY: Re-read `decisions.md` and confirm every merged entry is present before deleting its inbox source.
-  3. GIT COMMIT: Do not commit mutable squad state. If non-state repo files changed, report them for coordinator handling.
-
-  Runtime state tools own persistence. Never switch branches, push note refs, reset `.squad/`, or commit mutable squad state from this prompt.
-
-  Never speak to user. End with plain text summary after all tool calls.
 ```
+
+Keep the reference prompt's spawn manifest, archival safety rules and size gates, orchestration and session logs, permitted cross-agent history updates, history summarization gate, and health report. If the reference is unavailable, stop and report it rather than inventing a shortened prompt.
 
 **On-demand reference:** Read `.squad/templates/spawn-reference.md` for the full spawn template, Ghost Protocol block, all `STATE_BACKEND` conditionals, and post-work instructions.
 
@@ -693,7 +679,7 @@ when needed, and present compact outcomes. Spawn Scribe only when durable decisi
 merging. Keep the same accountable owner for follow-up work unless a new independently deliverable
 outcome requires rerouting.
 
-**On-demand reference:** Read `.squad/templates/after-agent-reference.md` for the full silent-success rules, Scribe spawn template, and follow-up sequence. Spawn Scribe from the Scribe Spawn Template above, with its explicit `model`, whenever the reference file's Scribe spawn differs.
+**On-demand reference:** Read `.squad/templates/after-agent-reference.md` for the full silent-success rules, Scribe spawn template, and follow-up sequence. Preserve its full Scribe prompt and follow-up sequence; override only the canonical `name` and configured `model` parameters using the Scribe Spawn Template above.
 
 ### Ceremonies
 
