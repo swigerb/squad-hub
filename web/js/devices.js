@@ -24,7 +24,7 @@ import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-deta
 // Neither module reaches into the other at module-evaluation time, so the
 // cycle resolves the same way any other two ES modules that call back into
 // each other do.
-import { renderInboxMenu, closeRowMenu } from './wiring.js';
+import { renderInboxMenu, syncRowMenu } from './wiring.js';
 
 //
 // Pure, for the same reason the list controls are: ordering and presence
@@ -396,7 +396,6 @@ export function render() {
     </div>`).join('');
 
   $('groups').innerHTML = html;
-  closeRowMenu();
   $('empty').hidden = (counts.sessions || 0) > 0;
 
   // With no device online there is nothing + New could do, so say what to do
@@ -504,6 +503,7 @@ export function render() {
   // from this same overview; keep them in step with every refresh and every
   // WebSocket push, the same as the list above.
   syncDetailHeader();
+  syncRowMenu();
 
   // The "Squad on ACA" status card (#180): its own connection fetch runs on
   // a slower, independent interval (see web/app.js), but its watcher/Ralph

@@ -803,7 +803,7 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // CODE in `web/js/wiring.js` changed again, so an existing install must
   // not keep serving the pre-extraction file out of its cache.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v20';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v21';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

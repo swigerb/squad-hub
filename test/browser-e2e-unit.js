@@ -2457,6 +2457,42 @@ async function watchCsp(pg) {
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
+    await check('the detail header menu survives overview refresh with focus intact, and Open does not duplicate history', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.click('#dtMoreBtn');
+      await page.waitForSelector('#rowMenu:not([hidden])');
+      await page.focus('#rowMenu [data-row-action="copylink"]');
+      await page.evaluate(() => window.__squadHubTest.refresh());
+      assert.deepStrictEqual(await page.evaluate(() => ({
+        open: !document.getElementById('rowMenu').hidden,
+        focused: document.activeElement.dataset.rowAction,
+      })), { open: true, focused: 'copylink' });
+      const before = await page.evaluate(() => history.length);
+      await page.click('#rowMenu [data-row-action="open"]');
+      assert.strictEqual(await page.evaluate(() => history.length), before,
+        'Open on the current session added a duplicate history entry');
+    });
+
+    await check('removing the open ended session returns to the list without stale detail controls', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'disposable detail removal', cwd: process.cwd() });
+      await daemon.handle({ op: 'stop-session', sessionId: started.id });
+      await page.evaluate(() => window.__squadHubTest.refresh());
+      const key = `e2e-device:${started.id}`;
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.click('#dtMoreBtn');
+      page.once('dialog', (dialog) => dialog.accept());
+      await page.click('#rowMenu [data-row-action="remove"]');
+      await until(async () => page.evaluate(() => (
+        document.getElementById('detailScrim').hidden
+        && window.__squadHubTest.state.currentSession === null
+        && !new URL(location.href).searchParams.has('session')
+      )), 'removing the current session to close and clear its detail page');
+      assert.strictEqual(daemon.sessions.has(started.id), false,
+        'the ended session was not actually removed from the device');
+    });
+
     // #243 real regression (CI run 37998832767): the two checks above proved
     // the RIGHT-side actions stay on-screen and on one line, but neither one
     // actually measured the FIRST row (back/star/title/pencil/pill) itself --
@@ -2550,6 +2586,44 @@ async function watchCsp(pg) {
           `at ${width}px, a header control (bottom=${result.maxControlBottom}) overlaps the metadata line underneath it (top=${result.metaTop})`);
       }
       await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    await check('at 390px, unreachable-session cleanup actions remain in bounds without overlapping metadata', async () => {
+      const subject = subjectKey('t1', 'u1');
+      const deviceId = 'phone-stale-fixture';
+      const device = svc.store.registerDevice(subject, { deviceId, name: 'Stale phone fixture', platform: 'linux' });
+      svc.store.upsertSession(subject, deviceId, {
+        id: 'stale-session', status: 'idle', prompt: 'Unreachable cleanup fixture', repo: 'acme/widgets',
+      });
+      device.lastSeen = Date.now() - svc.store.staleAfterMs - 1000;
+      const key = `${deviceId}:stale-session`;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])');
+        await page.waitForSelector('#dtForget:not([hidden])');
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+        const geometry = await page.evaluate(() => {
+          const ids = ['dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+          return {
+            width: document.documentElement.clientWidth,
+            metaTop: document.getElementById('dtMeta').getBoundingClientRect().top,
+            controls: ids.map((id) => {
+              const rect = document.getElementById(id).getBoundingClientRect();
+              return { id, left: rect.left, right: rect.right, bottom: rect.bottom, height: rect.height };
+            }),
+          };
+        });
+        for (const rect of geometry.controls) {
+          assert.ok(rect.left >= -0.5 && rect.right <= geometry.width + 0.5,
+            `${rect.id} is clipped on the unreachable session at 390px`);
+          assert.ok(rect.height <= 34 && rect.bottom <= geometry.metaTop + 0.5,
+            `${rect.id} wraps its label or overlaps metadata`);
+        }
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
     });
 
     // Evidence capture for CI: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.

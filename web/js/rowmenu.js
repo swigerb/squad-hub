@@ -113,7 +113,11 @@ export async function onRowMenuAction(key, action, href) {
   const found = findSessionByKey(key);
   if (!found) { closeRowMenu(); return; }
   const { device, session } = found;
-  if (action === 'open') { closeRowMenu(); openDetail(key); return; }
+  if (action === 'open') {
+    closeRowMenu();
+    if (!state.currentSession || (state.currentSession.session.key || state.currentSession.session.id) !== key) openDetail(key);
+    return;
+  }
   if (action === 'pin') { closeRowMenu(); toggleFavorite(key); return; }
   if (action === 'rename') {
     closeRowMenu();

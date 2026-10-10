@@ -3504,7 +3504,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v20';`,
+    find: `const CACHE = 'squad-hub-shell-v21';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -7209,11 +7209,39 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }
   .detail-head-line .spacer { display: none; }
   .detail-head-titlerow { flex-wrap: nowrap; }
-  .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; }
+  .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px; }
 }`,
     replace: `  /* MUTATION: phone-width second-line-box fix removed */
 }`,
     mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
+  {
+    name: 'unreachable detail cleanup buttons cannot wrap inside the phone viewport',
+    file: 'web/css/detail.css',
+    find: 'justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px;',
+    replace: 'justify-content: flex-end; flex-wrap: nowrap; height: 32px; row-gap: 6px;',
+    mustFail: 'at 390px, unreachable-session cleanup actions remain in bounds without overlapping metadata',
+  },
+  {
+    name: 'an overview refresh closes the persistent detail menu',
+    file: 'web/js/wiring.js',
+    find: "  const focused = document.activeElement;\n  const action = menu.contains(focused) ? focused.dataset.rowAction : null;",
+    replace: "  closeRowMenu(); return; // MUTATION\n  const focused = document.activeElement;\n  const action = menu.contains(focused) ? focused.dataset.rowAction : null;",
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'Open in the current detail menu pushes duplicate navigation',
+    file: 'web/js/rowmenu.js',
+    find: "    if (!state.currentSession || (state.currentSession.session.key || state.currentSession.session.id) !== key) openDetail(key);",
+    replace: "    openDetail(key); // MUTATION",
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'removing the selected session leaves stale detail controls',
+    file: 'web/js/detail.js',
+    find: "  if (!found) { closeDetail({ nav: NAV.REPLACE }); return; }",
+    replace: "  if (!found) return; // MUTATION",
+    mustFail: 'removing the open ended session returns to the list without stale detail controls',
   },
   {
     // Same regression, isolated to just the button-label guard: with the

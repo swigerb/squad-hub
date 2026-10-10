@@ -193,6 +193,34 @@ export function openRowMenu(key, btn, { extra = [] } = {}) {
   if (first) first.focus();
 }
 
+/** List anchors are rebuilt; the persistent detail anchor keeps its menu and focus. */
+export function syncRowMenu() {
+  if (rowMenuKey === null) return;
+  const found = findSessionByKey(rowMenuKey);
+  const current = state.currentSession;
+  if (!found || !rowMenuBtn || rowMenuBtn.id !== 'dtMoreBtn'
+    || !current || sessionKey(current.session) !== rowMenuKey) {
+    closeRowMenu();
+    return;
+  }
+  const menu = $('rowMenu');
+  const focused = document.activeElement;
+  const action = menu.contains(focused) ? focused.dataset.rowAction : null;
+  const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(rowMenuKey) });
+  const sync = detailSyncMenuItem();
+  if (sync) items.push({ sep: true }, sync);
+  const html = rowMenuHtml(items);
+  if (menu.innerHTML !== html) {
+    menu.innerHTML = html;
+    if (action) {
+      const next = [...menu.querySelectorAll('button:not([disabled])')]
+        .find((button) => button.dataset.rowAction === action);
+      const fallback = menu.querySelector('button:not([disabled])');
+      if (next || fallback) (next || fallback).focus();
+    }
+  }
+}
+
 /** Arrow-key navigation among the row menu's own (enabled) buttons. */
 function moveRowMenuFocus(delta) {
   const m = $('rowMenu');

@@ -266,7 +266,7 @@ export function syncDetailHeader() {
   if (!state.currentSession) return;
   const key = sessionKey(state.currentSession.session);
   const found = findSession(key);
-  if (!found) return;
+  if (!found) { closeDetail({ nav: NAV.REPLACE }); return; }
   state.currentSession = found;
   renderDetailTitle(found);
   $('dtMeta').textContent = [
@@ -286,6 +286,7 @@ export function syncDetailHeader() {
   const star = $('dtStar');
   star.classList.toggle('on', pinned);
   star.textContent = pinned ? '★' : '☆';
+  renderCleanup(found);
 }
 
 /**

@@ -46,7 +46,7 @@
 // dispatch was extracted into `handleRowMenuClick`), not just tests, so an
 // existing install's cache must actually refresh rather than keep serving
 // the old file forever.
-const CACHE = 'squad-hub-shell-v20';
+const CACHE = 'squad-hub-shell-v21';
 
 /**
  * The shell. Everything here is a public static asset.
