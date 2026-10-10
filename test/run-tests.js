@@ -1092,6 +1092,18 @@ async function suiteCeremonyConventions() {
 }
 
 /**
+ * Issue #246: the model each Squad member runs lives in the config, ten
+ * charters, the routing table, the roster, Ralph's instructions and the Squad
+ * agent. Nothing else keeps them in step, so an old model, a display-cased
+ * config key (`Rai`) or a Scribe spawn with no explicit model could come back
+ * unnoticed. This reads them as text and fails on any disagreement.
+ */
+async function suiteSquadModelPolicy() {
+  console.log('\n[MODEL-POLICY] config, charters, routing, roster and the Squad agent agree on each member\'s model');
+  runChildSuite(path.join(__dirname, 'squad-model-policy-unit.js'), 'squad-model-policy');
+}
+
+/**
  * #130 Sprint 2: steering a watched Copilot TUI session.
  *
  * A steer is queued, never sent, until an agentStop hook actually pops it;
@@ -1235,6 +1247,7 @@ async function suitePush() {
   await suiteRetroEnforcement();
   await suiteRetroActionOnRedTests();
   await suiteCeremonyConventions();
+  await suiteSquadModelPolicy();
   await suiteSteer();
   await suiteStaleApprovals();
   await suiteMcp();
