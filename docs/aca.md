@@ -405,10 +405,82 @@ can start a job, not a detail.
 Configured with `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` (see
 [commands.md](commands.md#the-service)); unset, the three `/api/aca/*` routes
 answer `501` and every repository works exactly as the first two directions
-above describe, which is the only state possible today — the App itself does
-not exist yet (swigerb/squad-on-aca#135 is the matching work on the workflow
-side, open and not yet implemented, which is why only `issue` and `prompt` are
-sent until it lands).
+above describe. Which inputs actually get sent for a given target repository
+still depends on that repository's own `squad-dispatch.yml` declaring them
+(the 422 refusal two paragraphs below) — `squad-on-aca`'s own copy of the
+workflow declares all seven as of its reviewed `main`, and this repository's
+own `.github/workflows/squad-dispatch.yml` (issue #242) declares all seven
+too, so a Hub App installed on either sends every field a caller supplies. A
+target repository that has not yet adopted a `squad-dispatch.yml` with the
+full input set still only accepts `issue`/`prompt`, and the hub's own 422
+check refuses the rest rather than guessing.
+
+### Setting up the dedicated dispatch App
+
+This is **setup guidance**, not a record that it has been done — registering
+the App, installing it, and configuring the identifiers below is a real,
+separate administrative action (tracked under #238/#239), never performed by
+this project's code at startup or from any workflow.
+
+**Register a dedicated, private App — never repurpose the existing worker
+control-plane App.** That control-plane App (the one squad-on-aca's own
+worker uses to push branches and open pull requests) already holds
+Contents/PR write and deliberately has no Actions permission at all; widening
+it to also call `workflow_dispatch` would hand a single credential two
+different trust levels it was never reviewed for. The dispatch App below is
+a second, independent App registration.
+
+| Permission | Level | Why |
+|---|---|---|
+| Actions | Read and write | `workflow_dispatch` itself, and reading a run's status back for `/api/aca/dispatches` |
+| Issues | Read and write | Creating the issue a `newIssue` dispatch targets, and reading/listing issues for `/api/aca/repos`-adjacent UI |
+| Contents | Read only | Reading `squad-dispatch.yml` off the target repository's default branch, to check declared inputs before dispatching (never writes — the App never pushes anything) |
+| Metadata | Read only | Mandatory on every GitHub App; lets the hub enumerate installed repositories |
+
+No other permission is needed, and none should be granted — in particular,
+**no** Contents write, **no** Pull requests permission, and **no**
+organization-level permission beyond what "selected repositories" already
+implies.
+
+1. **Create the App as private** ("Only on this account"), not public — see
+   below for why this matters.
+2. **Install it on selected repositories only** — explicitly choose which
+   repositories, never "All repositories". Every repository selected becomes
+   one where "any signed-in hub user can dispatch" (above) applies the moment
+   the App is configured on this hub.
+3. **Confirm `squad-dispatch.yml` is on each selected repository's default
+   branch** before expecting a dispatch to succeed there — `workflow_dispatch`
+   can only ever run a workflow file that already exists on that branch; there
+   is no way to supply the workflow content as part of the API call. The ref
+   the workflow actually runs from is always that repository's own current
+   default branch (never a caller-supplied `baseBranch` — see below).
+4. **Set `SQUAD_HUB_GH_APP_ID` and `SQUAD_HUB_GH_APP_PRIVATE_KEY`** on the hub
+   deployment (see [commands.md](commands.md#the-service)) — held only in
+   memory, never written to disk, never returned by any hub endpoint.
+5. **Confirm the OIDC/RBAC/lease prerequisites on the TARGET repository
+   itself are already in place** before relying on a dispatch to actually
+   start compute — the App above only gets GitHub as far as a successful
+   `workflow_dispatch` call; what that workflow run does once it starts is a
+   separate, target-repository-scoped concern: `AZURE_CLIENT_ID` /
+   `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` repository secrets bound to an
+   OIDC federation scoped to that repository and its default branch, an
+   Azure identity holding job-resource-scoped `Container Apps Jobs Operator`
+   (never broader), and `AZURE_RESOURCE_GROUP` / `ACA_SESSION_JOB_NAME`
+   repository variables naming the existing session job. None of these are
+   created, widened, or inferred by the App above, by `squad-dispatch.yml`,
+   or by this hub — a repository missing any of them fails the workflow's
+   own steps (Azure login, or the ACA REST calls), not a hub-side check.
+
+**Refusal and troubleshooting**, what each actually means:
+
+| Symptom | Meaning | Where it is decided |
+|---|---|---|
+| `POST /api/aca/dispatch` → `501` | `SQUAD_HUB_GH_APP_ID`/`SQUAD_HUB_GH_APP_PRIVATE_KEY` are unset on this hub | The hub itself, before any GitHub call |
+| `422` naming a field | That field is not one the target repository's own `squad-dispatch.yml` declares on its default branch | The hub, reading the workflow file, before `newIssue` or the dispatch call |
+| A repository is absent from `/api/aca/repos` | The App is not installed on it at all | GitHub's own installation list; this hub does not grant installation |
+| A repository is listed with `hasDispatchWorkflow: false` | The App is installed there, but it has no `squad-dispatch.yml` on its default branch yet | `listReposWithDispatchStatus()`, reading the repository's own default branch — not an installation fact |
+| Azure login step fails inside the run | The target repository's own OIDC federation/secrets are missing or scoped to the wrong repository/branch | `azure/login@v2`, inside the dispatched workflow run — not this hub |
+| The workflow's own lease-claim step reports `stand-down` | Another dispatch (Ralph, or a concurrent manual run) already holds the lease for that issue | The shared lease store, by design — this is a normal outcome, not a failure |
 
 With no App configured, the dialog's Repository and Issue fields still work
 (they sit outside the disabled `#acaForm`, not inside it, specifically so the
@@ -469,8 +541,65 @@ anything; if the dispatch call itself still fails afterward, the error response
 carries the issue the hub already created so it is never silently stranded.
 `workflow_dispatch` itself replies `204` with no run id, so the hub hands back
 the workflow's own Actions page as `runUrl` — the best any caller can do until
-a run appears, which `/api/aca/dispatches` then surfaces by matching it up
-afterward.
+a run appears, which `/api/aca/dispatches` then surfaces by proving it
+afterward. When the target workflow declares `hub_correlation_id`, the hub
+generates a per-attempt correlation id, stores it only in the authenticated
+user's in-memory dispatch bucket, sends it only as that workflow input, and
+later matches the run only when the workflow's exact `run-name` surfaces that
+same token back through the existing GitHub Actions API `display_title`. A
+repository still running an older workflow that does not declare that input is
+left honestly `unsupported`; the hub does not fall back to guessing by time.
+
+Proving the run is not the same as proving an execution started. After the ARM
+`/start` response yields an execution name and the workflow has validated it as
+a plain DNS-label-like name, the workflow publishes a one-line, one-day receipt
+artifact named `aca-exec-attempt<run_attempt>-<execution name>`. The hub reads
+only the artifact **name** through the Artifacts List API (covered by the App's
+existing Actions permission; no new permission, no artifact download) and, for a
+run that has started, reports it as `executionName`. That ties a hub dispatch to
+a verified Actions run and to the execution name behind the canonical
+`aca-<execution>` device identity. A receipt from a different run attempt (a
+manual rerun), an expired one, or none at all leaves `executionName` `null`;
+more than one current-attempt receipt is refused rather than guessed. The name
+is a join key only: it never creates or authenticates a device or session,
+which still requires the existing `aca-<execution>` registration.
+
+Both lookups are deliberately bounded — the newest 20 `workflow_dispatch` runs,
+the first 100 artifacts on a matched run — rather than paging through every
+run or artifact a repository has ever produced, which would turn one status
+poll into unbounded GitHub traffic. A match outside that bound is an honest
+`pending`/`null`, never an error. A match found *inside* the bound is only
+trusted when GitHub also reports that the page it came from was not truncated;
+if more runs (or artifacts) exist than the page fetched, the hub cannot rule
+out a same-looking match sitting on a page it never fetched, so it fails
+closed the same way a genuine on-page duplicate does, rather than treating an
+unverifiable single match as proof of uniqueness (see docs/api.md and
+docs/security.md).
+
+The run-list lookup additionally narrows its *candidate set* to runs created
+at or after this dispatch's own `dispatchedAt` (minus a small clock-skew
+buffer), using GitHub's `created` query filter. Without that bound, a
+repository's lifetime `workflow_dispatch` count — not just runs relevant to
+this dispatch — decides whether the page looks truncated; once a repository
+has made more than 20 manual dispatches *ever*, every future dispatch would
+otherwise see `total_count` exceed the fetched page and fail closed forever,
+even though the dispatch it is looking for is right there on the page. Time
+only bounds *which runs are candidates for the search* — it is never used as
+or in place of the correlation id, and a run sitting inside the time window
+with no matching correlation id is still left `pending`, exactly as if it had
+never been fetched at all.
+
+Each dispatch also gets a second, unrelated id: `DispatchTracker.record()`
+mints its own opaque `crypto.randomUUID()` the moment the dispatch is
+recorded, returned to the browser as `trackerId` from `POST /api/aca/dispatch`
+and exposed again as `.id` on every row `GET /api/aca/dispatches` returns.
+Unlike `hub_correlation_id` (used only internally, server-side, to match the
+Actions run and never sent to a browser), this id is meant to be handed back:
+it is the one stable, authoritative handle a client has for "the dispatch I
+just made", so a pending-row UI (#178) can bind to its own record directly
+instead of re-guessing which row is "its" dispatch from timestamp, issue
+number, or repo+ref proximity once more than one dispatch against the same
+repository is in flight at once.
 
 The dispatch always runs on the repository's own **default branch** — never on
 a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
@@ -549,12 +678,24 @@ The contract runs one way: **Squad Hub owns the device protocol and documents it
 here; squad-on-aca depends on it.** Never the reverse.
 
 The GitHub App dispatch path above is a THIRD, separate piece of scope, and is
-hub-side only: it calls `squad-dispatch.yml`'s `workflow_dispatch` trigger,
-which the workflow already supports for `issue`/`prompt` today. The additional
-inputs it can send (`model`, `base_branch`, `publish_pr`, `reviewer`,
-`watch_only`) are forward-compatible with swigerb/squad-on-aca#135, which is
-open and not yet implemented on the workflow side — sending them now does not
-block on that landing, because the hub reads the workflow's own declared
-inputs first and only ever sends the ones it actually declares, refusing the
-rest with a clear `422` rather than letting GitHub reject the whole call.
+hub-side only: it calls `squad-dispatch.yml`'s `workflow_dispatch` trigger.
+The additional inputs it can send (`model`, `base_branch`, `publish_pr`,
+`reviewer`, `watch_only`) landed on squad-on-aca's own workflow with
+swigerb/squad-on-aca#135 and are declared by this repository's own
+`.github/workflows/squad-dispatch.yml` too (issue #242) — sending them is
+still conditional, not assumed: the hub reads each target repository's own
+declared `workflow_dispatch` inputs first and only ever sends the ones it
+actually declares, refusing the rest with a clear `422` rather than letting
+GitHub reject the whole call. A target repository running an older
+`squad-dispatch.yml` that only declares `issue`/`prompt` is unaffected: it
+simply never receives the newer fields.
+
+That same conditional rule now includes the hub-owned `hub_correlation_id`
+input. It is not user input and does not pass through
+`sanitizeDispatchRequest`; the hub generates it per dispatch attempt, scopes it
+to the authenticated user's in-memory tracker partition, sends it only when the
+target workflow declares support, and reads it back only from the run's own
+`display_title` through the GitHub Actions API. No Azure credential is added to
+the hub, no worker/image/model protocol changes are involved, and the browser
+never needs to see the raw token.
 

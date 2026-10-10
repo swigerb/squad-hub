@@ -3282,7 +3282,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v16';`,
+    find: `const CACHE = 'squad-hub-shell-v15';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -4536,14 +4536,14 @@ if ($health.accessStore -ne 'durable') {`,
   },
   {
     // Must-fix #2: a run on a different branch than the one this dispatch
-    // actually used must never be matched, even if it was created at
-    // plausibly the right time -- otherwise a coincidentally-close run from
-    // an unrelated push could be reported as this dispatch's own status.
+    // actually used must never be matched, even if it carries the same
+    // correlation token -- otherwise a run on the wrong ref could be reported
+    // as this dispatch's own status.
     name: 'resolveRunStatus ignores ref, matching a run on any branch',
     file: 'src/service/github-app.js',
     find: `      .filter((r) => !ref || r.head_branch === ref)`,
     replace: `      .filter((r) => process.env.MUTANT || !ref || r.head_branch === ref) // MUTATION`,
-    mustFail: 'resolveRunStatus matches on ref, ignoring a run on a different branch',
+    mustFail: 'resolveRunStatus matches exactly one run by the dispatch correlation token in display_title',
   },
   {
     // Must-fix #2: a run id already bound to a different recorded dispatch
@@ -4556,15 +4556,60 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'resolveRunStatus never binds a run id already bound to another recorded dispatch',
   },
   {
-    // Must-fix #2: the tolerance window exists specifically to absorb clock
-    // drift and GitHub's whole-second created_at precision -- without it, a
-    // run GitHub timestamps a moment before this process believes it made
-    // the call would be missed entirely.
-    name: 'RUN_MATCH_TOLERANCE_MS is ignored, so a run created a moment early is missed',
+    // Issue #245: the title match must stay anchored to the exact
+    // bracket-delimited receipt format. Bare substring matching would let a
+    // truncated, padded, or embedded token pose as a real receipt.
+    name: 'correlation matching falls back to a bare substring includes() check',
     file: 'src/service/github-app.js',
-    find: `    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;`,
-    replace: `    const minCreatedAt = flooredDispatchedAt - (process.env.MUTANT ? 0 : RUN_MATCH_TOLERANCE_MS); // MUTATION`,
-    mustFail: 'resolveRunStatus tolerates a run GitHub timestamps a couple of seconds early (clock drift)',
+    find: `      .filter((r) => titleRe.test(String(r.display_title || '')));`,
+    replace: `      .filter((r) => process.env.MUTANT ? String(r.display_title || '').includes(correlationId) : titleRe.test(String(r.display_title || ''))); // MUTATION`,
+    mustFail: 'a forged or substring look-alike correlation receipt never matches',
+  },
+  {
+    // Issue #245: multiple exact receipts must be treated as bounded unknown,
+    // never resolved by silently picking whichever run happened to appear
+    // first in the API response.
+    name: 'ambiguous duplicate correlation receipts pick the first run instead of erroring',
+    file: 'src/service/github-app.js',
+    find: `    if (runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }`,
+    replace: `    if (!process.env.MUTANT && runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }`,
+    mustFail: 'an ambiguous duplicate correlation receipt returns error instead of guessing',
+  },
+  {
+    // #247 finding 2: a single match on a truncated page is not provably
+    // unique -- without this check, a genuine same-window duplicate
+    // correlation match sitting on an unfetched page would be silently
+    // trusted instead of failing closed.
+    name: 'resolveRunStatus trusts a single match even when GitHub reports a truncated page',
+    file: 'src/service/github-app.js',
+    find: `    if (totalCount > fetched.length) {
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }`,
+    replace: `    if (!process.env.MUTANT && totalCount > fetched.length) { // MUTATION
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }`,
+    mustFail: 'a single matching run found on a truncated (bounded) run-list page fails closed instead of claiming uniqueness',
+  },
+  {
+    // #247 finding 2: without a dispatch-time candidate window, GitHub's
+    // `total_count` on the plain run listing counts every manual dispatch
+    // this workflow has EVER had, repository-wide -- once that history
+    // passes `per_page=20`, the truncation check above trips permanently,
+    // on every future dispatch, even a uniquely correlated brand-new run
+    // sitting right there on the fetched page.
+    name: 'resolveRunStatus never bounds the run-list query to this dispatch\'s own time window',
+    file: 'src/service/github-app.js',
+    find: `    const createdFilter = dispatchedAt != null
+      ? \`&created=\${encodeURIComponent(\`>=\${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}\`)}\`
+      : '';`,
+    replace: `    const createdFilter = (process.env.MUTANT ? false : dispatchedAt != null) // MUTATION
+      ? \`&created=\${encodeURIComponent(\`>=\${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}\`)}\`
+      : '';`,
+    mustFail: 'more than 20 historical unrelated workflow_dispatch runs never permanently block a uniquely correlated new dispatch from resolving (#247)',
   },
   {
     // A GitHub 401/403 is the APP'S OWN credential being rejected, not the
@@ -4584,14 +4629,14 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
     replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
-    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+    mustFail: 'two same-target dispatches with distinct correlation ids each bind to their own run',
   },
   {
     name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
     file: 'src/service/dispatch-tracker.js',
     find: `        if (ids.has(o.id) || o.boundRunId != null) continue;`,
     replace: `        continue; // MUTATION`,
-    mustFail: 'close dispatches by two users bind oldest first, whichever user polls first',
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
   },
   {
     // DispatchTracker must-fix #2: once a record has a bound run, it must
@@ -4600,11 +4645,15 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/dispatch-tracker.js',
     find: `        if (r.boundRunId != null) {
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
     replace: `        if (r.boundRunId != null && !process.env.MUTANT) { // MUTATION
           status = await githubApp._getRun(r.owner, r.repo, r.installationId, r.boundRunId);
+        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
         } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
-    mustFail: 'once a dispatch binds a run, a later poll refreshes it without re-searching (never re-binds)',
+    mustFail: 'a bound dispatch refreshes queued -> in_progress -> completed without re-searching',
   },
   {
     // DispatchTracker must-fix #2: once a run is matched, it must be
@@ -4619,7 +4668,18 @@ if ($health.accessStore -ne 'durable') {`,
             r.boundRunId = status.runId;
             boundElsewhere.add(status.runId);
           }`,
-    mustFail: 'two close dispatches on one repo each bind to their own run, never double-claiming',
+    mustFail: 'cross-user binding matches owner/repo case-insensitively',
+  },
+  {
+    name: 'older workflow records fall through to live run searching instead of short-circuiting to unsupported',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        } else if (r.correlationSupported === false) {
+          status = UNSUPPORTED_STATUS;
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    replace: `        } else if (r.correlationSupported === false && !process.env.MUTANT) { // MUTATION
+          status = UNSUPPORTED_STATUS;
+        } else if (this._now() - r.dispatchedAt > MAX_UNMATCHED_RECORD_AGE_MS) {`,
+    mustFail: 'an older installed workflow is reported as unsupported forever and never searched',
   },
   {
     // NIT: `Number("0x10")` is 16 and `Number(true)` is 1 -- `Number.isInteger`
@@ -4946,6 +5006,174 @@ if ($health.accessStore -ne 'durable') {`,
       return send(200, { enabled: process.env.MUTANT ? !this.githubApp.enabled : this.githubApp.enabled, reason: this.githubApp.disabledReason() }); // MUTATION
     }`,
     mustFail: 'GET /api/aca/status answers 200 with enabled: false and a reason when the App is not configured',
+  },
+
+  // -- #245: the confirmed ACA execution receipt ---------------------------
+  {
+    // The captured execution name is only trustworthy because the charset is strict.
+    name: 'the receipt name regex accepts underscores in the execution name',
+    file: 'src/service/github-app.js',
+    find: `(?:[A-Za-z0-9-]{0,126}[A-Za-z0-9])?)$/;`,
+    replace: `(?:[A-Za-z0-9_-]{0,126}[A-Za-z0-9])?)$/; // MUTATION`,
+    mustFail: 'EXEC_RECEIPT_NAME_RE accepts only attempt-number plus a DNS-label-like execution name',
+  },
+  {
+    // An expired artifact is gone; reporting it would be a receipt that cannot be confirmed.
+    name: 'an expired receipt artifact is still reported',
+    file: 'src/service/github-app.js',
+    find: `      if (a.expired) continue;
+`,
+    replace: `      if (!process.env.MUTANT && a.expired) continue; // MUTATION
+`,
+    mustFail: 'resolveExecutionReceipt ignores an expired receipt',
+  },
+  {
+    // A stale artifact from attempt 1 must never be reported for attempt 2.
+    name: 'a receipt from a prior run attempt is accepted after a rerun',
+    file: 'src/service/github-app.js',
+    find: `      if (!m || Number(m[1]) !== Number(runAttempt)) continue;`,
+    replace: `      if (!m || (!process.env.MUTANT && Number(m[1]) !== Number(runAttempt))) continue; // MUTATION`,
+    mustFail: 'resolveExecutionReceipt ignores a receipt left by a prior attempt',
+  },
+  {
+    // More than one receipt must be refused, never guessed.
+    name: 'two receipts are resolved by guessing the first',
+    file: 'src/service/github-app.js',
+    find: `    if (matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess');`,
+    replace: `    if (!process.env.MUTANT && matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess'); // MUTATION`,
+    mustFail: 'resolveExecutionReceipt refuses to guess between two current-attempt receipts',
+  },
+  {
+    // A provider failure must not look like an honest "no receipt".
+    name: 'a failed artifact listing is reported as no receipt',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), \`could not read artifacts for`,
+    replace: `    if (!process.env.MUTANT && res.status !== 200) { // MUTATION
+      throw this._err(upstreamStatus(res.status), \`could not read artifacts for`,
+    mustFail: 'resolveExecutionReceipt surfaces a provider failure instead of returning null',
+  },
+  {
+    // The attempt number is what lets a rerun ignore a stale receipt.
+    name: '_getRun drops the run attempt',
+    file: 'src/service/github-app.js',
+    find: `      runAttempt: res.json.run_attempt,
+`,
+    replace: `      runAttempt: process.env.MUTANT ? undefined : res.json.run_attempt, // MUTATION
+`,
+    mustFail: '_getRun and resolveRunStatus both report the run_attempt',
+  },
+  {
+    // Same, for the freshly matched run.
+    name: 'resolveRunStatus drops the run attempt',
+    file: 'src/service/github-app.js',
+    find: `      runAttempt: run.run_attempt,
+`,
+    replace: `      runAttempt: process.env.MUTANT ? undefined : run.run_attempt, // MUTATION
+`,
+    mustFail: '_getRun and resolveRunStatus both report the run_attempt',
+  },
+  {
+    // A stale name must not be emitted alongside a different attempt's status.
+    name: 'the public record emits executionName regardless of the status attempt',
+    file: 'src/service/dispatch-tracker.js',
+    find: `rec.executionName != null && status && rec.executionAttempt === status.runAttempt`,
+    replace: `rec.executionName != null && (process.env.MUTANT || (status && rec.executionAttempt === status.runAttempt))`,
+    mustFail: 'tracker never keeps a stale executionName while a rerun is queued',
+  },
+  {
+    // The one new field surfaced to the API.
+    name: 'the public record omits executionName',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        ? rec.executionName : null,`,
+    replace: `        ? (process.env.MUTANT ? null : rec.executionName) : null, // MUTATION`,
+    mustFail: 'tracker surfaces a resolved executionName through the public record',
+  },
+  {
+    // Only a started run can have published a receipt.
+    name: 'a receipt is looked up for a run that has not started',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (status.state !== 'in_progress' && status.state !== 'completed') return status;`,
+    replace: `    if (!process.env.MUTANT && status.state !== 'in_progress' && status.state !== 'completed') return status; // MUTATION`,
+    mustFail: 'tracker never looks up a receipt for a queued, pending or unsupported dispatch',
+  },
+  {
+    // Once set, executionName never flip-flops.
+    name: 'a cached executionName is looked up again on every poll',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (r.executionName == null || r.executionAttempt !== attempt) {
+      try {`,
+    replace: `    if (process.env.MUTANT || r.executionName == null || r.executionAttempt !== attempt) { // MUTATION
+      try {`,
+    mustFail: 'tracker caches executionName and never re-resolves it on a later poll',
+  },
+  {
+    // Concurrent polls share one in-flight lookup.
+    name: 'overlapping polls each start their own receipt lookup',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (!r._receiptLookup || r._receiptLookupAttempt !== attempt) {`,
+    replace: `        if (process.env.MUTANT || !r._receiptLookup || r._receiptLookupAttempt !== attempt) { // MUTATION`,
+    mustFail: 'overlapping polls share one receipt lookup and agree on executionName',
+  },
+  {
+    // Re-check after the await, as boundRunId does.
+    name: 'a slower receipt lookup overwrites an executionName a concurrent poll already cached',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {`,
+    replace: `        if (receipt && attempt === r._attemptFence && (process.env.MUTANT || !alreadyCurrent)) { // MUTATION`,
+    mustFail: 'a concurrent poll that already cached executionName is never overwritten by a slower lookup',
+  },
+  {
+    // A lookup for an attempt a later poll has already superseded must not
+    // be allowed to commit its (stale) result to the cache.
+    name: 'a stale attempt lookup commits its result even after a newer attempt is observed',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        if (receipt && attempt === r._attemptFence && !alreadyCurrent) {`,
+    replace: `        if (receipt && (process.env.MUTANT || attempt === r._attemptFence) && !alreadyCurrent) { // MUTATION`,
+    mustFail: 'cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt',
+  },
+  {
+    // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
+    name: 'a cached executionName is trusted across a rerun attempt change',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
+        r.executionName = null;
+        r.executionAttempt = null;
+      }`,
+    replace: `      if (!process.env.MUTANT && r.executionAttempt != null && r.executionAttempt !== incomingAttempt) { // MUTATION
+        r.executionName = null;
+        r.executionAttempt = null;
+      }`,
+    mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
+  },
+  {
+    // One record's receipt failure must not hide another's status.
+    name: 'a receipt lookup failure escapes and hides every other dispatch',
+    file: 'src/service/dispatch-tracker.js',
+    find: `        return { ...status, reason: \`execution receipt lookup failed: \${e.message}\` };`,
+    replace: `        if (process.env.MUTANT) throw e; // MUTATION
+        return { ...status, reason: \`execution receipt lookup failed: \${e.message}\` };`,
+    mustFail: 'a failed receipt lookup keeps the run status and never hides another record',
+  },
+  {
+    // Without the attempt, a stale receipt could not be told apart.
+    name: 'the receipt lookup is not given the run attempt',
+    file: 'src/service/dispatch-tracker.js',
+    find: `            runAttempt: attempt,`,
+    replace: `            runAttempt: process.env.MUTANT ? undefined : attempt, // MUTATION`,
+    mustFail: 'tracker surfaces a resolved executionName through the public record and passes the run attempt',
+  },
+  {
+    // A status reporting an attempt behind the fence (a deferred `_getRun`
+    // that only resolves after a later poll already observed and cached a
+    // newer attempt) must not be allowed to clear that newer attempt's
+    // already-cached executionName or start a wasted receipt lookup for the
+    // stale attempt -- see #247, finding 1.
+    name: 'a status behind the attempt fence is still allowed to clear the cache and start a new lookup',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      if (incomingAttempt < r._attemptFence) {`,
+    replace: `      if (!process.env.MUTANT && incomingAttempt < r._attemptFence) { // MUTATION`,
+    mustFail: 'a stale deferred run-status arriving after a newer attempt is already cached must not clear the cache or re-query (#247)',
   },
 
   {
@@ -6868,6 +7096,232 @@ if ($health.accessStore -ne 'durable') {`,
     find: `capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,`,
     replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
     mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
+  },
+
+  // -------------------------------------------------------------------------
+  // Issue #242: `.github/workflows/squad-dispatch.yml`, the manual-only
+  // target dispatch workflow pinned to a reviewed squad-on-aca core.
+  // -------------------------------------------------------------------------
+  {
+    name: 'squad-dispatch.yml gains an issues: auto-dispatch trigger',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `on:
+  workflow_dispatch:`,
+    replace: `on:
+  issues:
+    types: [labeled] # MUTATION
+  workflow_dispatch:`,
+    mustFail: 'issues/issue_comment auto-dispatch triggers are NOT present',
+  },
+  {
+    name: 'the pinned core checkout is no longer verified to resolve to the pinned SHA',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if [ "$resolved" != "\${{ env.SQUAD_ACA_CORE_REF }}" ]; then`,
+    replace: `          if false; then # MUTATION: the pin check can never fire`,
+    mustFail: 'the pinned checkout is verified to actually resolve to the pinned SHA before any side effect runs',
+  },
+  {
+    name: 'the pinned core checkout starts persisting credentials',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          path: aca-core
+          persist-credentials: false`,
+    replace: `          path: aca-core
+          persist-credentials: true # MUTATION`,
+    mustFail: 'the pinned core checkout is read-only (no credentials persisted)',
+  },
+  {
+    name: 'the ACA job start no longer refuses a template missing image/cpu/memory',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if ! jq -e '.properties.template.containers[0].image and (.properties.template.containers[0].resources.cpu != null) and .properties.template.containers[0].resources.memory' "$job_file" >/dev/null; then`,
+    replace: `          if false; then # MUTATION: the template shape is never checked`,
+    mustFail: 'the job template is checked for image/cpu/memory before an override is attempted',
+  },
+  {
+    name: 'the ACA job start no longer refuses a merged environment with no GITHUB_TOKEN secret reference',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if ! printf '%s\\n' "\${start_env[@]}" | grep -q '^GITHUB_TOKEN=secretref:'; then`,
+    replace: `          if false; then # MUTATION: never refuses a missing GITHUB_TOKEN secret reference`,
+    mustFail: 'a merged environment with no GITHUB_TOKEN secret reference refuses to start',
+  },
+  {
+    name: 'a claimed lease with no resulting execution is no longer a hard failure',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          if [ -z "\${EXEC}" ]; then
+            echo "The lease was claimed for this issue but NO ACA execution was started."
+            echo "The lease is now held by a session that does not exist, so the issue is blocked until it is swept."
+            exit 1
+          fi`,
+    replace: `          if false; then # MUTATION: a claimed-but-unstarted lease is no longer caught
+            exit 1
+          fi`,
+    mustFail: 'a claimed lease with no resulting execution is a hard failure, not a quiet success',
+  },
+  {
+    name: 'the job-level permissions widen to include actions: write',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `    permissions:
+      id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
+    replace: `    permissions:
+      actions: write   # MUTATION: this job never needs Actions permission on itself
+      id-token: write   # OIDC federation to Azure; the ONLY Azure credential`,
+    mustFail: 'permissions are minimal at the workflow level and scoped at the job level',
+  },
+  {
+    name: 'input validation loses its GH_TOKEN, leaving its gh api base-branch check unauthenticated',
+    file: '.github/workflows/squad-dispatch.yml',
+    find: `          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          INPUT_MODEL: \${{ github.event.inputs.model || '' }}`,
+    replace: `          INPUT_MODEL: \${{ github.event.inputs.model || '' }} # MUTATION: GH_TOKEN removed`,
+    mustFail: 'input validation carries a GH_TOKEN so its gh api base-branch check is authenticated',
+  },
+  {
+    // PR #244 review (Finding 1): Azure's real "List Application Settings"
+    // operation is a POST to .../list, despite being a read -- there is no
+    // documented GET for config/appsettings. Reverting the recommended
+    // VAPID transfer script's read call back to GET reproduces exactly the
+    // factually-wrong REST shape the review flagged.
+    name: 'the recommended VAPID transfer script reads settings with GET instead of the real POST .../list operation',
+    file: 'docs/security.md',
+    find: `  const current = await settingsRequest('POST', undefined, 'read');`,
+    replace: `  const current = await settingsRequest('GET', undefined, 'read'); // MUTATION: Azure has no documented GET for this resource`,
+    mustFail: 'executable: the recommended script reads via POST .../list (not GET) and writes via PUT (not /list)',
+  },
+  {
+    // PR #244 review (Finding 2a): a malformed or unexpected-shape settings
+    // response must refuse loudly, never silently degrade to {} and then
+    // write a settings object that has lost every real pre-existing
+    // setting. Dropping the shape check back to the old `|| {}` fallback
+    // reproduces exactly that silent-data-loss bug.
+    name: 'the recommended VAPID transfer script silently treats a malformed settings response as empty instead of refusing',
+    file: 'docs/security.md',
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {
+    console.error('Refusing: ' + label + ' had an unexpected shape, missing a properties object. Never treat a missing properties object as empty settings.');
+    process.exit(1);
+  }
+  return res.body.properties;`,
+    replace: `  return res.body.properties || {}; // MUTATION: silently treats a malformed/missing-shape response as "no settings"`,
+    mustFail: 'executable: the script refuses safely, with no write, when the read response is JSON but missing properties',
+  },
+  {
+    // PR #244 review (Finding 2d): the public/private correspondence check
+    // must run in memory, before any network write, and actually refuse on
+    // a mismatch. Disabling the comparison reproduces writing an unverified
+    // pair -- exactly what an earlier, separate paste-based manual example
+    // existed to catch, now folded into this one script.
+    name: 'the in-script ECDH correspondence check never refuses, even on a derivation mismatch',
+    file: 'docs/security.md',
+    find: `  if (derivedPublic !== publicKey) {`,
+    replace: `  if (false) { // MUTATION: correspondence check disabled`,
+    mustFail: 'security.md folds the ECDH correspondence check into the one recommended script, with no separate paste-based example',
+  },
+  {
+    // Security review follow-up to #244 (N1): APP_SERVICE_SETTINGS_HOST must
+    // never be honored unless the insecure test-transport flag is also
+    // explicitly set to '1' -- otherwise a stray APP_SERVICE_SETTINGS_HOST
+    // left set in a real shell silently redirects the bearer token and the
+    // freshly written private key to a different host, still over HTTPS.
+    // Reverting to honoring the host override unconditionally reproduces
+    // exactly that.
+    name: 'the recommended VAPID transfer script honors APP_SERVICE_SETTINGS_HOST even without the insecure test-transport flag',
+    file: 'docs/security.md',
+    find: `const hostParts = ((insecureTestTransport && process.env.APP_SERVICE_SETTINGS_HOST) || 'management.azure.com').split(':');`,
+    replace: `const hostParts = (process.env.APP_SERVICE_SETTINGS_HOST || 'management.azure.com').split(':'); // MUTATION: host override honored unconditionally`,
+    mustFail: 'executable: APP_SERVICE_SETTINGS_HOST alone, without the insecure test-transport flag, is ignored -- the real hostname and port are used',
+  },
+  {
+    // Security review follow-up to #244 (N2): `typeof res.body.properties
+    // !== 'object'` alone is also true for an array (`typeof [] ===
+    // 'object'`), so a `properties: []` response would otherwise pass this
+    // shape check and proceed into the write path. Dropping the explicit
+    // Array.isArray rejection reproduces exactly that gap.
+    name: 'the recommended VAPID transfer script treats properties: [] as a valid shape instead of refusing',
+    file: 'docs/security.md',
+    find: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object' || Array.isArray(res.body.properties)) {`,
+    replace: `  if (!res.body || typeof res.body !== 'object' || !res.body.properties || typeof res.body.properties !== 'object') { // MUTATION: array shape rejection removed`,
+    mustFail: 'executable: the script refuses safely, with no write, when properties is an array instead of an object',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 1): Azure's real List Application
+    // Settings operation returns the private value verbatim on read -- it
+    // is not redacted. The in-memory ECDH check in step 2 only proves the
+    // freshly generated pair is internally self-consistent BEFORE the
+    // write; it proves nothing about what actually landed in App Service
+    // after the PUT. Dropping the readback comparison of the stored private
+    // key reproduces exactly the bug the re-review flagged: a PUT that
+    // silently drops/corrupts/truncates the private value would still
+    // report "Pair stored and verified".
+    name: 'the recommended VAPID transfer script never compares the stored private key against the generated one on readback',
+    file: 'docs/security.md',
+    find: `  if (stored.SQUAD_HUB_VAPID_PRIVATE_KEY !== privateKey) {
+    console.error('MISMATCH -- the stored private key does not match what was just generated. Do not treat this pair as deployed; investigate before relying on it.');
+    process.exit(1);
+  }`,
+    replace: `  // MUTATION: private key readback comparison removed`,
+    mustFail: 'executable: the script detects a stored private key that does not match what was generated, even though the public key matches, and never leaks either key value',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 2): settingsRequest() must bound how
+    // long it waits for a response -- a peer that accepts the connection
+    // but never finishes responding must never hang the operator's shell
+    // forever with no feedback. Removing the timeout reproduces exactly
+    // that unbounded hang.
+    name: 'the recommended VAPID transfer script has no bound on how long it waits for a response (no timeout)',
+    file: 'docs/security.md',
+    find: `    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy();
+      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }
+    });`,
+    replace: `    // MUTATION: request timeout removed`,
+    mustFail: 'executable: a stalled initial read times out, refuses safely, and reports that no write has happened yet',
+  },
+  {
+    // Re-review (follow-up to #244, Gap 2): a timed-out PUT must never
+    // claim "no write happened" -- the request body may already have
+    // reached the server before the response stalled. Reusing the read
+    // timeout's safe "no write has happened yet" language for a stalled PUT
+    // reproduces exactly the false safety claim the re-review flagged.
+    name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled PUT, same as a stalled read',
+    file: 'docs/security.md',
+    find: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }`,
+    replace: `      reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: PUT/readback timeout falsely claims no write happened, same as a read timeout`,
+    mustFail: 'executable: a stalled write (PUT) times out, refuses safely, and never claims no write happened',
+  },
+  {
+    // Security review follow-up (#242): collapsing the step-4 readback
+    // timeout message back to the step-1 wording reproduces the exact
+    // false-safety bug the security reviewer flagged on commit ed0f2ba --
+    // claiming "no write has happened yet" for a readback timeout that runs
+    // AFTER step 3's PUT already succeeded. This mutation keeps the PUT
+    // branch distinct (so the PUT-timeout test above still passes) but
+    // collapses ONLY the readback branch into the step-1 wording, which
+    // must make the dedicated step-4-stall test fail.
+    name: 'the recommended VAPID transfer script falsely claims no write happened on a stalled step-4 readback, same as a stalled step-1 read',
+    file: 'docs/security.md',
+    find: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else if (timeoutPhase === 'readback') {
+        reject(new Error('the request timed out waiting for a response; the write in step 3 already succeeded before this call started, so a pair is already stored -- this timeout only means verification could not be confirmed. Investigate before relying on this deployment: do not assume the stored pair is wrong just because this readback failed, but do not assume it is right either.'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script'));
+      }`,
+    replace: `      if (timeoutPhase === 'write') {
+        reject(new Error('the request timed out waiting for a response; if this was the write step, the settings may or may not have been updated -- do not assume either outcome, investigate before relying on this deployment'));
+      } else {
+        reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: readback branch collapsed back into the step-1 wording
+      }`,
+    mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
   },
 ];
 

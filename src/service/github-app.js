@@ -83,14 +83,33 @@ const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const LIST_PAGE_SIZE = 100;
 const MAX_LIST_PAGES = 50;
 
-/** `resolveRunStatus` floors the recorded dispatch timestamp to whole
- * seconds (GitHub's own `created_at` has no sub-second precision, so
- * comparing millisecond-precise would reject a run GitHub reports as created
- * in the very same second as the dispatch) and then subtracts this much
- * more, to absorb ordinary clock drift between this process and GitHub's --
- * a run GitHub timestamps a couple of seconds before this process believes
- * it made the call must still match. */
-const RUN_MATCH_TOLERANCE_MS = 5000;
+/** How far before a record's own `dispatchedAt` `resolveRunStatus`'s
+ * `created` candidate-window filter starts (see `resolveRunStatus`). Exists
+ * solely to absorb ordinary clock drift between this process's `Date.now()`
+ * and GitHub's own `created_at` timestamps -- a real `workflow_dispatch` run
+ * is created within seconds of the dispatch call that triggered it, never
+ * minutes earlier, so this is a generous margin, not a timing-based identity
+ * claim. The actual match is still decided purely by the correlation id in
+ * `display_title`; this constant only bounds the candidate set fetched and
+ * what `total_count` is checked against. */
+const RUN_SEARCH_WINDOW_SKEW_MS = 10 * 60 * 1000;
+
+const HUB_CORRELATION_INPUT = 'hub_correlation_id';
+const HUB_CORRELATION_TITLE_RE = /^Squad dispatch \[corr:([A-Za-z0-9]{8,64})\]$/;
+/** The receipt artifact the workflow publishes once ARM confirmed an execution:
+ * `aca-exec-attempt<run_attempt>-<execution name>`. The name charset mirrors
+ * the workflow's own validation, so a captured execution name is always a plain
+ * DNS-label-like string, never free text. */
+const EXEC_RECEIPT_NAME_RE = /^aca-exec-attempt(\d+)-([A-Za-z0-9](?:[A-Za-z0-9-]{0,126}[A-Za-z0-9])?)$/;
+const UNSUPPORTED_CORRELATION_REASON = `this repository's ${WORKFLOW_FILE} does not declare ${HUB_CORRELATION_INPUT}, so this dispatch's run cannot be proven from here`;
+
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function correlationTitleRe(correlationId) {
+  return new RegExp(`^Squad dispatch \\[corr:${escapeRegExp(correlationId)}\\]$`);
+}
 
 /**
  * Upstream GitHub status -> the status this hub reports for it. A 401 or 403
@@ -489,9 +508,10 @@ class GitHubApp {
    * issue was created for it, the thrown error carries `.issue` so the
    * caller is not left unable to find an issue this call already made.
    *
-   * Returns `{issue, runUrl, installationId, workflowFile, ref, dispatchedAt}`
-   * -- the last four kept so `DispatchTracker` can resolve a run's status
-   * later without re-doing the allow-list lookup.
+   * Returns `{issue, runUrl, installationId, workflowFile, ref, dispatchedAt,
+   * correlationId, correlationSupported}` -- the non-issue fields kept so
+   * `DispatchTracker` can resolve a run's status later without re-doing the
+   * allow-list lookup.
    */
   async dispatch({
     owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly,
@@ -521,6 +541,10 @@ class GitHubApp {
       );
     }
 
+    const generatedCorrelationId = crypto.randomBytes(16).toString('hex');
+    const correlationSupported = declared.includes(HUB_CORRELATION_INPUT);
+    const correlationId = correlationSupported ? generatedCorrelationId : null;
+
     // ALWAYS the repository's own default branch -- never the
     // caller-supplied `baseBranch`, which travels only as the `base_branch`
     // INPUT above (and only when the workflow declares it, per the check
@@ -541,9 +565,10 @@ class GitHubApp {
       { prompt, model, baseBranch, publishPr, reviewer, watchOnly },
       { issueNumber },
     );
+    if (correlationSupported) inputs[HUB_CORRELATION_INPUT] = correlationId;
 
-    // Captured immediately before the call that actually starts the run --
-    // see `resolveRunStatus`, which matches a run no older than this.
+    // Captured immediately before the call that actually starts the run so
+    // stale unmatched records can still age out if no run ever appears.
     const dispatchedAt = this._now();
     try {
       await this._dispatchWorkflow(owner, repo, ref, inputs, token);
@@ -559,6 +584,8 @@ class GitHubApp {
       workflowFile: WORKFLOW_FILE,
       ref,
       dispatchedAt,
+      correlationId,
+      correlationSupported,
     };
   }
 
@@ -575,55 +602,147 @@ class GitHubApp {
       state: res.json.status,
       conclusion: res.json.conclusion || null,
       runId: res.json.id,
+      runAttempt: res.json.run_attempt,
       htmlUrl: res.json.html_url,
     };
   }
 
   /**
    * The Actions run status for one tracked dispatch, for
-   * `GET /api/aca/dispatches`. Matches the earliest-created run of this
-   * workflow that:
-   *   - was triggered by `workflow_dispatch` (never a run some other trigger
-   *     started, which would otherwise look like this dispatch's own run),
-   *   - was created no earlier than the dispatch's own timestamp, floored to
-   *     whole seconds (GitHub's `created_at` has no finer resolution) minus
-   *     `RUN_MATCH_TOLERANCE_MS` of slack for ordinary clock drift,
-   *   - ran on the same `ref` this dispatch actually used (never a
-   *     coincidentally-close run on a different branch),
-   *   - is not already `excludeRunIds` -- a run id some OTHER recorded
-   *     dispatch has already been bound to, so two close dispatches on one
-   *     repo never both claim the same run.
+   * `GET /api/aca/dispatches`. For workflows that declare
+   * `hub_correlation_id`, the hub proves which run belongs to this dispatch by
+   * matching this record's own correlation id against the run's `display_title`
+   * in the exact, bracket-delimited `run-name:` format the workflow emits.
+   *
+   * `event=workflow_dispatch`, `ref`, and `excludeRunIds` remain as cheap
+   * defence-in-depth filters, but they are not the proof. If the workflow does
+   * not declare `hub_correlation_id`, this method refuses to guess.
+   *
+   * `dispatchedAt` (this record's own dispatch time, from `DispatchTracker`)
+   * bounds the CANDIDATE SET this lookup fetches, never the identity proof
+   * itself: the actual match is still decided purely by `correlationId`
+   * appearing in `display_title`, above. Without this bound, `total_count`
+   * on the plain `?event=workflow_dispatch` listing is GitHub's count of
+   * every manual dispatch this workflow has EVER had, for the whole
+   * repository's history -- once that history passes `per_page=20`, the
+   * truncation check below trips permanently, on every future dispatch,
+   * even a uniquely correlated brand-new run sitting right there on the
+   * fetched page (#247). Filtering by `created` narrows what `total_count`
+   * counts to runs created at or after a conservative window before this
+   * record's own dispatch -- recovering the truncation check's actual
+   * purpose (catching a same-window duplicate correlation match truncated
+   * off this page) without conflating it with the repository's unrelated
+   * total history. A window that starts BEFORE `dispatchedAt` (rather than
+   * exactly at it) absorbs ordinary clock drift between this process and
+   * GitHub's own `created_at` timestamps; a manual rerun keeps the run's
+   * original `created_at`, so it always stays inside a window drawn from
+   * the run's original dispatch time. Older callers (or any caller that does
+   * not supply `dispatchedAt`) get the previous, unbounded behavior exactly
+   * as before.
    */
   async resolveRunStatus({
-    owner, repo, installationId, dispatchedAt, ref, excludeRunIds,
+    owner, repo, installationId, correlationId, correlationSupported, ref, excludeRunIds, dispatchedAt,
   }) {
+    if (!correlationSupported || !correlationId) {
+      return { state: 'unsupported', reason: UNSUPPORTED_CORRELATION_REASON };
+    }
     const token = await this._installationToken(installationId, repo);
+    const createdFilter = dispatchedAt != null
+      ? `&created=${encodeURIComponent(`>=${new Date(dispatchedAt - RUN_SEARCH_WINDOW_SKEW_MS).toISOString()}`)}`
+      : '';
     const res = await this._request({
       method: 'GET',
-      path: `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=20`,
+      path: `/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=20${createdFilter}`,
       token,
     });
     if (res.status !== 200) {
       throw this._err(upstreamStatus(res.status), `could not read Actions runs for ${owner}/${repo} (GitHub returned ${res.status})`);
     }
-    const flooredDispatchedAt = Math.floor(dispatchedAt / 1000) * 1000;
-    const minCreatedAt = flooredDispatchedAt - RUN_MATCH_TOLERANCE_MS;
-    const runs = (res.json.workflow_runs || [])
-      .filter((r) => new Date(r.created_at).getTime() >= minCreatedAt)
+    const titleRe = correlationTitleRe(correlationId);
+    const fetched = res.json.workflow_runs || [];
+    const runs = fetched
       .filter((r) => !ref || r.head_branch === ref)
       .filter((r) => !excludeRunIds || !excludeRunIds.has(r.id))
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      .filter((r) => titleRe.test(String(r.display_title || '')));
     if (!runs.length) return { state: 'pending', reason: 'no run has appeared yet' };
+    if (runs.length > 1) {
+      return { state: 'error', reason: 'ambiguous correlation match; refusing to guess which run is this dispatch' };
+    }
+    // This lookup is bounded to the newest `per_page=20` runs within the
+    // candidate window above (see docs/aca.md and docs/security.md): a false
+    // NEGATIVE from that bound (a legitimate run just outside the newest 20
+    // in-window runs) is an acceptable honest "pending", but a false claim of
+    // UNIQUENESS is not. If GitHub reports more runs exist within that same
+    // bounded window than this one page fetched, a second, still-unfetched
+    // run could carry the same correlation id -- so a single match found
+    // here must not be trusted as proof of uniqueness; fail closed exactly
+    // as the real `runs.length > 1` case above does, rather than silently
+    // returning this run's status.
+    const totalCount = typeof res.json.total_count === 'number' ? res.json.total_count : fetched.length;
+    if (totalCount > fetched.length) {
+      return { state: 'error', reason: 'more workflow_dispatch runs exist than this bounded lookup fetched; refusing to assume this match is unique' };
+    }
     const run = runs[0];
     return {
       state: run.status, // queued | in_progress | completed
       conclusion: run.conclusion || null,
       runId: run.id,
+      runAttempt: run.run_attempt,
       htmlUrl: run.html_url,
     };
+  }
+
+  /**
+   * The confirmed ACA execution for one Actions run, read from the receipt
+   * artifact the workflow publishes only after the ARM `/start` response
+   * yielded a validated execution name. Uses the Artifacts List API (covered
+   * by the App's existing Actions permission); only the artifact NAME is read,
+   * never its contents. Returns `null` when no current-attempt receipt exists
+   * (still running, older workflow, or expired) -- an honest unknown, not an
+   * error. Artifacts from a different attempt (a manual rerun) are ignored, and
+   * more than one current-attempt receipt is refused rather than guessed.
+   */
+  async resolveExecutionReceipt({ owner, repo, installationId, runId, runAttempt }) {
+    const token = await this._installationToken(installationId, repo);
+    const res = await this._request({
+      method: 'GET',
+      path: `/repos/${owner}/${repo}/actions/runs/${runId}/artifacts?per_page=100`,
+      token,
+    });
+    if (res.status !== 200) {
+      throw this._err(upstreamStatus(res.status), `could not read artifacts for Actions run ${runId} in ${owner}/${repo} (GitHub returned ${res.status})`);
+    }
+    const fetched = (res.json && res.json.artifacts) || [];
+    const matches = [];
+    for (const a of fetched) {
+      if (a.expired) continue;
+      const m = EXEC_RECEIPT_NAME_RE.exec(String(a.name || ''));
+      if (!m || Number(m[1]) !== Number(runAttempt)) continue;
+      matches.push({ executionName: m[2], artifactId: a.id });
+    }
+    if (!matches.length) return null;
+    if (matches.length > 1) throw this._err(502, 'ambiguous execution receipt; refusing to guess');
+    // Same bounded-pagination reasoning as `resolveRunStatus`: this lookup
+    // only fetches the newest `per_page=100` artifacts for the run. A single
+    // match found here is not provably unique if GitHub reports more
+    // artifacts exist beyond this one page -- a second current-attempt
+    // receipt could be sitting unfetched on the next page. Fail closed
+    // rather than silently trusting this page's apparent uniqueness.
+    const totalCount = typeof res.json.total_count === 'number' ? res.json.total_count : fetched.length;
+    if (totalCount > fetched.length) {
+      throw this._err(502, 'more artifacts exist than this bounded lookup fetched; refusing to assume this receipt match is unique');
+    }
+    return matches[0];
   }
 }
 
 module.exports = {
-  GitHubApp, WORKFLOW_FILE, parseDeclaredWorkflowInputs, upstreamStatus,
+  GitHubApp,
+  WORKFLOW_FILE,
+  HUB_CORRELATION_INPUT,
+  HUB_CORRELATION_TITLE_RE,
+  EXEC_RECEIPT_NAME_RE,
+  UNSUPPORTED_CORRELATION_REASON,
+  parseDeclaredWorkflowInputs,
+  upstreamStatus,
 };

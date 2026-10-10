@@ -354,6 +354,10 @@ check('acaDispatchStatusLabel labels an error state with its reason', () => {
     'error: workflow not found');
 });
 
+check('acaDispatchStatusLabel labels an unsupported run honestly', () => {
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'unsupported' }), "can't confirm (older workflow)");
+});
+
 check('acaDispatchStatusLabel labels an error state with no reason as plain "error"', () => {
   assert.strictEqual(acaDispatchStatusLabel({ state: 'error' }), 'error');
 });

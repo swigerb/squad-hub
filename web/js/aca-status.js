@@ -217,6 +217,7 @@ export function acaDispatchStatusLabel(status) {
     case 'in_progress': return 'running';
     case 'completed': return s.conclusion && s.conclusion !== 'success' ? `completed (${s.conclusion})` : 'completed';
     case 'error': return s.reason ? `error: ${s.reason}` : 'error';
+    case 'unsupported': return "can't confirm (older workflow)";
     default: return 'unknown';
   }
 }

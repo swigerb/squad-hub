@@ -935,23 +935,25 @@ class HubService {
         const result = await this.githubApp.dispatch({
           ...validated.value, owner, repo: repoName, installationId: installation.installationId,
         });
-        const record = this.dispatchTracker.record(me.key, {
+        const trackerId = this.dispatchTracker.record(me.key, {
           owner,
           repo: repoName,
-          issue: (result.issue && result.issue.number) || null,
           installationId: installation.installationId,
           workflowFile: result.workflowFile,
           ref: result.ref,
           dispatchedAt: result.dispatchedAt,
+          correlationId: result.correlationId,
+          correlationSupported: result.correlationSupported,
         });
-        // `trackerId` is this hub's own stable identity for the dispatch
-        // (see `DispatchTracker.record`) -- the caller's local "Queued on
-        // ACA" row binds to it from here on (`aca-pending.js`'s
-        // `trackAcaDispatch`), rather than re-matching "the newest record on
-        // this repository" on every `GET /api/aca/dispatches` poll, which
-        // could bind to a DIFFERENT concurrent dispatch's record (#178's
-        // release-gate review).
-        return send(200, { issue: result.issue, runUrl: result.runUrl, trackerId: record.id });
+        // `trackerId` is this hub's own stable, opaque identifier for the
+        // dispatch (a `crypto.randomUUID()` from `DispatchTracker.record`,
+        // distinct from the internal `correlationId` used to match the
+        // Actions run, which is never returned to a browser). It is the one
+        // id both this response and every later `GET /api/aca/dispatches`
+        // row agree on, so a client can bind its own pending UI to the
+        // right record directly instead of re-guessing from timestamp,
+        // issue number, or repo+ref proximity. See docs/api.md.
+        return send(200, { issue: result.issue, runUrl: result.runUrl, trackerId });
       } catch (e) {
         const errBody = { error: e.message };
         // A dispatch that failed AFTER creating an issue for `newIssue` must

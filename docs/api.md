@@ -507,11 +507,62 @@ against GitHub Actions for its current run status:
 ```json
 {
   "dispatches": [{
+    "id": "4b6e0f2a-1c3d-4a9e-9f0b-2a7c5d8e1f3b",
     "owner": "me", "repo": "my-repo", "ref": "main", "dispatchedAt": 1730000000000,
-    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123" }
+    "executionName": "my-job-abc123",
+    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123", "executionName": "my-job-abc123" }
   }]
 }
 ```
+
+`id` is this hub's own stable, opaque identifier for the dispatch — a
+`crypto.randomUUID()` minted once by `DispatchTracker.record()`, the same one
+`POST /api/aca/dispatch` returns as `trackerId` (below). It is the one id both
+responses agree on, so a client can bind its own pending row to the exact
+record it just created instead of re-guessing from timestamp, issue number, or
+repo+ref proximity (see #245/#178). It is per-user partitioned like every
+other field here and carries no GitHub meaning of its own — it is distinct
+from, and never derived from, the internal `hub_correlation_id` used to match
+the Actions run (that id is never exposed to a browser).
+
+`executionName` is the ACA execution the workflow confirmed through the ARM
+`/start` response, or `null` if that is not (yet) known. The hub reads it from
+the names of the run's non-expired `aca-exec-attempt<run_attempt>-<execution>`
+artifacts (the Artifacts List API, within the App's existing Actions
+permission), only for a run that is `in_progress` or `completed`, and only an
+artifact for the run's current attempt counts. A missing, expired, or
+stale-attempt receipt is `null`, never a guess; once found it is not
+re-resolved. It matches a DNS-label charset only. It is a join key to the
+canonical `aca-<execution>` device identity, not proof of that identity by
+itself. A failed receipt lookup keeps the run's `state` and adds a note to
+`status.reason`.
+
+Both the correlation match (`resolveRunStatus`) and the execution receipt
+(`resolveExecutionReceipt`) are deliberately **bounded** lookups: the newest 20
+`workflow_dispatch` runs, and the first 100 artifacts on a matched run (GitHub
+API pagination). A match that both lookups never find within those bounds is
+an honest `pending`/`null` — the run or receipt may simply be outside the
+window this hub fetched, not proof that it does not exist. A match that IS
+found, however, is only trusted as proof when the page it came from was not
+itself truncated: if GitHub reports more runs (or artifacts) exist than this
+one bounded page returned, a same-looking match elsewhere on an unfetched page
+cannot be ruled out, so the hub fails closed exactly as it does for a genuine
+on-page duplicate (`state: 'error'` / a thrown receipt error) rather than
+silently trusting a single match that is not provably unique. This never
+causes extra GitHub traffic — it never fetches a second page — it only refuses
+to call a possibly-incomplete single page conclusive.
+
+The run-list lookup also narrows its candidate set with a `created=>=<ISO>`
+filter anchored to this dispatch's own `dispatchedAt` (minus a small
+clock-skew allowance), so "more runs exist than fetched" reflects runs created
+around this dispatch, not every manual dispatch the repository has ever had.
+Without that bound, a repository that accumulates more than 20
+`workflow_dispatch` runs over its lifetime would see every future dispatch's
+lookup falsely report truncation and fail closed forever, even when the
+uniquely-correlated run is on the fetched page. The time filter only narrows
+*which runs the hub asks GitHub for*; it is never substituted for the
+correlation id, and a time-window match with no matching correlation id is
+still reported `pending`.
 
 `GET /api/aca/repos` and `GET /api/aca/dispatches` share one read-only rate
 limit, per signed-in user (#213): **30 requests/minute**. Each spends the
@@ -525,9 +576,12 @@ shape as the dispatch limiter below. The status card (#180, #233) treats
 connected" or an error banner.
 
 `status.state` is `pending` (no matching run has appeared yet), `queued`,
-`in_progress`, or `completed` (with `conclusion` set), or `error` (a status
-lookup failed for this one dispatch — a deleted repo, a revoked installation —
-without hiding any other row).
+`in_progress`, or `completed` (with `conclusion` set), `unsupported` (the
+target repository is still running an older `squad-dispatch.yml` that does not
+declare `hub_correlation_id`, so the hub refuses to guess), or `error` (a
+status lookup failed for this one dispatch — a deleted repo, a revoked
+installation, or an ambiguous correlation receipt — without hiding any other
+row).
 
 **`POST /api/aca/dispatch`** — call `squad-dispatch.yml`'s `workflow_dispatch`
 on a repository the App is installed on:
@@ -547,9 +601,16 @@ always runs on the repository's default branch.
   entire allow-list: not a per-person collaborator check.
 - `422` — a requested option is not one the workflow declares.
 - `429` — too many dispatches from this account; retry after `retryAfterMs`.
-- Success returns `{ "issue": {...}, "runUrl": "..." }`. `workflow_dispatch`
+- Success returns `{ "issue": {...}, "runUrl": "...", "trackerId": "..." }`.
+  `trackerId` is the same opaque, hub-generated id `GET /api/aca/dispatches`
+  exposes as `.id` for this exact record — the one stable identifier a client
+  can use to bind its own pending UI to this dispatch. `workflow_dispatch`
   itself replies with no run id, so `runUrl` is the workflow's own Actions
-  page until `/api/aca/dispatches` matches up the run it produced.
+  page until `/api/aca/dispatches` proves which run it produced. When the
+  target workflow declares `hub_correlation_id`, the hub generates an internal
+  per-attempt correlation id, sends it only as that workflow input, and later
+  matches the run by the workflow's exact bracket-delimited `run-name`
+  `display_title`; it no longer guesses by timestamp.
 
 ## WebSocket
 
@@ -605,5 +666,4 @@ prefix-bound tokens" in [commands.md](commands.md)) is the **only** device a
 `session` message on it can ever affect: the hub keys every session by
 `{deviceId}:{session.id}`, so one device's token can no more upsert another
 device's session than it can attach as that device in the first place.
-
 

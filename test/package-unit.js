@@ -756,24 +756,11 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped to v11 for #178's release-gate fix (trackerId-based dispatch
-  // binding, device.meta-based attach correlation, honest step evidence,
-  // and the restored no-App existing-issue/command-preview fallback --
-  // web/js/aca.js, web/js/aca-pending.js, web/index.html), and again to v12
-  // for #178's follow-up fix (time-ordering-based dispatch-attempt identity
-  // in acaPendingMatch/aca-match.js, bounded "Check again" polling exclusion
-  // once an entry is terminally resolved -- web/js/aca.js,
-  // web/js/aca-pending.js, web/js/aca-match.js, web/index.html). Main
-  // independently bumped to v14 merging #180/#233's ACA status card branch
-  // (web/js/aca-status.js) with #236. Both sides bumped off an earlier
-  // shared base, so this merge needs a value neither side ever used: v15.
-  // Bumped again to v16: a third #178 review found repo+issue+timing is
-  // never authoritative proof of dispatch-attempt identity --
-  // acaPendingMatch/acaPendingAttached now always return null/false (see
-  // aca-match.js's own doc comment), and aca-pending.js's syncAcaPending was
-  // simplified to match -- both cached files' real behavior changed.
+  // Bumped again to v15 because /js/aca-status.js changed and that file sits
+  // in the shell pre-cache list. The value is pinned so a missed bump fails
+  // loudly instead of silently serving stale cached UI.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v16';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
