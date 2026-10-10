@@ -696,6 +696,24 @@ async function withStubHub(sessions, fn) {
     await refresh;
   });
 
+  await checkAsync('the Action needed view asks the hub for the keyword and device it holds and never for status=action, which no session has (#169 with #179)', async () => {
+    // The browser run cannot see this one: a live push is unfiltered and the
+    // page narrows it itself, so a wrong request is repaired before it shows.
+    const f = heldFilterFixture();
+    f.state.filters = { ...HELD_FILTERS, status: 'action' };
+    f.state.favorites = new Set();
+    const refresh = f.refresh();
+    assert.deepStrictEqual(f.requests.map((r) => r.path), ['/api/overview?q=needle&device=Desktop']);
+    // Why it stays home: the hub matches a status exactly and no session has this one.
+    const asked = { keyword: 'needle', status: 'action', deviceId: 'Desktop' };
+    assert.deepStrictEqual(sessionIdsIn(f.store.overview('u', asked)), [], 'the hub would answer status=action with nothing');
+    assert.deepStrictEqual(sessionIdsIn(f.requests[0].reply), ['match-cwd', 'match-prompt', 'wrong-status']);
+    f.requests[0].resolve(f.requests[0].reply);
+    await refresh;
+    assert.deepStrictEqual(sessionIdsIn(f.state.overview), ['match-cwd', 'match-prompt', 'wrong-status']);
+    assert.deepStrictEqual(f.draw(), BEFORE, 'the page narrows the keyword and device list to what Action needed catches');
+  });
+
   await checkAsync('an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)', async () => {
     const f = heldFilterFixture();
     const refresh = f.refresh();
