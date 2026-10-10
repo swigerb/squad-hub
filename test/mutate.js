@@ -2122,10 +2122,10 @@ const MUTATIONS = [
   {
     name: 'a pinned session is still subject to every filter',
     file: 'web/js/list.js',
-    find: `      const entry = { session: s, device: g.device };
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;
       if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
-    replace: `      const entry = { session: s, device: g.device };
-      if (pinnedKeys.has(sessionKey(s))) { if (!process.env.MUTANT || matchesFilters(s, filters, now)) pinned.push(entry); continue; } // MUTATION`,
+    replace: `      if (!matchesHubFilters(s, filters, g.device)) continue;
+      if (pinnedKeys.has(sessionKey(s))) { if (!process.env.MUTANT || matchesFilters(s, filters, now, g.device)) pinned.push(entry); continue; } // MUTATION`,
     mustFail: 'pinning outranks every filter',
   },
   {
@@ -2197,8 +2197,10 @@ const MUTATIONS = [
   {
     name: 'scopeCounts stops honouring the pin, undercounting a filtered-out favourite',
     file: 'web/js/list.js',
-    find: `      const included = pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now);`,
-    replace: `      const included = (pinnedKeys.has(sessionKey(s)) && !process.env.MUTANT) || matchesFilters(s, filters, now); // MUTATION`,
+    find: `      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));`,
+    replace: `      const included = matchesHubFilters(s, filters, g.device)
+        && ((pinnedKeys.has(sessionKey(s)) && !process.env.MUTANT) || matchesFilters(s, filters, now, g.device)); // MUTATION`,
     mustFail: 'scope tabs: scopeCounts counts a pinned session under its own scope, bypassing filters',
   },
   {
@@ -3220,6 +3222,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/util.js',
   '/js/list.js',
   '/js/sessionrow.js',
+  '/js/review.js',
   '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
@@ -3280,7 +3283,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v15';`,
+    find: `const CACHE = 'squad-hub-shell-v16';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -5651,6 +5654,7 @@ if ($health.accessStore -ne 'durable') {`,
   if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
+  if (isReadyForReview(s)) return 'ready';
   return {
     active: 'active',
     starting: 'active',
@@ -5662,6 +5666,7 @@ if ($health.accessStore -ne 'durable') {`,
   if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
+  if (isReadyForReview(s)) return 'ready';
   return {
     active: 'active',
     starting: 'active',
@@ -6924,6 +6929,585 @@ if ($health.accessStore -ne 'durable') {`,
         reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: readback branch collapsed back into the step-1 wording
       }`,
     mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
+  },
+
+  // -------------------------------------------------------------------------
+  // #179: Ready for review, the Squad health badge, and the keyword / status /
+  // device filters the page holds for itself (a live push is unfiltered).
+  // -------------------------------------------------------------------------
+  {
+    name: '#179 status: a failed run stops counting as ended on the hub',
+    file: 'src/session-status.js',
+    find: `const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);`,
+    replace: `const TERMINAL_STATUSES = new Set(process.env.MUTANT ? ['done', 'stopped', 'disconnected'] : ['done', 'failed', 'stopped', 'disconnected']); // MUTATION`,
+    mustFail: 'the browser and the hub agree on which statuses are ended',
+  },
+  {
+    name: '#179 status: a session that is merely idle counts as ended on the hub',
+    file: 'src/session-status.js',
+    find: `const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);`,
+    replace: `const TERMINAL_STATUSES = new Set(process.env.MUTANT ? ['done', 'failed', 'stopped', 'disconnected', 'idle'] : ['done', 'failed', 'stopped', 'disconnected']); // MUTATION`,
+    mustFail: 'the browser and the hub agree on which statuses are ended',
+  },
+  {
+    name: '#179 status: the hub lets a pending approval through as ready for review',
+    file: 'src/session-status.js',
+    find: `  if (Array.isArray(session.pendingApprovals) && session.pendingApprovals.length) return false;`,
+    replace: `  if (!process.env.MUTANT && Array.isArray(session.pendingApprovals) && session.pendingApprovals.length) return false; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 status: the hub no longer needs a valid pull request for ready',
+    file: 'src/session-status.js',
+    find: `  return sanitizePullRequest(session.pullRequest) !== null;`,
+    replace: `  return process.env.MUTANT ? !!session.pullRequest : sanitizePullRequest(session.pullRequest) !== null; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 status: the hub reads a session that is still going as ready',
+    file: 'src/session-status.js',
+    find: `  if (!session || !TERMINAL_STATUSES.has(session.status)) return false;`,
+    replace: `  if (!session || (!process.env.MUTANT && !TERMINAL_STATUSES.has(session.status))) return false; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 status: an empty status filter stops matching everything on the hub',
+    file: 'src/session-status.js',
+    find: `  if (!status) return true;`,
+    replace: `  if (!status) return !process.env.MUTANT; // MUTATION`,
+    mustFail: 'the hub-side filter selects the same sessions as the browser',
+  },
+  {
+    name: '#179 status: the hub filters "review" by equality with a reported status',
+    file: 'src/session-status.js',
+    find: `  if (status === REVIEW_FILTER) return isReadyForReview(session);`,
+    replace: `  if (status === REVIEW_FILTER && !process.env.MUTANT) return isReadyForReview(session); // MUTATION`,
+    mustFail: 'the hub-side filter selects the same sessions as the browser',
+  },
+  {
+    name: '#179 status: a plain status filter on the hub stops filtering',
+    file: 'src/session-status.js',
+    find: `  return session.status === status;`,
+    replace: `  return process.env.MUTANT ? true : session.status === status; // MUTATION`,
+    mustFail: 'the hub-side filter selects the same sessions as the browser',
+  },
+  {
+    name: '#179 store: listSessions filters "review" by equality instead of by the derived status',
+    file: 'src/service/store.js',
+    find: `    if (filter.status) out = out.filter((s) => matchesStatusFilter(s, filter.status));`,
+    replace: `    if (filter.status) out = out.filter((s) => (process.env.MUTANT ? s.status === filter.status : matchesStatusFilter(s, filter.status))); // MUTATION`,
+    mustFail: 'the store filters sessions by the derived review status',
+  },
+  {
+    name: '#179 mcp: the MCP session list filters "review" by equality instead of by the derived status',
+    file: 'src/mcp-hub-client.js',
+    find: `  if (filter.status && !matchesStatusFilter(s, filter.status)) return false;`,
+    replace: `  if (filter.status && !(process.env.MUTANT ? s.status === filter.status : matchesStatusFilter(s, filter.status))) return false; // MUTATION`,
+    mustFail: 'list_sessions (the MCP tool and `sessions --status`) filters by the derived review status',
+  },
+
+  // --- the browser's copy of "ended" and "ready" (web/js/util.js) -----------
+  {
+    name: '#179 util: a failed run stops counting as ended in the browser',
+    file: 'web/js/util.js',
+    find: `export const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);`,
+    replace: `export const TERMINAL_STATUSES = new Set(process.env.MUTANT ? ['done', 'stopped', 'disconnected'] : ['done', 'failed', 'stopped', 'disconnected']); // MUTATION`,
+    mustFail: 'the browser and the hub agree on which statuses are ended',
+  },
+  {
+    name: '#179 util: the browser accepts a pull request URL on any host',
+    file: 'web/js/util.js',
+    find: String.raw`const PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/;`,
+    replace: String.raw`const PR_URL_RE = process.env.MUTANT ? /^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/ : /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser stops checking the pull request number against its URL',
+    file: 'web/js/util.js',
+    find: `  if (!m || !Number.isInteger(pr.number) || String(pr.number) !== m[1]) return null;`,
+    replace: `  if (!m || (!process.env.MUTANT && (!Number.isInteger(pr.number) || String(pr.number) !== m[1]))) return null; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser lets markup and control characters through in a pull request title',
+    file: 'web/js/util.js',
+    find: String.raw`    || /[\x00-\x1f\x7f<>]/.test(title))) return null;`,
+    replace: String.raw`    || (!process.env.MUTANT && /[\x00-\x1f\x7f<>]/.test(title)))) return null; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser stops bounding the pull request URL length',
+    file: 'web/js/util.js',
+    find: `typeof pr.url !== 'string' || pr.url.length > 300) return null;`,
+    replace: `typeof pr.url !== 'string' || (!process.env.MUTANT && pr.url.length > 300)) return null; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser stops bounding the pull request title length',
+    file: 'web/js/util.js',
+    find: `!title.length || title.length > 200`,
+    replace: `!title.length || (!process.env.MUTANT && title.length > 200)`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser lets a pending approval through as ready for review',
+    file: 'web/js/util.js',
+    find: `  if (!s || !TERMINAL_STATUSES.has(s.status) || (s.pendingApprovals || []).length) return false;`,
+    replace: `  if (!s || !TERMINAL_STATUSES.has(s.status) || (!process.env.MUTANT && (s.pendingApprovals || []).length)) return false; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 util: the browser reads a session that is still going as ready',
+    file: 'web/js/util.js',
+    find: `  if (!s || !TERMINAL_STATUSES.has(s.status) || (s.pendingApprovals || []).length) return false;`,
+    replace: `  if (!s || (!process.env.MUTANT && !TERMINAL_STATUSES.has(s.status)) || (s.pendingApprovals || []).length) return false; // MUTATION`,
+    mustFail: 'a session that is still going is NOT ready, even with a pull request',
+  },
+  {
+    name: '#179 util: a ready session reads as its plain status instead of "Ready for review"',
+    file: 'web/js/util.js',
+    find: `  if (isReadyForReview(s)) return 'Ready for review';`,
+    replace: `  if (!process.env.MUTANT && isReadyForReview(s)) return 'Ready for review'; // MUTATION`,
+    mustFail: 'an ended session with a valid pull request is ready for review',
+  },
+  {
+    name: '#179 util: the ready badge takes the green "review" class',
+    file: 'web/js/util.js',
+    find: '  if (isReadyForReview(s)) return `<span class="status ready">${esc(statusLabel(s, device))}</span>`;',
+    replace: '  if (isReadyForReview(s)) return `<span class="status ${process.env.MUTANT ? \'review\' : \'ready\'}">${esc(statusLabel(s, device))}</span>`; // MUTATION',
+    mustFail: 'the badge, the label and the detail pill give the same session the same answer',
+  },
+  {
+    name: '#179 util: the detail pill takes the green "review" class for a ready session',
+    file: 'web/js/util.js',
+    find: `  if (isReadyForReview(s)) return 'ready';`,
+    replace: `  if (isReadyForReview(s)) return process.env.MUTANT ? 'review' : 'ready'; // MUTATION`,
+    mustFail: 'the badge, the label and the detail pill give the same session the same answer',
+  },
+
+  // --- the row and the detail page's markup (web/js/review.js) ---------------
+  {
+    name: '#179 review: the Open PR link loses noreferrer',
+    file: 'web/js/review.js',
+    find: 'target="_blank" rel="noopener noreferrer" data-pr-link',
+    replace: 'target="_blank" rel="${process.env.MUTANT ? \'noopener\' : \'noopener noreferrer\'}" data-pr-link',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 review: the Open PR link opens in the same tab',
+    file: 'web/js/review.js',
+    find: 'target="_blank" rel="noopener noreferrer" data-pr-link',
+    replace: 'target="${process.env.MUTANT ? \'_self\' : \'_blank\'}" rel="noopener noreferrer" data-pr-link',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 review: the Open PR tooltip is interpolated unescaped',
+    file: 'web/js/review.js',
+    find: 'title="${esc(tip)}" aria-label="Open PR',
+    replace: 'title="${process.env.MUTANT ? tip : esc(tip)}" aria-label="Open PR',
+    mustFail: 'a pull request title with markup is text in the tooltip, never markup',
+  },
+  {
+    name: '#179 review: a session that is not ready gets an Open PR link too',
+    file: 'web/js/review.js',
+    find: `  const pr = isReadyForReview(s) ? pullRequestOf(s) : null;`,
+    replace: `  const pr = (isReadyForReview(s) || process.env.MUTANT) ? pullRequestOf(s) : null; // MUTATION`,
+    mustFail: 'a session that is not ready has no link, and no violet row, even with a pull request',
+  },
+  {
+    name: '#179 review: a health verdict this build does not know is drawn as a badge',
+    file: 'web/js/review.js',
+    find: `(health.status !== 'pass' && health.status !== 'fail')) return null;`,
+    replace: `(!process.env.MUTANT && health.status !== 'pass' && health.status !== 'fail')) return null; // MUTATION`,
+    mustFail: 'unknown, unavailable and garbage health draw nothing at all',
+  },
+  {
+    name: '#179 review: a check id that is not a plain id reaches the markup',
+    file: 'web/js/review.js',
+    find: `typeof c.id !== 'string' || !HEALTH_ID_RE.test(c.id) || !HEALTH_RANK.has(c.status)) continue;`,
+    replace: `typeof c.id !== 'string' || (!process.env.MUTANT && !HEALTH_ID_RE.test(c.id)) || !HEALTH_RANK.has(c.status)) continue; // MUTATION`,
+    mustFail: 'a check id that is not a plain id never reaches the markup, in the tooltip or the list',
+  },
+  {
+    name: '#179 review: a check with a status this build does not know is kept',
+    file: 'web/js/review.js',
+    find: `typeof c.id !== 'string' || !HEALTH_ID_RE.test(c.id) || !HEALTH_RANK.has(c.status)) continue;`,
+    replace: `typeof c.id !== 'string' || !HEALTH_ID_RE.test(c.id) || (!process.env.MUTANT && !HEALTH_RANK.has(c.status))) continue; // MUTATION`,
+    mustFail: 'malformed check entries are ignored rather than guessed at',
+  },
+  {
+    name: '#179 review: the number of checks read is no longer bounded',
+    file: 'web/js/review.js',
+    find: `const HEALTH_MAX_CHECKS = 50;`,
+    replace: `const HEALTH_MAX_CHECKS = process.env.MUTANT ? 5000 : 50; // MUTATION`,
+    mustFail: 'only a bounded number of checks is ever read',
+  },
+  {
+    name: '#179 review: the better report wins when one check is reported twice',
+    file: 'web/js/review.js',
+    find: `HEALTH_RANK.get(c.status) > HEALTH_RANK.get(seen)) worst.set(c.id, c.status);`,
+    replace: `(process.env.MUTANT ? HEALTH_RANK.get(c.status) < HEALTH_RANK.get(seen) : HEALTH_RANK.get(c.status) > HEALTH_RANK.get(seen))) worst.set(c.id, c.status); // MUTATION`,
+    mustFail: 'the same check reported twice counts once, and the worse report wins',
+  },
+  {
+    name: '#179 review: a verdict of pass hides a failing check',
+    file: 'web/js/review.js',
+    find: `  return { healthy: health.status === 'pass' && !failing.length, checks, failing };`,
+    replace: `  return { healthy: health.status === 'pass' && (process.env.MUTANT || !failing.length), checks, failing }; // MUTATION`,
+    mustFail: 'a failing check outranks a verdict that says pass; a bare fail never invents a count',
+  },
+  {
+    name: '#179 review: a skipped check counts as failing',
+    file: 'web/js/review.js',
+    find: `  const failing = checks.filter((c) => c.status === 'fail').map((c) => c.id);`,
+    replace: `  const failing = checks.filter((c) => (process.env.MUTANT ? c.status !== 'pass' : c.status === 'fail')).map((c) => c.id); // MUTATION`,
+    mustFail: 'a skipped check is not a failure',
+  },
+  {
+    name: '#179 review: a bare failing verdict invents a count',
+    file: 'web/js/review.js',
+    find: "(n ? `health: ${n} failing` : 'health: failing');",
+    replace: "(n || process.env.MUTANT ? `health: ${n || 1} failing` : 'health: failing'); // MUTATION",
+    mustFail: 'a failing check outranks a verdict that says pass; a bare fail never invents a count',
+  },
+  {
+    name: '#179 review: the healthy tooltip claims something else',
+    file: 'web/js/review.js',
+    find: `  if (v.healthy) tip = 'Squad health: healthy — no failing checks';`,
+    replace: `  if (v.healthy) tip = process.env.MUTANT ? 'Squad health: ok' : 'Squad health: healthy — no failing checks'; // MUTATION`,
+    mustFail: 'a passing health report is a "● healthy" badge with a no-failures tooltip',
+  },
+  {
+    name: '#179 review: the failing tooltip stops naming the failing checks',
+    file: 'web/js/review.js',
+    find: '  else if (n) tip = `Squad health: failing checks — ${v.failing.join(\', \')}`;',
+    replace: '  else if (n) tip = process.env.MUTANT ? `Squad health: failing checks — ${n}` : `Squad health: failing checks — ${v.failing.join(\', \')}`; // MUTATION',
+    mustFail: 'a failing report counts the failing checks and names them in the tooltip',
+  },
+  {
+    name: '#179 review: a verdict with no checks gets an empty list as well',
+    file: 'web/js/review.js',
+    find: '${items.length ? `<ul class="sq-checks">${items.join(\'\')}</ul>` : \'\'}`;',
+    replace: '${items.length || process.env.MUTANT ? `<ul class="sq-checks">${items.join(\'\')}</ul>` : \'\'}`; // MUTATION',
+    mustFail: 'a verdict with no checks still gets a badge in the panel, and no empty list',
+  },
+  {
+    name: '#179 review: the detail page rewrites an unchanged link on every refresh',
+    file: 'web/js/review.js',
+    find: `    if (el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; }`,
+    replace: `    if (process.env.MUTANT || el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; } // MUTATION`,
+    mustFail: 'an unchanged detail page is not rewritten on every refresh, so focus on the link survives',
+  },
+  {
+    name: '#179 review: the detail page keeps an empty block visible',
+    file: 'web/js/review.js',
+    find: `    el.hidden = !html;`,
+    replace: `    el.hidden = process.env.MUTANT ? false : !html; // MUTATION`,
+    mustFail: 'the detail page shows the Open PR link and the health block, and hides both when there is nothing to say',
+  },
+  {
+    name: '#179 review: a detail page without the new elements throws',
+    file: 'web/js/review.js',
+    find: `    if (!el) return;`,
+    replace: `    if (!el && !process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'a detail page without the new elements does not throw',
+  },
+
+  // --- the keyword, status and device filters held by the page (list.js) -----
+  {
+    name: '#179 list: the keyword is ignored once the hub has already sent the list',
+    file: 'web/js/list.js',
+    find: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;",
+    replace: "  if (f.q && !process.env.MUTANT && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false; // MUTATION",
+    mustFail: 'the keyword filter holds on an unfiltered overview: the prompt, the working directory or the id, in any case',
+  },
+  {
+    name: '#179 list: the keyword no longer looks at the session id',
+    file: 'web/js/list.js',
+    find: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;",
+    replace: "  if (f.q && !matchesText(process.env.MUTANT ? `${s.prompt || ''} ${s.cwd || ''}` : `${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false; // MUTATION",
+    mustFail: 'the keyword filter holds on an unfiltered overview: the prompt, the working directory or the id, in any case',
+  },
+  {
+    name: '#179 list: the keyword matches fields the hub does not search',
+    file: 'web/js/list.js',
+    find: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;",
+    replace: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}${process.env.MUTANT ? ` ${s.status || ''} ${s.key || ''}` : ''}`, f.q)) return false; // MUTATION",
+    mustFail: 'the keyword filter searches the same three fields as the hub, and no others',
+  },
+  {
+    name: '#179 list: the device is ignored once the hub has already sent the list',
+    file: 'web/js/list.js',
+    find: `  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;`,
+    replace: `  if (f.device && !process.env.MUTANT && (s.deviceId || (device && device.deviceId)) !== f.device) return false; // MUTATION`,
+    mustFail: 'the device filter holds on an unfiltered overview',
+  },
+  {
+    name: '#179 list: a session with no device id of its own no longer takes its group\'s device',
+    file: 'web/js/list.js',
+    find: `  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;`,
+    replace: `  if (f.device && (process.env.MUTANT ? s.deviceId : (s.deviceId || (device && device.deviceId))) !== f.device) return false; // MUTATION`,
+    mustFail: 'the device filter holds on an unfiltered overview',
+  },
+  {
+    name: '#179 list: "review" is compared with the reported status instead of derived',
+    file: 'web/js/list.js',
+    find: `  if (f.status === 'review') return isReadyForReview(s);`,
+    replace: `  if (f.status === 'review' && !process.env.MUTANT) return isReadyForReview(s); // MUTATION`,
+    mustFail: 'the Ready for review filter uses the derived status, not an equality check',
+  },
+  {
+    name: '#179 list: a plain status is ignored once the hub has already sent the list',
+    file: 'web/js/list.js',
+    find: `  if (f.status && f.status !== 'action' && s.status !== f.status) return false;`,
+    replace: `  if (f.status && f.status !== 'action' && !process.env.MUTANT && s.status !== f.status) return false; // MUTATION`,
+    mustFail: 'a plain status filter holds on an unfiltered overview, exactly',
+  },
+  {
+    name: '#179 list: "action" is read as a status the hub could have filtered',
+    file: 'web/js/list.js',
+    find: `  if (f.status && f.status !== 'action' && s.status !== f.status) return false;`,
+    replace: `  if (f.status && (f.status !== 'action' || process.env.MUTANT) && s.status !== f.status) return false; // MUTATION`,
+    mustFail: 'the "action" status filter belongs to the browser alone: blocked or awaiting a reply',
+  },
+  {
+    name: '#179 list: matchesFilters stops applying the hub filters itself',
+    file: 'web/js/list.js',
+    find: `  if (!matchesHubFilters(s, f, device)) return false;
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    replace: `  if (!process.env.MUTANT && !matchesHubFilters(s, f, device)) return false; // MUTATION
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    mustFail: 'matchesFilters applies the review filter itself, because a pushed overview is unfiltered',
+  },
+  {
+    name: '#179 list: matchesFilters forgets which device the session is grouped under',
+    file: 'web/js/list.js',
+    find: `  if (!matchesHubFilters(s, f, device)) return false;
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    replace: `  if (!matchesHubFilters(s, f, process.env.MUTANT ? undefined : device)) return false; // MUTATION
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    mustFail: 'the device filter holds on an unfiltered overview',
+  },
+  {
+    name: '#179 list: a session blocked on a person escapes the keyword, status and device',
+    file: 'web/js/list.js',
+    find: `  if (!matchesHubFilters(s, f, device)) return false;
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    replace: `  if (!(process.env.MUTANT && needsAttention(s, device)) && !matchesHubFilters(s, f, device)) return false; // MUTATION
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    mustFail: 'a session blocked on a person is exempt from the time window and from nothing else',
+  },
+  {
+    name: '#179 list: a pinned session escapes the keyword, status and device',
+    file: 'web/js/list.js',
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      if (!process.env.MUTANT && !matchesHubFilters(s, filters, g.device)) continue; // MUTATION
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    mustFail: 'a pinned session outranks the window and the browser-side filters, but not the keyword, status or device',
+  },
+  {
+    name: '#179 list: buildView forgets which device the session is grouped under',
+    file: 'web/js/list.js',
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      if (!matchesHubFilters(s, filters, process.env.MUTANT ? undefined : g.device)) continue; // MUTATION
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    mustFail: 'a pinned session outranks the window and the browser-side filters, but not the keyword, status or device',
+  },
+  {
+    name: '#179 list: the scope tab counts forget which device the session is grouped under',
+    file: 'web/js/list.js',
+    find: `      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));`,
+    replace: `      const included = matchesHubFilters(s, filters, process.env.MUTANT ? undefined : g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device)); // MUTATION`,
+    mustFail: 'the scope tab counts follow the same three filters, pinned sessions included',
+  },
+  {
+    name: '#179 list: the scope tab counts a pinned session the keyword, status or device filtered out',
+    file: 'web/js/list.js',
+    find: `      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));`,
+    replace: `      const included = (process.env.MUTANT || matchesHubFilters(s, filters, g.device))
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device)); // MUTATION`,
+    mustFail: 'the scope tab counts follow the same three filters, pinned sessions included',
+  },
+  {
+    name: '#179 list: narrowGroups drops a device it left empty',
+    file: 'web/js/list.js',
+    find: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    replace: `  const narrowed = groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));
+  return process.env.MUTANT ? narrowed.filter((g) => g.sessions.length) : narrowed; // MUTATION`,
+    mustFail: 'narrowGroups keeps every device, narrows its sessions and leaves the overview it was given alone',
+  },
+  {
+    name: '#179 list: narrowGroups narrows the overview it was given in place',
+    file: 'web/js/list.js',
+    find: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    replace: `  if (process.env.MUTANT) for (const g of groups) g.sessions = (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)); // MUTATION
+  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    mustFail: 'narrowGroups keeps every device, narrows its sessions and leaves the overview it was given alone',
+  },
+  {
+    name: '#179 list: narrowGroups keeps every session whatever the filters say',
+    file: 'web/js/list.js',
+    find: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    replace: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => process.env.MUTANT || matchesHubFilters(s, filters, g.device)) })); // MUTATION`,
+    mustFail: 'narrowGroups keeps every device, narrows its sessions and leaves the overview it was given alone',
+  },
+  {
+    name: '#179 list: the Ready for review option is offered whether or not a session is ready',
+    file: 'web/js/list.js',
+    find: `  if (groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review');`,
+    replace: `  if (process.env.MUTANT || groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review'); // MUTATION`,
+    mustFail: 'the review option is offered only once a session is ready for review',
+  },
+  {
+    name: '#179 list: the Ready for review option is never offered',
+    file: 'web/js/list.js',
+    find: `  if (groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review');`,
+    replace: `  if (!process.env.MUTANT && groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review'); // MUTATION`,
+    mustFail: 'the review option is offered only once a session is ready for review',
+  },
+
+  // --- the row (web/js/sessionrow.js) ----------------------------------------
+  {
+    name: '#179 row: a ready session no longer gets the violet row class',
+    file: 'web/js/sessionrow.js',
+    find: '    <div class="row ${pending ? \'attention\' : (isReadyForReview(s) ? \'ready\' : \'\')}" data-session="${esc(s.key)}">',
+    replace: '    <div class="row ${pending ? \'attention\' : (isReadyForReview(s) && !process.env.MUTANT ? \'ready\' : \'\')}" data-session="${esc(s.key)}">',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 row: a ready session no longer gets its Open PR line',
+    file: 'web/js/sessionrow.js',
+    find: '        ${prLink ? `<div class="row-links">${prLink}</div>` : \'\'}',
+    replace: '        ${prLink && !process.env.MUTANT ? `<div class="row-links">${prLink}</div>` : \'\'}',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 row: the Squad line stops carrying the health badge',
+    file: 'web/js/sessionrow.js',
+    find: '        ${healthBadgeHtml(sq.health)}',
+    replace: '        ${process.env.MUTANT ? \'\' : healthBadgeHtml(sq.health)}',
+    mustFail: 'a Squad session row carries the health badge in its Squad line, and a row without Squad health carries none',
+  },
+
+  // --- the page itself: wiring, the filter bar, the detail page and the CSS.
+  // Nothing here can run under Node, so each is a plain edit proved by the
+  // real-Chromium suite (test/browser-e2e-unit.js).
+  {
+    name: '#179 wiring: following Open PR also opens the session',
+    file: 'web/js/wiring.js',
+    find: `    if (e.target.closest('a[data-pr-link]')) return;\n`,
+    replace: '',
+    mustFail: 'following Open PR opens the pull request in a new tab and does NOT open the session (#179)',
+  },
+  {
+    name: '#179 devices: a device the keyword, status or device filter left empty stops reading as empty after a live push',
+    file: 'web/js/devices.js',
+    find: `  const emptyDevices = narrowGroups(groups, state.filters)\n`,
+    replace: `  const emptyDevices = groups\n`,
+    mustFail: 'a device filter keeps one device, and the other still reads as empty, through a live push (#179)',
+  },
+  {
+    name: '#179 devices: the Status that is chosen is hidden once no session qualifies for it',
+    file: 'web/js/devices.js',
+    find: `    if (opt) opt.hidden = !statuses.has(value) && state.filters.status !== value;`,
+    replace: `    if (opt) opt.hidden = !statuses.has(value);`,
+    mustFail: 'a chosen Status stays on the control while no session qualifies for it, and leaves it once cleared (#179)',
+  },
+  {
+    name: '#179 detail: opening a session no longer draws its Open PR link and health block',
+    file: 'web/js/detail.js',
+    find: `  renderSquadPanel(found.session.squad);\n  syncReviewDetail(found.session);\n`,
+    replace: `  renderSquadPanel(found.session.squad);\n`,
+    mustFail: 'the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)',
+  },
+  {
+    name: '#179 detail: the open detail page stops following the session\'s pull request and health',
+    file: 'web/js/detail.js',
+    find: `  $('dtWarn').hidden = warnings.length === 0;\n  syncReviewDetail(found.session);\n  const pinned = state.favorites.has(key);`,
+    replace: `  $('dtWarn').hidden = warnings.length === 0;\n  const pinned = state.favorites.has(key);`,
+    mustFail: 'the detail page follows the session live: health recovers, and a lost pull request takes the link away (#179)',
+  },
+  {
+    name: '#179 html: the detail page loses the element the Open PR link is drawn into',
+    file: 'web/index.html',
+    find: `        <p class="detail-links" id="dtLinks" hidden></p>\n`,
+    replace: '',
+    mustFail: 'the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)',
+  },
+  {
+    name: '#179 css: the Ready for review pill is green instead of violet',
+    file: 'web/css/squad.css',
+    find: `.status.ready {\n  color: var(--violet);`,
+    replace: `.status.ready {\n  color: var(--ok);`,
+    mustFail: 'an ended session with a pull request reads "Ready for review": a violet 22px pill, a violet row, an Open PR link (#179)',
+  },
+  {
+    name: '#179 css: a ready row loses its violet edge',
+    file: 'web/css/squad.css',
+    find: `.row.ready { box-shadow: inset 3px 0 0 var(--violet); }`,
+    replace: `.row.ready { }`,
+    mustFail: 'an ended session with a pull request reads "Ready for review": a violet 22px pill, a violet row, an Open PR link (#179)',
+  },
+  {
+    name: '#179 css: the detail header pill stays plain for a ready session',
+    file: 'web/css/squad.css',
+    find: `.dt-pill.ready { color: var(--violet); background: color-mix(in srgb, var(--violet) 10%, var(--panel-2)); }`,
+    replace: `.dt-pill.ready { }`,
+    mustFail: 'the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)',
+  },
+  {
+    name: '#179 css: the failing health badge stops reading as a warning',
+    file: 'web/css/squad.css',
+    find: `.health.failing { color: color-mix(in srgb, var(--bad) 80%, var(--text)); }`,
+    replace: `.health.failing { color: var(--dim); }`,
+    mustFail: 'the health badge is an indicator, not a pill or a button, and it reads red when failing and green when healthy (#179)',
+  },
+  {
+    name: '#179 css: the sessions column stops wrapping its tabs on a phone, so the Ready for review row runs off the screen',
+    file: 'web/css/list.css',
+    find: `@media (max-width: 600px) {\n  .scopetabs { flex-wrap: wrap;`,
+    replace: `@media (max-width: 6px) {\n  .scopetabs { flex-wrap: wrap;`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the detail header keeps every action on one line on a phone',
+    file: 'web/css/detail.css',
+    find: `@media (max-width: 600px) {\n  .detail-head-line { height: auto;`,
+    replace: `@media (max-width: 6px) {\n  .detail-head-line { height: auto;`,
+    mustFail: 'a stale session shows every header action at once and still fits a phone, because the actions take their own line (#179)',
+  },
+  {
+    name: '#179 css: the light theme chosen in the settings has a violet too pale to read',
+    file: 'web/css/tokens.css',
+    find: `  --violet: #6d3fd1;\n  --bad-solid: #b8332f;`,
+    replace: `  --violet: #c4b5fd;\n  --bad-solid: #b8332f;`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the light theme followed from the system has a violet too pale to read',
+    file: 'web/css/tokens.css',
+    find: `    --violet: #6d3fd1;\n    --bad-solid: #b8332f;`,
+    replace: `    --violet: #c4b5fd;\n    --bad-solid: #b8332f;`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the dark theme\'s violet is too dark to read',
+    file: 'web/css/tokens.css',
+    find: `  --violet: #a78bfa;\n  /* A DEEPER red`,
+    replace: `  --violet: #3b2a6b;\n  /* A DEEPER red`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the healthy badge stops reading as green',
+    file: 'web/css/squad.css',
+    find: `.health.healthy { color: color-mix(in srgb, var(--ok) 80%, var(--text)); }`,
+    replace: `.health.healthy { color: var(--dim); }`,
+    mustFail: 'the health badge is an indicator, not a pill or a button, and it reads red when failing and green when healthy (#179)',
   },
 ];
 

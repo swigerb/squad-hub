@@ -8,6 +8,7 @@ import { refresh, resolveDeepLink } from './ws.js';
 import { toggleFavorite } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
+import { syncReviewDetail } from './review.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -104,6 +105,7 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
   renderSquadPanel(found.session.squad);
+  syncReviewDetail(found.session);
   $('dtTranscript').innerHTML = transcriptSkeleton();
   showDetailPage();
   renderSidebar();
@@ -218,6 +220,7 @@ export function syncDetailHeader() {
   ].filter(Boolean);
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
+  syncReviewDetail(found.session);
   const pinned = state.favorites.has(key);
   const star = $('dtStar');
   star.classList.toggle('on', pinned);
@@ -440,6 +443,7 @@ function renderSquadPanel(sq) {
       <span class="sq-dim">${counts}${modelSummary}</span>
     </div>
     ${sq.memberSource ? `<div class="sq-sub">Roster source: ${esc(sq.memberSource)}</div>` : ''}
+    <div class="sq-health" id="dtSquadHealth" hidden></div>
     <div class="sq-members">
       ${members.map((m) => `
         <button type="button" class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}"

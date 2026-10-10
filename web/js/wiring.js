@@ -355,6 +355,9 @@ export function wire() {
       openRowMenu(more.dataset.more, more);
       return;
     }
+    // Following the Open PR link (#179) goes to GitHub and nowhere else: the
+    // browser handles the anchor, and the row must not open the session too.
+    if (e.target.closest('a[data-pr-link]')) return;
     const row = e.target.closest('[data-session]');
     if (row) openDetail(row.dataset.session);
   };

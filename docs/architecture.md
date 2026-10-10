@@ -60,6 +60,18 @@ capped at 200 characters. Unlike device metadata's independent fields, a pull re
 fact with three parts, so an invalid field rejects the whole thing rather than
 surviving with a dropped piece.
 
+**Ready for review** is not a status a device reports; it is derived, by
+[`src/session-status.js`](../src/session-status.js) on the hub and by its mirror
+in `web/js/util.js` in the browser (a unit test runs both against one matrix).
+A session is ready for review when it has *ended* (`done`, `failed`, `stopped`
+or `disconnected` -- a pull request attached to a session that is still working
+or idle is not ready for anyone), reports a *valid* `pullRequest`, and has *no
+pending approval*. The web app draws it as a violet pill, a violet row edge and
+an "Open PR ↗" link that opens GitHub in a new tab, and offers it as a Status
+filter once a session qualifies. A session's Squad `health` verdict is drawn as
+a "● healthy" or "● health: N failing" badge on its Squad line, with the
+per-check list on the session's detail page.
+
 ### What follows from it
 
 **You can redeploy the hub in the middle of a working day.** The agent never

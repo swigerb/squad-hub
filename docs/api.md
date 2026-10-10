@@ -67,6 +67,20 @@ not a secret, unlike the paired private key the hub keeps to itself. See
 Everything the main view needs in one call: devices, sessions grouped by device,
 and counts. Prefer this over three separate calls.
 
+It takes four optional filters, which the web app sends and the hub applies:
+`q` (a case-insensitive substring of a session's prompt, working directory or
+id), `status`, `device` (a device id) and `actionNeeded=1` (only sessions with a
+pending approval). Every device is still returned, and one with no matching
+session comes back with an empty list. `status` is either the status a device
+reported (`active`, `idle`, `done`, ...) or `review`, which no device reports:
+it selects the sessions that are **ready for review** -- ended (`done`, `failed`,
+`stopped` or `disconnected`), carrying a valid `pullRequest`, and with no
+pending approval. The same `review` value works for `squad-hub sessions
+--status` and the MCP `list_sessions` tool. The same overview is also pushed
+over the WebSocket without any filter, so the web app applies `q`, `status` and
+`device` to a pushed overview itself, in the browser, to keep the list it
+already narrowed from filling back up with every session.
+
 ### `GET /api/devices`
 
 Your devices, with presence (`online`, `stale`, `offline`), platform, device

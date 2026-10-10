@@ -123,6 +123,18 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 }
 .scopetab[aria-pressed="true"] .tab-count { color: var(--text); }
 .scopetabs-end { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+/* Tabs plus the two view pills are ~480px of nowrap content, which does not fit
+   a phone. On a single line they were the widest thing in the sessions column:
+   a grid track sized `1fr` will not shrink below its widest child, so the whole
+   column came out ~480px wide in a 390px viewport and the right edge of every
+   row -- the Ready for review pill and the Open PR link included (#179) -- was
+   clipped by the screen. The pills drop to a second line under the tabs
+   instead; the filter bar below keeps its own row either way. */
+@media (max-width: 600px) {
+  .scopetabs { flex-wrap: wrap; height: auto; min-height: 40px; row-gap: 4px; }
+  .scopetab { height: 40px; }
+  .scopetabs-end { flex: 1 1 100%; margin-left: 0; }
+}
 
 /* ---------- the unified filter bar (#168) ---------- */
 /* One surface, 48px tall: the keyword box grows on the left, every dropdown

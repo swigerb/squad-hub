@@ -18,6 +18,7 @@ const { MemoryBacking } = require('./store-backing');
 const { sanitizeDeviceMeta } = require('../device-meta');
 const { sanitizeDiskVolumes } = require('../disk-meta');
 const { sanitizePullRequest } = require('../pull-request');
+const { TERMINAL_STATUSES, matchesStatusFilter } = require('../session-status');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
@@ -26,9 +27,10 @@ const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' }
  * Statuses a session never comes back from.
  *
  * Anything else -- starting, active, waiting_approval -- is live work and must
- * never be aged out from under someone.
+ * never be aged out from under someone. Shared with `src/session-status.js`,
+ * which the derived "ready for review" filter (#179) also reads.
  */
-const TERMINAL = new Set(['done', 'failed', 'stopped', 'disconnected']);
+const TERMINAL = TERMINAL_STATUSES;
 const LIVE_WHILE_ATTACHED = new Set(['starting', 'active', 'waiting_approval']);
 const TRANSCRIPT_CACHE_LIMIT = 500;
 
@@ -768,7 +770,7 @@ class Store extends EventEmitter {
   listSessions(subject, filter = {}) {
     let out = [...this._bucket(subject).sessions.values()];
     if (filter.deviceId) out = out.filter((s) => s.deviceId === filter.deviceId);
-    if (filter.status) out = out.filter((s) => s.status === filter.status);
+    if (filter.status) out = out.filter((s) => matchesStatusFilter(s, filter.status));
     if (filter.keyword) {
       const k = String(filter.keyword).toLowerCase();
       out = out.filter((s) => `${s.prompt || ''} ${s.cwd || ''} ${s.id}`.toLowerCase().includes(k));

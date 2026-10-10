@@ -1023,6 +1023,17 @@ async function suiteStaleSession() {
 }
 
 /**
+ * #179: an ended session with a valid pull request reads "Ready for review"
+ * (and only that session), the Status filter selects it in the browser, the
+ * store and the MCP client, and Squad health shows as a badge on the row with
+ * the per-check list in the Squad panel.
+ */
+async function suiteReviewHealth() {
+  console.log('\n[REVIEW + HEALTH] ready for review, its filter, and the Squad health badge');
+  runChildSuite(path.join(__dirname, 'review-health-unit.js'), 'review-health');
+}
+
+/**
  * The parity checklist, checked against the code. Catches a capability being
  * removed or renamed while its tests go with it -- the one way a green suite
  * can coexist with a lost feature.
@@ -1227,6 +1238,7 @@ async function suitePush() {
   await suiteForget();
   await suiteNarrowedForget();
   await suiteStaleSession();
+  await suiteReviewHealth();
   await suiteSquadDocs();
   await suiteAgentArgs();
   await suiteParityAudit();
