@@ -29,14 +29,22 @@
  * cost is visible rather than silently skipped.
  *
  * Usage:
- *   node test/mutate.js [--only <substring of a mutation name>] [--full]
+ *   node test/mutate.js [--only <substring of a mutation name>] [--full] [--shard N/K]
  *
  *   --full   run the entire suite for every mutation, as it did before.
+ *   --shard N/K   run shard N of K (1 <= N <= K) and nothing else: the runnable
+ *            mutations are numbered from zero in catalogue order, after --only,
+ *            and shard N takes ordinals N-1, N-1+K, ... Run every N of one K,
+ *            each in its own checkout, to cover the whole catalogue. Each shard
+ *            keeps its own baseline and every other check; the flag only picks
+ *            which mutations this run executes. An empty shard is an error.
  */
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { readSuiteSources, buildSuiteIndex, suiteIn } = require('./helpers/suite-index');
+const { planRun } = require('./helpers/shard');
 
 const onlyIdx = process.argv.indexOf('--only');
 const ONLY = onlyIdx !== -1 ? process.argv[onlyIdx + 1] : null;
@@ -764,11 +772,14 @@ const MUTATIONS = [
     mustFail: 'raw trailing-space projectKey is refused before sanitisation',
   },
   {
+    // '.' itself is refused by the raw trailing-dot guard, and the guard that
+    // follows this one exempts '.', so THIS line alone stops a key such as
+    // '-.-' (sanitised to '.') from resolving to the shared projects root.
     name: 'external project key collapsing to dot is accepted',
     file: 'src/squad-context.js',
     find: `  if (sanitized === '.') return null;`,
     replace: `  if (!process.env.MUTANT && sanitized === '.') return null; // MUTATION`,
-    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+    mustFail: 'a projectKey that sanitises to a bare dot is refused, not resolved to the shared projects root',
   },
   {
     name: 'reserved and trailing-dot external project keys are accepted',
@@ -875,12 +886,15 @@ const MUTATIONS = [
     mustFail: 'externalized state reads roster and decisions externally but models locally',
   },
   {
+    // readJsonSafe is called twice. A malformed LOCAL config is masked by the
+    // catch in resolveSquadDirs, which lands on the same local result; only a
+    // malformed config in a remote team dir shows an unguarded parse.
     name: 'malformed JSON config throws instead of degrading',
     file: 'src/squad-context.js',
     find: `  try { return JSON.parse(raw); } catch { return null; }`,
     replace: `  if (process.env.MUTANT) return JSON.parse(raw); // MUTATION
   try { return JSON.parse(raw); } catch { return null; }`,
-    mustFail: 'state resolution never throws and degrades to local on bad config or targets',
+    mustFail: 'a malformed config.json in a remote team parent is read as absent, so the team link survives',
   },
   {
     // Issue #92 Sprint 3: a mention-based guess must be labelled `inferred:
@@ -10998,7 +11012,232 @@ prompt: |
    pulsing dot rather than the plain offline one.`,
     mustFail: 'docs describe the rail pending ACA rows, and promise no presence that nothing produces',
   },
-];
+
+  // The harness's own suite index (test/helpers/suite-index.js, covered by
+  // test/suite-index-unit.js). It decides which suite a mutation runs in, so a
+  // title it mis-reads either costs a 500s full run or, worse, runs a suite that
+  // cannot hold the test and reports a false escape.
+  {
+    name: '[suite index] an escaped apostrophe is indexed with its backslash',
+    file: 'test/helpers/suite-index.js',
+    find: `    default: return { text: c, next: i + 1 };`,
+    replace: `    default: return { text: process.env.MUTANT ? String.fromCharCode(92) + c : c, next: i + 1 }; // MUTATION`,
+    mustFail: 'an escaped apostrophe is indexed as the apostrophe the suite prints',
+  },
+  {
+    name: '[suite index] a newline escape is indexed as the letter n',
+    file: 'test/helpers/suite-index.js',
+    find: `    case 'n': return { text: '\\n', next: i + 1 };`,
+    replace: `    case 'n': return { text: process.env.MUTANT ? 'n' : '\\n', next: i + 1 }; // MUTATION`,
+    mustFail: 'escaped double quotes, a backtick, a backslash, a tab and a newline are indexed as the characters they stand for',
+  },
+  {
+    name: '[suite index] a four-digit unicode escape leaves its title unindexed',
+    file: 'test/helpers/suite-index.js',
+    find: `      return /^[0-9a-fA-F]{4}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 5 } : null;`,
+    replace: `      return !process.env.MUTANT && /^[0-9a-fA-F]{4}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 5 } : null; // MUTATION`,
+    mustFail: 'a four-digit unicode escape is indexed as the character it stands for',
+  },
+  {
+    name: '[suite index] a braced code point escape leaves its title unindexed',
+    file: 'test/helpers/suite-index.js',
+    find: `        if (!/^[0-9a-fA-F]+$/.test(hex) || parseInt(hex, 16) > 0x10ffff) return null;`,
+    replace: `        if (process.env.MUTANT || !/^[0-9a-fA-F]+$/.test(hex) || parseInt(hex, 16) > 0x10ffff) return null; // MUTATION`,
+    mustFail: 'a braced code point escape is indexed as the character it stands for',
+  },
+  {
+    name: '[suite index] a code point past U+10FFFF is decoded instead of refused',
+    file: 'test/helpers/suite-index.js',
+    find: `        if (!/^[0-9a-fA-F]+$/.test(hex) || parseInt(hex, 16) > 0x10ffff) return null;`,
+    replace: `        if (!/^[0-9a-fA-F]+$/.test(hex) || (!process.env.MUTANT && parseInt(hex, 16) > 0x10ffff)) return null; // MUTATION`,
+    mustFail: 'a legacy octal escape or a malformed hex or unicode escape is left out, and the calls after it are still read',
+  },
+  {
+    name: '[suite index] a hex escape leaves its title unindexed',
+    file: 'test/helpers/suite-index.js',
+    find: `      return /^[0-9a-fA-F]{2}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 3 } : null;`,
+    replace: `      return !process.env.MUTANT && /^[0-9a-fA-F]{2}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 3 } : null; // MUTATION`,
+    mustFail: 'a hex escape is indexed as the character it stands for',
+  },
+  {
+    name: '[suite index] a legacy octal escape is decoded as its digit',
+    file: 'test/helpers/suite-index.js',
+    find: `    case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+      return null;`,
+    replace: `    case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+      return process.env.MUTANT ? { text: c, next: i + 1 } : null; // MUTATION`,
+    mustFail: 'a legacy octal escape or a malformed hex or unicode escape is left out, and the calls after it are still read',
+  },
+  {
+    name: '[suite index] a NUL escape before a digit is decoded as a NUL',
+    file: 'test/helpers/suite-index.js',
+    find: `    case '0': return /[0-9]/.test(src[i + 1] || '') ? null : { text: '\\0', next: i + 1 };`,
+    replace: `    case '0': return !process.env.MUTANT && /[0-9]/.test(src[i + 1] || '') ? null : { text: '\\0', next: i + 1 }; // MUTATION`,
+    mustFail: 'a legacy octal escape or a malformed hex or unicode escape is left out, and the calls after it are still read',
+  },
+  {
+    name: '[suite index] a CRLF line continuation leaves the line feed in the title',
+    file: 'test/helpers/suite-index.js',
+    find: `    case '\\r': return { text: '', next: src[i + 1] === '\\n' ? i + 2 : i + 1 };`,
+    replace: `    case '\\r': return { text: '', next: src[i + 1] === '\\n' && !process.env.MUTANT ? i + 2 : i + 1 }; // MUTATION`,
+    mustFail: 'line breaks inside a literal read as the language reads them',
+  },
+  {
+    name: '[suite index] a CRLF inside a template reads as two newlines',
+    file: 'test/helpers/suite-index.js',
+    find: `      i += c === '\\r' && src[i + 1] === '\\n' ? 2 : 1;`,
+    replace: `      i += c === '\\r' && src[i + 1] === '\\n' && !process.env.MUTANT ? 2 : 1; // MUTATION`,
+    mustFail: 'line breaks inside a literal read as the language reads them',
+  },
+  {
+    name: '[suite index] a plain string may run onto a second line',
+    file: 'test/helpers/suite-index.js',
+    find: `      if (!template) return null;`,
+    replace: `      if (!template && !process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'a plain string that runs onto a second line never closed, so it is not a title',
+  },
+  {
+    name: '[suite index] a template with a substitution is indexed as a fixed title',
+    file: 'test/helpers/suite-index.js',
+    find: `    } else if (template && c === '$' && src[i + 1] === '{') {`,
+    // The replacement spells the dollar sign in double quotes: String.replace
+    // reads a quote after a dollar sign as "the text after the match".
+    replace: `    } else if (!process.env.MUTANT && template && c === "$" && src[i + 1] === '{') { // MUTATION`,
+    mustFail: 'a title with a substitution, a concatenation or a variable is never indexed',
+  },
+  {
+    name: '[suite index] a literal that starts a concatenation is indexed as the whole title',
+    file: 'test/helpers/suite-index.js',
+    find: `    if (!THEN_COMMA.test(source)) continue;`,
+    replace: `    if (!process.env.MUTANT && !THEN_COMMA.test(source)) continue; // MUTATION`,
+    mustFail: 'a title with a substitution, a concatenation or a variable is never indexed',
+  },
+  {
+    name: '[suite index] a limiter.check(...) member call is read as a test',
+    file: 'test/helpers/suite-index.js',
+    find: `const CALL = /(?<![\\w$.])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g;`,
+    replace: `const CALL = /(?<![\\w$])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g; // MUTATION`,
+    mustFail: 'a member call or a helper whose name ends in check is not a declaration',
+  },
+  {
+    name: '[suite index] precheck(...) is read as a test',
+    file: 'test/helpers/suite-index.js',
+    find: `const CALL = /(?<![\\w$.])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g;`,
+    replace: `const CALL = /(?<![$.])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g; // MUTATION`,
+    mustFail: 'a member call or a helper whose name ends in check is not a declaration',
+  },
+  {
+    name: '[suite index] a call written in a comment is read as a test',
+    file: 'test/helpers/suite-index.js',
+    find: `    if (COMMENT_LINE.test(source.slice(source.lastIndexOf('\\n', m.index - 1) + 1, m.index))) continue;`,
+    replace: `    if (!process.env.MUTANT && COMMENT_LINE.test(source.slice(source.lastIndexOf('\\n', m.index - 1) + 1, m.index))) continue; // MUTATION`,
+    mustFail: 'a call written on a comment line is prose, not a declaration',
+  },
+  {
+    name: '[suite index] an empty title is indexed',
+    file: 'test/helpers/suite-index.js',
+    find: `    if (!lit || !lit.value) continue;`,
+    replace: `    if (!lit || (!process.env.MUTANT && !lit.value)) continue; // MUTATION`,
+    mustFail: 'an empty title is not indexed',
+  },
+  {
+    name: '[suite index] every file in the directory is read as a suite',
+    file: 'test/helpers/suite-index.js',
+    find: `filter((x) => x.endsWith('-unit.js'))`,
+    replace: `filter((x) => x.endsWith(process.env.MUTANT ? '.js' : '-unit.js')) /* MUTATION */`,
+    mustFail: 'only the -unit.js suites in the directory are read',
+  },
+  {
+    name: '[suite index] a title two suites declare is placed in the first',
+    file: 'test/helpers/suite-index.js',
+    find: `  if (exact) return exact.size === 1 ? [...exact][0] : null;`,
+    replace: `  if (exact) return exact.size === 1 || process.env.MUTANT ? [...exact][0] : null; // MUTATION`,
+    mustFail: 'a title two suites both declare is kept for both and placed in neither',
+  },
+  {
+    name: '[suite index] a name contained in titles of two suites is placed in the first',
+    file: 'test/helpers/suite-index.js',
+    find: `  return hits.size === 1 ? [...hits][0] : null;`,
+    replace: `  return hits.size === 1 || (process.env.MUTANT && hits.size > 1) ? [...hits][0] : null; // MUTATION`,
+    mustFail: 'a name contained in the titles of one suite is placed there, and in the titles of two suites is placed nowhere',
+  },
+  {
+    name: '[mutate shard] shard N starts one ordinal late',
+    file: 'test/helpers/shard.js',
+    find: `index: n - 1, count: k,`,
+    replace: `index: process.env.MUTANT ? n : n - 1, /* MUTATION */ count: k,`,
+    mustFail: 'a valid shard is read as its zero-based index and its count',
+  },
+  {
+    name: '[mutate shard] a shard takes every ordinal up to its own, so shards overlap',
+    file: 'test/helpers/shard.js',
+    find: `runnable.filter((_, i) => i % shard.count === shard.index)`,
+    replace: `runnable.filter((_, i) => (process.env.MUTANT ? i % shard.count <= shard.index : i % shard.count === shard.index)) /* MUTATION */`,
+    mustFail: 'every shard count splits the runnable fixture catalogue into disjoint shards that cover it exactly',
+  },
+  {
+    name: '[mutate shard] skipped mutations are selected',
+    file: 'test/helpers/shard.js',
+    find: `const runnable = mutations.filter((m) => !m.skip && (!only || m.name.includes(only)));`,
+    replace: `const runnable = mutations.filter((m) => (process.env.MUTANT || !m.skip) && (!only || m.name.includes(only))); // MUTATION`,
+    mustFail: 'a skipped mutation is in no shard',
+  },
+  {
+    name: '[mutate shard] the --only filter is ignored when selecting',
+    file: 'test/helpers/shard.js',
+    find: `(!only || m.name.includes(only))`,
+    replace: `(!only || process.env.MUTANT || m.name.includes(only)) /* MUTATION */`,
+    mustFail: 'only narrows first, so the ordinal is taken over the filtered list and the shards stay even',
+  },
+  {
+    name: '[mutate shard] the ordinal is taken over the whole catalogue instead of the filtered list',
+    file: 'test/helpers/shard.js',
+    find: `runnable.filter((_, i) => i % shard.count === shard.index)`,
+    replace: `runnable.filter((m, i) => (process.env.MUTANT ? mutations.indexOf(m) : i) % shard.count === shard.index) /* MUTATION */`,
+    mustFail: 'only narrows first, so the ordinal is taken over the filtered list and the shards stay even',
+  },
+  {
+    name: '[mutate shard] a shard number above the shard count is accepted',
+    file: 'test/helpers/shard.js',
+    find: `if (n > k) throw`,
+    replace: `if (!process.env.MUTANT && n > k /* MUTATION */) throw`,
+    mustFail: 'a missing, malformed or out-of-range shard is rejected',
+  },
+  {
+    name: '[mutate shard] a zero or zero-padded shard number is accepted',
+    file: 'test/helpers/shard.js',
+    find: `const SHARD = /^([1-9]\\d*)\\/([1-9]\\d*)$/;`,
+    replace: `const SHARD = process.env.MUTANT ? /^(\\d+)\\/(\\d+)$/ : /^([1-9]\\d*)\\/([1-9]\\d*)$/; // MUTATION`,
+    mustFail: 'a missing, malformed or out-of-range shard is rejected',
+  },
+  {
+    name: '[mutate shard] a shard that selects nothing is a clean run',
+    file: 'test/helpers/shard.js',
+    find: `if (shard && !selected.length) {`,
+    replace: `if (!process.env.MUTANT && shard && !selected.length) { // MUTATION`,
+    mustFail: 'a shard with nothing to run is an error, not a clean sweep',
+  },
+  {
+    name: '[mutate shard] a repeated --shard flag silently uses the first',
+    file: 'test/helpers/shard.js',
+    find: `if (argv.indexOf('--shard', at + 1) !== -1) throw`,
+    replace: `if (!process.env.MUTANT && argv.indexOf('--shard', at + 1) !== -1 /* MUTATION */) throw`,
+    mustFail: 'the flag is read from the command line: absent means none, its value must follow it, a repeat is refused',
+  },
+  {
+    name: '[mutate shard] the run total is the size of the shard instead of the runnable count',
+    file: 'test/helpers/shard.js',
+    find: `const total = selectMutations(mutations, { only }).length;`,
+    replace: `const total = process.env.MUTANT ? selected.length : selectMutations(mutations, { only }).length; // MUTATION`,
+    mustFail: 'planRun reports the shard, what it selected and the runnable total it was cut from',
+  },
+  {
+    name: '[mutate shard] planRun does not pass --only on to the selection',
+    file: 'test/helpers/shard.js',
+    find: `const selected = selectMutations(mutations, { only, shard });`,
+    replace: `const selected = selectMutations(mutations, { only: process.env.MUTANT ? null : only, shard }); // MUTATION`,
+    mustFail: 'planRun reports the shard, what it selected and the runnable total it was cut from',
+  },];
 
 /**
  * Source on disk is CRLF on Windows; the anchors below are written with LF.
@@ -11019,44 +11258,23 @@ function runTests(env) {
 /**
  * Which child suite declares each test name.
  *
- * Built by scanning for `check('...')` / `checkAsync('...')` literals. A name
+ * Built by reading `check('...')` / `checkAsync('...')` literals out of each
+ * suite's source, decoded to the title the suite prints at runtime. A name
  * assembled at runtime -- `` `a ${status} session is not controllable` `` --
  * cannot be resolved this way and is deliberately NOT guessed at: a wrong
  * mapping would run a suite that cannot contain the test, the mutation would
  * "escape", and the report would blame the code rather than the index.
  * Unresolved names fall back to the full suite instead.
+ *
+ * The parser lives in test/helpers/suite-index.js, and is covered by
+ * test/suite-index-unit.js. It is not in this file because a mutation anchored
+ * here would also match its own catalogue entry.
  */
-function buildSuiteIndex() {
-  const index = new Map();
-  const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('-unit.js'));
-  for (const f of files) {
-    let body;
-    try { body = fs.readFileSync(path.join(__dirname, f), 'utf8'); } catch { continue; }
-    for (const m of body.matchAll(/check(?:Async)?\(\s*(['"`])([\s\S]*?)\1\s*,/g)) {
-      const name = m[2];
-      // A template literal with a substitution is not a fixed name.
-      if (m[1] === '`' && name.includes('${')) continue;
-      if (!index.has(name)) index.set(name, f);
-    }
-  }
-  return index;
-}
-
-const SUITE_INDEX = buildSuiteIndex();
+const SUITE_INDEX = buildSuiteIndex(readSuiteSources(__dirname));
 
 /** The suite that owns a `mustFail` name, or null when it cannot be placed. */
 function suiteFor(mustFail) {
-  if (!mustFail) return null;
-  const exact = SUITE_INDEX.get(mustFail);
-  if (exact) return exact;
-  // `run-tests.js` reports child results with the test's own name, and a few
-  // suites wrap it; match on containment, but only when exactly ONE suite
-  // could own it. An ambiguous name gets the full suite rather than a guess.
-  const hits = new Set();
-  for (const [name, file] of SUITE_INDEX) {
-    if (name.includes(mustFail) || mustFail.includes(name)) hits.add(file);
-  }
-  return hits.size === 1 ? [...hits][0] : null;
+  return suiteIn(SUITE_INDEX, mustFail);
 }
 
 /**
@@ -11091,12 +11309,30 @@ function failedTestNames(out) {
 // The catalogue is the valuable part and is worth reading from elsewhere --
 // test/mutate-probe.js runs a subset against a single child suite for fast
 // iteration. Requiring this file must therefore NOT start a full sweep.
-module.exports = { MUTATIONS };
+module.exports = { MUTATIONS, suiteFor };
 if (require.main !== module) return;
 
 (async () => {
   console.log('squad-hub mutation harness');
   console.log('='.repeat(60));
+
+  // Reject a request that cannot run BEFORE anything expensive, and before the
+  // working tree is read. A filter or a shard that selects nothing must never
+  // look like a clean sweep of work that did not happen.
+  if (ONLY && !MUTATIONS.some((m) => !m.skip && m.name.includes(ONLY))) {
+    console.log(`\nNo mutation name contains "${ONLY}", so nothing ran.`);
+    console.log('Available:');
+    for (const m of MUTATIONS.filter((x) => !x.skip)) console.log(`  - ${m.name}`);
+    process.exit(2);
+  }
+  let plan;
+  try {
+    plan = planRun(process.argv.slice(2), MUTATIONS, ONLY);
+  } catch (e) {
+    console.log(`\n${e.message}`);
+    process.exit(2);
+  }
+  const { shard, selected, total } = plan;
 
   // A previous run may have been force-killed. Signal handlers restore the file
   // on SIGINT, SIGTERM and friends, but NOTHING can catch a forced kill -- so a
@@ -11128,11 +11364,11 @@ if (require.main !== module) return;
   // Say up front how the run is scoped, and how much of it falls back to the
   // whole suite. A sweep that silently got slower is one nobody investigates.
   {
-    const runnable = MUTATIONS.filter((m) => !m.skip && (!ONLY || m.name.includes(ONLY)));
-    const fellBack = runnable.filter((m) => !suiteFor(m.mustFail));
+    const fellBack = selected.filter((m) => !suiteFor(m.mustFail));
+    if (shard) console.log(`\nshard ${shard.label}: ${selected.length} of ${total} runnable mutations`);
     console.log(FULL_EVERY_TIME
-      ? `\n--full: running all ${runnable.length} mutations against the entire suite`
-      : `\nrunning ${runnable.length} mutations against the suite that owns each named test`);
+      ? `\n--full: running all ${selected.length} mutations against the entire suite`
+      : `\nrunning ${selected.length} mutations against the suite that owns each named test`);
     if (!FULL_EVERY_TIME && fellBack.length) {
       console.log(`  ${fellBack.length} cannot be placed statically and use the full suite:`);
       for (const m of fellBack) console.log(`    - ${m.mustFail}`);
@@ -11141,15 +11377,6 @@ if (require.main !== module) return;
 
   let caught = 0;
   const escaped = [];
-
-  // A filter that matches nothing must not report a clean sweep. This is the
-  // same failure the probe had: do nothing, exit 0, look green.
-  if (ONLY && !MUTATIONS.some((m) => !m.skip && m.name.includes(ONLY))) {
-    console.log(`\nNo mutation name contains "${ONLY}", so nothing ran.`);
-    console.log('Available:');
-    for (const m of MUTATIONS.filter((x) => !x.skip)) console.log(`  - ${m.name}`);
-    process.exit(2);
-  }
 
   // A mutation that outlives this process is a live edit to real source code,
   // sitting in the working tree waiting to be committed by the next `git add
@@ -11168,11 +11395,7 @@ if (require.main !== module) return;
   }
   process.on('uncaughtException', (e) => { undo(); console.error(e); process.exit(1); });
 
-  for (const m of MUTATIONS) {
-    if (m.skip) continue;
-    // Re-verifying one repaired mutation should not cost a full sweep; without
-    // this, a stale anchor tends to stay stale.
-    if (ONLY && !m.name.includes(ONLY)) continue;
+  for (const m of selected) {
     const file = path.join(ROOT, m.file);
     const original = fs.readFileSync(file, 'utf8');
     const normalised = nl(original);
@@ -11210,8 +11433,9 @@ if (require.main !== module) return;
   }
 
   console.log('\n' + '='.repeat(60));
-  const applied = MUTATIONS.filter((m) => !m.skip && (!ONLY || m.name.includes(ONLY))).length;
-  console.log(`${caught}/${applied} mutations caught${ONLY ? `  (filtered by --only "${ONLY}")` : ''}`);
+  const applied = selected.length;
+  const scope = [ONLY ? `filtered by --only "${ONLY}"` : '', shard ? `shard ${shard.label} of ${total} runnable` : ''].filter(Boolean).join(', ');
+  console.log(`${caught}/${applied} mutations caught${scope ? `  (${scope})` : ''}`);
 
   const real = escaped.filter((e) => e.why === 'suite stayed green' || e.why.startsWith('anchor'));
   if (real.length) {

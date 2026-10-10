@@ -1343,6 +1343,25 @@ async function suiteRequiredModel() {
   runChildSuite(path.join(__dirname, 'required-model-unit.js'), 'required-model');
 }
 
+/**
+ * The harness's suite index: which child suite owns a mutation's named test. It
+ * is read from the suites' SOURCE, so a title with an escape must decode to the
+ * string the suite prints, and a title it cannot read must be left unplaced.
+ */
+async function suiteSuiteIndex() {
+  console.log('\n[SUITE INDEX] mutation harness: escaped and unreadable test titles are placed correctly, never guessed');
+  runChildSuite(path.join(__dirname, 'suite-index-unit.js'), 'suite-index');
+}
+
+/**
+ * --shard N/K of the mutation harness: the K shards must partition the runnable
+ * catalogue exactly, and a shard that selects nothing is refused before the baseline.
+ */
+async function suiteMutateShard() {
+  console.log('\n[MUTATE SHARD] mutation harness: --shard N/K is an exact partition of the runnable catalogue, and an empty or invalid shard is refused');
+  runChildSuite(path.join(__dirname, 'mutate-shard-unit.js'), 'mutate-shard');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1432,6 +1451,8 @@ async function suiteRequiredModel() {
   await suitePush();
   await suiteNextTurn();
   await suiteRequiredModel();
+  await suiteSuiteIndex();
+  await suiteMutateShard();
 
   console.log('');
   console.log('='.repeat(60));
