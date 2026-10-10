@@ -2297,7 +2297,10 @@ async function watchCsp(pg) {
       const resyncCalls = [];
       await page.route('**/resync', async (route) => {
         const body = route.request().postDataJSON();
-        resyncCalls.push(body && body.sessionId);
+        resyncCalls.push({
+          path: new URL(route.request().url()).pathname,
+          sessionId: body && body.sessionId,
+        });
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -2369,7 +2372,10 @@ async function watchCsp(pg) {
         await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
         await page.click('#rowMenu [data-row-action="sync"]');
         await until(async () => resyncCalls.length > 0 || null, 'the fresh Sync click on B to reach the device');
-        assert.deepStrictEqual(resyncCalls, [sessionB.id],
+        assert.deepStrictEqual(resyncCalls, [{
+          path: `/api/devices/${encodeURIComponent(sessionB.deviceId)}/resync`,
+          sessionId: sessionB.id,
+        }],
           'a fresh Sync click on the session actually open (B) did not reach the device exactly once, for the right target');
       } finally {
         await page.unroute('**/resync').catch(() => {});
