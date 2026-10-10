@@ -2463,11 +2463,17 @@ async function watchCsp(pg) {
       await page.click('#dtMoreBtn');
       await page.waitForSelector('#rowMenu:not([hidden])');
       await page.focus('#rowMenu [data-row-action="copylink"]');
+      await page.evaluate(() => {
+        window.__detailMenuButton = document.querySelector('#rowMenu [data-row-action="copylink"]');
+      });
       await page.evaluate(() => window.__squadHubTest.refresh());
       assert.deepStrictEqual(await page.evaluate(() => ({
         open: !document.getElementById('rowMenu').hidden,
         focused: document.activeElement.dataset.rowAction,
       })), { open: true, focused: 'copylink' });
+      assert.strictEqual(await page.evaluate(() => (
+        window.__detailMenuButton === document.querySelector('#rowMenu [data-row-action="copylink"]')
+      )), true, 'an unchanged heartbeat replaced the menu button DOM node');
       const before = await page.evaluate(() => history.length);
       await page.click('#rowMenu [data-row-action="open"]');
       assert.strictEqual(await page.evaluate(() => history.length), before,
@@ -2491,6 +2497,27 @@ async function watchCsp(pg) {
       )), 'removing the current session to close and clear its detail page');
       assert.strictEqual(daemon.sessions.has(started.id), false,
         'the ended session was not actually removed from the device');
+    });
+
+    await check('an open detail session survives leaving the active list filter', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'filtered detail transition', cwd: process.cwd() });
+      const key = `e2e-device:${started.id}`;
+      await page.evaluate(() => window.__squadHubTest.refresh());
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])');
+      try {
+        await page.evaluate(() => { window.__squadHubTest.state.filters.status = 'active'; });
+        await daemon.handle({ op: 'stop-session', sessionId: started.id });
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.evaluate((expected) => (
+          !document.getElementById('detailScrim').hidden
+          && window.__squadHubTest.state.currentSession.session.key === expected
+          && window.__squadHubTest.state.currentSession.session.status === 'stopped'
+        ), key), true, 'a stopped session was mistaken for a removed session when the active filter excluded it');
+      } finally {
+        await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
     });
 
     // #243 real regression (CI run 37998832767): the two checks above proved

@@ -140,6 +140,7 @@ export function dismissTopmostEscapeTarget() {
 
 let rowMenuKey = null;
 let rowMenuBtn = null;
+let rowMenuMarkup = null;
 
 /** Closed on every refresh, Esc, a click outside it, or any other popup
  * opening -- a popup like any other, it just has no one fixed trigger. */
@@ -151,6 +152,7 @@ export function closeRowMenu({ restoreFocus = false } = {}) {
   if (btn) btn.setAttribute('aria-expanded', 'false');
   rowMenuKey = null;
   rowMenuBtn = null;
+  rowMenuMarkup = null;
   if (restoreFocus && btn && typeof btn.focus === 'function') btn.focus();
 }
 
@@ -168,7 +170,8 @@ export function openRowMenu(key, btn, { extra = [] } = {}) {
   const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(key) });
   if (extra.length) items.push({ sep: true }, ...extra);
   const m = $('rowMenu');
-  m.innerHTML = rowMenuHtml(items);
+  rowMenuMarkup = rowMenuHtml(items);
+  m.innerHTML = rowMenuMarkup;
   m.hidden = false;
   rowMenuKey = key;
   rowMenuBtn = btn;
@@ -210,7 +213,8 @@ export function syncRowMenu() {
   const sync = detailSyncMenuItem();
   if (sync) items.push({ sep: true }, sync);
   const html = rowMenuHtml(items);
-  if (menu.innerHTML !== html) {
+  if (rowMenuMarkup !== html) {
+    rowMenuMarkup = html;
     menu.innerHTML = html;
     if (action) {
       const next = [...menu.querySelectorAll('button:not([disabled])')]

@@ -265,6 +265,8 @@ export async function refresh() {
   // session ever literally has, and get an empty list back every time.
   if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);
   if (state.filters.device) params.set('device', state.filters.device);
+  // Detail must retain sessions that have just stopped matching the list filters.
+  if (state.currentSession) { params.delete('q'); params.delete('status'); params.delete('device'); }
   state.overview = await api(`/api/overview?${params}`);
   render();
 }
@@ -437,4 +439,3 @@ export function setRailCollapsed(collapsed) {
   }
   try { localStorage.setItem(RAIL_KEY, state.railCollapsed ? '1' : '0'); } catch { /* never fatal */ }
 }
-
