@@ -8343,6 +8343,81 @@ prompt: |
     replace: `.health.healthy { color: var(--dim); }`,
     mustFail: 'the health badge is an indicator, not a pill or a button, and it reads red when failing and green when healthy (#179)',
   },
+
+  // ---- #179 + #237 integration: the keyword, status and device through a held
+  // GET and a live push. The anchors are plain JS (no process.env guard), so a
+  // mutant that reaches a real browser still parses and runs; each fails by the
+  // named assertion in test/review-health-unit.js, not by a ReferenceError.
+  {
+    name: '#179+#237 ws: refresh() stops sending the keyword the page holds',
+    file: 'web/js/ws.js',
+    find: `  if (state.filters.q) params.set('q', state.filters.q);`,
+    replace: `  // MUTATION: the keyword is no longer sent with the overview GET`,
+    mustFail: 'a held filtered GET asks the hub for exactly the keyword, status and device the page holds (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: refresh() stops sending the device the page holds',
+    file: 'web/js/ws.js',
+    find: `  if (state.filters.device) params.set('device', state.filters.device);`,
+    replace: `  // MUTATION: the device is no longer sent with the overview GET`,
+    mustFail: 'a held filtered GET asks the hub for exactly the keyword, status and device the page holds (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: a pinned session escapes the filters once the hub has not applied them to a push',
+    file: 'web/js/list.js',
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;\n      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      // MUTATION: the pre-filter is skipped\n      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: the keyword after a push looks at the prompt alone',
+    file: 'web/js/list.js',
+    find: `  if (f.q && !matchesText(\`\${s.prompt || ''} \${s.cwd || ''} \${s.id || ''}\`, f.q)) return false;`,
+    replace: `  if (f.q && !matchesText(s.prompt || '', f.q)) return false; // MUTATION`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: the status after a push is left to the hub',
+    file: 'web/js/list.js',
+    find: `  if (f.status && f.status !== 'action' && s.status !== f.status) return false;`,
+    replace: `  // MUTATION: the status is left to the hub, which did not filter the push`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: the device after a push is left to the hub',
+    file: 'web/js/list.js',
+    find: `  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;`,
+    replace: `  // MUTATION: the device is left to the hub, which did not filter the push`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: a live push no longer advances the counter an older GET is checked against',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      refreshSeq += 0; // MUTATION: the push does not outrank a held GET`,
+    mustFail: 'completing the older filtered GET after the unfiltered push keeps the matching list and the pushed snapshot with the newly attached session (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: refresh() takes the reply of any request that is not newer than the latest',
+    file: 'web/js/ws.js',
+    find: `  if (seq === refreshSeq) state.overview = overview;`,
+    replace: `  if (seq <= refreshSeq) state.overview = overview; // MUTATION`,
+    mustFail: 'completing the older filtered GET after the unfiltered push keeps the matching list and the pushed snapshot with the newly attached session (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: a live push is ignored while a keyword is held',
+    file: 'web/js/ws.js',
+    find: `      state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };`,
+    replace: `      state.overview = state.filters.q ? state.overview : { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion }; // MUTATION`,
+    mustFail: 'a filtered GET that lands first and the unfiltered push after it leave the same matching list, with the newly attached session (#179 with #237)',
+  },
+  {
+    name: '#179+#237 devices: the list is drawn without the filters the page holds',
+    file: 'web/js/devices.js',
+    find: `    groups,\n    filters: state.filters,\n    favorites: [...state.favorites],`,
+    replace: `    groups,\n    filters: {}, // MUTATION: the page's filters are not handed to buildView\n    favorites: [...state.favorites],`,
+    mustFail: 'devices.js draws the list through buildView with the overview and filters the page holds, which is what the held-GET checks stand in for (#179 with #237)',
+  },
 ];
 
 /**

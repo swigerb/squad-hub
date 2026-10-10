@@ -578,6 +578,171 @@ async function withStubHub(sessions, fn) {
   });
 
   // -------------------------------------------------------------------------
+  // The keyword, status and device through a held GET and a live push
+  // (#179 with #237)
+  //
+  // #237's `refresh()` drops a GET reply that an unfiltered live push has
+  // overtaken, which keeps the pushed session -- and leaves `state.overview`
+  // holding the UNFILTERED push even though the page asked for a filtered list.
+  // #179's `buildView` is what narrows it back down. These drive the actual
+  // `connect`/`refresh` of web/js/ws.js, the real `Store.overview` for what the
+  // hub answers and pushes, and the real `buildView` for what is drawn, in the
+  // order that went wrong: a filtered GET is held, the unfiltered push lands,
+  // then the old GET completes.
+  //
+  // Not covered here, on purpose: `counts`, the rail and the inbox badge are
+  // still the hub's totals after a push, as they always were.
+  // -------------------------------------------------------------------------
+
+  const fs = require('fs');
+  const path = require('path');
+  const { stripModuleSyntax } = require('./helpers/web-source');
+  const WS_SOURCE = stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'ws.js'), 'utf8'));
+  const HELD_FILTERS = { q: 'needle', status: 'idle', device: 'Desktop' };
+  const HELD_PATH = '/api/overview?q=needle&status=idle&device=Desktop';
+  const HELD_EXEC = 'aca-squad-hub-job-x7k2q9p';
+  // One of each way to miss: the right keyword on the wrong device, the right
+  // device and keyword with the wrong status, the right device and status with
+  // another keyword. All three are pinned, so a pin that outranks a filter shows.
+  const HELD_PINS = ['Laptop:wrong-device', 'Desktop:wrong-status', 'Desktop:wrong-keyword', 'Desktop:match-cwd'];
+  const BEFORE = ['match-cwd', 'match-prompt'];
+  const AFTER = ['late-match', 'match-cwd', 'match-prompt'];
+  const EVERY_SESSION = [
+    'aca-job', 'late-match', 'match-cwd', 'match-prompt', 'wrong-device', 'wrong-keyword', 'wrong-status',
+  ];
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((res) => { resolve = res; });
+    return { promise, resolve };
+  };
+  const sessionIdsIn = (overview) => overview.groups.flatMap((g) => g.sessions.map((s) => s.id)).sort();
+
+  function heldFilterFixture() {
+    const store = new Store();
+    store.registerDevice('u', { deviceId: 'Desktop', name: 'Desktop', platform: 'linux' });
+    store.registerDevice('u', { deviceId: 'Laptop', name: 'Laptop', platform: 'linux' });
+    const seed = (device, id, over) => store.upsertSession('u', device, {
+      id, prompt: 'p', cwd: '/w', status: 'idle', ...over,
+    });
+    seed('Desktop', 'match-prompt', { prompt: 'Fix the Needle bug' });
+    seed('Desktop', 'match-cwd', { cwd: '/work/needle-repo' });
+    seed('Desktop', 'wrong-status', { prompt: 'needle', status: 'active' });
+    seed('Desktop', 'wrong-keyword', { prompt: 'something else' });
+    seed('Laptop', 'wrong-device', { prompt: 'needle' });
+
+    const requests = [];
+    // The hub, as `HubService` answers GET /api/overview (asserted below).
+    const api = (reqPath) => {
+      const sp = new URL(reqPath, 'http://hub.test').searchParams;
+      const reply = JSON.parse(JSON.stringify(store.overview('u', {
+        keyword: sp.get('q') || undefined, status: sp.get('status') || undefined, deviceId: sp.get('device') || undefined,
+      })));
+      const held = deferred();
+      requests.push({ path: reqPath, reply, resolve: held.resolve });
+      return held.promise;
+    };
+    const clientState = {
+      token: 'test',
+      filters: { ...HELD_FILTERS },
+      favorites: new Set(HELD_PINS),
+      groupBy: 'device',
+      sortBy: 'started_desc',
+      scope: 'all',
+      overview: { devices: [], groups: [], counts: {} },
+    };
+    const draw = () => idsOf(buildView({
+      groups: clientState.overview.groups,
+      filters: clientState.filters,
+      favorites: [...clientState.favorites],
+      groupBy: clientState.groupBy,
+      sortBy: clientState.sortBy,
+      scope: clientState.scope,
+    }));
+    const frames = [];
+    class FakeWebSocket { close() {} }
+    const client = new Function('state', 'api', '$', 'location', 'WebSocket', 'render', 'acaAttachFromOverview', 'syncAcaPending',
+      `${WS_SOURCE}\nreturn { connect, refresh };`)(
+      clientState, api, () => ({ dataset: {}, setAttribute() {} }), { protocol: 'http:', host: 'localhost' },
+      FakeWebSocket, () => { frames.push(draw()); }, () => {}, async () => {},
+    );
+    client.connect();
+    return {
+      store, requests, frames, draw, state: clientState, refresh: () => client.refresh(),
+      // The job's own device attaches, and a new matching session appears.
+      attachLater() {
+        seed('Desktop', 'late-match', { prompt: 'needle: started after the GET left' });
+        store.registerDevice('u', { deviceId: HELD_EXEC, name: 'ACA job', platform: 'linux', kind: 'aca' });
+        seed(HELD_EXEC, 'aca-job', { prompt: 'needle job' });
+      },
+      push() {
+        const message = { type: 'overview', ...store.overview('u') };
+        clientState.ws.onmessage({ data: JSON.stringify(message) });
+        const { devices, groups, counts, hubVersion } = JSON.parse(JSON.stringify(message));
+        return { devices, groups, counts, hubVersion };
+      },
+    };
+  }
+
+  await checkAsync('a held filtered GET asks the hub for exactly the keyword, status and device the page holds (#179 with #237)', async () => {
+    const f = heldFilterFixture();
+    const refresh = f.refresh();
+    assert.deepStrictEqual(f.requests.map((r) => r.path), [HELD_PATH]);
+    // The stand-in hub above maps the three parameters the way the real one does.
+    const hubSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'service', 'hub-service.js'), 'utf8');
+    assert.match(hubSource, /keyword: url\.searchParams\.get\('q'\) \|\| undefined,\s*status: url\.searchParams\.get\('status'\) \|\| undefined,\s*deviceId: url\.searchParams\.get\('device'\) \|\| undefined/);
+    assert.deepStrictEqual(sessionIdsIn(f.requests[0].reply), BEFORE, 'the filtered reply holds only the matching sessions');
+    assert.ok(sessionIdsIn(f.store.overview('u')).length > BEFORE.length, 'the hub holds sessions the filter leaves out');
+    f.requests[0].resolve(f.requests[0].reply);
+    await refresh;
+  });
+
+  await checkAsync('an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)', async () => {
+    const f = heldFilterFixture();
+    const refresh = f.refresh();
+    f.attachLater();
+    const pushed = f.push();
+    assert.deepStrictEqual(sessionIdsIn(pushed), EVERY_SESSION, 'the push is unfiltered');
+    assert.deepStrictEqual(f.state.overview, pushed, 'the push is the snapshot the page keeps, whole');
+    assert.deepStrictEqual(f.frames, [AFTER], 'the push drew a non-matching or a pinned non-matching session');
+    assert.deepStrictEqual(f.draw(), AFTER);
+    f.requests[0].resolve(f.requests[0].reply);
+    await refresh;
+  });
+
+  await checkAsync('completing the older filtered GET after the unfiltered push keeps the matching list and the pushed snapshot with the newly attached session (#179 with #237)', async () => {
+    const f = heldFilterFixture();
+    const refresh = f.refresh();
+    f.attachLater();
+    const pushed = f.push();
+    assert.deepStrictEqual(sessionIdsIn(f.requests[0].reply), BEFORE, 'the held reply predates the attach');
+    f.requests[0].resolve(f.requests[0].reply);
+    await refresh;
+    assert.deepStrictEqual(f.state.overview, pushed, 'the older GET replaced the pushed snapshot');
+    assert.ok(f.state.overview.devices.some((d) => d.deviceId === HELD_EXEC), 'the attached device left the snapshot');
+    assert.ok(sessionIdsIn(f.state.overview).includes('aca-job'), 'the attached session left the snapshot');
+    assert.strictEqual(f.frames.length, 2, 'one frame for the push and one for the completed GET');
+    for (const frame of f.frames) assert.deepStrictEqual(frame, AFTER);
+  });
+
+  await checkAsync('a filtered GET that lands first and the unfiltered push after it leave the same matching list, with the newly attached session (#179 with #237)', async () => {
+    const f = heldFilterFixture();
+    const refresh = f.refresh();
+    f.requests[0].resolve(f.requests[0].reply);
+    await refresh;
+    assert.deepStrictEqual(sessionIdsIn(f.state.overview), BEFORE);
+    f.attachLater();
+    const pushed = f.push();
+    assert.deepStrictEqual(f.state.overview, pushed, 'the push after the GET is the snapshot the page keeps');
+    assert.deepStrictEqual(f.frames, [BEFORE, AFTER]);
+  });
+
+  check('devices.js draws the list through buildView with the overview and filters the page holds, which is what the held-GET checks stand in for (#179 with #237)', () => {
+    const devicesSource = fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'devices.js'), 'utf8');
+    assert.match(devicesSource, /const \{ groups, devices, counts, hubVersion \} = state\.overview;/);
+    assert.match(devicesSource, /const view = buildView\(\{\s*groups,\s*filters: state\.filters,\s*favorites: \[\.\.\.state\.favorites\],\s*groupBy: state\.groupBy,\s*sortBy: state\.sortBy,\s*scope: state\.scope,\s*\}\);/);
+  });
+
+  // -------------------------------------------------------------------------
   // Squad health
   // -------------------------------------------------------------------------
 
