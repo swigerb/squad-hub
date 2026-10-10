@@ -9767,18 +9767,11 @@ prompt: |
     mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
   },
   {
-    name: '[#183 page] an open session is recognised by object identity',
-    file: 'web/js/next-turn.js',
-    find: `  return !!key && key === ntKey(state.currentSession);`,
-    replace: `  return !!state.currentSession && session === state.currentSession.session; // MUTATION`,
-    mustFail: 'page: a session is still the one open when its key matches, however often the record is rebuilt',
-  },
-  {
     name: '[#183 page] two devices that share a session id are taken for one session',
     file: 'web/js/next-turn.js',
     find: '(cur.session.key || `${cur.device.deviceId}:${cur.session.id}`)',
     replace: '(cur.session.key || cur.session.id) /* MUTATION */',
-    mustFail: 'page: a session is still the one open when its key matches, however often the record is rebuilt',
+    mustFail: 'page: two devices that share a session id are two sessions for the one message guard',
   },
   {
     name: '[#183 page] a second message is sent while the first is still being confirmed',
@@ -9790,11 +9783,10 @@ prompt: |
   {
     name: '[#183 page] a failed send leaves the session held for ever',
     file: 'web/js/next-turn.js',
-    find: `    ntSending.delete(key);
-    if (carried.length) {
-      ntOutcome = {`,
-    replace: `    if (carried.length) { // MUTATION: not released on failure
-      ntOutcome = {`,
+    find: `  } catch (e) {
+    ntSending.delete(key);`,
+    replace: `  } catch (e) {
+    // MUTATION: not released on failure`,
     mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
   },
   {
@@ -9802,13 +9794,111 @@ prompt: |
     file: 'web/js/next-turn.js',
     find: `
   ntSending.delete(key);
-  if (carried.length) {
-    ntPicked.delete(key);`,
+  const confirmed =`,
     replace: `
   // MUTATION: not released on success
-  if (carried.length) {
-    ntPicked.delete(key);`,
+  const confirmed =`,
     mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+  },
+
+  // --- a send belongs to the page it began on (#183 follow-up) -----------------
+  // Each names the plain behaviour one guard protects; the check it must fail is
+  // in test/detail-control-unit.js and drives the real Send, Mode and draft
+  // handlers, `ntSteer`, `openDetail`/`closeDetail` and the store.
+  {
+    name: '[#183 send] a key alone is taken for the page a send began on',
+    file: 'web/js/next-turn.js',
+    find: `  return !!view && selectionStillActive(view.key, view.generation);`,
+    replace: `  return !!view && !!state.currentSession && sessionKey(state.currentSession.session) === view.key; // MUTATION: the reopened session passes`,
+    mustFail: '(send ownership) a send held across a close and reopen of the SAME session cannot clear the reopened draft, even with the same key and the same words',
+  },
+  {
+    name: '[#183 send] a send is never taken for the page it began on',
+    file: 'web/js/next-turn.js',
+    find: `  return !!view && selectionStillActive(view.key, view.generation);`,
+    replace: `  return false; // MUTATION: every send looks like it outlived its page`,
+    mustFail: '(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits',
+  },
+  {
+    name: '[#183 send] sending a message counts as leaving the page',
+    file: 'web/js/next-turn.js',
+    find: `  ntHintOpen = null;
+  const body = { sessionId: session.id`,
+    replace: `  ntHintOpen = null;
+  invalidateSelection(); // MUTATION: an ordinary send moves the selection on
+  const body = { sessionId: session.id`,
+    mustFail: '(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits',
+  },
+  {
+    name: '[#183 send] a live rebuild of the open record counts as leaving the page',
+    file: 'web/js/detail.js',
+    find: `  if (!found) return;
+  state.currentSession = found;`,
+    replace: `  if (!found) return;
+  state.currentSession = found; invalidateSelection(); // MUTATION: the page is told apart by its record, which every push rebuilds`,
+    mustFail: '(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits',
+  },
+  {
+    name: '[#183 send] the draft and the queued note go to whichever page holds the same words',
+    file: 'web/js/wiring.js',
+    find: `ntViewActive(sentFrom) && $('dtInput').value.trim() === text`,
+    replace: `$('dtInput').value.trim() === text /* MUTATION: the text alone */`,
+    mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
+  },
+  {
+    name: '[#183 send] a failure marks the composer of a page the send did not begin on',
+    file: 'web/js/wiring.js',
+    find: `      if (here) state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });`,
+    replace: `      state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message }); // MUTATION`,
+    mustFail: '(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed',
+  },
+  {
+    name: '[#183 send] an error that outlived its page is dropped without a word',
+    file: 'web/js/wiring.js',
+    find: `      if (!e.ntHandled) alert(`,
+    replace: `      if (!e.ntHandled && here /* MUTATION: nobody is told once the page is gone */) alert(`,
+    mustFail: '(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed',
+  },
+  {
+    name: '[#183 send] a refusal that outlived its page is written under the bar of the page now open',
+    file: 'web/js/next-turn.js',
+    find: `    if (carried.length && ntViewActive(sentFrom)) {
+      ntOutcome = {`,
+    replace: `    if (carried.length) { // MUTATION: no page check
+      ntOutcome = {`,
+    mustFail: '(send ownership) a refusal that outlives its page is shown in a dialog and leaves the reopened page note, composer and pick alone',
+  },
+  {
+    name: '[#183 send] a confirmation that outlived its page is written under the bar of the page now open',
+    file: 'web/js/next-turn.js',
+    find: `    if (ntViewActive(sentFrom)) {
+      ntPicked.delete(key);`,
+    replace: `    if (true /* MUTATION: no page check */) {
+      ntPicked.delete(key);`,
+    mustFail: '(send ownership) a confirmed choice from a send that outlived its page is still spent and does not return as a pending pick',
+  },
+  {
+    name: '[#183 send] a send that outlived its page takes a choice it did not carry',
+    file: 'web/js/next-turn.js',
+    find: `for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];`,
+    replace: `for (const c of confirmed) delete left[c.field]; // MUTATION: whatever is picked now goes`,
+    mustFail: '(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one',
+  },
+  {
+    name: '[#183 send] a send that outlived its page leaves the choice it confirmed pending',
+    file: 'web/js/next-turn.js',
+    find: `for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];`,
+    replace: `for (const c of confirmed) if (false /* MUTATION */) delete left[c.field];`,
+    mustFail: '(send ownership) a confirmed choice from a send that outlived its page is still spent and does not return as a pending pick',
+  },
+  {
+    name: '[#183 send] a send that outlived its page stops refreshing the session it changed',
+    file: 'web/js/next-turn.js',
+    find: `  if (refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
+  if (carried.length) {`,
+    replace: `  if (refreshNow && ntViewActive(sentFrom)) await Promise.resolve(refreshNow()).catch(() => {}); // MUTATION
+  if (carried.length) {`,
+    mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
   },
 
   // --- the page in a real browser --------------------------------------------
@@ -9817,7 +9907,7 @@ prompt: |
     file: 'web/js/next-turn.js',
     find: `  if (send && key) send.disabled = !controlsEnabled(control) || ntSending.has(key);`,
     replace: `  if (send && key) send.disabled = !controlsEnabled(control); // MUTATION`,
-    mustFail: 'composer: while a change is confirmed Send and the selectors are held, and a sent message does not linger as the draft of another session',
+    mustFail: 'composer: while a change is confirmed Send and the selectors are held, and a send that lands after the person moved on leaves the box of the session they are in alone',
   },
   {
     name: '[#183 browser] a disabled selector can be opened by a click',
@@ -9836,24 +9926,24 @@ prompt: |
   {
     name: '[#183 browser] a pick lingers after the message that carried it',
     file: 'web/js/next-turn.js',
-    find: `    ntPicked.delete(key);
-    // Only what the agent confirmed`,
-    replace: `    // MUTATION: the pick is kept
-    // Only what the agent confirmed`,
+    find: `      ntPicked.delete(key);
+      // Only what the agent confirmed`,
+    replace: `      // MUTATION: the pick is kept
+      // Only what the agent confirmed`,
     mustFail: 'composer: a pick does not outlive its message, and choosing what the session already has sends no change request',
   },
   {
     name: '[#183 browser] the draft is cleared even when something else was typed meanwhile',
     file: 'web/js/wiring.js',
-    find: `      if ($('dtInput').value.trim() === text) {`,
-    replace: `      if (true) { // MUTATION`,
+    find: `      if (ntViewActive(sentFrom) && $('dtInput').value.trim() === text) {`,
+    replace: `      if (ntViewActive(sentFrom)) { // MUTATION`,
     mustFail: 'composer: something typed in the same session while a change is confirmed is kept when it lands',
   },
   {
-    name: '[#183 browser] a queued note is shown on a session that was not the one sent to',
+    name: '[#183 browser] a queued note is shown after the person has moved to another session',
     file: 'web/js/wiring.js',
-    find: `queued: !!(r && r.queued) && ntStillOpen(device, session),`,
-    replace: `queued: !!(r && r.queued), // MUTATION`,
+    find: `      if (ntViewActive(sentFrom) && $('dtInput').value.trim() === text) {`,
+    replace: `      if ($('dtInput').value.trim() === text) { // MUTATION`,
     mustFail: 'composer: a queued note is not shown on a session the message was not sent to',
   },
   {

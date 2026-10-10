@@ -74,6 +74,21 @@ export function selectionStillActive(key, generation) {
 }
 
 /**
+ * The selection on screen right now, as the `{ key, generation }` pair
+ * `selectionStillActive` takes -- or null when nothing is open. An async
+ * action that must not touch a page it did not start from (a send, whose
+ * reply can take seconds) captures this BEFORE it awaits anything and asks
+ * `selectionStillActive` with it afterwards. It is the same selection
+ * `openDetail` captures for its own transcript fetch: a live-snapshot rebuild
+ * of `state.currentSession` never changes it, an open, a close or a reopen of
+ * the identical session always does.
+ */
+export function captureSelection() {
+  const current = state.currentSession;
+  return current ? { key: sessionKey(current.session), generation: selectionGeneration } : null;
+}
+
+/**
  * Ask the device whether it can take a control command for this session.
  *
  * The answer comes from the machine running the agent, not from the hub --

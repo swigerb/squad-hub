@@ -778,9 +778,9 @@ await (async () => {
   const { readWebSource } = require('./helpers/web-source');
   const mod = { exports: {} };
   new Function('module', 'exports', `${readWebSource()}
-module.exports = { state, CONTROL, ntFieldView, ntSelectionBody, ntNote, ntStillOpen, ntSteer };`)(mod, mod.exports);
+module.exports = { state, CONTROL, ntFieldView, ntSelectionBody, ntNote, ntSteer, ntViewActive, captureSelection, invalidateSelection };`)(mod, mod.exports);
   const {
-    state, CONTROL, ntFieldView, ntSelectionBody, ntNote, ntStillOpen, ntSteer,
+    state, CONTROL, ntFieldView, ntSelectionBody, ntNote, ntSteer, ntViewActive, captureSelection, invalidateSelection,
   } = mod.exports;
   const nt = (over = {}) => ({
     id: 's1',
@@ -845,15 +845,48 @@ module.exports = { state, CONTROL, ntFieldView, ntSelectionBody, ntNote, ntStill
     assert.match(ntNote(both, CONTROL.SYNCED), /^Mode and Model are unavailable\./);
   });
 
-  await checkAsync('page: a session is still the one open when its key matches, however often the record is rebuilt', async () => {
+  await checkAsync('page: the page a send began on stays the one on screen across live rebuilds, and stops being it once left, reopened or closed', async () => {
     const device = { deviceId: 'dev' };
-    state.currentSession = { device, session: { id: 's1', key: 'dev:s1' } };
-    assert.strictEqual(ntStillOpen(device, { id: 's1', key: 'dev:s1' }), true, 'a rebuilt record of the same session was not recognized');
-    assert.strictEqual(ntStillOpen(device, { id: 's1' }), true, 'the key was not derived from the device and session id');
-    assert.strictEqual(ntStillOpen(device, { id: 's2', key: 'dev:s2' }), false, 'another session counted as the open one');
-    assert.strictEqual(ntStillOpen({ deviceId: 'other' }, { id: 's1' }), false, 'the same session id on another device counted as the open one');
+    const open = () => { state.currentSession = { device, session: { id: 's1', key: 'dev:s1' } }; };
     state.currentSession = null;
-    assert.strictEqual(ntStillOpen(device, { id: 's1', key: 'dev:s1' }), false, 'a closed page counted as open');
+    assert.strictEqual(captureSelection(), null, 'a page was captured with nothing open');
+    assert.strictEqual(ntViewActive(null), false, 'no page counted as the page a send began on');
+    invalidateSelection(); open();
+    const view = captureSelection();
+    assert.strictEqual(ntViewActive(view), true, 'the page a send began on was not recognized');
+    open();
+    assert.strictEqual(ntViewActive(view), true, 'a rebuilt record of the same session was not recognized');
+    state.currentSession = { device, session: { id: 's2', key: 'dev:s2' } };
+    assert.strictEqual(ntViewActive(view), false, 'another session counted as the page a send began on');
+    invalidateSelection(); open();
+    assert.strictEqual(ntViewActive(view), false, 'the same session reopened counted as the page a send began on');
+    state.currentSession = null;
+    assert.strictEqual(ntViewActive(view), false, 'a closed page counted as the page a send began on');
+  });
+
+  await checkAsync('page: two devices that share a session id are two sessions for the one message guard', async () => {
+    const realFetch = global.fetch;
+    const realDocument = global.document;
+    global.document = { getElementById: () => null };
+    const gate = [];
+    let hits = 0;
+    global.fetch = () => { hits += 1; return new Promise((resolve) => gate.push(resolve)); };
+    const here = { deviceId: 'dev-a' };
+    const there = { deviceId: 'dev-b' };
+    try {
+      state.currentSession = { device: here, session: { id: 's1', status: 'idle' } };
+      state.composer = { control: CONTROL.SYNCED };
+      const first = ntSteer(here, { id: 's1', status: 'idle' }, 'one', null);
+      const other = ntSteer(there, { id: 's1', status: 'idle' }, 'two', null).then(() => null, (e) => e);
+      assert.strictEqual(hits, 2, 'the same session id on another device was held by the first device message');
+      for (const resolve of gate.splice(0)) resolve({ ok: true, json: async () => ({ sent: true, changes: [] }) });
+      await first;
+      assert.strictEqual(await other, null, 'the other device message was refused');
+    } finally {
+      global.fetch = realFetch;
+      global.document = realDocument;
+      state.currentSession = null;
+    }
   });
 
   await checkAsync('page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again', async () => {
