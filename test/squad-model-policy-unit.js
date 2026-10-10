@@ -218,6 +218,21 @@ check('the Scribe Spawn Template passes the configured Scribe model, name scribe
   assert.match(block, /^agent_type: "general-purpose"$/m);
 });
 
+check('the Scribe model override preserves the complete reference workflow instead of replacing its prompt', () => {
+  const agent = read('.github/agents/squad.agent.md');
+  const block = section(agent, /^\*\*Scribe Spawn Template\*\*/m, /^\*\*On-demand reference:\*\*/m);
+  assert.match(block, /use its full Scribe spawn prompt unchanged/);
+  assert.match(block, /not a replacement task list/);
+  assert.doesNotMatch(block, /^prompt:/m, 'the model overlay supplies a competing shortened prompt');
+  for (const duty of ['spawn manifest', 'archival safety rules and size gates', 'orchestration and session logs',
+    'permitted cross-agent history updates', 'history summarization gate', 'health report']) {
+    assert.ok(block.includes(duty), `the reference duty is not preserved: ${duty}`);
+  }
+  const after = section(agent, /^### After Agent Work$/m, /^### Ceremonies$/m);
+  assert.match(after, /Preserve its full Scribe prompt and follow-up sequence/);
+  assert.match(after, /override only the canonical `name` and configured `model` parameters/);
+});
+
 check('every explicit model in a squad.agent.md spawn template is one the config pins', () => {
   const cfg = config();
   const pinned = new Set([cfg.defaultModel, ...Object.values(cfg.agentModelOverrides)]);

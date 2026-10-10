@@ -7038,6 +7038,24 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'the Scribe Spawn Template passes the configured Scribe model, name scribe and background mode',
   },
   {
+    name: 'the Scribe model overlay replaces the full reference prompt with a shortened task list',
+    file: '.github/agents/squad.agent.md',
+    find: `name: "scribe"
+description: "📋 Scribe: Log session & merge decisions"`,
+    replace: `name: "scribe"
+description: "📋 Scribe: Log session & merge decisions"
+prompt: |
+  Merge the decision inbox only. # MUTATION`,
+    mustFail: 'the Scribe model override preserves the complete reference workflow instead of replacing its prompt',
+  },
+  {
+    name: 'the after-agent Scribe model override discards the reference follow-up sequence',
+    file: '.github/agents/squad.agent.md',
+    find: `Preserve its full Scribe prompt and follow-up sequence; override only the canonical`,
+    replace: `Discard its full Scribe prompt and follow-up sequence; override only the canonical`, // MUTATION
+    mustFail: 'the Scribe model override preserves the complete reference workflow instead of replacing its prompt',
+  },
+  {
     name: 'the Scribe Spawn Template also passes the old claude-haiku-4.5 model',
     file: '.github/agents/squad.agent.md',
     find: 'model: "claude-haiku-5.5"\nmode: "background"\nname: "scribe"',
