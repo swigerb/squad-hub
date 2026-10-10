@@ -2697,9 +2697,15 @@ async function watchCsp(pg) {
                 metaTop: document.getElementById('dtMeta').getBoundingClientRect().top,
                 controls,
                 barCut: bar.scrollWidth - bar.clientWidth,
+                // Vertical: a bar whose tabs reach past its own padding box is
+                // scrollable overflow, whatever the browser does with scrollbars.
+                barHeight: bar.offsetHeight,
+                barOverflowY: bar.scrollHeight - bar.clientHeight,
+                barScrollbarX: bar.offsetWidth - bar.clientWidth,
+                barInnerBottom: bar.getBoundingClientRect().top + bar.clientTop + bar.clientHeight,
                 tabs: [...bar.querySelectorAll('[role="tab"]')].map((t) => {
                   const r = t.getBoundingClientRect();
-                  return { id: t.id, left: r.left, right: r.right, height: r.height };
+                  return { id: t.id, left: r.left, right: r.right, bottom: r.bottom, height: r.height };
                 }),
               };
             }, ids);
@@ -2726,8 +2732,15 @@ async function watchCsp(pg) {
             }
             assert.strictEqual(m.tabs.length, 4, `${at}: the tab bar does not show Chat, Squad, Info and Files`);
             assert.ok(m.barCut <= 1, `${at}: the tab bar has to scroll sideways (${m.barCut}px)`);
+            // The headless shell draws no scrollbars, so this measures the cause: content
+            // taller than the bar's box makes a classic-scrollbar browser draw a vertical
+            // scrollbar on it and clip the selected tab's underline.
+            assert.ok(m.barOverflowY <= 0, `${at}: the tab bar's content is ${m.barOverflowY}px taller than the bar, so it overflows vertically`);
+            assert.strictEqual(m.barScrollbarX, 0, `${at}: the tab bar reserves ${m.barScrollbarX}px for a scrollbar of its own`);
+            assert.ok(Math.abs(m.barHeight - 40) <= 0.5, `${at}: the tab bar is ${m.barHeight}px tall, not the intended 40px`);
             for (const t of m.tabs) {
               assert.ok(t.left >= -0.5 && t.right <= m.vw + 0.5 && t.height <= 48, `${at}: the ${t.id} tab is outside the viewport or wrapped`);
+              assert.ok(t.bottom <= m.barInnerBottom + 0.5, `${at}: the bar cuts the bottom of the ${t.id} tab, and with it the underline`);
             }
             assert.ok(by.dtTitle.right - by.dtTitle.left >= 60,
               `${at}: only ${Math.round(by.dtTitle.right - by.dtTitle.left)}px is left for the title`);
@@ -2790,6 +2803,85 @@ async function watchCsp(pg) {
       } finally {
         svc.store.removeDevice(subject, deviceId);
         await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
+    });
+
+    // The headless shell this file drives draws no scrollbars at all, so a tab bar
+    // that is secretly taller inside than outside looks fine there. This runs ONE
+    // browser with classic scrollbars (what desktop Chrome and Edge on Windows and
+    // Linux show), where the same defect is a real 15px scrollbar and a cut underline.
+    await check('the tab bar draws no scrollbar of its own and keeps its whole underline when the browser shows classic scrollbars, at 1280, 900, 390 and 200px, light and dark (#182)', async () => {
+      const subject = subjectKey('t1', 'u1');
+      const deviceId = 'classic-bars-fixture';
+      const device = svc.store.registerDevice(subject, { deviceId, name: 'Classic scrollbars fixture', platform: 'linux' });
+      svc.store.upsertSession(subject, deviceId, { id: 'classic-bars-session', status: 'idle', repo: 'acme/widgets', prompt: 'Classic scrollbars fixture' });
+      device.lastSeen = Date.now() - svc.store.staleAfterMs - 1000;
+      const classic = await chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] });
+      try {
+        const p = await classic.newPage();
+        await gotoSettled(p, `${origin}/?token=${userToken}`);
+        await p.waitForSelector('#who', { timeout: 15000 });
+        await gotoSettled(p, `${origin}/?session=${encodeURIComponent(`${deviceId}:classic-bars-session`)}`);
+        await p.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await p.waitForSelector('#dtTabs', { state: 'visible', timeout: 5000 });
+        // Without this the test would pass on a browser that hides scrollbars too.
+        const probe = await p.evaluate(() => {
+          const d = document.createElement('div');
+          d.style.overflow = 'scroll';
+          d.style.width = '60px';
+          d.style.height = '60px';
+          document.body.appendChild(d);
+          const w = d.offsetWidth - d.clientWidth;
+          d.remove();
+          return w;
+        });
+        assert.ok(probe >= 8, `this browser draws no classic scrollbars (${probe}px), so the check below would prove nothing`);
+        for (const scheme of ['light', 'dark']) {
+          await p.emulateMedia({ colorScheme: scheme });
+          for (const width of [1280, 900, 390, 200]) {
+            const at = `the tab bar at ${width}px in the ${scheme} theme`;
+            await p.setViewportSize({ width, height: 844 });
+            await p.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const m = await p.evaluate(() => {
+              const bar = document.getElementById('dtTabs');
+              const on = bar.querySelector('.dt-tab.on');
+              const last = [...bar.querySelectorAll('.dt-tab:not(:disabled)')].pop();
+              last.focus();
+              const barBox = bar.getBoundingClientRect();
+              const onBox = on.getBoundingClientRect();
+              const lastBox = last.getBoundingClientRect();
+              return {
+                scrollbarX: bar.offsetWidth - bar.clientWidth,
+                overflowY: bar.scrollHeight - bar.clientHeight,
+                sideways: bar.scrollWidth - bar.clientWidth,
+                innerBottom: barBox.top + bar.clientTop + bar.clientHeight,
+                underline: parseFloat(getComputedStyle(on).borderBottomWidth),
+                onBottom: onBox.bottom,
+                onTop: onBox.top,
+                height: bar.offsetHeight,
+                lastReached: lastBox.left >= barBox.left - 0.5 && lastBox.right <= barBox.right + 0.5,
+              };
+            });
+            assert.strictEqual(m.scrollbarX, 0, `${at} reserves ${m.scrollbarX}px for a vertical scrollbar of its own`);
+            assert.ok(m.overflowY <= 0, `${at} has content ${m.overflowY}px taller than its box`);
+            assert.strictEqual(m.underline, 2, `${at}: the selected tab's underline is ${m.underline}px, not 2`);
+            assert.ok(m.onBottom <= m.innerBottom + 0.5,
+              `${at} cuts the selected tab's underline (the tab ends at ${m.onBottom}, the bar's box at ${m.innerBottom})`);
+            // 200px is no real phone: it only makes the tabs overflow, to prove the bar still scrolls sideways.
+            if (width === 200) {
+              assert.ok(m.sideways > 0, `${at} does not scroll sideways, so the horizontal-scroll case was not exercised`);
+            } else {
+              assert.strictEqual(m.height, 40, `${at} is ${m.height}px tall, not 40`);
+            }
+            assert.ok(m.lastReached, `${at}: the last tab cannot be scrolled to when it takes focus`);
+            if (process.env.SQUAD_HUB_SCREENSHOT_DIR && width !== 1280) {
+              await p.screenshot({ path: path.join(process.env.SQUAD_HUB_SCREENSHOT_DIR, `detail-tabbar-classic-${width}-${scheme}.png`), clip: { x: 0, y: 0, width, height: 420 } });
+            }
+          }
+        }
+      } finally {
+        await classic.close();
+        svc.store.removeDevice(subject, deviceId);
       }
     });
 

@@ -5,13 +5,19 @@
    inline styles anywhere in the markup these classes style (the CSP forbids
    them). */
 
+/* The bar is as tall as its tabs (40px) and the 1px rule under it is an inset
+   shadow, not a border: a tab that overlapped a real border would be scrollable
+   overflow, so overflow-x:auto (which makes overflow-y auto too) would give the
+   bar a vertical scrollbar of its own on classic-scrollbar browsers and clip the
+   selected tab's 2px underline to 1px. With no height of its own, a horizontal
+   scrollbar on a very narrow window grows the bar instead of squeezing the tabs. */
 .dt-tabs {
-  display: flex; gap: 4px; height: 40px; margin-top: 12px;
-  border-bottom: 1px solid var(--line); overflow-x: auto;
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
 }
 .dt-tab {
   display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
-  height: 40px; padding: 0 14px; margin: 0 0 -1px;
+  height: 40px; padding: 0 14px; margin: 0;
   background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
   color: var(--dim); font: inherit; font-weight: 600; cursor: pointer;
 }

@@ -7481,8 +7481,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: '#182: the tab bar loses its height',
     file: 'web/css/detail-tabs.css',
-    find: `  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
-    replace: `  height: 36px; padding: 0 14px; margin: 0 0 -1px; /* MUTATION */`,
+    find: `  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `  height: 36px; padding: 0 14px; margin: 0; /* MUTATION */`,
     mustFail: 'the tabs, the card and its buttons keep their sizes and stay inside the page at 1280, 900 and 390px (#182)',
   },
   {
@@ -7655,6 +7655,48 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  .dt-tab { padding: 0 10px; }`,
     replace: `  .dt-tab { padding: 0 40px; } /* MUTATION */`,
     mustFail: 'the session header still fits, with the tabs, while a permission request waits, at 1280, 900 and 390px, light and dark (#182)',
+  },
+  // The tab bar's own box: the tab used to overlap a real border of an
+  // overflow-x:auto bar, which is vertical overflow (a 15px scrollbar and a cut
+  // underline on classic-scrollbar browsers; invisible in the headless shell).
+  {
+    name: '#182: the tab bar overlaps its own border again and grows a vertical scrollbar',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `.dt-tabs {
+  display: flex; gap: 4px; height: 40px; margin-top: 12px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; /* MUTATION */
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
+    mustFail: 'the tab bar draws no scrollbar of its own and keeps its whole underline when the browser shows classic scrollbars, at 1280, 900, 390 and 200px, light and dark (#182)',
+  },
+  // Hiding the scrollbar is not the fix: the content is still taller than its box.
+  {
+    name: '#182: the vertical scrollbar of the overlapping tab bar is only hidden, not removed',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `.dt-tabs {
+  display: flex; gap: 4px; height: 40px; margin-top: 12px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; /* MUTATION */
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
   },
 ];
 

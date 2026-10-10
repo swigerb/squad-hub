@@ -77,7 +77,9 @@ pull request; this entry documents what has landed on `main` so far.
   header keeps **Run on ACA…**, **Stop** and the rest whole and inside the
   page at 1280, 900 and 390px, light or dark; on a phone a long status such
   as "Unreachable — device offline" ends in an ellipsis so the title stays
-  readable. See
+  readable. The tab bar stays exactly its 40px: its underline is no longer
+  clipped to one pixel and it no longer grows a scrollbar of its own in
+  browsers that show classic scrollbars. See
   [docs/commands.md#the-session-page-chat-squad-and-info](docs/commands.md#the-session-page-chat-squad-and-info).
 
 ### Documentation
