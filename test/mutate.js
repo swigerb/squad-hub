@@ -376,9 +376,9 @@ const MUTATIONS = [
     name: 'a device refusal is reported to the caller as success',
     file: 'src/service/hub-service.js',
     find: `          if (msg.ok) p.resolve(msg.result);
-          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));`,
+          else {`,
     replace: `          if (msg.ok || process.env.MUTANT) p.resolve(msg.result || {}); // MUTATION
-          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));`,
+          else {`,
     mustFail: 'a device that refuses a command surfaces the refusal, not a success',
   },
   {
@@ -3216,6 +3216,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/css/detail.css',
   '/css/squad.css',
   '/css/inbox.css',
+  '/css/composer-next-turn.css',
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
@@ -3231,6 +3232,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/device-detail.js',
   '/js/detail.js',
   '/js/transcript.js',
+  '/js/next-turn.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
@@ -3280,7 +3282,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v15';`,
+    find: `const CACHE = 'squad-hub-shell-v16';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6684,7 +6686,7 @@ if ($health.accessStore -ne 'durable') {`,
     // to gate on and the 409 refusal above can never fire for real daemons.
     name: 'the daemon stops reporting narrowedForget, so the hub never knows a current daemon supports it (#236 finding 5)',
     file: 'src/daemon.js',
-    find: `capabilities: { narrowedForget: true },`,
+    find: `capabilities: { narrowedForget: true, nextTurnSelection: this.nextTurnSelection },`,
     replace: `capabilities: undefined, // MUTATION`,
     mustFail: 'a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)',
   },
@@ -6924,6 +6926,715 @@ if ($health.accessStore -ne 'durable') {`,
         reject(new Error('the request timed out waiting for a response; no write has happened yet at this point in the script')); // MUTATION: readback branch collapsed back into the step-1 wording
       }`,
     mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
+  },
+  // ---------------------------------------------------------------------
+  // #183: Mode and Model for the next turn.
+  //
+  // Every mutation below breaks ONE decision the feature makes and names the
+  // test that must notice. Names carry a bracketed tag so one layer can be
+  // re-proven alone: `node test/mutate-probe.js next-turn-unit.js "[#183 acp]"`.
+  // ---------------------------------------------------------------------
+  {
+    // The prompt must run in the mode that was asked for. Sent first, it runs
+    // in the OLD mode -- a request to only plan, honored as a request to act.
+    name: '[#183 acp] the prompt goes out before the mode and model are applied',
+    file: 'src/acp-session.js',
+    find: `      for (const { field, hit } of plan) {
+        const from = nt.current[field];`,
+    replace: `      this._sendPrompt(text); sent = true; // MUTATION: prompt sent before the changes
+      for (const { field, hit } of plan) {
+        const from = nt.current[field];`,
+    mustFail: 'next turn: a mode and model are applied BEFORE the prompt, which then runs in them',
+  },
+  {
+    // set_mode takes a URI and answers {}; set_model answers {}. Neither says
+    // what the value is now, so neither can be confirmed.
+    name: '[#183 acp] a change goes over session/set_mode or set_model instead of set_config_option',
+    file: 'src/acp-session.js',
+    find: `      result = await this._requestWithin('session/set_config_option',`,
+    replace: `      result = await this._requestWithin(field === 'mode' ? 'session/set_mode' : 'session/set_model', // MUTATION`,
+    mustFail: 'next turn: the change goes over session/set_config_option with the advertised id, never session/set_mode or set_model',
+  },
+  {
+    name: '[#183 acp] a mode is no longer found by its label',
+    file: 'src/acp-session.js',
+    find: `    || choices.find((c) => norm(c.name) === a)
+`,
+    replace: `    // MUTATION: label matching removed
+`,
+    mustFail: 'next turn: a mode named by label, case or fragment is sent as the id the agent advertised',
+  },
+  {
+    name: '[#183 acp] a mode is no longer found by the fragment of its URI',
+    file: 'src/acp-session.js',
+    find: `    || choices.find((c) => norm(c.id).split('#').pop() === a)
+`,
+    replace: `    // MUTATION: fragment matching removed
+`,
+    mustFail: 'next turn: a mode named by label, case or fragment is sent as the id the agent advertised',
+  },
+  {
+    name: '[#183 acp] the transcript marker is written under a name the page does not read',
+    file: 'src/acp-session.js',
+    find: `          sessionUpdate: 'selection_change',`,
+    replace: `          sessionUpdate: 'selection_changed', // MUTATION`,
+    mustFail: 'next turn: each applied change lands in the transcript, before the message that needed it',
+  },
+  {
+    name: '[#183 acp] the transcript marker lands after the message it was needed for',
+    file: 'src/acp-session.js',
+    find: `        this._pushTranscript({
+          sessionUpdate: 'selection_change',`,
+    replace: `        ((u) => setImmediate(() => this._pushTranscript(u)))({ // MUTATION: marker deferred past the prompt
+          sessionUpdate: 'selection_change',`,
+    mustFail: 'next turn: each applied change lands in the transcript, before the message that needed it',
+  },
+  {
+    name: '[#183 acp] an unknown mode is sent to the agent as asked',
+    file: 'src/acp-session.js',
+    find: `      const hit = findChoice(choices, asked[field]);`,
+    replace: `      const hit = findChoice(choices, asked[field]) || (field === 'mode' ? { id: asked[field], name: asked[field] } : null); // MUTATION`,
+    mustFail: 'next turn: an unknown mode is refused, and nothing is sent, changed or announced',
+  },
+  {
+    name: '[#183 acp] an unknown model is sent to the agent as asked',
+    file: 'src/acp-session.js',
+    find: `      const hit = findChoice(choices, asked[field]);`,
+    replace: `      const hit = findChoice(choices, asked[field]) || (field === 'model' ? { id: asked[field], name: asked[field] } : null); // MUTATION`,
+    mustFail: 'next turn: an unknown model is refused, and nothing is sent or changed',
+  },
+  {
+    // The model is applied first; a bad MODE found afterwards must not leave
+    // that model change behind.
+    name: '[#183 acp] the model is applied while the values are still being checked',
+    file: 'src/acp-session.js',
+    find: `      if (norm(nt.current[field]) !== norm(hit.id)) plan.push({ field, hit });`,
+    replace: `      if (norm(nt.current[field]) !== norm(hit.id)) { plan.push({ field, hit }); if (field === 'model') await this._applyChoice(field, hit); } // MUTATION`,
+    mustFail: 'next turn: every value is validated BEFORE any change is made, so a good mode is not applied beside a bad model',
+  },
+  {
+    name: '[#183 acp] asking for the value the session already has still makes a change',
+    file: 'src/acp-session.js',
+    find: `      if (norm(nt.current[field]) !== norm(hit.id)) plan.push({ field, hit });`,
+    replace: `      plan.push({ field, hit }); // MUTATION: no-op change not skipped`,
+    mustFail: 'next turn: asking for the mode the session already has makes no change and no round trip',
+  },
+  {
+    name: '[#183 acp] a refused change still sends the message',
+    file: 'src/acp-session.js',
+    find: `          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, changes);`,
+    replace: `          this._sendPrompt(text); sent = true; // MUTATION: message sent although the change was refused
+          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, changes);`,
+    mustFail: 'next turn: an agent that refuses the change gets no prompt, and the session does not claim it applied',
+  },
+  {
+    name: '[#183 acp] the session claims the value before the agent has confirmed it',
+    file: 'src/acp-session.js',
+    find: `    let result;
+    try {
+      result = await this._requestWithin(`,
+    replace: `    let result;
+    nt.current[field] = hit.id; // MUTATION: claimed before confirmation
+    try {
+      result = await this._requestWithin(`,
+    mustFail: 'next turn: an agent that refuses the change gets no prompt, and the session does not claim it applied',
+  },
+  {
+    name: '[#183 acp] a refusal forgets the change that was already confirmed',
+    file: 'src/acp-session.js',
+    find: `          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, changes);`,
+    replace: `          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, []); // MUTATION`,
+    mustFail: 'next turn: a refused second change leaves the first confirmed one reported, and the message unsent',
+  },
+  {
+    name: '[#183 acp] a refusal no longer says an earlier change stays in effect',
+    file: 'src/acp-session.js',
+    find: `          const prior = changes.length`,
+    replace: `          const prior = false && changes.length // MUTATION`,
+    mustFail: 'next turn: a refused second change leaves the first confirmed one reported, and the message unsent',
+  },
+  {
+    name: '[#183 acp] an agent that reports the old value is believed',
+    file: 'src/acp-session.js',
+    find: `    if (norm(reported.currentValue) !== norm(hit.id)) {`,
+    replace: `    if (false) { // MUTATION: read-back value not compared`,
+    mustFail: 'next turn: an agent that accepts a change but reports the OLD value is not believed',
+  },
+  {
+    name: '[#183 acp] an agent that says nothing about a change is believed',
+    file: 'src/acp-session.js',
+    find: `    if (!reported || reported.currentValue === undefined) {`,
+    replace: `    if (!reported || reported.currentValue === undefined) {
+      nt.current[field] = hit.id; return { ok: true }; // MUTATION: unconfirmed change believed
+    }
+    if (false) {`,
+    mustFail: 'next turn: an agent that accepts a change and says nothing about it is not believed either',
+  },
+  {
+    name: '[#183 acp] method not found no longer reads as unsupported',
+    file: 'src/acp-session.js',
+    find: `      if (rpc && rpc.code === -32601) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'next turn: "method not found" disables the selector with a reason, and is remembered',
+  },
+  {
+    name: '[#183 acp] an unsupported answer is not remembered, so the same change is tried again',
+    file: 'src/acp-session.js',
+    find: `        nt.unsupported.set(field, why);`,
+    replace: `        // MUTATION: not remembered`,
+    mustFail: 'next turn: "method not found" disables the selector with a reason, and is remembered',
+  },
+  {
+    name: '[#183 acp] a model list with no way to confirm a change is offered anyway',
+    file: 'src/acp-session.js',
+    find: `      if (!opt) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'next turn: a model list with nothing confirmable is shown disabled, and a change is refused',
+  },
+  {
+    name: '[#183 acp] every field is reported as supported whatever the agent advertised',
+    file: 'src/acp-session.js',
+    find: `        supported: reason === null,`,
+    replace: `        supported: true, // MUTATION`,
+    mustFail: 'next turn: an agent that advertises nothing is disabled with a plain reason, and an ordinary reply still works',
+  },
+  {
+    name: '[#183 acp] a change that never gets an answer leaves the session busy for ever',
+    file: 'src/acp-session.js',
+    find: `      nt.busy = false;
+      // Nothing was sent, so nothing is running`,
+    replace: `      // MUTATION: busy never cleared
+      // Nothing was sent, so nothing is running`,
+    mustFail: 'next turn: a change the agent never answers is reported as unconfirmed, sends nothing, and frees the session',
+  },
+  {
+    name: '[#183 acp] a change with no answer is reported as a plain failure, not as unconfirmed',
+    file: 'src/acp-session.js',
+    find: `      if (e && e.timedOut) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'next turn: a change the agent never answers is reported as unconfirmed, sends nothing, and frees the session',
+  },
+  {
+    name: '[#183 acp] a second change while one is in flight is let through',
+    file: 'src/acp-session.js',
+    find: `    if (nt.busy) {
+      return refuse('selection-busy',`,
+    replace: `    if (false) { // MUTATION
+      return refuse('selection-busy',`,
+    mustFail: 'next turn: a second change while one is being applied is refused as busy, and only one prompt is sent',
+  },
+  {
+    name: '[#183 acp] a plain reply slips in between a change and its prompt',
+    file: 'src/acp-session.js',
+    find: `    if (this._nt && this._nt.busy) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'next turn: a second change while one is being applied is refused as busy, and only one prompt is sent',
+  },
+  {
+    name: '[#183 acp] a change is applied while a turn is still running',
+    file: 'src/acp-session.js',
+    find: `    if (this.status !== STATUS.IDLE || this._pendingSteers > 0) {
+      return refuse('turn-in-progress',`,
+    replace: `    if (false) { // MUTATION
+      return refuse('turn-in-progress',`,
+    mustFail: 'next turn: a change asked for mid-turn is refused as in progress and touches nothing',
+  },
+  {
+    name: '[#183 acp] the mode shown does not follow the agent leaving plan mode',
+    file: 'src/acp-session.js',
+    find: `      this._noteCurrent('mode', u.currentModeId);`,
+    replace: `      // MUTATION: the agent's own mode change ignored`,
+    mustFail: 'next turn: the mode shown follows the agent when it leaves plan mode on its own',
+  },
+  {
+    name: '[#183 acp] an ended session still offers its selectors',
+    file: 'src/acp-session.js',
+    find: `    const live = !TERMINAL.includes(this.status);`,
+    replace: `    const live = true; // MUTATION`,
+    mustFail: 'next turn: an ended session offers nothing and refuses a change',
+  },
+  {
+    name: '[#183 acp] a change is applied to a session that has ended',
+    file: 'src/acp-session.js',
+    find: `    if (!text || TERMINAL.includes(this.status) || !this.acpSessionId || this.isAgentDead()) {`,
+    replace: `    if (!text) { // MUTATION`,
+    mustFail: 'next turn: an ended session offers nothing and refuses a change',
+  },
+  {
+    name: '[#183 acp] a session that ends mid-change is not noticed',
+    file: 'src/acp-session.js',
+    find: `          if (!this._canTakePrompt()) {
+            return refuse('session-changed', 'the session ended while the change was being applied', changes);
+          }
+          const prior`,
+    replace: `          const prior`,
+    mustFail: 'next turn: a session that ends while its change is being applied sends nothing and says the session changed',
+  },
+
+  // --- the daemon, the link, the watched terminal and the cloud device -------
+  {
+    name: '[#183 daemon] a one-shot job claims it can change the next turn',
+    file: 'src/daemon.js',
+    find: `capabilities: { narrowedForget: true, nextTurnSelection: this.nextTurnSelection },`,
+    replace: `capabilities: { narrowedForget: true, nextTurnSelection: true }, // MUTATION`,
+    mustFail: 'daemon: the capability is claimed at registration and withdrawn for a one-shot job',
+  },
+  {
+    name: '[#183 daemon] a one-shot device delivers the text without the change it was sent with',
+    file: 'src/daemon.js',
+    find: `    if (!this.nextTurnSelection || typeof s.steerWithSelection !== 'function') {`,
+    replace: `    if (typeof s.steerWithSelection !== 'function') { // MUTATION`,
+    mustFail: 'daemon: a one-shot device refuses a change and does not deliver the text',
+  },
+  {
+    name: '[#183 daemon] a one-shot device still publishes selectors that would work',
+    file: 'src/daemon.js',
+    find: `    if (!this.nextTurnSelection && view && view.nextTurn) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'daemon: a one-shot device refuses a change and does not deliver the text',
+  },
+  {
+    name: '[#183 daemon] a malformed mode or model is passed on instead of refused',
+    file: 'src/daemon.js',
+    find: `      if (typeof v !== 'string' || !v.trim() || v.length > 200) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'daemon: a refused selection throws the named code the hub maps, and a malformed one is a bad request',
+  },
+  {
+    name: '[#183 daemon] a session that cannot take input loses its code',
+    file: 'src/daemon.js',
+    find: `        code: r.code === 'not-steerable' ? 'NOT_STEERABLE' : r.code,`,
+    replace: `        code: r.code, // MUTATION`,
+    mustFail: 'daemon: a refused selection throws the named code the hub maps, and a malformed one is a bad request',
+  },
+  {
+    name: '[#183 daemon] a steer that changed something does not say what the agent confirmed',
+    file: 'src/daemon.js',
+    find: `    return { sent: true, changes: r.changes };`,
+    replace: `    return { sent: true }; // MUTATION`,
+    mustFail: 'daemon: a steer with a mode runs the prompt in that mode and reports the confirmed change',
+  },
+  {
+    name: '[#183 link] a refusal reaches the hub without its code',
+    file: 'src/hub-link.js',
+    find: `        ...(typeof code === 'string' && code ? { code } : {}),`,
+    replace: `        // MUTATION: the code is dropped`,
+    mustFail: 'hub link: a refusal carries its code on the reply, and a success never does',
+  },
+  {
+    name: '[#183 link] a success carries a code',
+    file: 'src/hub-link.js',
+    find: `      ? { type: 'reply', correlationId, ok: true, result: resultOrError }`,
+    replace: `      ? { type: 'reply', correlationId, ok: true, result: resultOrError, code: code || 'next-turn-unsupported' } // MUTATION`,
+    mustFail: 'hub link: a refusal carries its code on the reply, and a success never does',
+  },
+  {
+    name: '[#183 tui] a watched terminal session publishes selectors that would work',
+    file: 'src/tui-session.js',
+    find: `    supported: false, reason, mode: field(), model: field(),`,
+    replace: `    supported: true, reason, mode: field(), model: field(), // MUTATION`,
+    mustFail: 'daemon: a watched terminal session refuses a change and queues nothing',
+  },
+  {
+    name: '[#183 cloud] an ACA one-shot job claims next-turn support',
+    file: 'src/cloud-device.js',
+    find: `new Daemon({ nextTurnSelection: !ONESHOT })`,
+    replace: `new Daemon({ nextTurnSelection: true /* MUTATION */ })`,
+    mustFail: 'cloud device: a one-shot job claims no next-turn support and a change for it is refused before it reaches the job',
+  },
+  {
+    name: '[#183 cloud] a long-lived cloud worker does not claim next-turn support',
+    file: 'src/cloud-device.js',
+    find: `new Daemon({ nextTurnSelection: !ONESHOT })`,
+    replace: `new Daemon({ nextTurnSelection: false /* MUTATION */ })`,
+    mustFail: 'cloud device: a long-lived worker claims next-turn support',
+  },
+
+  // --- the hub ---------------------------------------------------------------
+  {
+    name: '[#183 hub] a change for a device that does not claim support is forwarded and silently dropped',
+    file: 'src/service/hub-service.js',
+    find: `          if (wantsNextTurn(body) && !(device.capabilities && device.capabilities.nextTurnSelection === true)) {`,
+    replace: `          if (false) { // MUTATION`,
+    mustFail: 'hub: a device that does not claim next-turn support is refused up front, and sent nothing',
+  },
+  {
+    name: '[#183 hub] a steer is relayed with whatever else the caller put in the body',
+    file: 'src/service/hub-service.js',
+    find: `: op === 'steer' ? steerForDevice(body)`,
+    replace: `: op === 'steer' ? { ...body } /* MUTATION */`,
+    mustFail: 'hub: a mode and model reach a capable device as strings, and nothing else rides along',
+  },
+  {
+    name: '[#183 hub] a mode or model reaches the device untrimmed',
+    file: 'src/service/hub-service.js',
+    find: `    if (typeof body[k] === 'string' && body[k].trim() !== '') out[k] = body[k].trim();`,
+    replace: `    if (typeof body[k] === 'string' && body[k].trim() !== '') out[k] = body[k]; // MUTATION`,
+    mustFail: 'hub: a mode and model reach a capable device as strings, and nothing else rides along',
+  },
+  {
+    name: '[#183 hub] a plain steer is relayed with an empty mode and model',
+    file: 'src/service/hub-service.js',
+    find: `  const out = { sessionId: body.sessionId, text: body.text };`,
+    replace: `  const out = { sessionId: body.sessionId, text: body.text, mode: null, model: null }; // MUTATION`,
+    mustFail: 'hub: a steer with no mode or model is relayed exactly as before, even to a device that predates this',
+  },
+  {
+    name: '[#183 hub] a mode or model of any kind is accepted at the API',
+    file: 'src/service/hub-service.js',
+    find: `            if (typeof v !== 'string' || !v.trim() || v.length > 200 || /[\\u0000-\\u001f\\u007f]/.test(v)) {`,
+    replace: `            if (false) { // MUTATION`,
+    mustFail: 'hub: a mode or model that is not a short string is refused before it reaches any device',
+  },
+  {
+    name: '[#183 hub] a mode or model with a control character is accepted at the API',
+    file: 'src/service/hub-service.js',
+    find: ` || v.length > 200 || /[\\u0000-\\u001f\\u007f]/.test(v)) {`,
+    replace: ` || v.length > 200) { // MUTATION`,
+    mustFail: 'hub: a mode or model that is not a short string is refused before it reaches any device',
+  },
+  {
+    name: '[#183 hub] the length bound on a mode or model is lifted',
+    file: 'src/service/hub-service.js',
+    find: ` || v.length > 200 || /[\\u0000-\\u001f\\u007f]/.test(v)) {`,
+    replace: ` || v.length > 200000 || /[\\u0000-\\u001f\\u007f]/.test(v)) { // MUTATION`,
+    mustFail: 'hub: a mode or model that is not a short string is refused before it reaches any device',
+  },
+  {
+    name: '[#183 hub] a refusal code the hub does not know is passed to the browser as a status',
+    file: 'src/service/hub-service.js',
+    find: `known ? { status: NEXT_TURN_REFUSALS[msg.code], code: msg.code } : { status: 400 },`,
+    replace: `known ? { status: NEXT_TURN_REFUSALS[msg.code], code: msg.code } : { status: 409, code: msg.code }, // MUTATION`,
+    mustFail: 'hub: a device refusal keeps its code and maps to its own status, and an unknown code stays a plain error',
+  },
+  {
+    name: '[#183 hub] a value that is not on offer is reported as a bad request',
+    file: 'src/service/hub-service.js',
+    find: `  'selection-not-offered': 422,`,
+    replace: `  'selection-not-offered': 400, // MUTATION`,
+    mustFail: 'hub: a device refusal keeps its code and maps to its own status, and an unknown code stays a plain error',
+  },
+  {
+    name: '[#183 hub] an agent that would not make the change is reported as a bad request',
+    file: 'src/service/hub-service.js',
+    find: `  'selection-failed': 502,`,
+    replace: `  'selection-failed': 400, // MUTATION`,
+    mustFail: 'hub: a device refusal keeps its code and maps to its own status, and an unknown code stays a plain error',
+  },
+
+  // --- the store -------------------------------------------------------------
+  {
+    name: '[#183 hub] any truthy capability earns next-turn support',
+    file: 'src/service/store.js',
+    find: `nextTurnSelection: v.nextTurnSelection === true };`,
+    replace: `nextTurnSelection: !!v.nextTurnSelection }; // MUTATION`,
+    mustFail: 'hub: a device that does not claim next-turn support is refused up front, and sent nothing',
+  },
+  {
+    name: '[#183 hub] a session may publish any number of choices',
+    file: 'src/service/store.js',
+    find: `(Array.isArray(f.choices) ? f.choices : []).slice(0, NEXT_TURN_CHOICE_MAX)`,
+    replace: `(Array.isArray(f.choices) ? f.choices : []) /* MUTATION */`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a choice id is not sanitised',
+    file: 'src/service/store.js',
+    find: `      const id = sanitizeShortString(c.id, 200);`,
+    replace: `      const id = typeof c.id === 'string' ? c.id : ''; // MUTATION`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a choice name is not sanitised',
+    file: 'src/service/store.js',
+    find: `      choices.push({ id, name: sanitizeShortString(c.name, 200) || id });`,
+    replace: `      choices.push({ id, name: typeof c.name === 'string' && c.name ? c.name : id }); // MUTATION`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a disabled field reason is not sanitised',
+    file: 'src/service/store.js',
+    find: `      reason: sanitizeShortString(f.reason, 300),`,
+    replace: `      reason: typeof f.reason === 'string' ? f.reason : null, // MUTATION`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a field with no choices is published as supported',
+    file: 'src/service/store.js',
+    find: `      supported: f.supported === true && choices.length > 0,`,
+    replace: `      supported: f.supported === true, // MUTATION`,
+    mustFail: 'hub: a malformed nextTurn becomes a disabled one, never an enabled one',
+  },
+  {
+    name: '[#183 hub] a nextTurn with no supported field is published as supported',
+    file: 'src/service/store.js',
+    find: `    supported: v.supported === true && (mode.supported || model.supported),`,
+    replace: `    supported: v.supported === true, // MUTATION`,
+    mustFail: 'hub: a malformed nextTurn becomes a disabled one, never an enabled one',
+  },
+  {
+    name: '[#183 hub] a session from an older device is given a nextTurn',
+    file: 'src/service/store.js',
+    find: `  if ('nextTurn' in s) s.nextTurn = sanitizeNextTurn(s.nextTurn);`,
+    replace: `  s.nextTurn = sanitizeNextTurn(s.nextTurn); // MUTATION`,
+    mustFail: 'hub: a session from an older device carries no nextTurn at all',
+  },
+
+  // --- the page's own decisions ----------------------------------------------
+  {
+    name: '[#183 page] a selector is enabled before the session is synced',
+    file: 'web/js/next-turn.js',
+    find: `  if (controlState !== CONTROL.SYNCED) return off(NT_WAIT_SYNC, f);`,
+    replace: `  // MUTATION: sync not required`,
+    mustFail: 'page: a selector is enabled only when synced, idle, not mid-send and offered; each other state says why',
+  },
+  {
+    name: '[#183 page] a selector stays enabled while a message is being sent',
+    file: 'web/js/next-turn.js',
+    find: `  if (sending) return off(NT_SENDING, f);`,
+    replace: `  // MUTATION: sending not checked`,
+    mustFail: 'page: a selector is enabled only when synced, idle, not mid-send and offered; each other state says why',
+  },
+  {
+    name: '[#183 page] a selector is enabled while the agent is working',
+    file: 'web/js/next-turn.js',
+    find: `  if (session.status !== 'idle') return off(NT_WAIT_IDLE, f);`,
+    replace: `  // MUTATION: idle not required`,
+    mustFail: 'page: a selector is enabled only when synced, idle, not mid-send and offered; each other state says why',
+  },
+  {
+    name: '[#183 page] a field the device did not offer is enabled',
+    file: 'web/js/next-turn.js',
+    find: `  if (!f || f.supported !== true) {`,
+    replace: `  if (!f) { // MUTATION`,
+    mustFail: 'page: a field the device did not offer stays disabled with the reason the device gave, and never enabled by a guess',
+  },
+  {
+    name: '[#183 page] a session from an older device is given selectors',
+    file: 'web/js/next-turn.js',
+    find: `  if (!nt || typeof nt !== 'object') return off(NT_OLD_DEVICE, null);`,
+    replace: `  // MUTATION: an absent nextTurn is not refused`,
+    mustFail: 'page: a field the device did not offer stays disabled with the reason the device gave, and never enabled by a guess',
+  },
+  {
+    name: '[#183 page] a choice with no string id is offered',
+    file: 'web/js/next-turn.js',
+    find: `.filter((c) => c && typeof c.id === 'string');`,
+    replace: `.filter((c) => c); // MUTATION`,
+    mustFail: 'page: a field the device did not offer stays disabled with the reason the device gave, and never enabled by a guess',
+  },
+  {
+    name: '[#183 page] a pick that was never offered is sent',
+    file: 'web/js/next-turn.js',
+    find: `  const hit = pick && choices.some((c) => c.id === pick);`,
+    replace: `  const hit = !!pick; // MUTATION`,
+    mustFail: 'page: only a pick that is offered, differs from the session and sits in an enabled selector is sent',
+  },
+  {
+    name: '[#183 page] a pick that is not on offer counts as a change',
+    file: 'web/js/next-turn.js',
+    find: `changed: !!hit && pick !== f.current,`,
+    replace: `changed: !!pick && pick !== f.current, // MUTATION`,
+    mustFail: 'page: only a pick that is offered, differs from the session and sits in an enabled selector is sent',
+  },
+  {
+    name: '[#183 page] a selector that was not changed is sent anyway',
+    file: 'web/js/next-turn.js',
+    find: `    if (v.enabled && v.changed) body[field] = v.selected;`,
+    replace: `    if (v.enabled) body[field] = v.selected; // MUTATION`,
+    mustFail: 'page: only a pick that is offered, differs from the session and sits in an enabled selector is sent',
+  },
+  {
+    name: '[#183 page] the note speaks over the sync banner',
+    file: 'web/js/next-turn.js',
+    find: `  if (!off.length || controlState !== CONTROL.SYNCED) return '';`,
+    replace: `  if (!off.length) return ''; // MUTATION`,
+    mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
+  },
+  {
+    name: '[#183 page] two identical reasons are said twice',
+    file: 'web/js/next-turn.js',
+    find: `  if (off.length === 2 && off[0].reason === off[1].reason) {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
+  },
+  {
+    name: '[#183 page] a reason from the device is shown as it came, with no capital or stop',
+    file: 'web/js/next-turn.js',
+    find: `  const s = t.charAt(0).toUpperCase() + t.slice(1);`,
+    replace: `  const s = t; // MUTATION`,
+    mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
+  },
+  {
+    name: '[#183 page] an open session is recognised by object identity',
+    file: 'web/js/next-turn.js',
+    find: `  return !!key && key === ntKey(state.currentSession);`,
+    replace: `  return !!state.currentSession && session === state.currentSession.session; // MUTATION`,
+    mustFail: 'page: a session is still the one open when its key matches, however often the record is rebuilt',
+  },
+  {
+    name: '[#183 page] two devices that share a session id are taken for one session',
+    file: 'web/js/next-turn.js',
+    find: '(cur.session.key || `${cur.device.deviceId}:${cur.session.id}`)',
+    replace: '(cur.session.key || cur.session.id) /* MUTATION */',
+    mustFail: 'page: a session is still the one open when its key matches, however often the record is rebuilt',
+  },
+  {
+    name: '[#183 page] a second message is sent while the first is still being confirmed',
+    file: 'web/js/next-turn.js',
+    find: `  if (ntSending.has(key)) {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+  },
+  {
+    name: '[#183 page] a failed send leaves the session held for ever',
+    file: 'web/js/next-turn.js',
+    find: `    ntSending.delete(key);
+    if (carried.length) {
+      ntOutcome = {`,
+    replace: `    if (carried.length) { // MUTATION: not released on failure
+      ntOutcome = {`,
+    mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+  },
+  {
+    name: '[#183 page] a finished send leaves the session held for ever',
+    file: 'web/js/next-turn.js',
+    find: `
+  ntSending.delete(key);
+  if (carried.length) {
+    ntPicked.delete(key);`,
+    replace: `
+  // MUTATION: not released on success
+  if (carried.length) {
+    ntPicked.delete(key);`,
+    mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+  },
+
+  // --- the page in a real browser --------------------------------------------
+  {
+    name: '[#183 browser] Send stays enabled while a change is being confirmed',
+    file: 'web/js/next-turn.js',
+    find: `  if (send && key) send.disabled = !controlsEnabled(control) || ntSending.has(key);`,
+    replace: `  if (send && key) send.disabled = !controlsEnabled(control); // MUTATION`,
+    mustFail: 'composer: while a change is confirmed Send and the selectors are held, and a sent message does not linger as the draft of another session',
+  },
+  {
+    name: '[#183 browser] a disabled selector can be opened by a click',
+    file: 'web/js/next-turn.js',
+    find: `    bar.addEventListener('click', refuse, true);`,
+    replace: `    // MUTATION: a click on a disabled selector is not refused`,
+    mustFail: 'composer: a disabled selector cannot be opened by pointer or script',
+  },
+  {
+    name: '[#183 browser] a disabled selector can be opened from the keyboard',
+    file: 'web/js/next-turn.js',
+    find: `    bar.addEventListener('keydown', refuse, true);`,
+    replace: `    // MUTATION: a key on a disabled selector is not refused`,
+    mustFail: 'composer: a disabled selector cannot be opened by pointer or script',
+  },
+  {
+    name: '[#183 browser] a pick lingers after the message that carried it',
+    file: 'web/js/next-turn.js',
+    find: `    ntPicked.delete(key);
+    // Only what the agent confirmed`,
+    replace: `    // MUTATION: the pick is kept
+    // Only what the agent confirmed`,
+    mustFail: 'composer: a pick does not outlive its message, and choosing what the session already has sends no change request',
+  },
+  {
+    name: '[#183 browser] the draft is cleared even when something else was typed meanwhile',
+    file: 'web/js/wiring.js',
+    find: `      if ($('dtInput').value.trim() === text) {`,
+    replace: `      if (true) { // MUTATION`,
+    mustFail: 'composer: something typed in the same session while a change is confirmed is kept when it lands',
+  },
+  {
+    name: '[#183 browser] a queued note is shown on a session that was not the one sent to',
+    file: 'web/js/wiring.js',
+    find: `queued: !!(r && r.queued) && ntStillOpen(device, session),`,
+    replace: `queued: !!(r && r.queued), // MUTATION`,
+    mustFail: 'composer: a queued note is not shown on a session the message was not sent to',
+  },
+  {
+    name: '[#183 browser] a refused change is reported again in a dialog',
+    file: 'web/js/wiring.js',
+    find: `      if (!e.ntHandled) alert(`,
+    replace: `      /* MUTATION: a dialog for a refusal the page already explained */ alert(\`Could not send: \${e.message}\`); if (false) alert(`,
+    mustFail: 'composer: a refused change keeps the draft and the pick, names the reason, and claims nothing applied',
+  },
+  {
+    name: '[#183 browser] Escape closes the whole session instead of an open list',
+    file: 'web/js/wiring.js',
+    find: `    if (!$('detailScrim').hidden && !e.defaultPrevented) closeDetail();`,
+    replace: `    if (!$('detailScrim').hidden) closeDetail(); // MUTATION`,
+    mustFail: 'composer: Escape closes an open list first and only then leaves the session',
+  },
+  {
+    name: '[#183 browser] a verified control answer is dropped whenever the session record is rebuilt',
+    file: 'web/js/detail.js',
+    find: `  if (!state.currentSession || sessionKey(state.currentSession.session) !== sessionKey(current.session)) return;`,
+    replace: `  if (!state.currentSession || state.currentSession !== current) return; // MUTATION`,
+    mustFail: 'composer: the bar offers Agent, Plan and Autopilot and the model list the device gave, each at its current value',
+  },
+  {
+    name: '[#183 browser] a confirmed change is not drawn in the transcript',
+    file: 'web/js/transcript.js',
+    find: `    if (kind === 'selection_change') {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'composer: the transcript shows each confirmed change, and the bar reports only what the agent confirmed',
+  },
+  {
+    name: '[#183 browser] the bar is not a row on one center line',
+    file: 'web/css/composer-next-turn.css',
+    find: `.composer-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.composer-bar .primary { flex: 0 0 auto; height: 32px; padding: 0 18px; line-height: 20px; }`,
+    replace: `.composer-bar { display: flex; align-items: flex-start; gap: 8px; min-width: 0; } /* MUTATION */
+.composer-bar .primary { flex: 0 0 auto; height: 44px; padding: 0 18px; line-height: 20px; }`,
+    mustFail: 'composer: Mode, Model and Send share one vertical center line at 1280, 900 and 390px in dark and light',
+  },
+  {
+    name: '[#183 browser] the selectors keep their words on a phone and push Send off the line',
+    file: 'web/css/composer-next-turn.css',
+    find: `  .nt-lab { display: none; }`,
+    replace: `  .nt-lab { display: inline; } /* MUTATION */`,
+    mustFail: 'composer: Mode, Model and Send share one vertical center line at 1280, 900 and 390px in dark and light',
+  },
+  {
+    name: '[#183 browser] pressing the Mode i does nothing',
+    file: 'web/js/wiring.js',
+    find: `  $('dtNtModeHint').onclick = () => ntOnHint('mode');`,
+    replace: `  $('dtNtModeHint').onclick = () => {}; // MUTATION`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+  {
+    name: '[#183 browser] pressing the Model i explains Mode',
+    file: 'web/js/wiring.js',
+    find: `  $('dtNtModelHint').onclick = () => ntOnHint('model');`,
+    replace: `  $('dtNtModelHint').onclick = () => ntOnHint('mode'); // MUTATION`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+  {
+    name: '[#183 browser] pressing the i again keeps the explanation open',
+    file: 'web/js/next-turn.js',
+    find: `  ntHintOpen = ntHintOpen && ntHintOpen.key === key && ntHintOpen.field === field ? null : { key, field };`,
+    replace: `  ntHintOpen = { key, field }; // MUTATION`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+  {
+    name: '[#183 browser] typing leaves an explanation open',
+    file: 'web/js/next-turn.js',
+    find: `  if (!ntOutcome && !ntHintOpen) return;
+  ntOutcome = null;
+  ntHintOpen = null;`,
+    replace: `  if (!ntOutcome) return; // MUTATION
+  ntOutcome = null;`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },  {
+    name: '[#183 browser] the Model i is not a hint button',
+    file: 'web/index.html',
+    find: `class="hint-btn" id="dtNtModelHint"`,
+    replace: `class="hint" id="dtNtModelHint"`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
   },
 ];
 

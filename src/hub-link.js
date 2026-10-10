@@ -172,10 +172,21 @@ class HubLink extends EventEmitter {
     return true;
   }
 
-  reply(correlationId, ok, resultOrError) {
+  /**
+   * Answer a hub command. `code` is a refusal's machine-readable name; it rides
+   * along only on a failure, and only when the daemon named one (the hub reads
+   * it against an allow-list, so an unrecognized one is simply ignored).
+   */
+  reply(correlationId, ok, resultOrError, code) {
     return this.send(ok
       ? { type: 'reply', correlationId, ok: true, result: resultOrError }
-      : { type: 'reply', correlationId, ok: false, error: String(resultOrError) });
+      : {
+        type: 'reply',
+        correlationId,
+        ok: false,
+        error: String(resultOrError),
+        ...(typeof code === 'string' && code ? { code } : {}),
+      });
   }
 
   startHeartbeat(getPayload) {

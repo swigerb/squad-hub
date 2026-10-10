@@ -1,0 +1,290 @@
+{
+  "agent": {
+    "name": "Copilot",
+    "title": "Copilot",
+    "version": "1.0.95"
+  },
+  "protocolVersion": 1,
+  "agentCapabilities": {
+    "loadSession": true,
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "sessionCapabilities": {
+      "close": {},
+      "list": {}
+    }
+  },
+  "advertised": {
+    "configOptionIds": [
+      "mode",
+      "model",
+      "reasoning_effort",
+      "agent",
+      "allow_all"
+    ],
+    "modes": [
+      {
+        "id": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "name": "Agent"
+      },
+      {
+        "id": "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "name": "Plan"
+      },
+      {
+        "id": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        "name": "Autopilot"
+      }
+    ],
+    "currentMode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+    "sessionModesField": true,
+    "modelCount": 28,
+    "currentModel": "claude-sonnet-5.5",
+    "modelsFromConfigOption": true,
+    "modelsFromModelsField": true
+  },
+  "rpc": {
+    "unknownMethod": {
+      "method": "session/set_not_a_method",
+      "accepted": false,
+      "code": -32601,
+      "message": "\"Method not found\": session/set_not_a_method",
+      "notifications": [
+        "available_commands_update"
+      ]
+    },
+    "modeConfigPlan": {
+      "method": "session/set_config_option",
+      "accepted": true,
+      "result": {
+        "current": {
+          "mode": "https://agentclientprotocol.com/protocol/session-modes#plan",
+          "model": "claude-sonnet-5.5"
+        }
+      },
+      "notifications": [
+        "current_mode_update",
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "model": "claude-sonnet-5.5"
+      }
+    },
+    "modeConfigBareName": {
+      "method": "session/set_config_option",
+      "accepted": false,
+      "code": -32602,
+      "message": "Invalid mode 'plan'. Supported values: https://agentclientprotocol.com/protocol/session-modes#agent, https://agentclientprotocol.com/protocol/session-modes#plan, https://agentclientprotocol.com/protocol/session-modes#autopilot.",
+      "notifications": []
+    },
+    "modeConfigUnknown": {
+      "method": "session/set_config_option",
+      "accepted": false,
+      "code": -32602,
+      "message": "Invalid mode 'not-a-mode'. Supported values: https://agentclientprotocol.com/protocol/session-modes#agent, https://agentclientprotocol.com/protocol/session-modes#plan, https://agentclientprotocol.com/protocol/session-modes#autopilot.",
+      "notifications": []
+    },
+    "modeConfigAutopilotThenBack": {
+      "method": "session/set_config_option",
+      "accepted": true,
+      "result": {
+        "current": {
+          "mode": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+          "model": "claude-sonnet-5.5"
+        }
+      },
+      "notifications": [
+        "current_mode_update",
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        "model": "claude-sonnet-5.5"
+      }
+    },
+    "modeConfigBackToAgent": {
+      "method": "session/set_config_option",
+      "accepted": true,
+      "result": {
+        "current": {
+          "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "model": "claude-sonnet-5.5"
+        }
+      },
+      "notifications": [
+        "current_mode_update",
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "model": "claude-sonnet-5.5"
+      }
+    },
+    "setModeUri": {
+      "method": "session/set_mode",
+      "accepted": true,
+      "result": {},
+      "notifications": [
+        "current_mode_update",
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "model": "claude-sonnet-5.5"
+      }
+    },
+    "setModeBareName": {
+      "method": "session/set_mode",
+      "accepted": false,
+      "code": -32602,
+      "message": "Invalid mode 'plan'. Supported values: https://agentclientprotocol.com/protocol/session-modes#agent, https://agentclientprotocol.com/protocol/session-modes#plan, https://agentclientprotocol.com/protocol/session-modes#autopilot.",
+      "notifications": []
+    },
+    "setModeUnknown": {
+      "method": "session/set_mode",
+      "accepted": false,
+      "code": -32602,
+      "message": "Invalid mode 'not-a-mode'. Supported values: https://agentclientprotocol.com/protocol/session-modes#agent, https://agentclientprotocol.com/protocol/session-modes#plan, https://agentclientprotocol.com/protocol/session-modes#autopilot.",
+      "notifications": []
+    },
+    "setModeBackToAgent": {
+      "method": "session/set_mode",
+      "accepted": true,
+      "result": {},
+      "notifications": [
+        "current_mode_update",
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "model": "claude-sonnet-5.5"
+      }
+    },
+    "setModelValid": {
+      "method": "session/set_model",
+      "accepted": true,
+      "result": {},
+      "notifications": [
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "model": "claude-sonnet-5"
+      }
+    },
+    "setModelUnknown": {
+      "method": "session/set_model",
+      "accepted": false,
+      "code": -32602,
+      "message": "Invalid modelId 'not-a-model-id': not one of this session's models.",
+      "notifications": []
+    },
+    "modelConfigOther": {
+      "method": "session/set_config_option",
+      "accepted": true,
+      "result": {
+        "current": {
+          "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "model": "claude-sonnet-5"
+        }
+      },
+      "notifications": [
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "model": "claude-sonnet-5"
+      }
+    },
+    "modelConfigValid": {
+      "method": "session/set_config_option",
+      "accepted": true,
+      "result": {
+        "current": {
+          "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "model": "claude-sonnet-5.5"
+        }
+      },
+      "notifications": [
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "model": "claude-sonnet-5.5"
+      }
+    },
+    "modelConfigUnknown": {
+      "method": "session/set_config_option",
+      "accepted": false,
+      "code": -32602,
+      "message": "Invalid modelId 'not-a-model-id': not one of this session's models.",
+      "notifications": []
+    },
+    "readBack": {
+      "method": "session/set_config_option",
+      "accepted": true,
+      "result": {
+        "current": {
+          "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "model": "claude-sonnet-5.5"
+        }
+      },
+      "notifications": [
+        "config_option_update"
+      ],
+      "notificationsSaid": {
+        "mode": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "model": "claude-sonnet-5.5"
+      }
+    }
+  },
+  "behavior": {
+    "model": "gpt-5-mini",
+    "note": "permission requests are cancelled; nothing is written",
+    "agentModeTurn": {
+      "turn": "agent",
+      "stopReason": "end_turn",
+      "error": null,
+      "ms": 10279,
+      "askedPermission": true,
+      "permissionRequests": [
+        {
+          "kind": "edit",
+          "title": "Create file"
+        }
+      ],
+      "updateKinds": [
+        "agent_message_chunk",
+        "session_info_update",
+        "tool_call",
+        "tool_call_update",
+        "usage_update"
+      ]
+    },
+    "planModeTurn": {
+      "turn": "plan",
+      "stopReason": "end_turn",
+      "error": null,
+      "ms": 17346,
+      "askedPermission": false,
+      "permissionRequests": [],
+      "updateKinds": [
+        "agent_message_chunk",
+        "agent_thought_chunk",
+        "plan",
+        "tool_call",
+        "tool_call_update",
+        "usage_update"
+      ]
+    },
+    "fileWritten": false
+  }
+}

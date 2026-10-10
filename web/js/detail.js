@@ -8,6 +8,7 @@ import { refresh, resolveDeepLink } from './ws.js';
 import { toggleFavorite } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
+import { renderNextTurn } from './next-turn.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -218,6 +219,7 @@ export function syncDetailHeader() {
   ].filter(Boolean);
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
+  renderNextTurn();
   const pinned = state.favorites.has(key);
   const star = $('dtStar');
   star.classList.toggle('on', pinned);
@@ -339,8 +341,10 @@ async function verifyControl() {
 
   // The detail panel may have been closed, or moved to another session, while
   // this was in flight. Applying a stale answer would enable the composer for
-  // a session nobody verified.
-  if (state.currentSession !== current) return;
+  // a session nobody verified. Compared by key: every live refresh rebuilds
+  // `state.currentSession` for the SAME session, and an identity check would
+  // drop the answer and leave the composer at "Checking control…" for good.
+  if (!state.currentSession || sessionKey(state.currentSession.session) !== sessionKey(current.session)) return;
 
   state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
   renderControl();
@@ -402,6 +406,7 @@ export function renderControl() {
   $('dtInput').placeholder = b.enabled
     ? 'Send follow-up input to the running agent'
     : 'Controls are disabled until this session is verified';
+  renderNextTurn();
 }
 
 /**

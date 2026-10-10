@@ -61,6 +61,32 @@ pull request; this entry documents what has landed on `main` so far.
   device connected, a copyable `npx squad-hub start` command — the same
   block an empty Local machines section shows. See
   [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
+- **Mode and Model for the next message** (issue #183). Two selectors under the
+  message box choose how the agent runs the message you are about to send. They
+  offer only what the device's own agent advertised (Copilot: Agent, Plan,
+  Autopilot, and its model list), apply a pick **before** the message, wait for
+  the agent to report the new value, and write a transcript line for each
+  confirmed change. A selector the device or session cannot honor — a one-shot
+  ACA job, a watched terminal session, an older device, an agent that does not
+  advertise it, or a session that is not synced or is mid-turn — is shown
+  disabled with an `i` explaining why. A refused or unconfirmed change sends
+  nothing and keeps the draft. `POST /api/devices/{id}/steer` takes optional
+  `mode` and `model`, with `409`, `422` and `502` refusals that carry a
+  `code`. See
+  [docs/commands.md](docs/commands.md#mode-and-model-for-the-next-message) and
+  [docs/api.md](docs/api.md#sending-follow-up-input-steer).
+
+### Fixed
+
+- **The composer no longer sticks on "Checking control…".** The check compared
+  the open session by object identity, and every live refresh rebuilds that
+  object, so a verified answer was dropped as stale. It is now compared by the
+  session's key.
+- **Escape closes an open Mode or Model list first**, and only a second press
+  leaves the session; one press used to close both.
+- **A message that finishes sending no longer clears something you typed in
+  the meantime**, and a failure that lands after you opened another session is
+  shown on the session it belongs to.
 
 ### Documentation
 
@@ -75,5 +101,9 @@ pull request; this entry documents what has landed on `main` so far.
   Teams, and MCP rows above.
 - `docs/commands.md#the-device-roster` now describes the rail's grouped
   sections and new empty states (issue #172).
+- `docs/commands.md` describes the next-message selectors, and documents
+  `SQUAD_HUB_SELECTION_TIMEOUT_MS`.
+- `docs/api.md` documents the optional `mode` and `model` on `steer`, the
+  refusal codes, and the `nextTurn` a session carries.
 
 [Unreleased]: https://github.com/swigerb/squad-hub/compare/v0.6.0...main

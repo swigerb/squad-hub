@@ -757,10 +757,11 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
   // Bumped again to v15 because /js/aca-status.js changed and that file sits
-  // in the shell pre-cache list. The value is pinned so a missed bump fails
+  // in the shell pre-cache list. Bumped again to v16 (#183) for the composer's
+  // next-turn module and stylesheet. The value is pinned so a missed bump fails
   // loudly instead of silently serving stale cached UI.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v16';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

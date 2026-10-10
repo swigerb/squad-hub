@@ -1,0 +1,52 @@
+/* ---------- composer bar: Mode and Model for the next turn (#183) ---------- */
+/* The bar sits under the box: the two selectors on the left, Send on the
+   right, all on ONE center line. Every item has a fixed 32px line box rather
+   than a height it happens to get from its content, so a font swap or a
+   wrapped label cannot push one of them off the line the others share. */
+.composer-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.composer-bar .primary { flex: 0 0 auto; height: 32px; padding: 0 18px; line-height: 20px; }
+.composer-bar .primary:disabled { opacity: .5; cursor: not-allowed; }
+
+.nt-bar { display: flex; align-items: center; gap: 12px; flex: 1 1 auto; min-width: 0; }
+.nt-field { display: flex; align-items: center; height: 32px; min-width: 0; flex: 0 1 auto; }
+.nt-field .hint-btn { flex: 0 0 auto; margin-left: 6px; vertical-align: baseline; }
+
+.nt-field .selectpill {
+  height: 32px; border-radius: 6px; padding: 0 10px; gap: 6px; min-width: 0;
+  box-sizing: border-box;
+}
+.nt-lab { color: var(--dim); font-size: 13px; line-height: 20px; flex: 0 0 auto; }
+.nt-field .sp-value { line-height: 20px; max-width: 150px; min-width: 0; }
+.nt-field .selectpill .caret-i { flex: 0 0 auto; }
+
+/* The list opens UP: the composer is the last thing on the page, and a list
+   that opens down opens off the screen. */
+.nt-field .sp-list { top: auto; bottom: calc(100% + 6px); }
+
+/* Disabled is visibly disabled and cannot be reached by pointer or keyboard
+   (the pill is the thing a person touches; the select inside is hidden). The
+   `i` beside it stays live, because it is where the reason is. */
+.nt-field[data-state="off"] .selectpill {
+  opacity: .55; cursor: not-allowed; pointer-events: none; background: var(--panel);
+}
+
+.nt-note { margin: 0; font-size: 12px; line-height: 18px; color: var(--dim); }
+.nt-note[data-kind="error"] { color: var(--warn); }
+.nt-note[data-kind="ok"] { color: var(--ok); }
+.nt-note[hidden] { display: none; }
+
+/* A phone has room for the values, not for a word in front of each one: the
+   selectors keep their names for assistive technology (aria-label) and their
+   `i`, and the three items stay on one line. */
+@media (max-width: 520px) {
+  .nt-bar { gap: 6px; }
+  .nt-lab { display: none; }
+  .nt-field .selectpill { padding: 0 8px; gap: 4px; }
+  .nt-field .sp-value { max-width: 82px; font-size: 12px; }
+  .nt-field .hint-btn { margin-left: 3px; }
+  .composer-bar { gap: 6px; }
+  .composer-bar .primary { padding: 0 12px; }
+}
+
+/* A mode or model change the agent confirmed, in the transcript. */
+.t-selection .t-tool { color: var(--accent); }

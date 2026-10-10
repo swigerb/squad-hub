@@ -25,6 +25,7 @@
 <link rel="stylesheet" href="/css/detail.css">
 <link rel="stylesheet" href="/css/squad.css">
 <link rel="stylesheet" href="/css/inbox.css">
+<link rel="stylesheet" href="/css/composer-next-turn.css">
 </head>
 <body>
 <header class="topbar">
@@ -472,7 +473,7 @@
     </div>
     <label class="field">
       <span>Mode <button type="button" class="hint-btn" aria-label="About Mode"
-        title="How much you are asked before the agent acts. &#10;&#10;Agent — asks you to approve each tool it wants to run. &#10;Plan — works out an approach and shows it, without changing anything. &#10;Autopilot — runs without asking, for work you would approve anyway. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
+        title="How much you are asked before the agent acts. &#10;&#10;Agent — the usual mode. It asks before anything that needs your approval. &#10;Plan — works out an approach before it acts. &#10;Autopilot — carries on without stopping to ask you. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
       <select id="nsMode">
         <option value="">the agent's default</option>
         <option value="agent">Agent — ask me before each tool</option>
@@ -561,8 +562,31 @@
         </div>
         <div class="composer-row">
           <textarea id="dtInput" rows="3" placeholder="Send follow-up input to the running agent&#10;Enter to send · Shift+Enter for a new line" disabled></textarea>
+        </div>
+        <div class="composer-bar">
+          <div class="nt-bar" id="dtNextTurn">
+            <div class="nt-field">
+              <div class="selectpill">
+                <span class="nt-lab">Mode</span>
+                <select id="dtNtMode" aria-label="Mode for the next turn" disabled><option value="">Unavailable</option></select>
+                <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+              </div>
+              <button type="button" class="hint-btn" id="dtNtModeHint" aria-label="About Mode"
+                title="How the agent handles your next message. &#10;&#10;Agent — the usual mode. It asks before anything that needs your approval. &#10;Plan — works out an approach before it acts. &#10;Autopilot — carries on without stopping to ask you. &#10;&#10;The agent confirms the change before your message is sent, and the session keeps that mode until you change it again. Leave it alone and the session keeps its current mode.">i</button>
+            </div>
+            <div class="nt-field">
+              <div class="selectpill">
+                <span class="nt-lab">Model</span>
+                <select id="dtNtModel" aria-label="Model for the next turn" disabled><option value="">Unavailable</option></select>
+                <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+              </div>
+              <button type="button" class="hint-btn" id="dtNtModelHint" aria-label="About Model"
+                title="The model for your next turn. &#10;&#10;The list comes from this device, since only it knows what its Copilot CLI can use. The agent confirms the change before your message is sent. &#10;&#10;In a Squad session, team members can keep the models their charters assign.">i</button>
+            </div>
+          </div>
           <button class="primary" id="dtSend" disabled>Send</button>
         </div>
+        <p class="nt-note" id="dtNtNote" role="status" aria-live="polite" hidden></p>
       </div>
     </div>
   </div>

@@ -653,8 +653,28 @@ class TuiSession {
        */
       steerQueueLength: this.steerQueue.length,
       steerGuardTripped: this.steerGuardTripped,
+      /**
+       * Present and unsupported, so a client reads a reason rather than
+       * guessing from absence. The daemon does not own this agent's process,
+       * so it has no protocol connection to change a mode or model over --
+       * and a text queue that a hook pops later cannot honor "this turn, in
+       * that mode" without silently running it in whatever mode the terminal
+       * is in.
+       */
+      nextTurn: unsupportedNextTurn('a watched terminal session is driven from its own terminal; '
+        + 'its mode and model cannot be changed from here'),
     };
   }
+}
+
+/** A `nextTurn` descriptor for a session that cannot change either. */
+function unsupportedNextTurn(reason) {
+  const field = () => ({
+    supported: false, reason, current: null, choices: [],
+  });
+  return {
+    supported: false, reason, mode: field(), model: field(),
+  };
 }
 
 module.exports = {
