@@ -921,6 +921,45 @@ const pressSend = () => dom('dtSend').onclick();
     await again;
   });
 
+  await checkAsync('(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left', async () => {
+    resetComposer();
+    const world = sendWorld('own-refused-refresh');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+
+    // The page it was sent from is gone, the session is not: a change the agent
+    // confirmed before refusing must still reach the list, and only the list.
+    const left = pressSend();
+    closeDetail();
+    await openSynced(world.keyA);
+    let before = __getRefreshCalls();
+    steers[0].reject(new Error('mode refused'));
+    await left;
+    assert.strictEqual(__getRefreshCalls() - before, 1,
+      'a refusal that outlived its page did not refresh the session exactly once');
+    assert.strictEqual(alerts.length, 1, 'a refusal that outlived its page was not shown once, in a dialog');
+    assert.ok(!/kept/i.test(dom('dtNtNote').textContent) && dom('dtNtNote').dataset.kind !== 'error',
+      'the refresh after a refusal from a page that was left wrote under the bar of the reopened page');
+    assert.strictEqual(dom('dtInput').value, 'plan it', 'the refresh after a refusal from a page that was left changed the reopened draft');
+
+    // The pick survived, so the next send carries it again, from the page now open.
+    const again = pressSend();
+    assert.strictEqual(steers.length, 2, 'the second Send never reached the device');
+    assert.strictEqual(steers[1].body.mode, 'm-plan', 'a refusal from a page that was left dropped the pick');
+    before = __getRefreshCalls();
+    steers[1].reject(new Error('mode refused'));
+    await again;
+    assert.strictEqual(__getRefreshCalls() - before, 1,
+      'a refusal on the page still open did not refresh the session exactly once');
+    assert.strictEqual(alerts.length, 1, 'a refusal on the page it was sent from also raised a dialog, not only the note under the bar');
+    assert.ok(/kept/i.test(dom('dtNtNote').textContent) && dom('dtNtNote').dataset.kind === 'error',
+      'a refusal on the page it was sent from did not say so under the bar');
+    assert.strictEqual(dom('dtInput').value, 'plan it', 'a refusal on the page it was sent from threw away the draft');
+  });
+
   await checkAsync('(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed', async () => {
     resetComposer();
     const world = sendWorld('own-plain-err');

@@ -100,13 +100,21 @@ pull request; this entry documents what has landed on `main` so far.
 
 - **The composer no longer sticks on "Checking control…".** The check compared
   the open session by object identity, and every live refresh rebuilds that
-  object, so a verified answer was dropped as stale. It is now compared by the
-  session's key.
+  object, so a verified answer was dropped as stale. It now compares the
+  session's key and the page's generation: a live refresh of the open session
+  is the same page, while opening another session, or closing and reopening
+  the same one, is a new page.
 - **Escape closes an open Mode or Model list first**, and only a second press
   leaves the session; one press used to close both.
-- **A message that finishes sending no longer clears something you typed in
-  the meantime**, and a failure that lands after you opened another session is
-  shown on the session it belongs to.
+- **A message that finishes sending writes only to the page you pressed Send
+  on.** It no longer clears something you typed in the meantime. Once you have
+  opened another session, or closed and reopened the same one, it leaves that
+  page's draft, note and picks alone, even when the text is identical, and a
+  failure that arrives after you left is shown in a dialog instead of on the
+  page now open. The session is still refreshed from what the agent confirmed.
+  There is one shared draft box, not a draft per session: a message sent from a
+  page you left stays in it until you clear it. See
+  [docs/commands.md](docs/commands.md#mode-and-model-for-the-next-message).
 
 ### Documentation
 

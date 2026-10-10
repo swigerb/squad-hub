@@ -10064,6 +10064,20 @@ prompt: |
   if (carried.length) {`,
     mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
   },
+  {
+    name: '[#183 send] a refused pick no longer refreshes the session from the device',
+    file: 'web/js/next-turn.js',
+    find: `    if (carried.length && refreshNow) await Promise.resolve(refreshNow()).catch(() => {});`,
+    replace: `    // MUTATION: the refusal path never asks the device for what it did confirm`,
+    mustFail: '(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left',
+  },
+  {
+    name: '[#183 send] a refusal that outlived its page stops refreshing the session it changed',
+    file: 'web/js/next-turn.js',
+    find: `    if (carried.length && refreshNow) await Promise.resolve(refreshNow()).catch(() => {});`,
+    replace: `    if (carried.length && refreshNow && ntViewActive(sentFrom)) await Promise.resolve(refreshNow()).catch(() => {}); // MUTATION`,
+    mustFail: '(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left',
+  },
 
   // --- the page in a real browser --------------------------------------------
   {

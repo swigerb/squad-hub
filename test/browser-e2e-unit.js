@@ -399,6 +399,32 @@ async function refreshNow(page) {
 }
 
 /**
+ * Take the status filter off the way a person does, and wait until the hub's
+ * saved view has lost it too.
+ *
+ * Setting `state.filters.status` in memory is enough to FILTER, but every pin or
+ * rename after it writes the whole view to `/api/prefs`, so the hub keeps the
+ * filter. Clearing only the page's copy then looks clean until the next
+ * navigation, which loads the saved view back and hides the sessions every
+ * later check goes on to start.
+ */
+async function clearStatusFilter(page, svc) {
+  // The select can sit behind an open detail page, where a click-style
+  // `selectOption` waits for it to be actionable; its change handler is what
+  // a person reaches, so that is what is fired.
+  await page.evaluate(() => {
+    const el = document.getElementById('statusFilter');
+    el.value = '';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const saved = () => {
+    const view = svc.prefsStore.get(subjectKey('t1', 'u1')).view;
+    return !view || !view.filters || !view.filters.status ? true : null;
+  };
+  await until(saved, 'the hub to hold no status filter in the saved view');
+}
+
+/**
  * Register an `aca-` device with one session, straight through the store (the
  * seam test/stale-approval-unit.js already uses -- nothing here runs a real
  * Container Apps job). `refresh()`'s own `GET /api/overview` reads it back.
@@ -1842,13 +1868,11 @@ function realSessionRows(page) {
       fs.writeFileSync(path.join(sq, 'decisions.md'), '# Decisions\n');
 
       process.env.FAKE_AGENT_MODE = 'no-permission';
-      await daemon.handle({ op: 'start-session', prompt: 'squad doc view', cwd: work });
+      const started = await daemon.handle({ op: 'start-session', prompt: 'squad doc view', cwd: work });
 
-      await gotoSettled(page, origin);
-      await page.waitForSelector('[data-session]', { timeout: 20000 });
-      // Open the session whose workspace is the one just built.
-      await page.click('[data-session]');
-      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      // The session whose workspace was just built, once the hub lists it: the
+      // first row on the page is whichever session happens to be listed first.
+      await openListedDetail(page, origin, `e2e-device:${started.id}`);
       // The Squad panel lives on its own tab (#182): open it, as a person would.
       await page.click('#dtTab-squad');
       await page.waitForSelector('#dtSquad:not([hidden])', { timeout: 20000 });
@@ -2760,7 +2784,7 @@ function realSessionRows(page) {
           && document.getElementById('dtInput').value === 'Preserve this unsent follow-up'
         ), key), true, 'a stopped session was mistaken for a removed session when the active filter excluded it');
       } finally {
-        await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });
+        await clearStatusFilter(page, svc);
         await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
       }
     });
@@ -2860,7 +2884,7 @@ function realSessionRows(page) {
         assert.strictEqual(daemon.sessions.has(bystander.id), true,
           'Remove from the retained header menu swept another ended session instead of exactly this one');
       } finally {
-        await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });
+        await clearStatusFilter(page, svc);
         await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
         daemon.forgetSessions({ sessionId: bystander.id });
       }
@@ -5241,6 +5265,17 @@ function realSessionRows(page) {
       assert.strictEqual(pills, 'Ready for review');
     });
 
+    // The health list is drawn on its own: the row carries it as it opens, but
+    // on the detail page it sits in the Squad tab, and a session always opens
+    // on Chat (#182). Open that tab, as a person would, before judging it.
+    const rvHealthShown = async (view) => {
+      if (view === 'detail') {
+        await rv.page.click('#dtTab-squad');
+        await rv.page.waitForSelector('#dtSquad:not([hidden])', { timeout: 10000 });
+      }
+      await rv.page.waitForSelector(view === 'list' ? '#groups .row .health' : '#dtSquadHealth .health', { timeout: 10000 });
+    };
+
     /**
      * Everything about the Ready for review row (or the detail page) that a
      * person would call "broken": the page wider than the screen, a piece of it
@@ -5351,7 +5386,7 @@ function realSessionRows(page) {
           await rv.page.waitForSelector(view === 'list' ? '#groups .row' : '#detailScrim:not([hidden])', { timeout: 20000 });
           await until(async () => (await rv.page.$$(view === 'list' ? '#groups .row a[data-pr-link]' : '#dtLinks a[data-pr-link]')).length || null,
             'the Open PR link to be drawn');
-          await rv.page.waitForSelector(view === 'list' ? '#groups .row .health' : '#dtSquadHealth .health', { timeout: 10000 });
+          await rvHealthShown(view);
           for (const width of [1280, 900, 390]) {
             // The third pass is a person who chose Light on a dark system: the
             // explicit `data-theme` block of tokens.css, which the two system
@@ -5394,7 +5429,7 @@ function realSessionRows(page) {
           await rv.page.waitForSelector(view === 'list' ? '#groups .row' : '#detailScrim:not([hidden])', { timeout: 20000 });
           await until(async () => (await rv.page.$$(view === 'list' ? '#groups .row a[data-pr-link]' : '#dtLinks a[data-pr-link]')).length || null,
             'the Open PR link to be drawn');
-          await rv.page.waitForSelector(view === 'list' ? '#groups .row .health' : '#dtSquadHealth .health', { timeout: 10000 });
+          await rvHealthShown(view);
           for (const shot of shots) {
             await rv.page.setViewportSize({ width: shot.width, height: shot.height });
             await rv.page.emulateMedia({ colorScheme: shot.scheme });
