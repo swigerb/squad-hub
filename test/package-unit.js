@@ -802,8 +802,14 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // restated proxy) exercises the production handler in tests -- cached
   // CODE in `web/js/wiring.js` changed again, so an existing install must
   // not keep serving the pre-extraction file out of its cache.
+  //
+  // Bumped to v22 for #182: the detail page's Chat | Squad | Info tabs changed
+  // `web/index.html` and `web/js/detail.js`, moved `renderSquadPanel` into
+  // `web/js/squad-panel.js`, and added `detail-tabs.js`, `approval-card.js`,
+  // `session-info.js` and `detail-tabs.css` to the shell. v21 is already spent
+  // by #181's branch, so this is v22.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v21';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v22';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

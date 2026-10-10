@@ -23,6 +23,7 @@
 <link rel="stylesheet" href="/css/devices.css">
 <link rel="stylesheet" href="/css/modals.css">
 <link rel="stylesheet" href="/css/detail.css">
+<link rel="stylesheet" href="/css/detail-tabs.css">
 <link rel="stylesheet" href="/css/squad.css">
 <link rel="stylesheet" href="/css/inbox.css">
 </head>
@@ -558,9 +559,32 @@
         </div>
         <p class="modal-sub" id="dtMeta"></p>
         <p class="agent-warn" id="dtWarn" hidden></p>
+        <!-- #182: Chat | Squad | Info. Files is a spike only (docs/design/files-tab-spike.md):
+             it is disabled, has no pane and no code, and only says a later
+             release may offer it when the device allows file access. -->
+        <div class="dt-tabs" id="dtTabs" role="tablist" aria-label="Session sections">
+          <button type="button" class="dt-tab on" id="dtTab-chat" data-dttab="chat" role="tab" aria-selected="true" aria-controls="dtPane-chat">Chat<span class="dt-tab-dot" id="dtTabChatDot" hidden></span></button>
+          <button type="button" class="dt-tab" id="dtTab-squad" data-dttab="squad" role="tab" aria-selected="false" aria-controls="dtPane-squad" tabindex="-1">Squad</button>
+          <button type="button" class="dt-tab" id="dtTab-info" data-dttab="info" role="tab" aria-selected="false" aria-controls="dtPane-info" tabindex="-1">Info</button>
+          <button type="button" class="dt-tab" id="dtTab-files" data-dttab="files" role="tab" aria-selected="false" aria-disabled="true" disabled title="Spike only: appears when the device allows file access">Files</button>
+        </div>
       </div>
-      <div class="transcript" id="dtTranscript"></div>
-      <div class="squadpanel" id="dtSquad" hidden></div>
+      <div class="dt-pane" id="dtPane-chat" role="tabpanel" aria-labelledby="dtTab-chat">
+        <div class="transcript" id="dtTranscript"></div>
+        <!-- The same pending permission request the pop-up and the bell show. -->
+        <div class="dt-approvals" id="dtApprovals" aria-live="polite"></div>
+      </div>
+      <div class="dt-pane" id="dtPane-squad" role="tabpanel" aria-labelledby="dtTab-squad" hidden>
+        <div class="squadpanel" id="dtSquad" hidden></div>
+        <p class="dt-empty" id="dtSquadNone">No Squad workspace was reported for this session.</p>
+      </div>
+      <div class="dt-pane" id="dtPane-info" role="tabpanel" aria-labelledby="dtTab-info" hidden>
+        <table class="dt-kv" aria-label="Session details"><tbody id="dtInfoRows"></tbody></table>
+        <h3 class="dt-sec">Approval history
+          <button type="button" class="hint-btn" aria-label="About approval history" title="Permission requests that are no longer waiting: who answered each one, what it was for, when, and from where. A request nobody answered shows as expired.">i</button>
+        </h3>
+        <ul class="dt-hist" id="dtInfoHistory"></ul>
+      </div>
       <div class="composer">
         <div class="control-banner" id="dtControl">
           <span class="control-state" id="dtControlLabel">Checking control…</span>

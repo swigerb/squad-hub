@@ -12,6 +12,7 @@
 | [Sessions on Container Apps](aca.md) | Supervising Squad on ACA runs, so a job can ask a human |
 | [Releasing](releasing.md) | Publishing to npm, under both of its names |
 | [v0.7.0 mockup](design/v0.7.0-mockup.html) | Raw design reference for the v0.7.0 hub UI |
+| [Files tab spike](design/files-tab-spike.md) | What a read-only Files tab would need, its risks, and a recommendation |
 
 ## How this is tested
 

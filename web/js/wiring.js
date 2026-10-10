@@ -12,6 +12,7 @@ import {
 import {
   notifyState, requestNotifyPermission, syncBell, maybePromptApproval,
 } from './notifications.js';
+import { answerApproval } from './approvals.js';
 import { render } from './devices.js';
 import {
   openDetail, closeDetail, initDetailRouting, renderControl, openSquadDoc, forgetStaleSession,
@@ -257,10 +258,7 @@ async function answerFromInbox(btn) {
   const buttons = row ? [...row.querySelectorAll('[data-answer]')] : [btn];
   for (const b of buttons) b.disabled = true;
   try {
-    await api(`/api/devices/${encodeURIComponent(device)}/approve`, {
-      method: 'POST',
-      body: { sessionId, approvalId: approval, optionId: answer },
-    });
+    await answerApproval({ deviceId: device }, { id: sessionId }, { approvalId: approval }, answer);
     // The next overview -- pushed immediately by the hub once the device
     // acts on it, same as everywhere else this api call is made -- drives
     // `renderInboxMenu()` again and drops the card. Nothing to do here but

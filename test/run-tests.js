@@ -1240,6 +1240,17 @@ async function suiteBellInbox() {
 }
 
 /**
+ * The detail page's tabs, inline approval card and Info tab (#182): the pure
+ * parts (tab keys, card markup, Info rows, approval history) plus the static
+ * guards -- no request of their own, no Teams, no inline styles, the Files tab
+ * disabled. The real click-through lives in browser-e2e-unit.js.
+ */
+async function suiteDetailTabs() {
+  console.log('\n[DETAIL TABS] Chat | Squad | Info, the inline approval card, Info rows and approval history (#182)');
+  runChildSuite(path.join(__dirname, 'detail-tabs-unit.js'), 'detail-tabs');
+}
+
+/**
  * Web Push (#175): VAPID + aes128gcm crypto proven by round-trip, per-user
  * subscription storage, the dedupe/prune notifier, and the HTTP API that
  * wires them together -- "a session needs you" while the installed PWA is
@@ -1334,6 +1345,7 @@ async function suitePush() {
   await suiteMcp();
   await suiteSessionsOpen();
   await suiteBellInbox();
+  await suiteDetailTabs();
   await suitePush();
 
   console.log('');

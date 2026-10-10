@@ -117,6 +117,7 @@ function fakeDocument() {
           placeholder: '',
           title: '',
           dataset: {},
+          children: [],
           classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
           setAttribute() {},
           removeAttribute() {},

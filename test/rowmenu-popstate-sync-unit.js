@@ -106,6 +106,7 @@ function makeElement(id) {
     placeholder: '',
     title: '',
     dataset: {},
+    children: [],
     style: {},
     classList: {
       toggle() {}, add() {}, remove() {}, contains() { return false; },

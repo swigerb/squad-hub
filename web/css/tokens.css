@@ -101,6 +101,11 @@
     --ok: #1a7f4b;
     --bad: #c93c3c;
     --bad-solid: #b8332f;
+    /* Without these, a system that prefers light but has no saved choice kept
+       the near-black code surfaces under light text: an unreadable transcript,
+       and (#182) an unreadable command in the inline approval card. */
+    --code-bg: #f2f4f8;
+    --code-line: #dfe4ec;
   }
 }
 

@@ -46,7 +46,13 @@
 // dispatch was extracted into `handleRowMenuClick`), not just tests, so an
 // existing install's cache must actually refresh rather than keep serving
 // the old file forever.
-const CACHE = 'squad-hub-shell-v21';
+//
+// #182: v22. The detail page gained Chat | Squad | Info tabs, so index.html and
+// detail.js changed shape, `renderSquadPanel` moved into a new module, and
+// three more modules and a stylesheet joined the shell. An existing install
+// must not pair the old markup with the new scripts, or the reverse. v21 is
+// already spent by #181's branch, so this is v22.
+const CACHE = 'squad-hub-shell-v22';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -62,6 +68,7 @@ const SHELL = [
   '/css/devices.css',
   '/css/modals.css',
   '/css/detail.css',
+  '/css/detail-tabs.css',
   '/css/squad.css',
   '/css/inbox.css',
   '/js/api.js',
@@ -79,6 +86,10 @@ const SHELL = [
   '/js/device-detail.js',
   '/js/detail.js',
   '/js/detail-control.js',
+  '/js/detail-tabs.js',
+  '/js/approval-card.js',
+  '/js/session-info.js',
+  '/js/squad-panel.js',
   '/js/transcript.js',
   '/js/ws.js',
   '/js/prefs-sync.js',

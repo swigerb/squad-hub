@@ -528,6 +528,47 @@ A session that reaches **Awaiting your reply** stays there until you reply or
 `SQUAD_HUB_IDLE_MS` elapses (30 minutes by default), after which it becomes
 **Finished** and its agent is stopped. Replying resets the clock.
 
+### The session page: Chat, Squad and Info
+
+Opening a session shows three tabs and a fourth that is not there yet. A
+session always opens on **Chat**, and switching tabs only shows and hides what
+is already loaded: nothing is fetched, a half-typed message is kept, and the
+transcript does not move.
+
+| Tab | What it holds |
+|---|---|
+| **Chat** | The transcript and the message box. While the agent is blocked on a permission request, the request is also drawn here as a card (below), so you can answer without leaving the transcript. A dot on the tab says a request is waiting while you are looking at another tab. |
+| **Squad** | The Squad panel, as it always was: the team, the models, the whole-team documents and the recent decisions. See [squad-views.md](squad-views.md). |
+| **Info** | What the device reported about the session, and the approval history. |
+| **Files** | Disabled, with the hint *appears when the device allows file access*. Only a [design](design/files-tab-spike.md) exists. |
+
+**The card is the same request as the pop-up and the bell**, built from the
+same pieces: the command in full, a chip for the tool and for every program in
+it, each path badged `read-only` or `writes`, and one button per option the
+agent actually offered. **Always allow** appears only when the agent offered
+it, and says what it would make standing. The pop-up and the bell work as
+before, and a request answered in any one of them leaves all three.
+
+The card never removes itself on a guess. The buttons go dead while an answer
+is on its way, and the card goes only when the device's own report says the
+request is no longer pending. If the hub refuses the answer the card stays,
+says why, and can be answered again.
+
+**Info** lists the device, working directory, repository and branch, the
+agent, model and mode (what was requested, and what the device says it is
+running when it has said so), when the session started and was last active,
+the tool-call count, the result of each Squad health check, and — for a
+device that reports them — the issue, pull request and Aspire dashboard links.
+Anything the device did not report reads *not reported*; nothing is inferred.
+A long working directory wraps, in the page header and here, instead of
+widening the page.
+
+Under **Approval history** is every permission request in the session that is
+no longer waiting, newest first: what it was for, whether it was allowed,
+denied or expired, who answered, from where (the hub, or the terminal on the
+device) and when. A request that expired has no answerer, and says *not
+answered*.
+
 ## The session list
 
 The web UI's list controls reshape what is already loaded, so they apply
