@@ -12,7 +12,8 @@ import {
 import { refresh } from './ws.js';
 import { removeDeviceUndoLabel } from './cleanup.js';
 import { openAca } from './aca.js';
-import { toggleDeviceSection } from './devices.js';
+import { toggleDeviceSection, render } from './devices.js';
+import { retryAcaPending } from './aca-pending.js';
 import { toggleDeviceExpanded } from './device-detail.js';
 
 /**
@@ -220,6 +221,10 @@ export function wireConnect({ spawnRequest, spawnError }) {
   });
 
   $('deviceList').onclick = (e) => {
+    // A finished-but-unattached dispatch's "Check again" (aca-rail.js): the
+    // same one-shot re-read the list row offers, never a second dispatch.
+    const retry = e.target.closest('[data-aca-retry]');
+    if (retry) { retryAcaPending(retry.dataset.acaRetry).then(render); return; }
     const rm = e.target.closest('[data-remove-device]');
     if (rm) { removeDevice(rm.dataset.removeDevice); return; }
     const spawn = e.target.closest('[data-spawn]');

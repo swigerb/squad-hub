@@ -903,6 +903,15 @@ async function suiteAcaDispatchDialog() {
 }
 
 /**
+ * The device rail's pending ACA rows: a dispatch this tab made, drawn with a
+ * pulsing "Starting" dot until its job's own device attaches (#172, #178).
+ */
+async function suiteAcaRail() {
+  console.log('\n[ACA RAIL] pending dispatch rows, pulse only while open, exact hand-over to the attached device');
+  runChildSuite(path.join(__dirname, 'aca-rail-unit.js'), 'aca-rail');
+}
+
+/**
  * The deploy must not quietly weaken how people sign in. A real incident.
  */
 async function suiteDeployGuard() {
@@ -1384,6 +1393,7 @@ async function suiteRequiredModel() {
   await suitePrefs();
   await suiteGitHubLink();
   await suiteAcaDispatchDialog();
+  await suiteAcaRail();
   await suiteDeployGuard();
   await suiteConversation();
   await suiteSessionMetadata();

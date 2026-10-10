@@ -453,6 +453,40 @@ function realSessionRows(page) {
   return page.$$eval('.row[data-session]', (rows) => rows.map((r) => r.getAttribute('data-session')));
 }
 
+/**
+ * The rail's pending ACA rows (#172), with the dot's COMPUTED style and the
+ * animations the browser is actually running on it -- a class name on a dot
+ * proves nothing about whether it moves.
+ */
+function railRows(page) {
+  return page.$$eval('#deviceList .device.aca-rail', (rows) => rows.map((r) => {
+    const dot = r.querySelector('.dot');
+    return {
+      localId: r.getAttribute('data-local-id'),
+      title: r.querySelector('.device-name span').textContent,
+      status: r.querySelector('.device-meta').textContent.replace(/\s+/g, ' ').trim(),
+      dot: dot.className,
+      animation: getComputedStyle(dot).animationName,
+      running: dot.getAnimations().filter((a) => a.animationName === 'dot-pulse' && a.playState === 'running').length,
+      fail: (r.querySelector('.aca-fail') || {}).textContent || '',
+      retry: !!r.querySelector('[data-aca-retry]'),
+      inAcaSection: !!r.closest('#devsecbody-aca'),
+      shown: r.getClientRects().length > 0,
+    };
+  }));
+}
+
+/** What the rail counts and draws around its pending rows. */
+function railFacts(page) {
+  return page.evaluate(() => ({
+    count: document.getElementById('deviceCount').textContent.trim(),
+    acaLabel: document.querySelector('[data-sec="aca"] .sec-label').textContent.trim(),
+    acaDevices: [...document.querySelectorAll('#devsecbody-aca [data-spawn]')].map((b) => b.getAttribute('data-spawn')),
+    jobsRow: !!document.querySelector('#deviceList .device.ondemand'),
+    pulsing: document.querySelectorAll('#deviceList .dot.dispatching').length,
+  }));
+}
+
 (async () => {
   console.log('browser end-to-end');
   console.log('='.repeat(60));
@@ -4324,6 +4358,204 @@ function realSessionRows(page) {
 
         const broken = hub.errors.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('a dispatched ACA job pulses a Starting dot in the rail, uncounted, until its own device replaces the row (#172, #178)', async () => {
+      const hub = await acaHub(browser, 'rail');
+      const { page, app } = hub;
+      try {
+        const before = await railFacts(page);
+        assert.deepStrictEqual(await railRows(page), [], 'a rail row existed before anything was dispatched');
+        assert.strictEqual(before.acaLabel, 'Squad on ACA executions (0)');
+
+        await dispatchAcaJob(page, 'Rail job for the starting dot');
+        const queued = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 ? r : null;
+        }, 'the dispatch to appear in the rail');
+        // Title, place and a dot that is really animating, as the browser computes it.
+        assert.strictEqual(queued[0].title, '#42 \u00b7 acme/widgets');
+        assert.ok(queued[0].inAcaSection, 'the row is not inside "Squad on ACA executions"');
+        assert.ok(queued[0].shown, 'the rail row is not on screen');
+        assert.strictEqual(queued[0].dot, 'dot dispatching');
+        assert.strictEqual(queued[0].animation, 'dot-pulse', 'the dot has no pulse animation');
+        assert.strictEqual(queued[0].running, 1, 'the browser is not running the pulse');
+        // A bare queued run proves nothing about a lease or a start.
+        assert.match(queued[0].status, /^Queued/);
+        assert.doesNotMatch(queued[0].status, /Starting|lease claimed/, `claimed a start nothing proved: ${queued[0].status}`);
+        assert.strictEqual(queued[0].retry, false, 'an open dispatch offers Check again');
+
+        // A pending job is not a device: nothing the rail or header counts moved.
+        const withRow = await railFacts(page);
+        assert.strictEqual(withRow.count, before.count, 'a pending dispatch was counted as a device');
+        assert.strictEqual(withRow.acaLabel, 'Squad on ACA executions (0)');
+        assert.ok(withRow.jobsRow, 'the on-demand ACA jobs row went missing');
+        assert.strictEqual(withRow.pulsing, 1);
+        assert.strictEqual((await pendingRows(page)).length, 1, 'the main list lost its own Queued on ACA row');
+
+        // Reduced motion keeps the dot but stops the pulse.
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        const calm = (await railRows(page))[0];
+        assert.strictEqual(calm.animation, 'none', 'the dot still pulses under prefers-reduced-motion');
+        assert.strictEqual(calm.running, 0);
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        assert.strictEqual((await railRows(page))[0].animation, 'dot-pulse');
+
+        // The run starts: the row now says Starting, from the run itself.
+        app.setRun(1, { state: 'in_progress' });
+        await refreshNow(page);
+        const running = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 && /^Starting/.test(r[0].status) ? r : null;
+        }, 'the in-progress run to reach the rail');
+        assert.strictEqual(running[0].status, 'Starting \u00b7 the run is in progress');
+        assert.strictEqual(running[0].animation, 'dot-pulse');
+
+        // The receipt confirms the execution: the lease claim is now proven.
+        app.setRun(1, { executionName: ACA_EXEC });
+        await refreshNow(page);
+        const confirmed = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 && /lease claimed/.test(r[0].status) ? r : null;
+        }, 'the confirmed execution to reach the rail');
+        assert.strictEqual(confirmed[0].status, 'Starting \u00b7 lease claimed, waiting to attach');
+        assert.strictEqual(confirmed[0].running, 1);
+
+        // An older job on the same repository is a device of its own; it never
+        // takes this dispatch's place, and is counted because it is a device.
+        attachAcaDevice(hub, 'aca-older-job-0001', 'sess-older', { repo: 'acme/widgets', issue: '42' }, Date.now() - 3600000);
+        await refreshNow(page);
+        const withOlder = await until(async () => {
+          const f = await railFacts(page);
+          return f.acaDevices.length === 1 ? f : null;
+        }, 'the older job to appear as a device');
+        assert.deepStrictEqual(withOlder.acaDevices, ['aca-older-job-0001']);
+        assert.strictEqual(withOlder.acaLabel, 'Squad on ACA executions (1)');
+        assert.strictEqual(withOlder.count, '1');
+        assert.strictEqual((await railRows(page)).length, 1, 'an older same-repo device took over the pending row');
+
+        // The dispatched job's own device: the row gives way to it, once.
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-exec', {});
+        await refreshNow(page);
+        const attached = await until(async () => {
+          const f = await railFacts(page);
+          return f.acaDevices.length === 2 && (await railRows(page)).length === 0 ? f : null;
+        }, 'the dispatched job\'s device to replace the pending row');
+        assert.strictEqual(attached.acaDevices.filter((d) => d === `aca-${ACA_EXEC}`).length, 1, 'the real device is drawn more than once');
+        assert.strictEqual(attached.acaLabel, 'Squad on ACA executions (2)');
+        assert.strictEqual(attached.count, '2');
+        assert.strictEqual(attached.pulsing, 0, 'something still pulses after the job attached');
+        assert.strictEqual((await pendingRows(page)).length, 0);
+
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the rail flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('two dispatches on one repository are two rail rows, and each job device removes only its own row (#172, #178)', async () => {
+      const hub = await acaHub(browser, 'rail-two');
+      const { page, app } = hub;
+      try {
+        await dispatchAcaJob(page, 'First rail job');
+        await dispatchAcaJob(page, 'Second rail job');
+        const two = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 2 ? r : null;
+        }, 'both dispatches to appear in the rail');
+        assert.deepStrictEqual(two.map((r) => r.title), ['#42 \u00b7 acme/widgets', '#43 \u00b7 acme/widgets']);
+        assert.notStrictEqual(two[0].localId, two[1].localId);
+        assert.ok(two.every((r) => r.running === 1));
+
+        app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
+        app.setRun(2, { state: 'in_progress', executionName: ACA_EXEC_2 });
+        await refreshNow(page);
+        await until(async () => {
+          const r = await railRows(page);
+          return r.length === 2 && r.every((x) => /lease claimed/.test(x.status)) ? r : null;
+        }, 'both rows to show their confirmed execution');
+
+        attachAcaDevice(hub, `aca-${ACA_EXEC_2}`, 'sess-second', {});
+        await refreshNow(page);
+        const left = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 ? r : null;
+        }, 'exactly one rail row to remain');
+        assert.strictEqual(left[0].title, '#42 \u00b7 acme/widgets', 'the wrong dispatch\'s rail row went');
+        assert.strictEqual(left[0].running, 1);
+        assert.deepStrictEqual((await railFacts(page)).acaDevices, [`aca-${ACA_EXEC_2}`]);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('a failed or unknown ACA dispatch stops pulsing in the rail, says why, and Check again re-reads it (#172, #178)', async () => {
+      const hub = await acaHub(browser, 'rail-failed');
+      const { page, app, calls } = hub;
+      try {
+        await dispatchAcaJob(page, 'A run that ends badly');
+        await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 && r[0].animation === 'dot-pulse' ? r : null;
+        }, 'the open dispatch to pulse');
+
+        app.setRun(1, { state: 'completed', conclusion: 'failure' });
+        await refreshNow(page);
+        const failed = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 && /failed/.test(r[0].dot) ? r : null;
+        }, 'the failed run to reach the rail');
+        assert.strictEqual(failed[0].dot, 'dot failed');
+        assert.strictEqual(failed[0].animation, 'none', 'a failed dispatch still pulses');
+        assert.strictEqual(failed[0].running, 0);
+        assert.strictEqual(failed[0].status, 'Dispatch failed');
+        assert.match(failed[0].fail, /finished \(failure\)/, `no reason shown: ${failed[0].fail}`);
+        assert.ok(failed[0].retry, 'a failed dispatch offers no Check again');
+        assert.strictEqual((await railFacts(page)).pulsing, 0);
+
+        // A rerun is a new attempt: Check again in the RAIL picks it up, with
+        // one more read of the status endpoint and no second dispatch.
+        const dispatchPosts = () => calls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/aca/dispatch')).length;
+        const postsBefore = dispatchPosts();
+        app.setRun(1, { runAttempt: 2, state: 'in_progress', conclusion: null, executionName: ACA_EXEC });
+        await page.click('#deviceList [data-aca-retry]');
+        const rerun = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 && /lease claimed/.test(r[0].status) ? r : null;
+        }, 'the rerun to be followed after Check again in the rail');
+        assert.strictEqual(rerun[0].animation, 'dot-pulse');
+        assert.strictEqual(rerun[0].retry, false);
+        assert.strictEqual(dispatchPosts(), postsBefore, 'Check again dispatched a new job');
+
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-rerun-rail', {});
+        await refreshNow(page);
+        await until(async () => ((await railRows(page)).length === 0
+          && (await railFacts(page)).acaDevices.length === 1) ? true : null, 'the rerun job to replace the rail row');
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the failed rail flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('an unprovable dispatch is an unknown outcome in the rail, not a failure, and never pulses (#172, #178)', async () => {
+      const hub = await acaHub(browser, 'rail-unknown', { correlationSupported: false });
+      const { page } = hub;
+      try {
+        await dispatchAcaJob(page, 'Workflow with no correlation input');
+        await refreshNow(page);
+        const unknown = await until(async () => {
+          const r = await railRows(page);
+          return r.length === 1 && r[0].status === 'Unknown outcome' ? r : null;
+        }, 'the unsupported dispatch to be an unknown outcome in the rail');
+        assert.strictEqual(unknown[0].dot, 'dot stale');
+        assert.strictEqual(unknown[0].animation, 'none');
+        assert.match(unknown[0].fail, /hub_correlation_id/);
+        assert.ok(unknown[0].retry);
       } finally {
         await hub.close();
       }

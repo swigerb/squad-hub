@@ -14,6 +14,7 @@ import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
 import { openAca } from './aca.js';
 import { acaPendingSectionHtml } from './aca-pending.js';
+import { acaJobsRowHtml, acaRailRowsHtml } from './aca-rail.js';
 import { renderAcaStatus } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
@@ -287,12 +288,15 @@ export function localDevicesEmptyHtml() {
  * Not a `<button>`: the section's own "+" lives inside its header, and a
  * button cannot nest inside another button. `role="button"` plus the
  * `onkeydown` handler in connect.js give it the same keyboard behavior.
+ *
+ * `pendingHtml` is rows for work that has no device yet (the ACA section's
+ * dispatches still starting). They follow the devices, and they are not
+ * devices: the count in the header stays the number of devices in `list`.
  */
-function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle, hubVersion) {
+function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle, hubVersion, pendingHtml = '') {
   const collapsed = isSectionCollapsed(key);
-  const body = list.length
-    ? list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0, hubVersion })).join('')
-    : (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
+  const cards = list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0, hubVersion })).join('') + pendingHtml;
+  const body = cards || (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
   return `
     <div class="devsec" data-sec="${key}" role="button" tabindex="0"
          aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="devsecbody-${key}">
@@ -302,23 +306,6 @@ function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle,
     </div>
     <div class="devsecbody" id="devsecbody-${key}"${collapsed ? ' hidden' : ''}>
       <div class="card">${body}</div>
-    </div>`;
-}
-
-/**
- * The always-visible "ACA jobs" row: on-demand compute, not a roster of
- * devices, so it has no count and nothing to collapse -- only the + that
- * opens the ACA dialog (#172).
- */
-function acaJobsRowHtml() {
-  return `
-    <div class="device ondemand">
-      <span class="dot online"></span>
-      <div class="device-main">
-        <div class="device-name">ACA jobs</div>
-        <div class="device-meta">On-demand &middot; Always available</div>
-      </div>
-      <button class="add" data-action="aca" title="Start an ACA job">+</button>
     </div>`;
 }
 
@@ -446,7 +433,7 @@ export function render() {
   const sessionCounts = sessionCountsByDevice(groups);
   $('deviceList').innerHTML = `
     ${acaJobsRowHtml()}
-    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job', hubVersion)}
+    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job', hubVersion, acaRailRowsHtml(state.acaPending, devices))}
     ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}
     ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}`;
   applyMeterFills($('deviceList'));
