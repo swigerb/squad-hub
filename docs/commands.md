@@ -491,6 +491,44 @@ available instead. `squad-hub status` prints it, and the web UI marks the row.
 Copilot which custom agents it has and says whether `squad-hub squad` will
 really run Squad here.
 
+### A model that is required, not preferred
+
+Falling back to the default model is right for a person at a terminal and wrong
+for a supervisor that pinned a model on purpose: a different model answering is
+a different job, not a degraded one. A session started with a **required** model
+(`SQUAD_HUB_REQUIRE_MODEL=1` on a one-shot, below) never falls back — not to the
+project's model, not to the agent's default. Before the first prompt is sent:
+
+1. the model must be one the agent **advertised** in `session/new`, matched by
+   its id (a display name or a fragment is a different model) and sent as the
+   agent's own spelling of that id;
+2. the agent must **confirm** it: `session/set_config_option` must answer with
+   the model option's `currentValue` equal to that id. An empty `{}`, the old
+   current model, an error, "method not found" or no answer inside
+   `SQUAD_HUB_SELECTION_TIMEOUT_MS` is not a confirmation, and neither is a model
+   that merely was already current — the request is always sent, so the answer is
+   always the agent's own.
+
+If either fails, **no prompt is sent**, the session is `failed` with a coded
+reason, and the agent process Hub started is stopped. A failure after the model
+was confirmed is an ordinary failure, reported as it was. The reason is one of:
+
+| Code | Meaning |
+|---|---|
+| `REQUIRED_MODEL_MISSING` | A required model was not named (`SQUAD_HUB_MODEL`). |
+| `REQUIRED_MODEL_INVALID` | The name is not a valid model name. |
+| `REQUIRED_MODEL_FLAG_INVALID` | `SQUAD_HUB_REQUIRE_MODEL` is not `1`, `0` or unset. |
+| `REQUIRED_MODEL_ONESHOT_ONLY` | `SQUAD_HUB_REQUIRE_MODEL=1` without `SQUAD_HUB_ONESHOT`. |
+| `REQUIRED_MODEL_NOT_ADVERTISED` | The agent offers no way to confirm a model change: nothing advertised, models listed with no `model` config option, or "method not found". |
+| `REQUIRED_MODEL_UNAVAILABLE` | The agent advertises models, but not this one. |
+| `REQUIRED_MODEL_UNCONFIRMED` | The agent did not say the model is now in effect, or refused. |
+| `REQUIRED_MODEL_TIMEOUT` | The agent did not answer in time. |
+| `REQUIRED_MODEL_AGENT_EXITED` | The agent exited before it confirmed. |
+
+The session carries `requiredModel: { requested, chosen, confirmed, failure }` —
+see [api.md](api.md). `confirmed` is the only field that says the model is the
+one running. An optional model (the default) behaves exactly as described above.
+
 ## What a session shows
 Each session carries the context needed to tell it apart from every other one
 at a glance, in both `squad-hub status` and the web UI.
@@ -658,6 +696,7 @@ test suite verifies this behavior without ever installing a real login task.
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
 | `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
+| `squad-hub oneshot --capabilities` | Print `{"protocolVersion":1,"requiredModel":true}` and exit 0, touching no hub, config, daemon or agent. Says this build understands `SQUAD_HUB_REQUIRE_MODEL`. |
 | `squad-hub report-pr --url <pr-url> --number <N> [--title <t>] [--session <id>]` | Attach a pull request to a session after it ended, as the same device that ran it. |
 | `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
 | `squad-hub forget --all` | Remove the record of every session that has ended. |
@@ -1380,7 +1419,8 @@ platform's timeout while doing nothing.
 | `SQUAD_HUB_ONESHOT` | Run one session, then exit. |
 | `SQUAD_HUB_PROMPT` | What to run. Required in one-shot mode. |
 | `SQUAD_HUB_CWD` | Working directory for the session. |
-| `SQUAD_HUB_MODEL` | Model for the session, validated like `--model`. An invalid name is ignored and the default model runs. |
+| `SQUAD_HUB_MODEL` | Model for the session, validated like `--model`. An invalid name is ignored and the default model runs — unless `SQUAD_HUB_REQUIRE_MODEL=1`, which makes it a requirement. |
+| `SQUAD_HUB_REQUIRE_MODEL` | `1` makes `SQUAD_HUB_MODEL` **required**: the agent must advertise it and confirm it before the prompt is sent, or nothing runs and the job exits **78**. `0` or unset leaves it optional. Anything else (`true`, `yes`, a typo) is refused, never guessed at. Needs `SQUAD_HUB_ONESHOT`. See "A model that is required, not preferred". |
 | `SQUAD_HUB_ATTACH_GRACE_MS` | How long to wait for the hub before starting anyway. Default 5000. |
 | `SQUAD_HUB_MAX_SESSION_MS` | Ceiling on one session, so a wedged agent cannot hold the job open. Default 3 hours. |
 | `SQUAD_HUB_IDLE_MS` | How long a session waits for your reply before it is closed and its agent stopped. Default 30 minutes. |
@@ -1388,7 +1428,33 @@ platform's timeout while doing nothing.
 The exit code carries the outcome, so the platform's own status means
 something: **0** when the session completed, **1** when it failed or was cut
 short, **64** when there was no prompt to run, **75** when it needed an
-approval nobody could give, **77** when the hub refused the device.
+approval nobody could give, **77** when the hub refused the device, **78** when
+a required model was not confirmed.
+
+**A required model** is decided before anything else starts. A missing or
+invalid `SQUAD_HUB_MODEL` or `SQUAD_HUB_REQUIRE_MODEL` exits 78 without a
+daemon, hub connection or agent. Otherwise the job prints
+`model required: <name> (waiting for the agent to confirm it)`, and only after
+the agent's own reply says that model is current,
+`model confirmed: requested=<name> chosen=<id>`. A refusal is one stderr line,
+`required-model-refused code=<CODE> reason=<text>`, then exit 78 with the agent
+stopped and the hub told the session failed. Exit 0 needs the confirmation:
+a session that went idle without one is a refusal, not a success. A session that
+fails *after* confirming its model exits 1 as any failed session does.
+
+**Asking whether this build understands that**, without running anything:
+
+```
+$ squad-hub oneshot --capabilities
+{"protocolVersion":1,"requiredModel":true}
+```
+
+It reads no environment, auth, config or socket, starts no daemon or agent, and
+exits 0 — even with `--env` naming an environment that is not configured. It
+speaks about this *code*, not about any account: whether a model is usable is
+something only a live agent can say, at run time. Any other argument next to
+`--capabilities` is refused (exit 2) with no answer printed. A build that
+predates it has no such flag and does not understand `SQUAD_HUB_REQUIRE_MODEL`.
 
 **The hub is an observer, never a dependency.** If it cannot be reached the
 session still runs — it simply says that nobody will be able to approve a tool

@@ -31,7 +31,7 @@ const { EventEmitter } = require('events');
 const paths = require('./paths');
 const config = require('./config');
 const { AcpSession, STATUS } = require('./acp-session');
-const { selectAgent, buildAgentArgs } = require('./agent-select');
+const { selectAgent, buildAgentArgs, RequiredModelError } = require('./agent-select');
 const { resolveSquadDoc, listSquadDocs, readFileSafe } = require('./squad-context');
 
 /**
@@ -407,12 +407,20 @@ class Daemon extends EventEmitter {
    * can run a Squad project and a plain repo side by side correctly.
    */
   startSession({
-    prompt, cwd, localCwd, agent, model, mode,
+    prompt, cwd, localCwd, agent, model, mode, requiredModel,
   }) {
+    // Settled before anything is spawned or registered: a refusal here leaves
+    // no agent process and no session behind. `requiredModel` is the flag a
+    // supervisor sets to say the model is not a preference (see
+    // `RequiredModelError`); anything but a real boolean is a mistake about
+    // what was asked for, not a way of asking for less.
+    if (requiredModel !== undefined && typeof requiredModel !== 'boolean') {
+      throw new RequiredModelError('REQUIRED_MODEL_FLAG_INVALID', 'requiredModel must be true or false');
+    }
     const dir = this._resolveCwd(cwd, localCwd);
     const id = `s${(++this._seq).toString().padStart(3, '0')}-${Date.now().toString(36)}`;
     const selection = selectAgent({
-      cwd: dir, explicitAgent: agent, explicitModel: model, explicitMode: mode,
+      cwd: dir, explicitAgent: agent, explicitModel: model, explicitMode: mode, requireModel: requiredModel === true,
     });
     const args = buildAgentArgs(this.agentArgs, selection);
     const s = new AcpSession({
@@ -1107,6 +1115,7 @@ class Daemon extends EventEmitter {
         // directory, never a remotely-requested one.
         const s = this.startSession({
           prompt: req.prompt, cwd: req.cwd, localCwd: req.localCwd, agent: req.agent, model: req.model, mode: req.mode,
+          requiredModel: req.requiredModel,
         });
         return { id: s.id, pid: s.pid, cwd: s.cwd, agentSelection: s.agentSelection };
       }

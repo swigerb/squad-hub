@@ -37,12 +37,18 @@
  *   models-only   lists models with no configOptions entry (nothing confirmable).
  *   ignores       accepts a change and answers with the OLD current value.
  *   no-readback   applies a change but answers `{}` and announces nothing.
+ *   announce-only applies a change and ANNOUNCES it (config_option_update), but its
+ *                 reply to the request is `{}`: the change happened, and the
+ *                 request's own answer says nothing about it.
  *   stuck         never answers set_config_option.
  *   slow          as `copilot`, but each change is applied and answered only
  *                 after FAKE_AGENT_SLOW_MS (1500), so a person can do something
  *                 else while it is being confirmed.
  *   refuse-model  as `copilot`, but a model change is refused (-32602).
  *   refuse-mode   as `copilot`, but a mode change is refused (-32602).
+ *   aliased       as `copilot`, but each model's display name is a bare alias that
+ *                 is also a valid model name (fake-deep is called `deep`), so a
+ *                 lookup by NAME finds a model a lookup by id does not.
  *   renamed       as `copilot`, but the modes carry display names that are not
  *                 the end of their ids (Ask first, Think first, Hands off).
  * FAKE_AGENT_RPC_LOG names a file (resolved against the session's cwd) that
@@ -88,6 +94,7 @@ const MODEL_CHOICES = [
   { value: 'fake-deep', name: 'Fake Deep', description: 'A deliberate model' },
   { value: 'auto', name: 'Auto', description: 'Let the agent pick the best model' },
 ];
+if (NEXT === 'aliased') MODEL_CHOICES.forEach((m) => { if (m.value !== 'auto') m.name = m.value.replace(/^fake-/, ''); });
 
 let buf = '';
 const sessions = new Map();
@@ -163,7 +170,7 @@ function handleChange(msg) {
     return send({
       jsonrpc: '2.0',
       id: msg.id,
-      result: msg.method === 'session/set_config_option' && NEXT !== 'no-readback'
+      result: msg.method === 'session/set_config_option' && NEXT !== 'no-readback' && NEXT !== 'announce-only'
         ? { configOptions: configOptions(s) } : {},
     });
   };

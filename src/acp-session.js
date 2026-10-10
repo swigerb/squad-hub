@@ -19,6 +19,7 @@
 
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const { RequiredModelError, requireModelName } = require('./agent-select');
 
 const STATUS = Object.freeze({
   STARTING: 'starting',
@@ -86,10 +87,15 @@ const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
  * Copilot registers the agent as "Squad" where every other surface says
  * "squad". The canonical choice is returned, never the caller's spelling, so
  * what goes over the wire is a value the agent itself advertised.
+ *
+ * `idOnly` stops after the first rung. A required model is looked up by the id
+ * it was named by and nothing looser: a display name or a fragment that happens
+ * to match would be a different model answering to the requested one's name.
  */
-function findChoice(choices, asked) {
+function findChoice(choices, asked, { idOnly = false } = {}) {
   const a = norm(asked);
   if (!a) return null;
+  if (idOnly) return choices.find((c) => norm(c.id) === a) || null;
   return choices.find((c) => norm(c.id) === a)
     || choices.find((c) => norm(c.name) === a)
     || choices.find((c) => norm(c.id).split('#').pop() === a)
@@ -342,7 +348,25 @@ class AcpSession extends EventEmitter {
 
   // -- lifecycle ------------------------------------------------------------
 
+  /**
+   * Run the session: handshake, select agent/model/mode, then the first prompt.
+   *
+   * A session that names a REQUIRED model (`agentSelection.requiredModel`) can
+   * fail before its prompt for a reason the optional path would have shrugged
+   * off, and every such failure -- the model not advertised, not offered, not
+   * confirmed, no answer in time, the agent dying -- ends here as one coded
+   * refusal with the agent stopped. See `_applyRequiredModel`. A failure AFTER
+   * the model was confirmed is an ordinary failure and is rethrown as it was.
+   */
   async run() {
+    try {
+      return await this._runSession();
+    } catch (e) {
+      throw this._requiredModel() ? this._refuseRequiredModel(e) : e;
+    }
+  }
+
+  async _runSession() {
     const init = await this._request('initialize', {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
@@ -461,9 +485,12 @@ class AcpSession extends EventEmitter {
    * Ask for the agent and model this session was started with, and record what
    * was actually granted.
    *
-   * Never throws. A session that cannot have its agent set is still a working
-   * session -- it is just not the one that was asked for, and saying so is the
-   * entire job here. Throwing would turn a degraded session into no session.
+   * Never throws for an optional agent or model: a session that cannot have
+   * them set is still a working session -- it is just not the one that was
+   * asked for, and saying so is the entire job here. Throwing would turn a
+   * degraded session into no session. A REQUIRED model (`want.requiredModel`)
+   * is the exception: a different model answering is not a degraded session,
+   * so that throws instead.
    */
   async _applySelection(newSession) {
     const want = this.agentSelection || {};
@@ -530,7 +557,11 @@ class AcpSession extends EventEmitter {
       }
     }
 
-    if (want.model) {
+    if (want.requiredModel === true) {
+      // No warning, no default: this either ends with the model confirmed or
+      // throws, and the caller of `run()` sees the throw before any prompt.
+      await this._applyRequiredModel(want.model);
+    } else if (want.model) {
       const available = ((newSession && newSession.models && newSession.models.availableModels) || [])
         .map((m) => m.modelId);
       const hit = available.find((id) => String(id).toLowerCase() === String(want.model).toLowerCase());
@@ -594,6 +625,115 @@ class AcpSession extends EventEmitter {
 
     for (const w of this.applied.warnings) this.emit('selection-warning', w);
     return this.applied;
+  }
+
+  /**
+   * The required-model record of this session, or null when its model is only
+   * a preference. Built on first use rather than in the constructor because the
+   * daemon hands the selection over after `new`.
+   *
+   * `confirmed` is the one fact a supervisor can rely on: true only after the
+   * agent itself reported the requested model as current.
+   */
+  _requiredModel() {
+    const want = this.agentSelection;
+    if (!want || want.requiredModel !== true) return null;
+    if (!this._rm) {
+      this._rm = {
+        requested: typeof want.model === 'string' ? want.model : null,
+        chosen: null,
+        confirmed: false,
+        failure: null,
+      };
+    }
+    return this._rm;
+  }
+
+  /** The agent process is gone, or the session already ended without us. */
+  _agentGone() {
+    return TERMINAL.includes(this.status) || this.isAgentDead();
+  }
+
+  /**
+   * Make the requested model the one this session runs, or throw.
+   *
+   * Same rules as a next-turn change (`steerWithSelection`) and the same
+   * helpers, because what makes a change real is the same here: the model must
+   * be one the agent ADVERTISED in `session/new`, and the change must be
+   * confirmed by `session/set_config_option` answering with that model as
+   * current. Everything the optional path tolerates is a refusal here --
+   *
+   *   - no model config option advertised (an agent that lists models but
+   *     cannot switch them, one that lists nothing)   -> NOT_ADVERTISED
+   *   - the requested id is not among the advertised  -> UNAVAILABLE
+   *   - `{}`, the old current, no entry for the model -> UNCONFIRMED
+   *   - an error, or "method not found"               -> UNCONFIRMED / NOT_ADVERTISED
+   *   - no answer inside the selection timeout        -> TIMEOUT
+   *   - the agent exited while we waited              -> AGENT_EXITED
+   *
+   * An RPC that merely succeeded is not a confirmation, and neither is a model
+   * that was already current: the request is always sent, so the answer is
+   * always the agent's own. `applied.model` is set from that answer alone.
+   */
+  async _applyRequiredModel(asked) {
+    const rm = this._requiredModel();
+    const name = requireModelName(asked);
+    const nt = this._nextTurn();
+    const choices = (nt.choices && nt.choices.model) || [];
+    if (nt.unsupported.has('model') || !choices.length) {
+      throw new RequiredModelError('REQUIRED_MODEL_NOT_ADVERTISED',
+        nt.unsupported.get('model') || 'this agent did not advertise a model it can be told to use');
+    }
+    const hit = findChoice(choices, name, { idOnly: true });
+    if (!hit) {
+      const offered = choices.slice(0, 20).map((c) => c.id).join(', ');
+      throw new RequiredModelError('REQUIRED_MODEL_UNAVAILABLE',
+        `the required model is not one this agent offers (available: ${offered}${choices.length > 20 ? ', ...' : ''})`);
+    }
+
+    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {
+      let code = 'REQUIRED_MODEL_UNCONFIRMED';
+      if (this._agentGone()) code = 'REQUIRED_MODEL_AGENT_EXITED';
+      else if (step.unsupported) code = 'REQUIRED_MODEL_NOT_ADVERTISED';
+      else if (step.timedOut) code = 'REQUIRED_MODEL_TIMEOUT';
+      throw new RequiredModelError(code, step.reason);
+    }
+    rm.chosen = hit.id;
+    rm.confirmed = true;
+    this.applied.model = hit.id;
+  }
+
+  /**
+   * End a required-model session that cannot run: record why, fail it, stop the
+   * agent this session owns, and hand back the error `run()` throws.
+   *
+   * Anything that goes wrong before the model is confirmed lands here, coded,
+   * so a supervisor reads one stable `code` whatever stage it was at. After
+   * confirmation it is not a model problem any more, and `e` goes back as it
+   * was. The agent is killed here rather than left to the caller: a refused
+   * session has no prompt to run and nothing a live agent could still do for it.
+   */
+  _refuseRequiredModel(e) {
+    const rm = this._requiredModel();
+    if (rm.confirmed) return e;
+    let code;
+    let reason;
+    if (e instanceof RequiredModelError) {
+      ({ code } = e);
+      reason = e.message;
+    } else {
+      code = this._agentGone() ? 'REQUIRED_MODEL_AGENT_EXITED' : 'REQUIRED_MODEL_UNCONFIRMED';
+      reason = `the agent failed before the model was confirmed: ${(e && e.message) || 'unknown error'}`;
+    }
+    // The agent's own words can carry control characters; this ends up on a
+    // terminal line and in the hub.
+    reason = String(reason).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 300);
+    rm.failure = { code, reason };
+    const err = new RequiredModelError(code, `required model refused (${code}): ${reason}`);
+    if (this.status !== STATUS.STOPPED) this._fail(err.message);
+    this.shutdown();
+    return err;
   }
 
   /** Answer a pending approval. Returns false if the id is unknown. */
@@ -948,7 +1088,7 @@ class AcpSession extends EventEmitter {
         return { ok: false, unsupported: true, reason: why };
       }
       if (e && e.timedOut) {
-        return { ok: false, reason: 'the agent did not confirm it in time, so it may or may not have applied' };
+        return { ok: false, timedOut: true, reason: 'the agent did not confirm it in time, so it may or may not have applied' };
       }
       return { ok: false, reason: String((rpc && rpc.message) || (e && e.message) || 'the agent refused').slice(0, 300) };
     }
@@ -1038,6 +1178,11 @@ class AcpSession extends EventEmitter {
     this.emit('status', { from: prev, to: next, activity: this.activity });
   }
 
+  _requiredModelView() {
+    const rm = this._requiredModel();
+    return { ...rm, failure: rm.failure ? { ...rm.failure } : null };
+  }
+
   toJSON() {
     return {
       id: this.id,
@@ -1061,6 +1206,11 @@ class AcpSession extends EventEmitter {
       // because "we asked for squad" and "we got squad" are different facts and
       // the UI has to be able to tell them apart.
       applied: this.applied || null,
+      // Present only for a session whose model is REQUIRED, and then the whole
+      // story: what was asked for, what the agent confirmed (null until it
+      // has), and the coded reason when it refused. `confirmed` is the only
+      // field that says the model is really the one running.
+      requiredModel: this._requiredModel() ? this._requiredModelView() : undefined,
       // What the composer may change for the next turn, and what the agent
       // last confirmed as current. Published per session because it is the
       // agent's own advertisement, not a device-wide guess.
