@@ -602,6 +602,13 @@ check('sidebarRow carries the session key as the click target, so a click knows 
   assert.match(sidebarRow(entry, null), /data-session="the-key"/);
 });
 
+check('sidebarRow uses the same renamed displayTitle as the main row', () => {
+  const entry = { session: sess({ key: 'named', prompt: 'raw prompt' }), device: { name: 'Dev Box', presence: 'online' } };
+  const html = sidebarRow(entry, null, { named: 'Custom sidebar name' });
+  assert.match(html, /<span class="dt-side-title">Custom sidebar name<\/span>/);
+  assert.ok(!html.includes('raw prompt'), 'the sidebar still showed the raw prompt instead of the custom name');
+});
+
 check('a malicious session key cannot break out of the sidebar row markup', () => {
   const entry = { session: sess({ key: '"><img src=x onerror=alert(1)>' }), device: { name: 'Dev Box', presence: 'online' } };
   assert.ok(!sidebarRow(entry, null).includes('<img'),

@@ -20,8 +20,10 @@ import {
 } from './notifications.js';
 import { render } from './devices.js';
 import {
-  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession,
+  openDetail, closeDetail, initDetailRouting, renderControl, openSquadDoc, forgetStaleSession,
 } from './detail.js';
+import { syncSession, detailSyncMenuItem } from './detail-control.js';
+import { sessionKey } from './list.js';
 import {
   setRailCollapsed, applyTheme, nextTheme, saveView, refresh,
 } from './ws.js';
@@ -75,7 +77,7 @@ function toggleMenu(force) {
  * intends and every stray click produces.
  */
 const POPUP_BUTTON = {
-  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn', dtMenu: 'dtMoreBtn',
+  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn',
 };
 
 function togglePopup(menuId, btnId, force) {
@@ -95,6 +97,40 @@ function togglePopup(menuId, btnId, force) {
   if (open && menuId === 'inboxMenu') renderInboxMenu();
 }
 
+function closeFilterBar() {
+  $('filterbarEnd').classList.remove('open');
+  $('filterToggle').setAttribute('aria-expanded', 'false');
+}
+
+/** Dismiss one Escape target at a time, topmost first, before the detail page itself. */
+export function dismissTopmostEscapeTarget() {
+  for (const id of ['approvalScrim', 'newScrim']) {
+    if (!$(id).hidden) {
+      $(id).hidden = true;
+      return true;
+    }
+  }
+  if (!$('menu').hidden) {
+    toggleMenu(false);
+    return true;
+  }
+  for (const [menuId, btnId] of Object.entries(POPUP_BUTTON)) {
+    if (!$(menuId).hidden) {
+      togglePopup(menuId, btnId, false);
+      return true;
+    }
+  }
+  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return true;
+  }
+  if ($('filterbarEnd').classList.contains('open')) {
+    closeFilterBar();
+    return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // The per-row ⋯ menu (#170): one shared, floating `<nav id="rowMenu">`,
 // repositioned per click -- the mockup's own approach, rather than one
@@ -107,28 +143,30 @@ let rowMenuBtn = null;
 
 /** Closed on every refresh, Esc, a click outside it, or any other popup
  * opening -- a popup like any other, it just has no one fixed trigger. */
-export function closeRowMenu() {
+export function closeRowMenu({ restoreFocus = false } = {}) {
   if (rowMenuKey === null) return;
   const m = $('rowMenu');
+  const btn = rowMenuBtn;
   if (m) m.hidden = true;
-  if (rowMenuBtn) rowMenuBtn.setAttribute('aria-expanded', 'false');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
   rowMenuKey = null;
   rowMenuBtn = null;
+  if (restoreFocus && btn && typeof btn.focus === 'function') btn.focus();
 }
 
-function openRowMenu(key, btn) {
+export function openRowMenu(key, btn, { extra = [] } = {}) {
   const reopening = rowMenuKey === key;
   toggleMenu(false);
   togglePopup('newMenu', 'newMoreBtn', false);
   togglePopup('tidyMenu', 'tidyBtn', false);
   togglePopup('inboxMenu', 'bellBtn', false);
-  togglePopup('dtMenu', 'dtMoreBtn', false);
   closeRowMenu();
   if (reopening) return; // a second click on the SAME ⋯ closes it again
 
   const found = findSessionByKey(key);
   if (!found) return;
   const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(key) });
+  if (extra.length) items.push({ sep: true }, ...extra);
   const m = $('rowMenu');
   m.innerHTML = rowMenuHtml(items);
   m.hidden = false;
@@ -334,6 +372,32 @@ async function onMenu(action) {
 }
 
 /**
+ * The shared `#rowMenu`'s click dispatch, extracted so tests can drive the
+ * exact function `wire()` installs as the real `onclick` -- not a
+ * reimplementation of its body (#243: a stale-menu wrong-target regression
+ * in the Sync branch was only caught because the real handler, not a proxy
+ * restating it, was exercised).
+ */
+export function handleRowMenuClick(e) {
+  const b = e.target.closest('[data-row-action]');
+  if (!b || b.disabled || !rowMenuKey) return;
+  if (b.dataset.rowAction === 'sync') {
+    // Captured before `closeRowMenu()` clears `rowMenuKey` -- `syncSession`
+    // revalidates against this target itself (detail-control.js), the
+    // same identity every other row action already gets below (#243
+    // Scout review of ab5ef90: Sync alone discarded it and resynced
+    // whatever session happened to be open at click time instead).
+    const target = rowMenuKey;
+    closeRowMenu();
+    // Returned (not just fired) so tests can await the real request this
+    // click actually issues; a bare `onclick` return value is otherwise
+    // ignored by the browser, so this changes nothing in production.
+    return syncSession(target);
+  }
+  onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
+}
+
+/**
  * Attach every control's event handler. Called once, from main(), after the
  * page has a token and is past the sign-in gate.
  */
@@ -359,11 +423,7 @@ export function wire() {
     if (row) openDetail(row.dataset.session);
   };
 
-  $('rowMenu').onclick = (e) => {
-    const b = e.target.closest('[data-row-action]');
-    if (!b || b.disabled || !rowMenuKey) return;
-    onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
-  };
+  $('rowMenu').onclick = handleRowMenuClick;
   $('rowMenu').onkeydown = (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveRowMenuFocus(1); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveRowMenuFocus(-1); }
@@ -408,7 +468,13 @@ export function wire() {
   };
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
   initDetailRouting();
-  $('dtMoreBtn').onclick = (e) => { e.stopPropagation(); togglePopup('dtMenu', 'dtMoreBtn'); };
+  $('dtMoreBtn').onclick = (e) => {
+    e.stopPropagation();
+    const current = state.currentSession;
+    if (!current) return;
+    const extraItem = detailSyncMenuItem();
+    openRowMenu(sessionKey(current.session), e.currentTarget, { extra: extraItem ? [extraItem] : [] });
+  };
 
   $('bellBtn').onclick = async (e) => {
     e.stopPropagation();
@@ -463,13 +529,9 @@ export function wire() {
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
     if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
-    if (!$('dtMenu').hidden && !e.target.closest('#dtMoreBtn') && !e.target.closest('#dtMenu')) togglePopup('dtMenu', 'dtMoreBtn', false);
     if (!$('rowMenu').hidden && !e.target.closest('#rowMenu') && !e.target.closest('[data-more]')) closeRowMenu();
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
-    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
-      $('filterbarEnd').classList.remove('open');
-      $('filterToggle').setAttribute('aria-expanded', 'false');
-    }
+    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) closeFilterBar();
   });
 
   wireInstall();
@@ -532,18 +594,8 @@ export function wire() {
     $('dtSend').click();
   };
 
-  $('dtSync').onclick = () => { togglePopup('dtMenu', 'dtMoreBtn', false); syncSession(); };
-
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    toggleMenu(false);
-    togglePopup('newMenu', 'newMoreBtn', false);
-    togglePopup('tidyMenu', 'tidyBtn', false);
-    togglePopup('dtMenu', 'dtMoreBtn', false);
-    closeRowMenu();
-    $('filterbarEnd').classList.remove('open');
-    $('filterToggle').setAttribute('aria-expanded', 'false');
-    for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;
-    if (!$('detailScrim').hidden) closeDetail();
+    if (!dismissTopmostEscapeTarget() && !$('detailScrim').hidden) closeDetail();
   });
 }

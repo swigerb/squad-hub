@@ -13,6 +13,7 @@
 
 import { state, api } from './api.js';
 import { render } from './devices.js';
+import { displayTitle } from './sessionrow.js';
 import { VIEW_PARAM_KEYS } from './util.js';
 import { syncUrlFromState, syncControls } from './ws.js';
 
@@ -322,4 +323,20 @@ export function renameSession(key, name) {
   saveNames();
   pushPrefs('names');
   render();
+}
+
+/**
+ * Prompt for, and apply, a rename -- the ONE place that decides what the
+ * prompt pre-fills with and writes the result, shared by the row ⋯ menu and
+ * the detail header's pencil/⋯ menu (#181 part 2), so renaming from either
+ * surface can never drift into two different prompts or two write paths.
+ */
+export function promptRenameSession(key, session) {
+  const raw = session.prompt || session.id || '';
+  const current = displayTitle(session, state.names);
+  // Blank unless already renamed -- prompting with the raw prompt back at
+  // you would read as "this IS the name".
+  const name = window.prompt('Rename this session', current === raw ? '' : current);
+  if (name === null) return; // canceled
+  renameSession(key, name);
 }

@@ -2051,10 +2051,328 @@ async function watchCsp(pg) {
       // Esc closes it -- the same global handler that closes every other
       // popup -- and must not also reopen the session detail underneath.
       await page.keyboard.press('Escape');
-      const hiddenAfterEsc = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+      const afterEsc = await page.evaluate((key) => ({
+        hidden: document.getElementById('rowMenu').hidden,
+        focusReturned: document.activeElement?.dataset?.more === key,
+      }), firstSessionKey);
+      const hiddenAfterEsc = afterEsc.hidden;
       assert.strictEqual(hiddenAfterEsc, true, 'Escape did not close the row menu');
+      assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the row ⋯ button that opened the menu');
       const detailHiddenAfterEsc = await page.evaluate(() => document.getElementById('detailScrim').hidden);
       assert.strictEqual(detailHiddenAfterEsc, true, 'closing the row menu with Esc also opened the session detail');
+    });
+
+    await check('the detail header rename pencil updates the header, the detail sidebar and the list row through one shared rename path (#181 part 2)', async () => {
+      const newName = `Header rename ${Date.now()}`;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        page.once('dialog', (dialog) => dialog.accept(newName));
+        await page.click('#dtRename');
+        await until(async () => {
+          const t = await page.textContent('#dtTitle');
+          return String(t || '').trim() === newName ? true : null;
+        }, 'the detail header title to show the new name');
+
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        const sidebarTitle = await until(async () => {
+          const t = await page.evaluate(
+            (key) => document.querySelector(`#detailSidebarList [data-session="${CSS.escape(key)}"] .dt-side-title`)?.textContent || '',
+            firstSessionKey,
+          );
+          return t === newName ? true : null;
+        }, 'the detail sidebar row to show the renamed title');
+        assert.strictEqual(sidebarTitle, true, 'the detail sidebar did not pick up the renamed title');
+
+        await page.click('#dtBack');
+        await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+        const rowTitle = await until(async () => {
+          const t = await page.evaluate(
+            (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',
+            firstSessionKey,
+          );
+          return t === newName ? true : null;
+        }, 'the list row to keep the same renamed title');
+        assert.strictEqual(rowTitle, true, 'the list row did not agree with the header rename');
+      } finally {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        page.once('dialog', (dialog) => dialog.accept(''));
+        await page.click('#dtRename');
+        await until(async () => {
+          const t = await page.textContent('#dtTitle');
+          return String(t || '').trim() !== newName ? true : null;
+        }, 'the detail header rename cleanup to restore the raw title');
+      }
+    });
+
+    await check('the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await until(async () => {
+        const label = await page.textContent('#dtControlLabel');
+        return label && label !== 'Checking control…' ? label.trim() : null;
+      }, 'the detail control check to settle before reading the header menu');
+      await page.click('#dtMoreBtn');
+      await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+      const menuState = await page.evaluate(() => ({
+        dtMenuExists: document.getElementById('dtMenu') !== null,
+        actions: [...document.querySelectorAll('#rowMenu [data-row-action]')].map((b) => b.dataset.rowAction),
+        detailOpen: !document.getElementById('detailScrim').hidden,
+      }));
+      assert.strictEqual(menuState.dtMenuExists, false, 'the old abbreviated #dtMenu still exists in the DOM');
+      for (const action of ['pin', 'rename', 'copylink']) {
+        assert.ok(menuState.actions.includes(action), `the shared row menu is missing its "${action}" action in the detail header`);
+      }
+      assert.ok(!menuState.actions.includes('sync'),
+        'Sync session should be absent once the detail page is already synced and controllable');
+      await page.keyboard.press('Escape');
+      const afterEsc = await page.evaluate(() => ({
+        rowMenuHidden: document.getElementById('rowMenu').hidden,
+        detailOpen: !document.getElementById('detailScrim').hidden,
+        focusReturned: document.activeElement?.id === 'dtMoreBtn',
+      }));
+      assert.strictEqual(afterEsc.rowMenuHidden, true, 'Escape did not close the shared row menu from the detail header');
+      assert.strictEqual(afterEsc.detailOpen, true, 'Escape closed the detail page instead of just the header menu');
+      assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the detail header ⋯ button');
+    });
+
+    await check('a live-snapshot refresh arriving mid-verification does not leave "Checking control…" stuck forever (#243 Scout review fix for 53e6a18)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await until(async () => {
+        const label = await page.textContent('#dtControlLabel');
+        return label && label !== 'Checking control…' ? label.trim() : null;
+      }, 'the initial detail control check to settle');
+
+      // Hold the NEXT control-check request open so this test controls
+      // exactly when it answers -- the real regression needed a
+      // heartbeat/refresh to land while the request was still in flight,
+      // which real network timing cannot reproduce deterministically.
+      let release;
+      const held = new Promise((r) => { release = r; });
+      let intercepted = false;
+      await page.route('**/control-check', async (route) => {
+        intercepted = true;
+        await held;
+        await route.continue();
+      });
+
+      try {
+        // Reopen the SAME session -- back to the list, then the same row --
+        // to start a fresh `verifyControl`, the exact navigation a person
+        // closing and reopening a session performs.
+        await page.click('#dtBack');
+        await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await page.evaluate((key) => {
+          document.querySelector(`[data-session="${CSS.escape(key)}"]`).click();
+        }, firstSessionKey);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Checking control…' ? true : null),
+          'the reopened session to start a fresh control check');
+
+        // The exact regression: `syncDetailHeader` reassigns
+        // `state.currentSession` to a NEW wrapper for the SAME device/session
+        // on every refresh, even while this request is still in flight.
+        // Force two of those, same as a couple of heartbeats landing
+        // mid-check, through the real `/api/overview` endpoint -- only
+        // `control-check` above is intercepted.
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        await page.evaluate(() => window.__squadHubTest.refresh());
+
+        assert.ok(intercepted, 'the reopened session never issued a control-check request to intercept');
+        release();
+
+        const settled = await until(async () => {
+          const label = await page.textContent('#dtControlLabel');
+          return label && label !== 'Checking control…' ? label.trim() : null;
+        }, 'the detail control check to settle after a live-snapshot refresh landed mid-flight', 8000);
+        assert.notStrictEqual(settled, "Control couldn't be verified",
+          'the check only "settled" because the 8s timeout fired -- the race silently discarded the real answer instead of applying it');
+      } finally {
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
+    await check('Sync session guards one in-flight resync per target; a reopened menu shows it disabled until it resolves, with no extra request (#243 Scout review fix for 53e6a18)', async () => {
+      // Forced to Not-synced regardless of the real daemon's actual answer --
+      // isolates the FRONTEND resync guard under test from real daemon/agent
+      // lifecycle, which control-verification-unit.js already covers.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'the agent process is gone' }),
+      }));
+      let resyncCalls = 0;
+      let releaseResync;
+      const resyncHeld = new Promise((r) => { releaseResync = r; });
+      await page.route('**/resync', async (route) => {
+        resyncCalls += 1;
+        await resyncHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: firstSessionKey, pid: 1, cwd: '/', resyncCount: resyncCalls }),
+        });
+      });
+
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render');
+
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const firstOpen = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { present: true, disabled: b.disabled, label: b.textContent.trim() } : { present: false };
+        });
+        assert.ok(firstOpen.present, 'Sync session is not offered for a Not-synced, reachable device');
+        assert.strictEqual(firstOpen.disabled, false, 'Sync session should not start disabled');
+
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await page.waitForSelector('#rowMenu[hidden]', { state: 'attached', timeout: 5000 });
+
+        // Reopen the menu WHILE the resync is still held open -- the exact
+        // regression: the old dedicated #dtSync button disabled ITSELF here;
+        // the shared menu item has to too, or a second click restarts the
+        // same agent.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const reopened = await until(async () => {
+          const s = await page.evaluate(() => {
+            const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+            return b ? { disabled: b.disabled, label: b.textContent.trim() } : null;
+          });
+          return s && s.disabled ? s : null;
+        }, 'the reopened menu to show Sync session disabled while a resync is pending');
+        assert.ok(reopened.label.includes('Syncing'), `the pending label does not say so: ${reopened.label}`);
+
+        // A click on a genuinely disabled button is a no-op in a real
+        // browser, proving the guard end-to-end rather than just reading
+        // the attribute.
+        await page.click('#rowMenu [data-row-action="sync"]', { force: true }).catch(() => {});
+        assert.strictEqual(resyncCalls, 1, 'reopening the menu mid-resync issued a SECOND resync request to the device');
+
+        await page.keyboard.press('Escape');
+        const afterEsc = await page.evaluate(() => document.activeElement?.id === 'dtMoreBtn');
+        assert.strictEqual(afterEsc, true, 'Escape did not return focus to the detail header ⋯ button while Sync was pending');
+
+        releaseResync();
+        await until(async () => {
+          const label = await page.textContent('#dtControlLabel');
+          return label && label !== 'Checking control…' ? label.trim() : null;
+        }, 'the re-verification after the resync settled to finish');
+
+        assert.strictEqual(resyncCalls, 1, 'more than one resync request reached the device for one target');
+
+        // Success recovery: the guard cleared, so a later, genuine click is
+        // offered again rather than being stuck disabled forever.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const afterSettle = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { disabled: b.disabled, label: b.textContent.trim() } : { present: false };
+        });
+        assert.strictEqual(afterSettle.disabled, false,
+          'Sync session is still disabled after its resync settled -- the in-flight guard was never cleared');
+        await page.keyboard.press('Escape');
+      } finally {
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
+    await check('a real browser Back/Forward away from a session with its shared Sync menu open closes the stale menu, with no outside click and no resync for the wrong target (#243 Scout review of ab5ef90, PR comment 6091670737)', async () => {
+      // Forced Not-synced for BOTH sessions this test visits, same reasoning
+      // as the in-flight-guard check above: isolates the frontend stale-menu
+      // guard from the real daemon/agent lifecycle.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'forced not-synced for this fixture' }),
+      }));
+      const resyncCalls = [];
+      await page.route('**/resync', async (route) => {
+        const body = route.request().postDataJSON();
+        resyncCalls.push(body && body.sessionId);
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: body && body.sessionId, pid: 1, cwd: '/' }),
+        });
+      });
+
+      try {
+        // Build a REAL two-entry history stack by navigating entirely
+        // through in-app clicks -- list -> A -> B -- so the Back/Forward
+        // below are genuine browser session-history traversals, not a
+        // synthetic `history.pushState` the test fabricated itself.
+        await gotoSettled(page, origin);
+        await page.waitForSelector('[data-session]', { timeout: 20000 });
+        const keyA = await page.getAttribute('[data-session]', 'data-session');
+        await page.click(`[data-session="${keyA}"]`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render for A');
+
+        const keyB = await page.evaluate((openKey) => {
+          const rows = [...document.querySelectorAll('#detailSidebarList [data-session]')];
+          const other = rows.find((r) => r.dataset.session !== openKey);
+          return other && other.dataset.session;
+        }, keyA);
+        assert.ok(keyB, 'there is no second session to navigate to for this fixture');
+
+        await page.click(`#detailSidebarList [data-session="${keyB}"]`);
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
+          'the URL to switch to session B via the sidebar');
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render for B');
+
+        // Real Back: B -> A. Still no outside click, no menu open yet.
+        await page.goBack();
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyA)}`),
+          'Back to land on session A');
+
+        // Open A's shared row menu (Sync offered) -- the exact state a
+        // stale menu was left in across a popstate before this fix.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const offeredOnA = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { present: true, disabled: b.disabled } : { present: false };
+        });
+        assert.ok(offeredOnA.present, 'Sync session is not offered for A (Not-synced, reachable)');
+        assert.strictEqual(offeredOnA.disabled, false, 'Sync session should not start disabled');
+
+        // Real Forward: A -> B, menu still open, driven by the browser's
+        // OWN history stack -- no click anywhere in the document, so any
+        // close has to come from the popstate listener itself, not an
+        // outside-click handler standing in for it.
+        await page.goForward();
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
+          'Forward to land on session B');
+
+        const afterNav = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+        assert.strictEqual(afterNav, true,
+          'the shared row menu was still visible after a real Back/Forward navigation away from the session it was opened for');
+        assert.deepStrictEqual(resyncCalls, [],
+          'no Sync click was simulated, yet a resync request reached the device during the navigation itself');
+
+        // Fresh positive: a genuine Sync click on B, the session actually
+        // open now, still reaches the device exactly once.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await until(async () => resyncCalls.length > 0 || null, 'the fresh Sync click on B to reach the device');
+        assert.deepStrictEqual(resyncCalls, [keyB],
+          'a fresh Sync click on the session actually open (B) did not reach the device exactly once, for the right target');
+      } finally {
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+      }
     });
 
     await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
@@ -2066,7 +2384,9 @@ async function watchCsp(pg) {
         // it one frame before measuring.
         await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
         const centers = await page.evaluate((w) => {
-          const ids = w <= 900 ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtStatusPill'] : ['dtStar', 'dtTitle', 'dtStatusPill', 'dtAca'];
+          const ids = w <= 900
+            ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill']
+            : ['dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca'];
           return ids.map((id) => {
             const el = document.getElementById(id);
             if (!el || el.offsetParent === null) return null;
@@ -2080,6 +2400,191 @@ async function watchCsp(pg) {
           `at ${width}px, the header items do not share a line box -- vertical centers span ${spread}px`);
       }
       await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // #243: `offsetParent !== null` only proves an element is laid out, not
+    // that it is readable or reachable -- an element can be squeezed to zero
+    // width, wrapped onto three lines, or pushed past the right edge of the
+    // viewport and still have a non-null offsetParent. This reads the actual
+    // rendered geometry instead, which is what caught the real regression
+    // (the title unreadable, "Run on ACA…" wrapping onto 3 lines inside its
+    // 32px button, and Stop/⋯ pushed off the right edge) that the offsetParent
+    // checks above and in the capture test below did not.
+    await check('at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const bounds = await page.evaluate(() => {
+        const vw = document.documentElement.clientWidth;
+        const rectOf = (id) => {
+          const el = document.getElementById(id);
+          if (!el || el.offsetParent === null) return null;
+          const r = el.getBoundingClientRect();
+          return { left: r.left, right: r.right, width: r.width, height: r.height };
+        };
+        return {
+          vw,
+          title: rectOf('dtTitle'),
+          aca: rectOf('dtAca'),
+          stop: rectOf('dtStop'),
+          more: rectOf('dtMoreBtn'),
+        };
+      });
+      assert.ok(bounds.title && bounds.title.width > 0,
+        'the detail title has no rendered width at 390px -- it is not actually readable');
+      assert.ok(bounds.title.right <= bounds.vw + 0.5,
+        `the detail title overflows the 390px viewport (right=${bounds.title.right}, viewport=${bounds.vw})`);
+      for (const [label, rect] of [
+        ['Run on ACA…', bounds.aca],
+        ['Stop', bounds.stop],
+        ['the ⋯ (More actions) button', bounds.more],
+      ]) {
+        assert.ok(rect, `${label} is not visible at 390px`);
+        assert.ok(rect.left >= -0.5 && rect.right <= bounds.vw + 0.5,
+          `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
+        assert.ok(rect.height <= 34,
+          `${label}'s label wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // #243 real regression (CI run 37998832767): the two checks above proved
+    // the RIGHT-side actions stay on-screen and on one line, but neither one
+    // actually measured the FIRST row (back/star/title/pencil/pill) itself --
+    // the root cause was `flex-wrap` applied to the whole `.detail-head-line`,
+    // which let the first row's own items (not just the actions) spill onto a
+    // second line while the header kept a fixed 32px height. This measures
+    // every first-row control's own rendered geometry at 390px, the same way
+    // the actions were already checked: inside the viewport, unclipped, and a
+    // single ~32px line each -- which a height-only check on the header
+    // container cannot tell apart from "32px tall but two of these items are
+    // on a wrapped second line that overflows it".
+    await check('at 390px, every first-row header control (back/star/title/pencil/pill) stays inside the viewport, unclipped and on one line', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const bounds = await page.evaluate(() => {
+        const vw = document.documentElement.clientWidth;
+        const rectOf = (id) => {
+          const el = document.getElementById(id);
+          if (!el || el.offsetParent === null) return null;
+          const r = el.getBoundingClientRect();
+          return { left: r.left, right: r.right, width: r.width, height: r.height };
+        };
+        return {
+          vw,
+          back: rectOf('dtBackPhone'),
+          star: rectOf('dtStar'),
+          title: rectOf('dtTitle'),
+          rename: rectOf('dtRename'),
+          pill: rectOf('dtStatusPill'),
+        };
+      });
+      for (const [label, rect] of [
+        ['the back arrow', bounds.back],
+        ['the pin star', bounds.star],
+        ['the title', bounds.title],
+        ['the rename pencil', bounds.rename],
+        ['the status pill', bounds.pill],
+      ]) {
+        assert.ok(rect, `${label} is not visible at 390px`);
+        assert.ok(rect.width > 0, `${label} has no rendered width at 390px`);
+        assert.ok(rect.left >= -0.5 && rect.right <= bounds.vw + 0.5,
+          `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
+        assert.ok(rect.height <= 34,
+          `${label} wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // #243 real regression: the old fix pinned `.detail-head-line` to a fixed
+    // 32px line box and relied on `flex-wrap` to push overflow onto a SECOND
+    // line that the fixed-height box never actually grew to accommodate --
+    // the row-height check above (`rect.height <= 34`) cannot catch this,
+    // because it only measures a single BUTTON's own box, not whether that
+    // button's row collided with unrelated content underneath it.
+    //
+    // This measures every CONTROL's own rendered rectangle (not the shared
+    // `.detail-head-line` container's rect) against the metadata line below
+    // it. Measuring the container itself is a false-safe check: a container
+    // with a fixed `height` (the old, broken design, or a regression back to
+    // it) always reports its own `bottom` at exactly that fixed height, which
+    // trivially stays above the metadata line even while its own children
+    // overflow past it -- `overflow` only clips what is PAINTED, it never
+    // moves the overflowing children's own boxes, so measuring the controls
+    // themselves is what actually catches the collision. Checked at every
+    // width the header's row count changes (two rows at 390px/900px, one row
+    // at 1280px).
+    await check('at 390px, the detail header controls do not spatially overlap the metadata line underneath them', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      for (const width of [1280, 900, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+        const result = await page.evaluate(() => {
+          const ids = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+          const bottoms = ids.map((id) => {
+            const el = document.getElementById(id);
+            if (!el || el.offsetParent === null) return null;
+            return el.getBoundingClientRect().bottom;
+          }).filter((v) => v !== null);
+          const meta = document.getElementById('dtMeta');
+          return {
+            maxControlBottom: bottoms.length ? Math.max(...bottoms) : null,
+            metaTop: meta ? meta.getBoundingClientRect().top : null,
+          };
+        });
+        assert.ok(result.maxControlBottom !== null, `at ${width}px, no header control was visible to measure`);
+        assert.ok(result.metaTop !== null, `at ${width}px, the metadata line could not be measured`);
+        assert.ok(result.maxControlBottom <= result.metaTop + 0.5,
+          `at ${width}px, a header control (bottom=${result.maxControlBottom}) overlaps the metadata line underneath it (top=${result.metaTop})`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // Evidence capture for CI: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.
+    await check('the session detail page renders and is captured at desktop and phone widths, dark and light', async () => {
+      const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
+      if (!outDir) { assert.ok(true); return; }
+      assert.ok(fs.statSync(outDir).isDirectory(), `SQUAD_HUB_SCREENSHOT_DIR is not a directory: ${outDir}`);
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const shots = [
+        { width: 1280, height: 900, scheme: 'dark', file: 'detail-desktop-dark.png' },
+        { width: 1280, height: 900, scheme: 'light', file: 'detail-desktop-light.png' },
+        { width: 390, height: 844, scheme: 'dark', file: 'detail-phone-390-dark.png' },
+        { width: 390, height: 844, scheme: 'light', file: 'detail-phone-390-light.png' },
+      ];
+      try {
+        for (const shot of shots) {
+          await page.setViewportSize({ width: shot.width, height: shot.height });
+          await page.emulateMedia({ colorScheme: shot.scheme });
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+          const state = await page.evaluate(() => {
+            const shown = (id) => { const el = document.getElementById(id); return !!el && el.offsetParent !== null; };
+            return {
+              signin: !!document.querySelector('.signin'),
+              title: shown('dtTitle'),
+              rename: shown('dtRename'),
+              more: shown('dtMoreBtn'),
+              back: shown('dtBackPhone'),
+              titleText: (document.getElementById('dtTitle') || {}).textContent || '',
+            };
+          });
+          assert.strictEqual(state.signin, false, `${shot.file}: the sign-in page is showing, not the session detail`);
+          assert.ok(state.title && state.titleText.trim(), `${shot.file}: the detail title is not visible`);
+          assert.ok(state.rename, `${shot.file}: the rename pencil is not visible`);
+          assert.ok(state.more, `${shot.file}: the More actions button is not visible`);
+          if (shot.width <= 900) assert.ok(state.back, `${shot.file}: the phone back arrow is not visible`);
+          await page.screenshot({ path: path.join(outDir, shot.file) });
+          assert.ok(fs.statSync(path.join(outDir, shot.file)).size > 0, `${shot.file} was written empty`);
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
     });
 
     await check('under 900px, the sidebar is hidden and the phone back arrow takes its place', async () => {

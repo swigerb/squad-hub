@@ -3,6 +3,7 @@ import {
   truncateWords, isStaleSession,
 } from './util.js';
 import { isCloudKind } from './cleanup.js';
+import { displayTitle } from './sessionrow.js';
 
 // ---------------------------------------------------------------------------
 // List controls.
@@ -442,11 +443,11 @@ export function sidebarEntries(groups = [], filterText = '') {
 }
 
 /** One row in the sidebar, highlighted when it is the session currently open. */
-export function sidebarRow(entry, selectedKey) {
+export function sidebarRow(entry, selectedKey, names = {}) {
   const { session: s, device } = entry;
   const key = sessionKey(s);
   const selected = key === selectedKey;
-  const title = truncateWords(s.prompt || s.id, 60);
+  const title = truncateWords(displayTitle(s, names), 60);
   const meta = [device && device.name, sessionRepo(s)].filter(Boolean).join(' · ');
   return `
     <button type="button" class="dt-side-row ${selected ? 'selected' : ''} ${needsAttention(s, device) ? 'attention' : ''}"
@@ -478,4 +479,3 @@ export function skeletonRows(n = 4) {
       </div>
     </div>`).join('');
 }
-

@@ -31,7 +31,22 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v15';
+//
+// #181/#243: bumped again here even though no file was added or removed from
+// SHELL. The header-row fix below restructures `.detail-head-line` enough
+// (a new `.detail-head-titlerow` wrapper and a real two-row phone layout
+// instead of whole-line `flex-wrap`) that a stale offline install serving the
+// OLD `detail.css`/`index.html` pair out of its cache would keep showing the
+// exact 390px misalignment this PR fixes, with no way to tell from the
+// network-first path alone since that only helps while online. v16 is
+// already spent by #178's branch (`squad/hub-178-aca-job-dialog`), so this
+// uses v17 -- a value neither sibling branch has used -- to avoid a
+// cross-PR cache collision if both merge close together. v20: this PR's
+// completion slice changed cached code (web/js/wiring.js's row-menu click
+// dispatch was extracted into `handleRowMenuClick`), not just tests, so an
+// existing install's cache must actually refresh rather than keep serving
+// the old file forever.
+const CACHE = 'squad-hub-shell-v20';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -63,6 +78,7 @@ const SHELL = [
   '/js/devices.js',
   '/js/device-detail.js',
   '/js/detail.js',
+  '/js/detail-control.js',
   '/js/transcript.js',
   '/js/ws.js',
   '/js/prefs-sync.js',

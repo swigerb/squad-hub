@@ -51,6 +51,16 @@
    back control is visible (see .phone-only / .detail-sidebar below), never
    the vertical alignment. */
 .detail-head-line { display: flex; align-items: center; gap: 10px; height: 32px; }
+/* #243: the back arrow, star, title, rename pencil and status pill are
+   grouped into THIS one nested flex row (see the static wrapper in
+   index.html) so they can be shrunk/laid out as a single atomic line box
+   that never wraps internally. `min-width: 0` lets the group itself shrink
+   below its children's combined natural width when the phone breakpoint
+   gives the actions their own line below and still leaves less room than
+   1280px/900px desktop widths do -- the same shrink the title's `h2` already
+   relied on, now also applied one level up so the GROUP can give way instead
+   of splitting onto a second line the way the old single shared flex row did. */
+.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
 .detail-head-line h2 {
   margin: 0; font-size: 17px; line-height: 32px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
@@ -62,6 +72,12 @@
 }
 .detail-head-line .star:hover { background: var(--panel-2); color: var(--text); }
 .detail-head-line .star.on { color: var(--warn); }
+.detail-head-line .pen-btn {
+  flex: 0 0 auto; width: 24px; height: 24px; display: inline-flex;
+  align-items: center; justify-content: center; background: transparent;
+  border: 0; color: var(--faint); font-size: 13px; cursor: pointer; border-radius: 6px;
+}
+.detail-head-line .pen-btn:hover { background: var(--panel-2); color: var(--text); }
 .back-btn {
   flex: 0 0 auto; width: 32px; height: 32px; display: inline-flex;
   align-items: center; justify-content: center; border-radius: 8px;
@@ -71,7 +87,14 @@
 .back-btn .i { width: 16px; height: 16px; }
 .phone-only { display: none; }
 .detail-head-line .detail-actions { align-items: center; height: 32px; }
-.detail-head-line .detail-actions button { height: 32px; box-sizing: border-box; }
+/* #243/#181: "Run on ACA…" is long enough that a squeezed flex item wraps it
+   onto three lines instead of shrinking -- nowrap + flex-shrink:0 means these
+   buttons keep their natural width and single-line label at every breakpoint;
+   it is the ROW around them (see the 900px block below) that gives way on a
+   phone, not the label text inside them. */
+.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;
+}
 
 /* The status pill: fully rounded, 22px tall, a tinted fill and a leading dot
    rather than a clickable-looking outline -- a status is a fact, not a
@@ -108,6 +131,35 @@
   .detail-layout { grid-template-columns: 1fr; }
   .detail-sidebar { display: none; }
   .phone-only { display: inline-flex; }
+
+  /* #243/#181: below the point where the title row and "Run on ACA…" / Stop /
+     ⋯ fit on one 32px line without clipping (measured: a 390px phone, with
+     the back arrow, star, title, pencil and status pill already in the row,
+     leaves well under the ~220px the three actions need), the actions get
+     their OWN right-aligned 32px line box under the title row instead of
+     sharing it.
+     g7's `flex-wrap: wrap` on the WHOLE `.detail-head-line` reproduced the
+     real CI regression this comment used to describe fixing: wrapping the
+     entire line (title-row items included) rather than just the actions
+     means a narrow-enough viewport can wrap the title row's OWN items (the
+     pill, say) onto a second line too, while the header's line box stayed a
+     fixed 32px tall -- splitting the first row's vertical center away from
+     the rest of it and risking the wrapped item colliding with the metadata
+     line underneath. `.detail-head-titlerow` (see above) is the real fix:
+     the title row is now an atomic, internally-`nowrap` group, and THIS
+     block turns `.detail-head-line` itself into a real two-row column (the
+     title row, then the actions) with an actual (auto) height for both rows,
+     instead of a single fixed-height box with overflow hidden by wrapping.
+     Every control keeps the exact same id, markup, menu contents and
+     keyboard/focus/Escape behavior -- only which line box it renders on
+     changes. This `max-width: 900px` query covers BOTH 900px and 390px (the
+     title row is one atomic row, the actions get their own row, at both);
+     only 1280px, above the breakpoint, keeps the single-row desktop layout
+     this block never touches. */
+  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }
+  .detail-head-line .spacer { display: none; }
+  .detail-head-titlerow { flex-wrap: nowrap; }
+  .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; }
 }
 /* Grows with what is in it rather than reserving a fixed slab. A 260px
    minimum meant a two-word reply sat at the top of an empty black rectangle

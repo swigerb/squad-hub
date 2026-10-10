@@ -385,6 +385,43 @@ function runChildSuite(file, label) {
   }
 }
 
+function checkEscapeFocusWiring() {
+  const source = fs.readFileSync(__filename, 'utf8');
+  const name = 'run-tests.js still wires in the escape-focus child suite and invocation';
+  check(name, () => {
+    try {
+      // This function's own body quotes the same literals it searches for
+      // (so the check can describe what it looks for in its failure
+      // messages). Start every indexOf() AFTER this function's own
+      // definition, or the first match is always this self-reference, not
+      // the real wiring further down the file -- which would make the
+      // check pass or fail for the wrong reason no matter what run-tests.js
+      // actually does below.
+      const searchFrom = source.indexOf(
+        '// ---------------------------------------------------------------------------\n// CRITERION 2');
+      assert.ok(searchFrom !== -1, 'could not find a stable marker after checkEscapeFocusWiring() to search from');
+      const suiteStart = source.indexOf('async function suiteEscapeFocus() {', searchFrom);
+      assert.ok(suiteStart !== -1, 'suiteEscapeFocus() is missing');
+      const suiteEnd = source.indexOf('/**\n * Approval depth', suiteStart);
+      assert.ok(suiteEnd !== -1, 'suiteEscapeFocus() no longer sits before suiteApprovalDepth()');
+      const suiteSource = source.slice(suiteStart, suiteEnd);
+      assert.ok(suiteSource.includes("runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');"),
+        'run-tests.js no longer registers test/escape-focus-unit.js');
+      const orderStart = source.indexOf('  await suiteModuleLink();', searchFrom);
+      assert.ok(orderStart !== -1, 'suiteModuleLink() is missing from the sequential run order');
+      const orderEnd = source.indexOf('  await suiteApprovalDepth();', orderStart);
+      assert.ok(orderEnd !== -1, 'suiteApprovalDepth() is missing from the sequential run order');
+      const orderSource = source.slice(orderStart, orderEnd);
+      assert.ok(orderSource.includes('  await suiteEscapeFocus();'),
+        'run-tests.js no longer invokes suiteEscapeFocus()');
+      if (process.env.MUTANT) console.log(`RESULT\tok\t${name}`);
+    } catch (e) {
+      if (process.env.MUTANT) console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+      throw e;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // CRITERION 2 -- a dead agent must not read as Active.
 //
@@ -959,6 +996,57 @@ async function suiteControlVerification() {
 }
 
 /**
+ * The detail header's control-check verification guard and the Sync session
+ * in-flight guard (web/js/detail-control.js), fixed for PR #243's Scout
+ * review of 53e6a18: stable-selection vs. object-identity for a live
+ * snapshot refresh mid-verification, and one in-flight resync per target.
+ */
+async function suiteDetailControl() {
+  console.log('\n[DETAIL CONTROL] a live-snapshot refresh mid-verification cannot drop a valid result, and Sync session cannot double-fire');
+  runChildSuite(path.join(__dirname, 'detail-control-unit.js'), 'detail-control');
+}
+
+/**
+ * Scout's source review of 046b708 (PR #243): `web/app.js` still imported
+ * `syncSession` from `./js/detail.js` after the detail-control split moved
+ * it to `./js/detail-control.js`, which stops the browser's module linker
+ * before `main()` ever runs -- a live boot failure, not a flaky timeout.
+ * Linked natively with `vm.SourceTextModule` against the real on-disk
+ * files, because `readWebSource()`'s `new Function` harness strips
+ * `import`/`export` and so cannot see this class of bug at all.
+ */
+async function suiteModuleLink() {
+  console.log('\n[MODULE LINK] web/app.js\'s real module graph resolves under native ES module linking');
+  runChildSuite(path.join(__dirname, 'module-link-unit.js'), 'module-link');
+}
+
+/**
+ * The shared `#rowMenu`'s identity across real navigation (#243 Scout
+ * review of ab5ef90, PR comment 6091670737): a menu opened for session A,
+ * including its Sync session item, must close on any real
+ * `openDetail`/`closeDetail` -- a click, a sidebar selection, or the
+ * browser's own Back/Forward `popstate`, with no outside click -- rather
+ * than stay visible and resync whatever session navigation just opened
+ * instead. `syncSession` itself now also refuses to act for any target
+ * other than the one its caller's menu item was built for, a second,
+ * independent guard.
+ */
+async function suiteRowMenuPopstateSync() {
+  console.log('\n[ROWMENU POPSTATE SYNC] a stale shared Sync menu cannot survive real navigation, and Sync never retargets to the wrong session');
+  runChildSuite(path.join(__dirname, 'rowmenu-popstate-sync-unit.js'), 'rowmenu-popstate-sync');
+}
+
+/**
+ * Registers `test/escape-focus-unit.js`'s three Escape-dismissal-order
+ * regression tests from PR #243, which were written correctly but never wired
+ * into this explicit runner.
+ */
+async function suiteEscapeFocus() {
+  console.log('\n[ESCAPE FOCUS] Escape dismisses the topmost thing first, before detail closes');
+  runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');
+}
+
+/**
  * Approval depth and the composer's agent/model selection. Reading a file and
  * rewriting a directory are not the same decision, and a standing permission
  * that does not say what it makes standing is a blank cheque.
@@ -1075,6 +1163,7 @@ async function suiteRetroEnforcement() {
 async function suiteRetroActionOnRedTests() {
   console.log('\n[RETRO-ACTION] a red Tests run on main/dev leaves a trace, and closure is provable');
   runChildSuite(path.join(__dirname, 'retro-action-workflow-unit.js'), 'retro-action-workflow');
+  runChildSuite(path.join(__dirname, 'tests-workflow-unit.js'), 'tests-workflow');
   runChildSuite(path.join(__dirname, 'retro-action-closure-unit.js'), 'retro-action-closure');
   runChildSuite(path.join(__dirname, 'sync-squad-labels-unit.js'), 'sync-squad-labels');
 }
@@ -1171,6 +1260,7 @@ async function suitePush() {
   console.log('squad-hub test suite');
   console.log('='.repeat(60));
   const t0 = Date.now();
+  checkEscapeFocusWiring();
 
   await suiteLifecycle();
   await suiteSessionRoundTrip();
@@ -1223,6 +1313,10 @@ async function suitePush() {
   await suiteDeviceRoster();
   await suiteAcaStatusCard();
   await suiteControlVerification();
+  await suiteDetailControl();
+  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
+  await suiteEscapeFocus();
   await suiteApprovalDepth();
   await suiteForget();
   await suiteNarrowedForget();

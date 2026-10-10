@@ -111,6 +111,13 @@ check('every asset index.html references is shipped', () => {
   assert.deepStrictEqual(missing, [], `referenced but not shipped: ${missing.join(', ')}`);
 });
 
+check('the detail header markup ships the rename pencil and no longer ships the old dtMenu/dtSync popup', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'web/index.html'), 'utf8');
+  assert.match(html, /id="dtRename"/, 'the detail header rename pencil is missing from web/index.html');
+  assert.ok(!/id="dtMenu"/.test(html), 'the old detail-header dtMenu popup is still in web/index.html');
+  assert.ok(!/id="dtSync"/.test(html), 'the old detail-header dtSync button is still in web/index.html');
+});
+
 // ---------------------------------------------------------------------------
 // Home-screen install -- the failure mode here is SILENT
 // ---------------------------------------------------------------------------
@@ -756,11 +763,47 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped again to v15 because /js/aca-status.js changed and that file sits
-  // in the shell pre-cache list. The value is pinned so a missed bump fails
-  // loudly instead of silently serving stale cached UI.
+  //
+  // v15 was spent merging two branches that had EACH independently bumped to
+  // v14 off an earlier shared base: PR #243's own fix (`web/js/detail.js`'s
+  // `verifyControl`/`syncSession`/`detailSyncMenuItem` moved into a new
+  // `web/js/detail-control.js` to keep detail.js under the size budget, so
+  // the shell's cached file SET changed shape) and main's #180/#233 ACA
+  // status card branch merged with #236 (`/js/aca-status.js`,
+  // `/js/sessionrow.js`, `/js/rowmenu.js`, `/js/prefs-sync.js` -- see those
+  // commits' own history for why each needed a fresh shell). A same-numbered
+  // coincidence between two branches is not the same cache: the merge needs
+  // a value NEITHER side ever used, so this stays pinned to v15, not v14.
+  //
+  // v15 was spent again, separately, on main's own #245 (per-attempt ACA
+  // dispatch/execution identity): `/js/aca-status.js` changed again and that
+  // file sits in the shell pre-cache list.
+  //
+  // Bumped to v17 for the #243 390px header-alignment fix: no file was added
+  // to or removed from SHELL, but `detail.css`/`index.html`'s cached CONTENT
+  // changed behavior (the `.detail-head-titlerow` wrapper and the real
+  // two-row phone layout replacing whole-line `flex-wrap`), and an offline
+  // install must not keep serving the old misaligned pair out of its cache.
+  // v16 is already spent by the sibling `squad/hub-178-aca-job-dialog`
+  // branch, so this is v17, not v16, to avoid a cross-PR cache collision.
+  //
+  // Bumped again to v19 for the stale-shared-menu/wrong-target Sync fix
+  // (#243 Scout review of ab5ef90): `web/js/detail.js`,
+  // `web/js/detail-control.js` and `web/js/wiring.js` all changed cached
+  // CONTENT (the shared `#rowMenu` now closes on navigation, and Sync binds
+  // to the target it was offered for), and an offline install must not keep
+  // serving the old vulnerable code out of its cache. v18 is reserved by
+  // another in-flight branch, so this is v19, not v18, to avoid a cross-PR
+  // cache collision -- and the sibling `squad/hub-178-aca-job-dialog`
+  // branch already spent v16.
+  //
+  // Bumped again to v20: this PR's completion slice extracted the Sync
+  // click dispatch into `handleRowMenuClick` so a real click (not a
+  // restated proxy) exercises the production handler in tests -- cached
+  // CODE in `web/js/wiring.js` changed again, so an existing install must
+  // not keep serving the pre-extraction file out of its cache.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v20';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

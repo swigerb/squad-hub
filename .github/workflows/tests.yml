@@ -56,7 +56,14 @@ jobs:
           npm install --no-save --no-audit --no-fund playwright
           npx playwright install --with-deps chromium
 
+      - name: Create the screenshot directory
+        run: mkdir -p "${{ runner.temp }}/screenshots"
+
       - name: Run the test suite
+        env:
+          # Makes test/browser-e2e-unit.js capture the session detail page
+          # (dark/light, desktop/phone) for issue #181's visual evidence.
+          SQUAD_HUB_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
         run: |
           set -o pipefail
           rc=0
@@ -84,3 +91,13 @@ jobs:
             exit 1
           fi
           rm -f test.out
+
+      # These PNGs are the proof that issue #181's visual acceptance criteria
+      # (dark/light, desktop 1280px/phone 390px) were met. Without this step
+      # they only ever existed on an ephemeral runner.
+      - name: Upload the session detail screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-node${{ matrix.node }}-${{ github.sha }}
+          path: ${{ runner.temp }}/screenshots/*.png
+          if-no-files-found: error

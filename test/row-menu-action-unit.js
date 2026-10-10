@@ -42,8 +42,10 @@ async function checkAsync(name, fn) {
 const src = readWebSource();
 const mod = { exports: {} };
 new Function('module', 'exports', `${src}
-module.exports = { onRowMenuAction, state, closeRowMenu };`)(mod, mod.exports);
-const { onRowMenuAction, state, closeRowMenu } = mod.exports;
+module.exports = { onRowMenuAction, promptRenameSession, state, closeRowMenu };`)(mod, mod.exports);
+const {
+  onRowMenuAction, promptRenameSession, state, closeRowMenu,
+} = mod.exports;
 
 /** A fake `navigator.clipboard` whose `writeText` behaves on command, same shape as copy-clipboard-unit.js's. */
 function fakeNav(behavior) {
@@ -61,9 +63,31 @@ function fakeNav(behavior) {
 /** A fake `document`: the toast element plus the execCommand textarea fallback. */
 function fakeDocument({ execOk = true } = {}) {
   const toastEl = { hidden: true, textContent: '' };
+  const makeEl = () => ({
+    hidden: false,
+    textContent: '',
+    innerHTML: '',
+    value: '',
+    title: '',
+    disabled: false,
+    onclick: null,
+    classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
+    style: {},
+    setAttribute() {},
+    removeAttribute() {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  });
+  const els = new Map([['toast', toastEl]]);
   return {
     toastEl,
-    getElementById: (id) => (id === 'toast' ? toastEl : { innerHTML: '' }),
+    title: '',
+    getElementById: (id) => {
+      if (!els.has(id)) els.set(id, id === 'toast' ? toastEl : makeEl());
+      return els.get(id);
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
     createElement: () => ({ value: undefined, select() {}, remove() {} }),
     body: { appendChild: () => {} },
     execCommand: () => execOk,
@@ -87,7 +111,13 @@ function setOverview(sess, device = null) {
   const setLocation = (v) => Object.defineProperty(global, 'location', { value: v, configurable: true });
 
   try {
-    global.window = { prompt: () => null, confirm: () => true };
+    global.window = { prompt: () => null, confirm: () => true, navigator: {} };
+    global.localStorage = {
+      _m: new Map(),
+      getItem(k) { return this._m.has(k) ? this._m.get(k) : null; },
+      setItem(k, v) { this._m.set(k, String(v)); },
+      removeItem(k) { this._m.delete(k); },
+    };
     setLocation({ origin: 'https://hub.example' });
 
     await checkAsync('copylink toasts "Link copied" on a genuine clipboard success', async () => {
@@ -126,11 +156,70 @@ function setOverview(sess, device = null) {
       await onRowMenuAction('s1', 'copylink', null);
       assert.strictEqual(doc.toastEl.textContent, 'Link copied');
     });
+
+    await checkAsync('rename stores the trimmed new name through the shared promptRenameSession path', async () => {
+      const doc = fakeDocument();
+      global.document = doc;
+      state.names = {};
+      state.favorites = new Set();
+      state.filters = {};
+      state.scope = 'all';
+      state.groupBy = 'device';
+      state.sortBy = 'started_desc';
+      state.currentSession = null;
+      state.overview = { groups: [], devices: [], counts: { devices: 0, sessions: 1, actionNeeded: 0 }, hubVersion: '' };
+      setOverview(session());
+      global.window.prompt = () => '  New name  ';
+      await onRowMenuAction('s1', 'rename', null);
+      assert.strictEqual(state.names.s1, 'New name');
+    });
+
+    await checkAsync('rename cancel leaves state.names unchanged', async () => {
+      const doc = fakeDocument();
+      global.document = doc;
+      state.names = { s1: 'Keep me' };
+      state.favorites = new Set();
+      state.filters = {};
+      state.scope = 'all';
+      state.groupBy = 'device';
+      state.sortBy = 'started_desc';
+      state.currentSession = null;
+      state.overview = { groups: [], devices: [], counts: { devices: 0, sessions: 1, actionNeeded: 0 }, hubVersion: '' };
+      setOverview(session());
+      global.window.prompt = () => null;
+      await onRowMenuAction('s1', 'rename', null);
+      assert.deepStrictEqual(state.names, { s1: 'Keep me' });
+    });
+
+    await checkAsync('rename prompts blank when there is no custom name, not with the raw prompt', async () => {
+      let capturedDefault = 'not-called';
+      state.names = {};
+      global.window.prompt = (msg, def) => {
+        assert.strictEqual(msg, 'Rename this session');
+        capturedDefault = def;
+        return null;
+      };
+      promptRenameSession('s1', session());
+      assert.strictEqual(capturedDefault, '');
+    });
+
+    await checkAsync('rename prompts with the existing custom name when one is already set', async () => {
+      let capturedDefault = 'not-called';
+      state.names = { s1: 'Existing custom name' };
+      global.window.prompt = (msg, def) => {
+        assert.strictEqual(msg, 'Rename this session');
+        capturedDefault = def;
+        return null;
+      };
+      promptRenameSession('s1', session());
+      assert.strictEqual(capturedDefault, 'Existing custom name');
+    });
   } finally {
     if (oldWindow === undefined) delete global.window; else global.window = oldWindow;
     if (oldDocument === undefined) delete global.document; else global.document = oldDocument;
     if (oldNavigator) Object.defineProperty(global, 'navigator', oldNavigator); else delete global.navigator;
     if (oldLocation) Object.defineProperty(global, 'location', oldLocation); else delete global.location;
+    delete global.localStorage;
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

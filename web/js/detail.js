@@ -1,13 +1,25 @@
 import { state, api } from './api.js';
 import {
   esc, num, truncateWords, statusLabel, statusPillClass,
-  isStaleSession, isDeviceUnreachable, cleanupControls, $,
+  isStaleSession, cleanupControls, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
 import { refresh, resolveDeepLink } from './ws.js';
-import { toggleFavorite } from './prefs-sync.js';
+import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
+import { displayTitle } from './sessionrow.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
+// Circular import, same pattern rowmenu.js/wiring.js already use: see
+// detail-control.js's own top-of-file comment for why this is safe.
+import {
+  verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, selectionStillActive,
+} from './detail-control.js';
+// Circular import, same pattern rowmenu.js/wiring.js already use:
+// `closeRowMenu` is a hoisted `export function` declaration in wiring.js,
+// never read at either module's top level, so by the time `openDetail`/
+// `closeDetail` below actually call it, wiring.js's module body has long
+// finished.
+import { closeRowMenu } from './wiring.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -55,15 +67,46 @@ export function urlSessionKey() {
   return new URLSearchParams(location.search).get('session');
 }
 
+/**
+ * The header title: a custom name when one was set, else the prompt (falling
+ * back to the id) -- the exact same rule `displayTitle` already applies to
+ * the row and the sidebar (#181 part 2 closes this: the header used to
+ * ignore a rename entirely). The raw prompt stays one hover away via
+ * `title`, matching the row's own convention in sessionrow.js.
+ */
+function renderDetailTitle(found) {
+  const raw = found.session.prompt || found.session.id || '';
+  const shown = displayTitle(found.session, state.names);
+  const el = $('dtTitle');
+  el.textContent = truncateWords(shown, 80);
+  if (shown !== raw) el.title = raw; else el.removeAttribute('title');
+}
+
 export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const found = findSession(key);
   if (!found) return false;
+  // Close the shared `#rowMenu` first: it is keyed to whichever session it
+  // was opened for, and a navigation here -- including the browser's own
+  // Back/Forward (`nav: NAV.NONE`) -- never goes through the menu's own
+  // close paths (a click outside it, Esc, another popup opening). Left
+  // open, Sync session would retarget to whatever this call is about to
+  // select instead of the session its menu was actually offered for (#243
+  // Scout review of ab5ef90). Unconditional, so even reopening the SAME key
+  // drops a menu opened before this navigation.
+  closeRowMenu();
+  // Invalidate BEFORE anything else awaits, including the transcript fetch
+  // below -- not only once `verifyControl` itself starts. Scout's review of
+  // 34256a0: a reply for the PREVIOUS selection (even this same session,
+  // closed and reopened) can still be in flight while this function awaits
+  // the transcript, before a new `verifyControl` call would otherwise bump
+  // `controlToken`. Bumping the generation here, synchronously, closes that
+  // gap regardless of how long the rest of this function takes. The
+  // returned generation is captured below so the continuation AFTER the
+  // transcript await can tell whether it is still the active selection.
+  const generation = invalidateSelection();
   applyNav(nav, key);
   state.currentSession = found;
-  // Cut at a word boundary. `slice(0, 80)` alone ended titles mid-word --
-  // "...as the Squad team, using y" -- which reads as a rendering fault rather
-  // than as a long prompt.
-  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  renderDetailTitle(found);
   // The status pill (#169) shares its words and state mapping with the row's
   // `statusBadge` via `statusLabel`/`statusPillClass` (one source), so the
   // detail header and the row it was opened from can never read two
@@ -119,15 +162,29 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
     const r = await api(`/api/devices/${encodeURIComponent(found.device.deviceId)}/transcript`, {
       method: 'POST', body: { sessionId: found.session.id, limit: 200 },
     });
-    renderTranscript(r.transcript || []);
+    // The person may have closed this session, reopened it (even the
+    // identical one), or opened something else entirely while this fetch
+    // was in flight -- `openDetail` has no `await` between bumping the
+    // generation above and this one, so any such navigation already ran
+    // its own `invalidateSelection` and moved the generation past what
+    // this call captured. Applying a transcript fetched for a context the
+    // person already left behind would silently overwrite whatever the
+    // CURRENT (correct) session's own transcript render just put on
+    // screen with stale content for a different session.
+    if (selectionStillActive(key, generation)) renderTranscript(r.transcript || []);
   } catch (e) {
-    $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
+    if (selectionStillActive(key, generation)) {
+      $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
+    }
   }
 
   // Deliberately AFTER the transcript: a session that cannot be controlled is
   // still worth reading, and blocking the transcript on a control check would
-  // make an unreachable device hide the very history explaining why.
-  verifyControl();
+  // make an unreachable device hide the very history explaining why. Gated
+  // the same way: a superseded selection already has its OWN `verifyControl`
+  // call in flight (started by whichever open/reopen superseded this one),
+  // so starting a second, redundant control-check here would only race it.
+  if (selectionStillActive(key, generation)) verifyControl();
   return true;
 }
 
@@ -140,6 +197,13 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
  * entry that got it here.
  */
 export function closeDetail({ nav = NAV.PUSH } = {}) {
+  // Same reasoning as `openDetail`'s call above: a stale shared menu must
+  // not survive leaving the page it was opened on either.
+  closeRowMenu();
+  // Same reasoning as `openDetail`'s call: a verify/resync reply already in
+  // flight for the session being closed must never be applied after this
+  // point, even if nothing new ever reopens it.
+  invalidateSelection();
   state.currentSession = null;
   applyNav(nav, null);
   hideDetailPage();
@@ -180,7 +244,7 @@ export function renderSidebar() {
   const selectedKey = state.currentSession ? sessionKey(state.currentSession.session) : null;
   const entries = sidebarEntries((state.overview && state.overview.groups) || [], filterText);
   list.innerHTML = entries.length
-    ? entries.map((e) => sidebarRow(e, selectedKey)).join('')
+    ? entries.map((e) => sidebarRow(e, selectedKey, state.names)).join('')
     : '<div class="dt-side-empty">No sessions match this filter</div>';
 }
 
@@ -204,7 +268,7 @@ export function syncDetailHeader() {
   const found = findSession(key);
   if (!found) return;
   state.currentSession = found;
-  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  renderDetailTitle(found);
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
@@ -235,6 +299,11 @@ export function initDetailRouting() {
   $('dtBackPhone').onclick = back;
 
   $('dtSidebarFilter').oninput = () => renderSidebar();
+  $('dtRename').onclick = () => {
+    const current = state.currentSession;
+    if (!current) return;
+    promptRenameSession(sessionKey(current.session), current.session);
+  };
 
   $('detailSidebarList').onclick = (e) => {
     const row = e.target.closest('[data-session]');
@@ -314,70 +383,6 @@ export async function forgetStaleSession() {
   }
 }
 
-/** How long to wait for the device to answer before saying so. */
-const CONTROL_TIMEOUT_MS = 8000;
-
-/**
- * Ask the device whether it can take a control command for this session.
- *
- * The answer comes from the machine running the agent, not from the hub. The
- * hub is a cache: it knowing about a session proves only that a heartbeat once
- * mentioned it.
- */
-async function verifyControl() {
-  const current = state.currentSession;
-  if (!current) return;
-  state.composer = composerReduce(state.composer, { type: 'verify-start' });
-  renderControl();
-
-  const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), CONTROL_TIMEOUT_MS));
-  const ask = api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/control-check`, {
-    method: 'POST', body: { sessionId: current.session.id },
-  }).catch((e) => ({ error: e.message }));
-
-  const outcome = await Promise.race([ask, timeout]);
-
-  // The detail panel may have been closed, or moved to another session, while
-  // this was in flight. Applying a stale answer would enable the composer for
-  // a session nobody verified.
-  if (state.currentSession !== current) return;
-
-  state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
-  renderControl();
-}
-
-/**
- * `Sync session` -- restart the engine, keeping the session id, then re-check.
- *
- * Re-verifying alone would be a button that asks the same question twice and
- * expects a different answer. When the device has said the agent process is
- * gone, nothing changes until something restarts it.
- *
- * The id survives on purpose: it is what the row, the Teams card and anyone's
- * terminal history all refer to. A "sync" that produced a new session would
- * quietly orphan every one of those references.
- */
-export async function syncSession() {
-  const current = state.currentSession;
-  if (!current) return;
-  const btn = $('dtSync');
-  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
-  try {
-    await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/resync`, {
-      method: 'POST', body: { sessionId: current.session.id },
-    });
-    await refresh();
-  } catch (e) {
-    state.composer = composerReduce(state.composer, { type: 'verify-result', outcome: { error: e.message } });
-    renderControl();
-    return;
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Sync session'; }
-  }
-  // Only now is the question worth asking again.
-  await verifyControl();
-}
-
 export function renderControl() {
   const b = controlBanner(state.composer.control, state.composer.reason);
   const banner = $('dtControl');
@@ -394,9 +399,6 @@ export function renderControl() {
   // label. `Forget stale session` (see renderCleanup) is the real next step
   // for an unreachable device; Sync stays for the case it was built for, a
   // reachable device whose session the hub has lost track of.
-  const current = state.currentSession;
-  const deviceUnreachable = !!(current && isDeviceUnreachable(current.device));
-  $('dtSync').hidden = !b.canSync || deviceUnreachable;
   $('dtInput').disabled = !b.enabled;
   $('dtSend').disabled = !b.enabled;
   $('dtInput').placeholder = b.enabled
