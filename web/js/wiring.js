@@ -400,7 +400,17 @@ export function wire() {
   $('rowMenu').onclick = (e) => {
     const b = e.target.closest('[data-row-action]');
     if (!b || b.disabled || !rowMenuKey) return;
-    if (b.dataset.rowAction === 'sync') { closeRowMenu(); syncSession(); return; }
+    if (b.dataset.rowAction === 'sync') {
+      // Captured before `closeRowMenu()` clears `rowMenuKey` -- `syncSession`
+      // revalidates against this target itself (detail-control.js), the
+      // same identity every other row action already gets below (#243
+      // Scout review of ab5ef90: Sync alone discarded it and resynced
+      // whatever session happened to be open at click time instead).
+      const target = rowMenuKey;
+      closeRowMenu();
+      syncSession(target);
+      return;
+    }
     onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
   };
   $('rowMenu').onkeydown = (e) => {

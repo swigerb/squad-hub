@@ -138,11 +138,26 @@ const syncInFlightKeys = new Set();
  * `Sync session` -- restart the engine, keeping the session id, then re-check.
  * The id survives on purpose: it is what the row, the Teams card and
  * anyone's terminal history all refer to.
+ *
+ * `targetKey` is the session the shared `#rowMenu`'s Sync item was actually
+ * built for -- the row-menu click handler (wiring.js) passes its own
+ * `rowMenuKey`, captured before closing the menu clears it. Every OTHER row
+ * action already receives this identity explicitly (`onRowMenuAction(key,
+ * ...)` in rowmenu.js); Sync alone used to read `state.currentSession`
+ * fresh instead, which is the session open NOW, not necessarily the one the
+ * menu was offered for. `openDetail`/`closeDetail` close a stale shared menu
+ * on every navigation (detail.js), which is the fix for the open case this
+ * caused -- a menu left visible for A across a popstate to B. This check is
+ * the second, independent guard: even if a stale menu somehow survived to a
+ * click, Sync for a target that is no longer the open selection is a no-op,
+ * never a resync of whatever happens to be open instead (#243 Scout review
+ * of ab5ef90).
  */
-export async function syncSession() {
+export async function syncSession(targetKey) {
   const current = state.currentSession;
   if (!current) return;
   const key = sessionKey(current.session);
+  if (targetKey !== undefined && targetKey !== key) return;
   // Already resyncing this target: `detailSyncMenuItem` disables the menu
   // item while true, and the row-menu click handler also checks `b.disabled`
   // itself (see wiring.js), so this only guards a caller bypassing the UI.

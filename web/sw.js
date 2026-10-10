@@ -42,7 +42,7 @@
 // already spent by #178's branch (`squad/hub-178-aca-job-dialog`), so this
 // uses v17 -- a value neither sibling branch has used -- to avoid a
 // cross-PR cache collision if both merge close together.
-const CACHE = 'squad-hub-shell-v17';
+const CACHE = 'squad-hub-shell-v19';
 
 /**
  * The shell. Everything here is a public static asset.

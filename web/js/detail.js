@@ -14,6 +14,12 @@ import { renderTranscript, transcriptSkeleton } from './transcript.js';
 import {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, selectionStillActive,
 } from './detail-control.js';
+// Circular import, same pattern rowmenu.js/wiring.js already use:
+// `closeRowMenu` is a hoisted `export function` declaration in wiring.js,
+// never read at either module's top level, so by the time `openDetail`/
+// `closeDetail` below actually call it, wiring.js's module body has long
+// finished.
+import { closeRowMenu } from './wiring.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -79,6 +85,15 @@ function renderDetailTitle(found) {
 export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const found = findSession(key);
   if (!found) return false;
+  // Close the shared `#rowMenu` first: it is keyed to whichever session it
+  // was opened for, and a navigation here -- including the browser's own
+  // Back/Forward (`nav: NAV.NONE`) -- never goes through the menu's own
+  // close paths (a click outside it, Esc, another popup opening). Left
+  // open, Sync session would retarget to whatever this call is about to
+  // select instead of the session its menu was actually offered for (#243
+  // Scout review of ab5ef90). Unconditional, so even reopening the SAME key
+  // drops a menu opened before this navigation.
+  closeRowMenu();
   // Invalidate BEFORE anything else awaits, including the transcript fetch
   // below -- not only once `verifyControl` itself starts. Scout's review of
   // 34256a0: a reply for the PREVIOUS selection (even this same session,
@@ -182,6 +197,9 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
  * entry that got it here.
  */
 export function closeDetail({ nav = NAV.PUSH } = {}) {
+  // Same reasoning as `openDetail`'s call above: a stale shared menu must
+  // not survive leaving the page it was opened on either.
+  closeRowMenu();
   // Same reasoning as `openDetail`'s call: a verify/resync reply already in
   // flight for the session being closed must never be applied after this
   // point, even if nothing new ever reopens it.

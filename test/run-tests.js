@@ -1021,6 +1021,22 @@ async function suiteModuleLink() {
 }
 
 /**
+ * The shared `#rowMenu`'s identity across real navigation (#243 Scout
+ * review of ab5ef90, PR comment 6091670737): a menu opened for session A,
+ * including its Sync session item, must close on any real
+ * `openDetail`/`closeDetail` -- a click, a sidebar selection, or the
+ * browser's own Back/Forward `popstate`, with no outside click -- rather
+ * than stay visible and resync whatever session navigation just opened
+ * instead. `syncSession` itself now also refuses to act for any target
+ * other than the one its caller's menu item was built for, a second,
+ * independent guard.
+ */
+async function suiteRowMenuPopstateSync() {
+  console.log('\n[ROWMENU POPSTATE SYNC] a stale shared Sync menu cannot survive real navigation, and Sync never retargets to the wrong session');
+  runChildSuite(path.join(__dirname, 'rowmenu-popstate-sync-unit.js'), 'rowmenu-popstate-sync');
+}
+
+/**
  * Registers `test/escape-focus-unit.js`'s three Escape-dismissal-order
  * regression tests from PR #243, which were written correctly but never wired
  * into this explicit runner.
@@ -1299,6 +1315,7 @@ async function suitePush() {
   await suiteControlVerification();
   await suiteDetailControl();
   await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
   await suiteEscapeFocus();
   await suiteApprovalDepth();
   await suiteForget();

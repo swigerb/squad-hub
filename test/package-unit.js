@@ -786,8 +786,18 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // install must not keep serving the old misaligned pair out of its cache.
   // v16 is already spent by the sibling `squad/hub-178-aca-job-dialog`
   // branch, so this is v17, not v16, to avoid a cross-PR cache collision.
+  //
+  // Bumped again to v19 for the stale-shared-menu/wrong-target Sync fix
+  // (#243 Scout review of ab5ef90): `web/js/detail.js`,
+  // `web/js/detail-control.js` and `web/js/wiring.js` all changed cached
+  // CONTENT (the shared `#rowMenu` now closes on navigation, and Sync binds
+  // to the target it was offered for), and an offline install must not keep
+  // serving the old vulnerable code out of its cache. v18 is reserved by
+  // another in-flight branch, so this is v19, not v18, to avoid a cross-PR
+  // cache collision -- and the sibling `squad/hub-178-aca-job-dialog`
+  // branch already spent v16.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v17';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v19';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
