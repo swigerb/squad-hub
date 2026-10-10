@@ -1313,6 +1313,18 @@ async function suiteNextTurn() {
 
 // ===========================================================================
 
+/**
+ * A model a supervisor REQUIRES: the capability probe, the strict selection, the
+ * daemon and ACP path that confirm it over the real protocol before the first
+ * prompt, and the cloud one-shot's exit code when it cannot be confirmed.
+ */
+async function suiteRequiredModel() {
+  console.log('\n[REQUIRED MODEL] A pinned model runs confirmed by the agent or not at all: probe, strict selection, refusal before the first prompt, one-shot exit 78');
+  runChildSuite(path.join(__dirname, 'required-model-unit.js'), 'required-model');
+}
+
+// ===========================================================================
+
 (async () => {
   console.log('squad-hub test suite');
   console.log('='.repeat(60));
@@ -1397,6 +1409,7 @@ async function suiteNextTurn() {
   await suiteDetailTabs();
   await suitePush();
   await suiteNextTurn();
+  await suiteRequiredModel();
 
   console.log('');
   console.log('='.repeat(60));

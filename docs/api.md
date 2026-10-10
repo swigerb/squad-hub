@@ -357,6 +357,18 @@ Each session in `GET /api/sessions` and `GET /api/overview` may carry `nextTurn`
 and `reason` says why whenever `supported` is false. A session from a device
 that predates the feature carries no `nextTurn` at all.
 
+A session whose model was **required** (a one-shot with
+`SQUAD_HUB_REQUIRE_MODEL=1`) also carries `requiredModel`:
+`{ requested, chosen, confirmed, failure }`. `requested` is the name asked for;
+`chosen` is the id the agent advertised and then confirmed as current, `null`
+until it has; `confirmed` is `true` only after the agent itself reported that
+model as current, and is the only field that says the model is the one running;
+`failure` is `null` or `{ code, reason }` — a stable `REQUIRED_MODEL_*` code
+(see [commands.md](commands.md#a-model-that-is-required-not-preferred)) and a
+reason for a person. A refused session is `failed` with `applied.model` still
+`null` and no prompt ever sent. `agentSelection.requiredModel` is `true` on such
+a session. A session whose model is only a preference carries neither.
+
 Removing the record of sessions that have already ended:
 
 ```bash

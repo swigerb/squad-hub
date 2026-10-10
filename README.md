@@ -292,6 +292,11 @@ SQUAD_HUB_ONESHOT=1
 SQUAD_HUB_PROMPT="add a health endpoint and a test for it"
 ```
 
+Add `SQUAD_HUB_MODEL=<name>` and `SQUAD_HUB_REQUIRE_MODEL=1` to pin a model: the
+agent must confirm it before the prompt is sent, or the job exits 78 instead of
+quietly running on the default. `squad-hub oneshot --capabilities` says whether
+a build understands that, without starting anything.
+
 That is how Squad Hub supervises [Squad on ACA](docs/aca.md) runs, which lets a
 tool call inside a cloud job be approved from your phone — something an
 unattended job cannot do.

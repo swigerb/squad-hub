@@ -10205,6 +10205,401 @@ prompt: |
     replace: `class="hint" id="dtNtModelHint"`,
     mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
   },
+  // ---------------------------------------------------------------------
+  // A model a supervisor REQUIRES: confirmed by the agent before the first
+  // prompt, or refused with a code and nothing sent.
+  //
+  // Each breaks ONE decision and names the check that must notice. Tagged by
+  // layer so one can be re-proven alone:
+  //   node test/mutate-probe.js required-model-unit.js "[required-model acp]"
+  // ---------------------------------------------------------------------
+  {
+    // The probe is the worker's only way to learn this build refuses instead of
+    // defaulting. A false here sends it back to a runtime that cannot.
+    name: '[required-model cli] the capability probe says required models are not understood',
+    file: 'src/cli.js',
+    find: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: true });`,
+    replace: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: false }); // MUTATION`,
+    mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
+  },
+  {
+    name: '[required-model cli] the capability probe reports another protocol version',
+    file: 'src/cli.js',
+    find: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: true });`,
+    replace: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 2, requiredModel: true }); // MUTATION`,
+    mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
+  },
+  {
+    // An unknown flag next to --capabilities is a question this build was not
+    // asked; answering "yes" to it is the false positive the probe must not give.
+    name: '[required-model cli] the probe answers a command line with other arguments on it',
+    file: 'src/cli.js',
+    find: `    if (argv.length !== 1) {
+      err('usage: squad-hub oneshot --capabilities`,
+    replace: `    if (false) { // MUTATION: any other argument is ignored
+      err('usage: squad-hub oneshot --capabilities`,
+    mustFail: 'required model: a probe with any other argument is refused with no answer, not read as capable',
+  },
+  {
+    name: '[required-model cli] the probe waits for the environment to be applied, so an unconfigured --env stops it',
+    file: 'src/cli.js',
+    find: `const needsEnvironment = cmd !== undefined && !isProbe && !['help'`,
+    replace: `const needsEnvironment = cmd !== undefined && !['help'`,
+    mustFail: 'required model: a global --env naming an environment that is not configured does not stop the probe',
+  },
+  {
+    name: '[required-model cli] the probe goes on to start the one-shot device after answering',
+    file: 'src/cli.js',
+    find: `    out(JSON.stringify(ONESHOT_CAPABILITIES));
+    return 0;
+  }`,
+    replace: `    out(JSON.stringify(ONESHOT_CAPABILITIES)); // MUTATION: no return, so the run below starts
+  }`,
+    mustFail: 'required model: the probe answers with no configuration, and with every configuration hostile, and touches nothing',
+  },
+  {
+    // The flag was dropped on the way to the daemon: the job runs optional and
+    // exits 0 on whatever model answered.
+    name: '[required-model cloud] the one-shot never sends the required intent to the daemon',
+    file: 'src/cloud-device.js',
+    find: `        ...(REQUIRE_MODEL ? { requiredModel: true } : {}),`,
+    replace: `        ...({}), // MUTATION: the intent is dropped`,
+    mustFail: 'required model: a one-shot whose required model is unavailable exits 78 with the code, runs no prompt, and leaves nothing hanging',
+  },
+  {
+    name: '[required-model cloud] a one-shot that refused the model exits with the session\'s plain success code',
+    file: 'src/cloud-device.js',
+    find: `      try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
+      d.shutdown(REQUIRED_MODEL_EXIT);`,
+    replace: `      try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
+      d.shutdown(0); // MUTATION`,
+    mustFail: 'required model: a one-shot whose required model is unavailable exits 78 with the code, runs no prompt, and leaves nothing hanging',
+  },
+  {
+    // Without the verdict, a session that finished without ever confirming the
+    // model is judged by its status alone.
+    name: '[required-model cloud] the one-shot judges a required model by the session status alone',
+    file: 'src/cloud-device.js',
+    find: `    if (REQUIRE_MODEL && !(rm && rm.confirmed === true)) {`,
+    replace: `    if (false && REQUIRE_MODEL && !(rm && rm.confirmed === true)) { // MUTATION`,
+    mustFail: 'required model: a one-shot refuses with 78 when the agent ignores the change, cannot read it back, never answers, or advertises nothing',
+  },
+  {
+    name: '[required-model cloud] SQUAD_HUB_REQUIRE_MODEL is read leniently, so a typo means not required',
+    file: 'src/cloud-device.js',
+    find: `  REQUIRE_MODEL = parseRequireModel(process.env.SQUAD_HUB_REQUIRE_MODEL);`,
+    replace: `  REQUIRE_MODEL = process.env.SQUAD_HUB_REQUIRE_MODEL === '1'; // MUTATION`,
+    mustFail: 'required model: a one-shot with a missing, invalid or unparseable requirement refuses before any agent or hub work',
+  },
+  {
+    name: '[required-model cloud] a required one-shot with no model starts the device anyway',
+    file: 'src/cloud-device.js',
+    find: `    requireModelName(MODEL);`,
+    replace: `    // MUTATION: the model is not checked before the device starts`,
+    mustFail: 'required model: a one-shot with a missing, invalid or unparseable requirement refuses before any agent or hub work',
+  },
+  {
+    name: '[required-model cloud] a required model outside one-shot mode requires nothing and says nothing',
+    file: 'src/cloud-device.js',
+    find: `    if (!ONESHOT) {
+      throw new RequiredModelError('REQUIRED_MODEL_ONESHOT_ONLY'`,
+    replace: `    if (false) { // MUTATION
+      throw new RequiredModelError('REQUIRED_MODEL_ONESHOT_ONLY'`,
+    mustFail: 'required model: a one-shot with a missing, invalid or unparseable requirement refuses before any agent or hub work',
+  },
+  {
+    // A failed session must stay failed on the hub. Stopping it overwrites the
+    // status the hub is shown with "stopped".
+    name: '[required-model cloud] a refused session that already failed is stopped, overwriting its status',
+    file: 'src/cloud-device.js',
+    find: `      if (!last || !['failed', 'stopped', 'done'].includes(last.status)) {`,
+    replace: `      if (true) { // MUTATION`,
+    mustFail: 'required model: a one-shot whose required model is unavailable exits 78 with the code, runs no prompt, and leaves nothing hanging',
+  },
+  {
+    name: '[required-model cloud] the one-shot announces a confirmed model the agent never confirmed',
+    file: 'src/cloud-device.js',
+    find: `      if (!REQUIRE_MODEL || confirmationLogged || !rm || rm.confirmed !== true) return;`,
+    replace: `      if (!REQUIRE_MODEL || confirmationLogged || !rm) return; // MUTATION`,
+    mustFail: 'required model: a one-shot refuses with 78 when the agent ignores the change, cannot read it back, never answers, or advertises nothing',
+  },
+  {
+    name: '[required-model daemon] start-session drops the required intent at the door',
+    file: 'src/daemon.js',
+    find: `          requiredModel: req.requiredModel,
+`,
+    replace: `          // MUTATION: the intent is dropped
+`,
+    mustFail: 'required model: the daemon carries the required intent into the session, which confirms the requested model before its first prompt',
+  },
+  {
+    name: '[required-model daemon] the selection is made without the required flag, so a bad model falls back',
+    file: 'src/daemon.js',
+    find: `explicitMode: mode, requireModel: requiredModel === true,`,
+    replace: `explicitMode: mode, requireModel: false, // MUTATION`,
+    mustFail: 'required model: the daemon refuses a bad required request before any agent starts or session exists',
+  },
+  {
+    name: '[required-model daemon] a requiredModel that is not a boolean is accepted',
+    file: 'src/daemon.js',
+    find: `    if (requiredModel !== undefined && typeof requiredModel !== 'boolean') {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: the daemon refuses a bad required request before any agent starts or session exists',
+  },
+  {
+    name: '[required-model select] a required model that is missing or invalid falls back instead of refusing',
+    file: 'src/agent-select.js',
+    find: `  const required = requireModel === true ? requireModelName(explicitModel) : null;`,
+    replace: `  let required = null; // MUTATION: a refusal is swallowed and the optional rungs take over
+  try { required = requireModel === true ? requireModelName(explicitModel) : null; } catch { required = null; }`,
+    mustFail: 'required model: a required selection has no fallback: a missing or invalid model refuses, and the project model is never used',
+  },
+  {
+    name: '[required-model select] the project model outranks the required one',
+    file: 'src/agent-select.js',
+    find: `    model = required;`,
+    replace: `    model = proj.model || required; // MUTATION`,
+    mustFail: 'required model: a required selection has no fallback: a missing or invalid model refuses, and the project model is never used',
+  },
+  {
+    name: '[required-model select] an unparseable SQUAD_HUB_REQUIRE_MODEL is read as off',
+    file: 'src/agent-select.js',
+    find: `  throw new RequiredModelError('REQUIRED_MODEL_FLAG_INVALID', 'SQUAD_HUB_REQUIRE_MODEL must be 1 or 0 (or unset)');`,
+    replace: `  return false; // MUTATION`,
+    mustFail: 'required model: SQUAD_HUB_REQUIRE_MODEL is strict: 1 is on, 0 and unset are off, anything else is refused',
+  },
+  {
+    name: '[required-model select] an optional selection is marked as required',
+    file: 'src/agent-select.js',
+    find: `  const pinned = required ? { requiredModel: true } : {};`,
+    replace: `  const pinned = { requiredModel: true }; // MUTATION`,
+    mustFail: 'required model: an optional selection still falls back to the project model and carries no required flag',
+  },
+  {
+    // The model is never applied: the prompt runs on whatever the agent started with.
+    name: '[required-model acp] a required model is never applied before the prompt',
+    file: 'src/acp-session.js',
+    find: `      await this._applyRequiredModel(want.model);`,
+    replace: `      // MUTATION: nothing is applied`,
+    mustFail: 'required model: an advertised model is confirmed over the protocol, then exactly one prompt runs on it',
+  },
+  {
+    name: '[required-model acp] the first prompt goes out before the model is confirmed',
+    file: 'src/acp-session.js',
+    find: `    await this._applySelection(s);
+
+    this._setStatus(STATUS.ACTIVE, 'Processing...');
+
+    const stop = await this._request('session/prompt', {
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text: this.prompt }],
+    });`,
+    replace: `    const early = this._request('session/prompt', { // MUTATION: sent before the selection
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text: this.prompt }],
+    });
+    early.catch(() => {});
+    await this._applySelection(s);
+
+    this._setStatus(STATUS.ACTIVE, 'Processing...');
+
+    const stop = await early;`,
+    mustFail: 'required model: an advertised model is confirmed over the protocol, then exactly one prompt runs on it',
+  },
+  {
+    // The agent's answer is the confirmation. Ignoring it turns an "ignores" or
+    // "{}" reply into a model that is running.
+    name: '[required-model acp] the agent\'s answer to the change is not read',
+    file: 'src/acp-session.js',
+    find: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {`,
+    replace: `    const step = await this._applyChoice('model', hit);
+    if (false) { // MUTATION: the answer is not read`,
+    mustFail: 'required model: an agent that answers with the OLD current model has not confirmed the new one',
+  },
+  {
+    name: '[required-model acp] a model that is already current is assumed, not confirmed',
+    file: 'src/acp-session.js',
+    find: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {`,
+    replace: `    const step = (nt.current.model && norm(nt.current.model) === norm(hit.id)) ? { ok: true } : await this._applyChoice('model', hit); // MUTATION
+    if (!step.ok) {`,
+    mustFail: 'required model: a model that is already the current one is still confirmed by the agent, not assumed',
+  },
+  {
+    name: '[required-model acp] a model the agent does not offer falls back to the default with a warning',
+    file: 'src/acp-session.js',
+    find: `    if (!hit) {
+      const offered = choices.slice(0, 20).map((c) => c.id).join(', ');`,
+    replace: `    if (!hit) {
+      this.applied.warnings.push('falling back to the default model'); // MUTATION
+      return;
+      const offered = choices.slice(0, 20).map((c) => c.id).join(', ');`,
+    mustFail: 'required model: a model the agent does not offer is refused before any request or prompt',
+  },
+  {
+    name: '[required-model acp] an agent that lists models with nothing to confirm them is called unavailable, not unadvertised',
+    file: 'src/acp-session.js',
+    find: `    if (nt.unsupported.has('model') || !choices.length) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: an agent that lists models but cannot switch them is refused',
+  },
+  {
+    name: '[required-model acp] a model the agent only mentions is reported applied before it answers',
+    file: 'src/acp-session.js',
+    find: `    const rm = this._requiredModel();
+    const name = requireModelName(asked);`,
+    replace: `    const rm = this._requiredModel();
+    const name = requireModelName(asked);
+    this.applied.model = name; // MUTATION: the request is reported as the result`,
+    mustFail: 'required model: an agent that answers with the OLD current model has not confirmed the new one',
+  },
+  {
+    name: '[required-model acp] an agent that never answers is not told apart from one that refused',
+    file: 'src/acp-session.js',
+    find: `      else if (step.timedOut) code = 'REQUIRED_MODEL_TIMEOUT';`,
+    replace: `      // MUTATION: the timeout is no longer named`,
+    mustFail: 'required model: an agent that never answers times out as a refusal and its process is killed',
+  },
+  {
+    name: '[required-model acp] an agent that died is not told apart from one that refused',
+    file: 'src/acp-session.js',
+    find: `      if (this._agentGone()) code = 'REQUIRED_MODEL_AGENT_EXITED';
+      else if (step.unsupported) code = 'REQUIRED_MODEL_NOT_ADVERTISED';`,
+    replace: `      if (step.unsupported) code = 'REQUIRED_MODEL_NOT_ADVERTISED'; // MUTATION: the exit is no longer named`,
+    mustFail: 'required model: an agent that dies while the model is being confirmed is a refusal with its own code',
+  },
+  {
+    name: '[required-model acp] a failure before the first prompt is thrown as it came, with no code',
+    file: 'src/acp-session.js',
+    find: `      throw this._requiredModel() ? this._refuseRequiredModel(e) : e;`,
+    replace: `      throw e; // MUTATION`,
+    mustFail: 'required model: an agent that exits before it answers the handshake is a refusal',
+  },
+  {
+    name: '[required-model acp] a failure after the model was confirmed is reported as a model refusal',
+    file: 'src/acp-session.js',
+    find: `    if (rm.confirmed) return e;
+`,
+    replace: `    // MUTATION: a confirmed model is no longer excused
+`,
+    mustFail: 'required model: a failure AFTER the model was confirmed is an ordinary failure, not a refusal',
+  },
+  {
+    name: '[required-model acp] a refused session leaves its agent running',
+    file: 'src/acp-session.js',
+    find: `    if (this.status !== STATUS.STOPPED) this._fail(err.message);
+    this.shutdown();`,
+    replace: `    if (this.status !== STATUS.STOPPED) this._fail(err.message);
+    // MUTATION: the agent is not stopped`,
+    mustFail: 'required model: an agent that never answers times out as a refusal and its process is killed',
+  },
+  {
+    name: '[required-model acp] a refused session is not marked failed',
+    file: 'src/acp-session.js',
+    find: `    if (this.status !== STATUS.STOPPED) this._fail(err.message);`,
+    replace: `    // MUTATION: the session is not failed`,
+    mustFail: 'required model: a model the agent does not offer is refused before any request or prompt',
+  },
+  {
+    name: '[required-model acp] the session JSON hides the required-model record',
+    file: 'src/acp-session.js',
+    find: `      requiredModel: this._requiredModel() ? this._requiredModelView() : undefined,`,
+    replace: `      requiredModel: undefined, // MUTATION`,
+    mustFail: 'required model: an advertised model is confirmed over the protocol, then exactly one prompt runs on it',
+  },
+  {
+    // The optional path is a different promise: a person at a terminal wants the
+    // session to run. Making it strict would make every unavailable model fatal.
+    name: '[required-model acp] an optional model is held to the required standard',
+    file: 'src/acp-session.js',
+    find: `    if (want.requiredModel === true) {
+      // No warning, no default`,
+    replace: `    if (want.model) { // MUTATION
+      // No warning, no default`,
+    mustFail: 'required model: an optional model the agent does not offer still warns, defaults, and runs the prompt',
+  },
+  {
+    name: '[required-model acp] an optional model is applied the new way instead of the one it always used',
+    file: 'src/acp-session.js',
+    find: `          await this._request('session/set_model', { sessionId: this.acpSessionId, modelId: hit });`,
+    replace: `          await this._request('session/set_config_option', { sessionId: this.acpSessionId, configId: 'model', value: hit }); // MUTATION`,
+    mustFail: 'required model: an optional model the agent offers is still applied the way it always was',
+  },
+  {
+    name: '[required-model acp] an optional model the account lacks stops being reported',
+    file: 'src/acp-session.js',
+    find: `      if (!hit) {
+        this.applied.warnings.push(
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    replace: `      if (!hit) {
+        [].push( // MUTATION: the warning is dropped
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    mustFail: 'required model: an optional model the agent does not offer still warns, defaults, and runs the prompt',
+  },
+  {
+    // The reply to the request is the confirmation, and an empty one says
+    // nothing. Treating it as a yes starts the prompt on whatever model the
+    // agent happened to have.
+    name: '[required-model acp] an empty answer to the model change counts as the confirmation',
+    file: 'src/acp-session.js',
+    find: `      return { ok: false, reason: \`the agent accepted it but did not say what the \${field} is now, so it may or may not have applied\` };`,
+    replace: `      nt.current[field] = hit.id; return { ok: true }; // MUTATION`,
+    mustFail: 'required model: an agent that answers an empty result has not confirmed anything',
+  },
+  {
+    // An announcement is the agent talking about itself; the answer to OUR
+    // request is the only thing that says this change took effect.
+    name: '[required-model acp] a model the agent only announced is taken as confirmed',
+    file: 'src/acp-session.js',
+    find: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {`,
+    replace: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok && norm(nt.current.model) !== norm(hit.id)) { // MUTATION`,
+    mustFail: 'required model: a model the agent only ANNOUNCED, while its reply to the request says nothing, is not confirmed',
+  },
+  {
+    name: '[required-model acp] a required model is also matched by its display name or a fragment of its id',
+    file: 'src/acp-session.js',
+    find: `    const hit = findChoice(choices, name, { idOnly: true });`,
+    replace: `    const hit = findChoice(choices, name); // MUTATION`,
+    mustFail: 'required model: a model is found by its id only: a display name that is itself a valid model name is a different thing',
+  },
+  {
+    // A resync replays the prompt on a new agent. If the requirement is
+    // forgotten there, the replay runs on whatever model that agent starts with.
+    name: '[required-model daemon] a resynced session forgets that its model was required',
+    file: 'src/daemon.js',
+    find: `    s.agentSelection = old.agentSelection;`,
+    replace: `    s.agentSelection = { ...old.agentSelection, requiredModel: undefined }; // MUTATION`,
+    mustFail: 'required model: a session the daemon resyncs is still required, and confirms its model again before the replayed prompt',
+  },
+  {
+    name: '[required-model cloud] a one-shot cut off at the ceiling while waiting for its model is left running',
+    file: 'src/cloud-device.js',
+    find: `      if (!last || !['failed', 'stopped', 'done'].includes(last.status)) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'required model: a one-shot whose agent never confirms stops at the session ceiling with 78, and the hub is told it was stopped',
+  },
+  {
+    name: '[required-model cloud] a one-shot cut off at the ceiling reports the model as unconfirmed rather than timed out',
+    file: 'src/cloud-device.js',
+    find: `{ code: 'REQUIRED_MODEL_TIMEOUT', reason: \`the agent had not confirmed`,
+    replace: `{ code: 'REQUIRED_MODEL_UNCONFIRMED', reason: \`the agent had not confirmed`,
+    mustFail: 'required model: a one-shot whose agent never confirms stops at the session ceiling with 78, and the hub is told it was stopped',
+  },
+  {
+    // The probe has to answer BEFORE anything that reads the environment. Here
+    // it loads the cloud device first, so a missing or hostile environment gets
+    // there before the answer does.
+    name: '[required-model cli] the probe loads the cloud device first, so a missing or bad environment stops it',
+    file: 'src/cli.js',
+    find: `  if (argv.includes('--capabilities')) {
+    if (argv.length !== 1) {`,
+    replace: `  if (argv.includes('--capabilities') && (require('./cloud-device'), true)) { // MUTATION
+    if (argv.length !== 1) {`,
+    mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
+  },
 ];
 
 /**

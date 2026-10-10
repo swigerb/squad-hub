@@ -87,18 +87,27 @@ GitHub issue / CLI ──> ACA job execution
 One-shot mode makes a job execution behave like a job rather than a server:
 
 ```
-SQUAD_HUB_URL        the hub
-SQUAD_HUB_TOKEN      a DEVICE TOKEN, not your own credential
-SQUAD_HUB_ONESHOT    1
-SQUAD_HUB_PROMPT     what to run
-SQUAD_HUB_CWD        where to run it
-SQUAD_HUB_MODEL      optional model for the session (validated like --model)
-SQUAD_HUB_DEVICE_ID  what to register as -- see below
+SQUAD_HUB_URL             the hub
+SQUAD_HUB_TOKEN           a DEVICE TOKEN, not your own credential
+SQUAD_HUB_ONESHOT         1
+SQUAD_HUB_PROMPT          what to run
+SQUAD_HUB_CWD             where to run it
+SQUAD_HUB_MODEL           optional model for the session (validated like --model)
+SQUAD_HUB_REQUIRE_MODEL   1 = that model is required: confirmed by the agent or nothing runs
+SQUAD_HUB_DEVICE_ID       what to register as -- see below
 ```
 
 It runs one session and exits, with a code the platform can read: **0** done,
 **1** failed, **64** no prompt, **75** an approval nobody could give, **77** the
-hub refused the device.
+hub refused the device, **78** a required model was not confirmed.
+
+`squad-hub oneshot --capabilities` prints `{"protocolVersion":1,"requiredModel":true}`
+and exits 0 without reading the environment or starting anything, so a
+supervisor can tell a build that understands `SQUAD_HUB_REQUIRE_MODEL` from one
+that would silently run an unpinned job. With the flag on, the prompt is sent
+only after the agent confirms the model, and a model that cannot be confirmed
+fails the job (78) rather than falling back to the default; see
+[commands.md](commands.md#a-model-that-is-required-not-preferred).
 
 ### Steering a one-shot session
 
