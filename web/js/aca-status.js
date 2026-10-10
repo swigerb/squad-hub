@@ -2,10 +2,9 @@
 // this hub's GitHub App is connected, whether the issue watcher and Ralph
 // (the triage sweep) are reachable, and the state of the last dispatch.
 //
-// This is the first UI consumer of `GET /api/aca/repos` and
-// `GET /api/aca/dispatches` (#177): the existing "Start on ACA" dialog
-// (aca.js) only ever builds a `github.com/.../issues/new` link and never
-// calls either route. Everything here is read-only and never starts a job.
+// Like the dispatch dialog and pending rows, this card reads
+// `GET /api/aca/repos` and `GET /api/aca/dispatches` (#177).
+// Everything here is read-only and never starts a job.
 //
 // Split out as its own module, pure functions first, so every state the card
 // can be in -- checking, not connected, connected with nothing yet, connected

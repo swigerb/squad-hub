@@ -247,8 +247,11 @@ own Actions runner). Squad Hub shows it as a **"Queued on ACA"** row at the top
 of the session list, on the **All** and **Cloud** scopes (an ACA job cannot run
 on **Local**), through four steps: *Dispatched*, *Lease claimed*, *Starting
 job*, *Attached*. When the job's own session attaches, the row is replaced by
-the real session row. The device rail draws the same dispatch as a pulsing
-*Starting* row in its "Squad on ACA executions" section until then; see
+the real session row. While the outcome remains open, the device rail draws
+the same dispatch with a pulsing dot in "Squad on ACA executions": *Queued*
+for a queued run, then *Starting* once the run is in progress or
+its receipt names the execution. A finished run with no receipt reads
+*Waiting*; failed or unknown outcomes stop pulsing. See
 [the device roster](commands.md#dispatches-still-waiting-for-a-device).
 
 **How a row finds its job.** Only by identity the hub itself proved, in three
@@ -621,7 +624,7 @@ Both halves are implemented and proven.
 
 | | |
 |---|---|
-| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy — and the devices panel's "Squad on ACA" status card (#180, honest role/approval/sweep reporting per #233), the first UI to read `GET /api/aca/repos` / `GET /api/aca/dispatches`. |
+| **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy — and the devices panel's "Squad on ACA" status card (#180, honest role/approval/sweep reporting per #233). The card reads `GET /api/aca/repos` / `GET /api/aca/dispatches` and never starts a job. |
 | **In squad-on-aca** | `worker/lib/squad-hub.sh`, the `hub-argv-json` policy variant, and the `-SquadHubUrl` / `-SquadHubToken` deploy parameters. See its [docs/squad-hub.md][aca-doc]. |
 
 [aca-doc]: https://github.com/swigerb/squad-on-aca/blob/main/docs/squad-hub.md
@@ -655,4 +658,3 @@ target workflow declares support, and reads it back only from the run's own
 `display_title` through the GitHub Actions API. No Azure credential is added to
 the hub, no worker/image/model protocol changes are involved, and the browser
 never needs to see the raw token.
-

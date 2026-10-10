@@ -123,9 +123,9 @@ publication — that workflow never touches npm.
   [docs/architecture.md](docs/architecture.md#session-activity-and-pull-requests).
 - **A "Squad on ACA" status card** (issue #180). Under the device rail: whether
   this hub's GitHub App is connected, whether the issue watcher and Ralph are
-  reachable, and the state of the last dispatch — the first UI to read
-  `GET /api/aca/repos` and `GET /api/aca/dispatches`, read-only and never
-  starting a job. See
+  reachable, and the state of the last dispatch. The card reads
+  `GET /api/aca/repos` and `GET /api/aca/dispatches`; it is read-only and never
+  starts a job. See
   [docs/aca.md](docs/aca.md#the-status-cards-issue-watcher-and-ralph-rows-180-233).
 - **The session detail is a page** (issue #181). A session opens at
   `/?session=<key>` rather than in a modal, so a deep link, Back and Forward
