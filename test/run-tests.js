@@ -1353,6 +1353,15 @@ async function suiteSuiteIndex() {
   runChildSuite(path.join(__dirname, 'suite-index-unit.js'), 'suite-index');
 }
 
+/**
+ * --shard N/K of the mutation harness: the K shards must partition the runnable
+ * catalogue exactly, and a shard that selects nothing is refused before the baseline.
+ */
+async function suiteMutateShard() {
+  console.log('\n[MUTATE SHARD] mutation harness: --shard N/K is an exact partition of the runnable catalogue, and an empty or invalid shard is refused');
+  runChildSuite(path.join(__dirname, 'mutate-shard-unit.js'), 'mutate-shard');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1443,6 +1452,7 @@ async function suiteSuiteIndex() {
   await suiteNextTurn();
   await suiteRequiredModel();
   await suiteSuiteIndex();
+  await suiteMutateShard();
 
   console.log('');
   console.log('='.repeat(60));
