@@ -19,9 +19,6 @@ jobs:
         with:
           node-version: 22
 
-      - name: Run tests
-        run: node --test test/*.test.cjs
-
       - name: Validate version consistency
         run: |
           VERSION=$(node -e "console.log(require('./package.json').version)")
@@ -44,11 +41,58 @@ jobs:
         run: |
           if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "⏭️ Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
+            echo "⏭️ Tag ${{ steps.version.outputs.tag }} already exists — skipping release and its test gate."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "🆕 Tag ${{ steps.version.outputs.tag }} does not exist — creating release."
           fi
+
+      # The gate below runs only when a release is about to be cut, so an
+      # ordinary push to main (whose version is already tagged) does not pay
+      # for a second full run -- the Tests workflow already covers it. When it
+      # does run, it runs BEFORE the tag and the GitHub release exist, and the
+      # steps after it carry no `if: always()` / `continue-on-error`, so a red
+      # or incomplete run stops the job with no tag and no release.
+      #
+      # It is the same gate as tests.yml: `npm test` (test/run-tests.js), with
+      # Playwright installed so the browser suites cannot skip. This file used
+      # to run `node --test test/*.test.cjs`, which matches nothing in this
+      # repository, ran zero tests and exited 0 -- so the tag and release were
+      # created behind a gate that could not fail. test/release-workflow-unit.js
+      # pins every property below, including that the gate cannot pass with
+      # zero tests.
+      - name: Install Playwright (so the browser suite cannot skip)
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          npm install --no-save --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Run the test suite
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -o pipefail
+          rc=0
+          npm test 2>&1 | tee test.out || rc=$?
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::The test suite failed (exit ${rc}). No tag or release was created."
+            exit "$rc"
+          fi
+          # A skip is not a pass. Playwright is installed above, so a skipped
+          # suite means the run proved less than it claims.
+          if grep -qE '(^  SKIP )|SKIPPED' test.out; then
+            echo "::error::A suite was SKIPPED. A skip is not a pass, so no tag or release was created."
+            grep -E -A 20 '(^  SKIP )|SKIPPED' test.out || true
+            exit 1
+          fi
+          # Belt and braces: the runner's own summary must show a NON-ZERO
+          # number passed and zero failed, so an empty suite or a runner that
+          # exits 0 without running anything cannot release.
+          if ! grep -qE '^[1-9][0-9]* passed, 0 failed' test.out; then
+            echo "::error::No '<n> passed, 0 failed' summary with n > 0 was found. The suite ran nothing, or its output format changed, so no tag or release was created."
+            tail -20 test.out
+            exit 1
+          fi
+          rm -f test.out
 
       - name: Create git tag
         if: steps.check_tag.outputs.exists == 'false'

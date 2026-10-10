@@ -3,10 +3,12 @@
 All notable changes to Squad Hub are documented here. Dates are when a version
 was published to npm, not when a change merged — see [docs/releasing.md](docs/releasing.md).
 
-## [Unreleased] — v0.7.0
+## [0.7.0] — npm publication pending
 
-The version in `package.json` stays `0.6.0` until the single v0.7.0 release
-pull request; this entry documents what has landed on `main` so far.
+This is the v0.7.0 candidate, so it carries no date: 0.7.0 has not been
+published to npm, and a date is added only once `npm run release` has done it.
+A tag or GitHub release made by the `Squad Release` workflow is not a
+publication — that workflow never touches npm.
 
 ### Added
 
@@ -95,9 +97,25 @@ pull request; this entry documents what has landed on `main` so far.
   `code`. See
   [docs/commands.md](docs/commands.md#mode-and-model-for-the-next-message) and
   [docs/api.md](docs/api.md#sending-follow-up-input-steer).
+- **Confirmed required models for supervised jobs.** One-shot runs can opt in
+  with `SQUAD_HUB_REQUIRE_MODEL=1` and `SQUAD_HUB_MODEL`. The requested model must
+  be advertised and confirmed by the agent before any prompt is sent; an
+  unavailable or unconfirmed selection fails instead of running a default.
+  `squad-hub oneshot --capabilities` reports the contract without starting an
+  agent. Optional model selection keeps its existing behavior.
 
 ### Fixed
 
+- **The release workflow now runs the real test suite before it tags.**
+  `Squad Release` (added with the Squad 0.13.1 upgrade, so present since v0.6.0)
+  ran `node --test test/*.test.cjs`, which matches no file in this repository:
+  it ran zero tests, exited 0, and the tag and GitHub release followed
+  regardless. It now installs Playwright and runs `npm test`
+  (`test/run-tests.js`) first, only when the tag does not exist yet, and creates
+  neither the tag nor the release if the suite exits non-zero, skips a suite, or
+  reports no passing tests. It still only tags and creates a GitHub release;
+  publishing to npm remains `npm run release`, done by a person. See
+  [docs/releasing.md](docs/releasing.md#the-squad-release-workflow).
 - **The composer no longer sticks on "Checking control…".** The check compared
   the open session by object identity, and every live refresh rebuilds that
   object, so a verified answer was dropped as stale. It now compares the
@@ -136,5 +154,63 @@ pull request; this entry documents what has landed on `main` so far.
   `SQUAD_HUB_SELECTION_TIMEOUT_MS`.
 - `docs/api.md` documents the optional `mode` and `model` on `steer`, the
   refusal codes, and the `nextTurn` a session carries.
+- `docs/releasing.md` describes what the `Squad Release` workflow does when a
+  new version reaches `main`, in what order, and what it leaves to a person.
 
-[Unreleased]: https://github.com/swigerb/squad-hub/compare/v0.6.0...main
+## [0.6.0]
+
+The npm publication date of 0.6.0 is not recorded in this repository, so none
+is given here. The `v0.6.0` tag points at commit `06d5e53` (2026-10-02); what
+follows is taken from the commits between `v0.5.0` and that tag. All of it is
+code that runs on the device, so deploying a hub does not deliver it — a device
+gets it by installing the new version.
+
+### Added
+
+- **Squad state is read from where Squad keeps it** (issue #156). A project
+  using `squad externalize`, or a remote `teamRoot` set by `squad link`, is now
+  read from its real location. Reading outside the project root stays off unless
+  `followExternalSquadState` is set (default off, and never part of the public
+  configuration view); a local `.squad` or documents directory that is a
+  symlink pointing out of the project is confined the same way. See
+  [docs/security.md](docs/security.md#external-squad-state).
+- **`doctor` reports Squad's own health** (issue #157). When the working
+  directory is a Squad project and a Squad 0.13 or later is on `PATH`, `doctor`
+  runs `squad health --json` and shows the result; when it cannot, it says why.
+  The session view carries only a summary — an overall status and each check's
+  `{id, status}` — cached per working directory. Spawning a Windows `.cmd` shim
+  is hardened. See [docs/commands.md](docs/commands.md#doctor).
+- **Team Capabilities preferred over the `team.md` parse** (issue #158). The
+  Team Capabilities block in `.github/agents/squad.agent.md` is used when
+  present; a block still marked `status=pending` counts as absent and the
+  `team.md` parse is used instead. Each roster records its `memberSource`. See
+  [docs/squad-views.md](docs/squad-views.md#where-the-roster-comes-from).
+- **Cost policy beside the model summary** (issue #159). `costPolicy`
+  (`maxCategory`) and `economyMode` are shown next to the model summary.
+- **`npm run release` rehearses what it publishes** (issue #150). It installs
+  the built tarball offline and runs it before publishing, verifies both package
+  names (`squad-hub` and `@mightybs/squad-hub`) after publishing, and creates the
+  tag locally once a publish has succeeded; it does not push it.
+
+### Fixed
+
+- **A device that has gone no longer leaves an approval card someone can
+  answer** (issue #162). The pending approvals of a device that disconnected are
+  expired with the reason "device disconnected" and the session's status becomes
+  `disconnected`, with watchers told straight away. The keepalive terminates a
+  device socket that stays silent for two intervals (90 seconds by default). A
+  device that reconnects does not expire approvals that are still live, and
+  revoking a device token goes through the same path. The web UI labels it as a
+  disconnect rather than a timeout.
+
+### Documentation
+
+- `docs/squad-views.md` describes what the hub now knows about Squad 0.13.
+- `docs/releasing.md` corrects the record of the v0.1.0 deprecation (issue
+  #151).
+- The repository's own Squad was upgraded to 0.13.1 (#153), which added the
+  generated `.github/workflows/squad-*.yml` workflows, including the
+  `Squad Release` workflow whose test step ran no tests (see 0.7.0, above).
+
+[0.7.0]: https://github.com/swigerb/squad-hub/compare/v0.6.0...main
+[0.6.0]: https://github.com/swigerb/squad-hub/releases/tag/v0.6.0
