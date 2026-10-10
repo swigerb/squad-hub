@@ -4031,6 +4031,171 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     replace: `          name: screenshots # MUTATION: hard-coded, legs collide`,
     mustFail: 'the artifact name is unique per matrix leg and per commit',
   },
+
+  // -------------------------------------------------------------------------
+  // squad-release.yml: the tag and release sit behind the REAL test suite. It
+  // used to run `node --test test/*.test.cjs`, which matches no file here, so
+  // it ran zero tests, exited 0, and tagged and released anyway.
+  // -------------------------------------------------------------------------
+  {
+    name: 'the release gate goes back to the zero-test node --test glob',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm test 2>&1 | tee test.out || rc=$?`,
+    replace: `          node --test test/*.test.cjs 2>&1 | tee test.out || rc=$? # MUTATION`,
+    mustFail: 'the gate runs npm test, never the zero-test node --test glob',
+  },
+  {
+    name: 'the release gate ignores the exit status of npm test',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm test 2>&1 | tee test.out || rc=$?`,
+    replace: `          npm test 2>&1 | tee test.out || true # MUTATION: exit status dropped`,
+    mustFail: 'a non-zero exit from npm test fails the gate and is propagated, whatever the output says',
+  },
+  {
+    name: 'the release gate no longer fails on a non-zero exit',
+    file: '.github/workflows/squad-release.yml',
+    find: `            exit "$rc"`,
+    replace: `            : # MUTATION: the failing exit status is swallowed`,
+    mustFail: 'a non-zero exit from npm test fails the gate and is propagated, whatever the output says',
+  },
+  {
+    name: 'the release gate loses pipefail, so tee hides a failing npm test',
+    file: '.github/workflows/squad-release.yml',
+    find: `          set -o pipefail`,
+    replace: `          : # MUTATION: pipefail removed`,
+    mustFail: 'a non-zero exit from npm test fails the gate and is propagated, whatever the output says',
+  },
+  {
+    name: 'the release gate stops failing on a skipped suite',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if grep -qE '(^  SKIP )|SKIPPED' test.out; then`,
+    replace: `          if false; then # MUTATION`,
+    mustFail: 'a skipped suite fails the gate even when every test that did run passed',
+  },
+  {
+    name: 'the release gate stops noticing a per-test SKIP line',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if grep -qE '(^  SKIP )|SKIPPED' test.out; then`,
+    replace: `          if grep -qE 'SKIPPED' test.out; then # MUTATION: SKIP lines ignored`,
+    mustFail: 'a skipped suite fails the gate even when every test that did run passed',
+  },
+  {
+    name: 'the release gate accepts a run that passed zero tests',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if ! grep -qE '^[1-9][0-9]* passed, 0 failed' test.out; then`,
+    replace: `          if ! grep -qE '[0-9]+ passed, 0 failed' test.out; then # MUTATION: zero allowed`,
+    mustFail: 'a run that executed zero tests fails the gate',
+  },
+  {
+    name: 'the release gate accepts a summary that reports failures',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if ! grep -qE '^[1-9][0-9]* passed, 0 failed' test.out; then`,
+    replace: `          if ! grep -qE '^[1-9][0-9]* passed' test.out; then # MUTATION: failures allowed`,
+    mustFail: 'a summary that reports failures fails the gate even if npm exits 0',
+  },
+  {
+    name: 'a tag is created before the test gate runs',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Install Playwright (so the browser suite cannot skip)`,
+    replace: `      - name: Create git tag
+        run: git tag -a v0 -m early # MUTATION: tagged before the gate
+
+      - name: Install Playwright (so the browser suite cannot skip)`,
+    mustFail: 'the tag and release steps come after the test gate, never before',
+  },
+  {
+    name: 'a failed test gate no longer stops the release',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Run the test suite`,
+    replace: `      - name: Run the test suite
+        continue-on-error: true # MUTATION`,
+    mustFail: 'no step is allowed to fail without stopping the release (no continue-on-error, no always())',
+  },
+  {
+    name: 'the release gate no longer installs Playwright, so the browser suite skips',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm install --no-save --no-audit --no-fund playwright`,
+    replace: `          true # MUTATION: Playwright not installed`,
+    mustFail: 'the Playwright install matches the Tests workflow, so the browser suites cannot skip',
+  },
+  {
+    name: 'the release gate installs Playwright into package.json',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm install --no-save --no-audit --no-fund playwright`,
+    replace: `          npm install --no-audit --no-fund playwright # MUTATION: --no-save dropped`,
+    mustFail: 'Playwright is installed with --no-save, so no dependency manifest is written',
+  },
+  {
+    name: 'the tag is created even when a tag for this version already exists',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Create git tag
+        if: steps.check_tag.outputs.exists == 'false'`,
+    replace: `      - name: Create git tag # MUTATION: no condition`,
+    mustFail: 'install, gate, tag, release and verify only run when the tag does not exist yet',
+  },
+  {
+    name: 'the release workflow starts publishing to npm',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Verify release`,
+    replace: `      - name: Publish
+        run: npm publish --access public # MUTATION
+
+      - name: Verify release`,
+    mustFail: 'the workflow cannot publish to npm or deploy anything',
+  },
+  {
+    name: 'the release workflow stops refusing a version missing from CHANGELOG.md',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if ! grep -q "## \\[$VERSION\\]" CHANGELOG.md 2>/dev/null; then`,
+    replace: `          if false; then # MUTATION`,
+    mustFail: 'the changelog guard refuses a version CHANGELOG.md does not mention and accepts one it does',
+  },
+  {
+    name: 'the CHANGELOG check only runs when a release is about to be cut',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Validate version consistency`,
+    replace: `      - name: Validate version consistency
+        if: steps.check_tag.outputs.exists == 'false' # MUTATION`,
+    mustFail: 'the release is refused when CHANGELOG.md has no section for the package version',
+  },
+  {
+    name: 'the release workflow pins checkout to a mutable tag',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 #v4`,
+    replace: `      - uses: actions/checkout@v4 # MUTATION: unpinned`,
+    mustFail: 'every action is pinned to a full commit SHA',
+  },
+  {
+    name: 'the release workflow gains a permission it does not need',
+    file: '.github/workflows/squad-release.yml',
+    find: `  contents: write`,
+    replace: `  contents: write
+  id-token: write # MUTATION`,
+    mustFail: 'the workflow keeps its single contents: write permission',
+  },
+  {
+    name: 'the release workflow also runs on pull requests',
+    file: '.github/workflows/squad-release.yml',
+    find: `    branches: [main]`,
+    replace: `    branches: [main]
+  pull_request: # MUTATION
+    branches: [main]`,
+    mustFail: 'the workflow keeps its name and only triggers on a push to main',
+  },
+  {
+    name: 'the test runner changes the summary line the release gate reads',
+    file: 'test/run-tests.js',
+    find: `console.log(\`\${pass} passed, \${fail} failed`,
+    replace: `console.log(\`\${pass} ok, \${fail} failed`,
+    mustFail: 'the gate reads the strings the runner really prints',
+  },
+  {
+    name: 'the test runner stops running the release workflow unit',
+    file: 'test/run-tests.js',
+    find: `  await suiteReleaseWorkflow();`,
+    replace: `  // MUTATION: release workflow unit not invoked`,
+    mustFail: 'the runner runs this unit, so the release gate checks cannot be silently unplugged',
+  },
   {
     name: 'the sync-squad-labels workflow stops actually syncing retro-action',
     file: '.github/workflows/sync-squad-labels.yml',

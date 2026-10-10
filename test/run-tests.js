@@ -1190,6 +1190,17 @@ async function suiteRetroActionOnRedTests() {
 }
 
 /**
+ * `squad-release.yml` used to run `node --test test/*.test.cjs`, which matches
+ * no file in this repo: zero tests, exit 0, and a tag and release behind a gate
+ * that could not fail. The unit checks the workflow as text and then runs its
+ * gate and changelog-guard shell under bash against a fake `npm`.
+ */
+async function suiteReleaseWorkflow() {
+  console.log('\n[RELEASE-WORKFLOW] the tag and release sit behind the real test suite');
+  runChildSuite(path.join(__dirname, 'release-workflow-unit.js'), 'release-workflow');
+}
+
+/**
  * Issues #97 and #98: both were resolved to a short, plain convention in
  * `.squad/ceremonies.md` rather than automation, because the corpus each
  * issue names as its own falsification test showed a script/gate/CI job
@@ -1387,6 +1398,7 @@ async function suiteNextTurn() {
   await suiteSessionPersistence();
   await suiteRetroEnforcement();
   await suiteRetroActionOnRedTests();
+  await suiteReleaseWorkflow();
   await suiteCeremonyConventions();
   await suiteSquadModelPolicy();
   await suiteSteer();

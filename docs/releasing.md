@@ -384,6 +384,31 @@ The suite is not skippable here even though CI already ran it, because the
 release publishes **the commit you have checked out**, which is not necessarily
 the one CI saw.
 
+### The `Squad Release` workflow
+
+`.github/workflows/squad-release.yml` runs on every push to `main`. It is a
+separate act from the three steps above: it has no npm credentials and no
+publish step, so it never puts a version on npm. In order, it:
+
+1. Refuses the run when `CHANGELOG.md` has no `## [<version>]` heading for the
+   version in `package.json`. This applies to every push, not only a version bump.
+2. Looks for the tag `v<version>`. If it already exists, the rest is skipped,
+   which is what happens on every push that is not a version bump.
+3. Installs Playwright and Chromium the way the `Tests` workflow does, then runs
+   `npm test` — the same `test/run-tests.js` — on one Node version (22), not the
+   full matrix.
+4. Fails the run, before anything is tagged, when `npm test` exits non-zero, when
+   any suite was skipped, or when the summary does not show at least one passed
+   test and no failures.
+5. Only then creates the `v<version>` tag and the GitHub release, and checks the
+   release exists.
+
+A green run says the suite passed on CI at that commit. It says nothing about
+npm, and it does not replace `npm run release`, which runs the suite again on the
+commit you publish. The other generated `squad-*.yml` workflows still run
+`node --test test/*.test.cjs`, which matches no file here; only `Squad Release`
+has a real gate.
+
 ### Deciding whether a release is needed at all
 
 Deploying the hub and publishing to npm are **different acts**, and it is worth
