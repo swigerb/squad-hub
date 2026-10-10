@@ -13,8 +13,8 @@ How to decide who handles what.
 | Documentation | docs | README, docs/, capability matrices, failure modes, honest limits |
 | Scope & priorities | lead | What to build next, sequencing, which premise to test first |
 | An executor is stuck | advisor | Two defensible designs, a failing premise, or the same fix failing twice. Guidance only -- the executor keeps the work. |
-| Session logging | Scribe | Automatic — never needs routing |
-| RAI review | Rai | Content safety, bias checks, credential detection, ethical review |
+| Session logging | scribe | Automatic — never needs routing. Spawned with its explicit model; see Model Policy. |
+| RAI review | rai | Content safety, bias checks, credential detection, ethical review |
 
 ## Issue Routing
 
@@ -33,7 +33,7 @@ How to decide who handles what.
 ## Rules
 
 1. **Eager by default** — spawn all agents who could usefully start work, including anticipatory downstream work.
-2. **Scribe always runs** after substantial work, always as `mode: "background"`. Never blocks.
+2. **Scribe always runs** after substantial work, always as `mode: "background"`. Never blocks. Spawn it as `name: "scribe"` with `model: "claude-haiku-5.5"` (`agentModelOverrides.scribe`) — never a template default.
 3. **Quick facts → coordinator answers directly.** Don't spawn an agent for "what port does the server run on?"
 4. **When two agents could handle it**, pick the one whose domain is the primary concern.
 5. **"Team, ..." → fan-out.** Spawn all relevant agents in parallel as `mode: "background"`.
@@ -51,14 +51,28 @@ reasonably settle.
 
 | Tier | Model | Who | Why |
 |------|-------|-----|-----|
-| Advisor | `claude-opus-5` | advisor, lead, security, Rai, fact-checker | Roles that **judge** rather than execute. A bad call costs the team a cycle or blocks a release. |
-| Executor | `claude-sonnet-5` | engineer, reviewer, ralph | Roles that **drive**: call tools, read results, iterate. They escalate rather than guess. |
-| Scribe | `claude-haiku-4.5` | scribe, docs | High volume, low ambiguity. |
+| Advisor | `gpt-6.1-sol` | advisor, lead, security, rai, fact-checker | Roles that **judge** rather than execute. A bad call costs the team a cycle or blocks a release. |
+| Executor | `claude-sonnet-5.5` | engineer, reviewer, ralph | Roles that **drive**: call tools, read results, iterate. They escalate rather than guess. |
+| Scribe | `claude-haiku-5.5` | scribe, docs | High volume, low ambiguity. |
 
 `.squad/config.json` sets `defaultModel` to the **executor** model and lists every
 member explicitly, because Layer 0a beats Layer 0b and an unlisted agent is easy
 to misread as deliberate. A new agent added later lands on the executor tier by
 default rather than silently inheriting the frontier one.
+
+The names in the **Who** column are the exact config keys: the lowercase
+`.squad/agents/<name>/` folder, which is also the casting registry key and the
+spawn `name`. Display names such as `Rai` or `Scribe` are not keys; a lookup under
+one never matches and silently falls through to `defaultModel`.
+
+Every spawn — including the after-agent Scribe — passes the member's model from
+`agentModelOverrides` explicitly; see Per-Agent Model Selection in
+`.github/agents/squad.agent.md`, which overrides any template default. If the
+configured model is unavailable, stop and report which member and model. Do not
+retry on another model and do not omit the `model` parameter.
+
+This table supersedes the earlier model mapping (2026-10-09, issue #246). The
+earlier mapping is preserved as a superseded entry in `.squad/decisions.md`.
 
 ### Escalating to the advisor
 

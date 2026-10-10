@@ -11,10 +11,10 @@
 
 ## Model
 
-Use `claude-opus-5.5`.
+Use `gpt-6.1-sol`.
 
 Coordination is judgement rather than execution: a bad sequencing decision costs
-the whole team a cycle. The executors I spawn run `claude-sonnet-5` and escalate
+the whole team a cycle. The executors I spawn run `claude-sonnet-5.5` and escalate
 to `advisor` when they need to.
 
 ## What I Own
