@@ -11,7 +11,18 @@
  * NAMED test fails. A mutation that nothing catches is a mechanism nothing is
  * testing -- and that is a finding, not a pass.
  *
- * Exit 0 only if every mutation is caught by the test that claims to cover it.
+ * Exit 0 only if every selected mutation is CAUGHT: the suite finished with a
+ * nonzero exit status and the test the catalogue NAMES is among those that
+ * failed. Every other outcome is a failure and exits 1, each labelled so the
+ * cause reads at a glance, and none of them is counted as caught:
+ *   ESCAPED    the suite stayed green; nothing tests the mechanism.
+ *   IMPRECISE  the suite went red, but not on the named test; the claim is wrong.
+ *   ERROR      the suite timed out, was killed, or crashed before failing any
+ *              test; there is no verdict to read.
+ *   ANCHOR     the text to mutate is gone, so the mutation never ran.
+ * The baseline, and the re-run after the last restore, must each be a clean run
+ * that executed tests and skipped none. The decisions are made in
+ * test/helpers/verdict.js and covered by test/mutate-verdict-unit.js.
  *
  * ONLY THE SUITE THAT OWNS THE NAMED TEST IS RUN. This used to run all 764
  * tests for every mutation, which took 137 seconds to answer a question that
@@ -45,6 +56,7 @@ const fs = require('fs');
 const path = require('path');
 const { readSuiteSources, buildSuiteIndex, suiteIn } = require('./helpers/suite-index');
 const { planRun } = require('./helpers/shard');
+const { judgeBaseline, classify, summarise } = require('./helpers/verdict');
 
 const onlyIdx = process.argv.indexOf('--only');
 const ONLY = onlyIdx !== -1 ? process.argv[onlyIdx + 1] : null;
@@ -1319,15 +1331,21 @@ import { syncSession } from './js/detail-control.js';`,
     // The OUTER catch in readSquad is unreachable while every inner reader is
     // itself safe -- so mutating it proves nothing. Mutate the layer that
     // actually does the work instead: if readFileSafe stops swallowing a
-    // missing file, a workspace with no team.md must still degrade to a usable
-    // context rather than to nothing.
+    // missing file, it must be reported as absent rather than raised.
+    //
+    // 'an empty .squad directory is still a squad' does NOT own this: a
+    // missing file never reaches readFileSafe through readFileConfined (the
+    // real-path check gives up first), and its one direct read sits inside a
+    // try whose fallback is the identical local result. The old catalogue run
+    // recorded a kill by three unrelated remote-teamRoot tests instead. The
+    // direct readFileSafe test below is the one that names this contract.
     name: 'a missing .squad file propagates instead of degrading',
     file: 'src/squad-context.js',
     find: `    return fs.readFileSync(p, 'utf8');
   } catch { return null; }`,
     replace: `    return fs.readFileSync(p, 'utf8');
   } catch (e) { if (process.env.MUTANT) throw e; return null; } // MUTATION`,
-    mustFail: 'an empty .squad directory is still a squad',
+    mustFail: 'readFileSafe reads a missing path and a directory as absent, and a real file as its text',
   },
   {
     name: 'secrets are posted to Teams unredacted',
@@ -2725,7 +2743,7 @@ import { syncSession } from './js/detail-control.js';`,
     file: 'web/js/ws.js',
     find: `  if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);`,
     replace: `  if (state.filters.status) params.set('status', state.filters.status); // MUTATION: "action" is sent to the server too`,
-    mustFail: '"Action needed" (#169) narrows to blocked and awaiting-reply sessions, without a server round trip for a status no session has',
+    mustFail: 'the Action needed view asks the hub for the keyword and device it holds and never for status=action, which no session has (#169 with #179)',
   },
   {
     name: 'the custom dropdown popup stops skipping a hidden <option>, so "Queued on ACA" / "Ready for review" appear with no data behind them',
@@ -2837,8 +2855,12 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'a device name is interpolated into the roster unescaped',
     file: 'web/js/devices.js',
+    // The marker is a BLOCK comment inside the expression. A line comment here
+    // runs to the end of the source line, takes the rest of the template with
+    // it, and makes web/js/devices.js a SyntaxError -- the whole suite then
+    // dies with no named failure instead of failing the escaping test.
     find: '          <span>${esc(displayName)}</span>${isCloudKind(d.kind)',
-    replace: '          <span>${process.env.MUTANT ? displayName : esc(displayName)}</span>${isCloudKind(d.kind) // MUTATION',
+    replace: '          <span>${/* MUTATION */ process.env.MUTANT ? displayName : esc(displayName)}</span>${isCloudKind(d.kind)',
     mustFail: 'a malicious device name renders as inert escaped text',
   },
   {
@@ -2877,14 +2899,14 @@ import { syncSession } from './js/detail-control.js';`,
     file: 'src/telemetry.js',
     find: `    if (LINUX_PSEUDO_FS.has(m.fsType)) continue;`,
     replace: `    if (!process.env.MUTANT && LINUX_PSEUDO_FS.has(m.fsType)) continue; // MUTATION`,
-    mustFail: 'listLinuxVolumes skips pseudo filesystems and read-only mounts',
+    mustFail: 'listLinuxVolumes drops a pseudo filesystem that reports a real size, without asking it for one',
   },
   {
     name: 'a read-only mount is reported as a disk volume',
     file: 'src/telemetry.js',
     find: `    if (m.options.includes('ro')) continue;`,
     replace: `    if (!process.env.MUTANT && m.options.includes('ro')) continue; // MUTATION`,
-    mustFail: 'listLinuxVolumes skips pseudo filesystems and read-only mounts',
+    mustFail: 'listLinuxVolumes drops a read-only mount on a real filesystem, and keeps one that only mentions remount-ro',
   },
   {
     // A mount-point list is a privacy-sensitive fact (#173): file access off
@@ -11237,6 +11259,99 @@ prompt: |
     find: `const selected = selectMutations(mutations, { only, shard });`,
     replace: `const selected = selectMutations(mutations, { only: process.env.MUTANT ? null : only, shard }); // MUTATION`,
     mustFail: 'planRun reports the shard, what it selected and the runnable total it was cut from',
+  },
+  {
+    // test/helpers/verdict.js decides what the harness counts as caught. These
+    // break each decision it makes; its own unit test must notice every one.
+    name: '[mutate verdict] a suite that failed on some other test is counted as caught',
+    file: 'test/helpers/verdict.js',
+    find: `  if (failed.some((f) => f.includes(mustFail))) return { verdict: 'caught', reason: '' };`,
+    replace: `  if (process.env.MUTANT || failed.some((f) => f.includes(mustFail))) return { verdict: 'caught', reason: '' }; /* MUTATION */`,
+    mustFail: 'a run that fails but not on the named test is imprecise, never caught',
+  },
+  {
+    name: '[mutate verdict] a crash with no failing test is not told apart from a wrong-test failure',
+    file: 'test/helpers/verdict.js',
+    find: `  if (!failed.length) {`,
+    replace: `  if (!process.env.MUTANT && !failed.length) { /* MUTATION */`,
+    mustFail: 'a nonzero exit with no failing test is a crash, never caught',
+  },
+  {
+    name: '[mutate verdict] a timeout or a kill is read as a finished run',
+    file: 'test/helpers/verdict.js',
+    find: `  if (Number.isInteger(run && run.code)) return null;`,
+    replace: `  if (process.env.MUTANT || Number.isInteger(run && run.code)) return null; /* MUTATION */`,
+    mustFail: 'a timeout, a kill or a missing status is an error even when the named failure was printed',
+  },
+  {
+    name: '[mutate verdict] a named failure under exit 0 is trusted instead of reported as an error',
+    file: 'test/helpers/verdict.js',
+    find: `  if (run.code === 0) {`,
+    replace: `  if (run.code === 0 && !(process.env.MUTANT && failed.length)) { /* MUTATION */`,
+    mustFail: 'a green run is escaped, and one that reports failures while exiting 0 is an error',
+  },
+  {
+    name: '[mutate verdict] a mutation that names no test can be caught by any failure',
+    file: 'test/helpers/verdict.js',
+    find: `  if (typeof mustFail !== 'string' || !mustFail) {`,
+    replace: `  if (!process.env.MUTANT && (typeof mustFail !== 'string' || !mustFail)) { /* MUTATION */`,
+    mustFail: 'a mutation that names no test cannot be caught by anything',
+  },
+  {
+    name: '[mutate verdict] an unmutated run that skipped tests is accepted',
+    file: 'test/helpers/verdict.js',
+    find: `  if (skipped > 0) return {`,
+    replace: `  if (!process.env.MUTANT && skipped > 0) /* MUTATION */ return {`,
+    mustFail: 'the baseline must finish, exit 0, print a summary, run tests, fail none and skip none',
+  },
+  {
+    name: '[mutate verdict] an unmutated run that ran no tests is accepted',
+    file: 'test/helpers/verdict.js',
+    find: `  if (passed === 0) return {`,
+    replace: `  if (!process.env.MUTANT && passed === 0) /* MUTATION */ return {`,
+    mustFail: 'the baseline must finish, exit 0, print a summary, run tests, fail none and skip none',
+  },
+  {
+    name: '[mutate verdict] an unmutated run that exited nonzero is not refused for it',
+    file: 'test/helpers/verdict.js',
+    find: `  if (run.code !== 0) return`,
+    replace: `  if (!process.env.MUTANT && run.code !== 0) /* MUTATION */ return`,
+    mustFail: 'the baseline must finish, exit 0, print a summary, run tests, fail none and skip none',
+  },
+  {
+    name: '[mutate verdict] the verdict of the unmutated run reads the first summary line instead of the last',
+    file: 'test/helpers/verdict.js',
+    find: `  const last = all[all.length - 1];`,
+    replace: `  const last = process.env.MUTANT ? all[0] : all[all.length - 1]; /* MUTATION */`,
+    mustFail: 'the baseline reads the last summary line and tolerates CRLF',
+  },
+  {
+    name: '[mutate verdict] every outcome is counted as caught',
+    file: 'test/helpers/verdict.js',
+    find: `  const caught = tally.caught || 0;`,
+    replace: `  const caught = process.env.MUTANT ? outcomes.length : (tally.caught || 0); /* MUTATION */`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[mutate verdict] a restored source that does not re-run clean is accepted',
+    file: 'test/helpers/verdict.js',
+    find: `  const accepted = complete && caught === outcomes.length && restoredOk;`,
+    replace: `  const accepted = complete && caught === outcomes.length && (process.env.MUTANT || restoredOk); /* MUTATION */`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[mutate verdict] a selected mutation that produced no outcome is not noticed',
+    file: 'test/helpers/verdict.js',
+    find: `  const complete = outcomes.length > 0 && outcomes.length === expected;`,
+    replace: `  const complete = outcomes.length > 0 && (process.env.MUTANT || outcomes.length === expected); /* MUTATION */`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[mutate verdict] the exit status is 0 whatever the outcomes were',
+    file: 'test/helpers/verdict.js',
+    find: `exitCode: accepted ? 0 : 1 };`,
+    replace: `exitCode: process.env.MUTANT ? 0 : (accepted ? 0 : 1) /* MUTATION */ };`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
   },];
 
 /**
@@ -11252,7 +11367,7 @@ function runTests(env) {
     cwd: ROOT, encoding: 'utf8', timeout: 600000,
     env: { ...process.env, ...env },
   });
-  return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
+  return { code: r.status, signal: r.signal, error: r.error, out: (r.stdout || '') + (r.stderr || '') };
 }
 
 /**
@@ -11297,7 +11412,7 @@ function runFor(mutation) {
   const failed = out.split('\n')
     .filter((l) => l.startsWith('RESULT\tfail\t'))
     .map((l) => l.split('\t')[2]);
-  return { code: r.status, out, scope: suite, failed };
+  return { code: r.status, signal: r.signal, error: r.error, out, scope: suite, failed };
 }
 
 function failedTestNames(out) {
@@ -11352,14 +11467,15 @@ if (require.main !== module) return;
     process.exit(3);
   }
 
-  console.log('\nbaseline (unmutated): expecting a clean pass');
+  console.log('\nbaseline (unmutated): expecting a clean pass that ran tests and skipped none');
   const base = runTests({});
-  if (base.code !== 0) {
+  const baseline = judgeBaseline(base);
+  if (!baseline.ok) {
     console.log(base.out.split('\n').slice(-30).join('\n'));
-    console.log('\nBASELINE IS RED. Fix the suite before trusting any mutation.');
+    console.log(`\nBASELINE IS RED: ${baseline.reason}. Fix the suite before trusting any mutation.`);
     process.exit(1);
   }
-  console.log('  baseline green');
+  console.log(`  baseline green: ${baseline.passed} passed, ${baseline.failed} failed, ${baseline.skipped} skipped`);
 
   // Say up front how the run is scoped, and how much of it falls back to the
   // whole suite. A sweep that silently got slower is one nobody investigates.
@@ -11375,8 +11491,8 @@ if (require.main !== module) return;
     }
   }
 
-  let caught = 0;
-  const escaped = [];
+  // One outcome per selected mutation, in order. Only `caught` counts.
+  const outcomes = [];
 
   // A mutation that outlives this process is a live edit to real source code,
   // sitting in the working tree waiting to be committed by the next `git add
@@ -11400,8 +11516,9 @@ if (require.main !== module) return;
     const original = fs.readFileSync(file, 'utf8');
     const normalised = nl(original);
     if (!normalised.includes(m.find)) {
-      console.log(`\n! could not apply mutation "${m.name}" - the anchor text moved`);
-      escaped.push({ ...m, why: 'anchor not found; the mutation never ran' });
+      console.log(`\n  ANCHOR  ${m.name}`);
+      console.log('          -> the anchor text moved, so the mutation never ran');
+      outcomes.push({ mutation: m, verdict: 'anchor', reason: 'anchor not found; the mutation never ran' });
       continue;
     }
     inFlight = { file, original };
@@ -11409,22 +11526,22 @@ if (require.main !== module) return;
 
     try {
       const r = runFor(m);
-      const failed = r.failed;
-      const hit = failed.some((f) => f.includes(m.mustFail));
-      if (hit) {
-        caught += 1;
+      const v = classify(r, m.mustFail);
+      outcomes.push({ mutation: m, ...v });
+      if (v.verdict === 'caught') {
         console.log(`\n  CAUGHT  ${m.name}`);
         console.log(`          -> "${m.mustFail}" failed, as it must  [${r.scope}]`);
-      } else if (r.code !== 0) {
-        caught += 1;
-        console.log(`\n  CAUGHT  ${m.name}`);
-        console.log(`          -> suite went red, but on: ${failed.join(' | ') || '(no named failure)'}`);
-        console.log(`          -> EXPECTED: "${m.mustFail}"  <- the coverage claim is imprecise`);
-        escaped.push({ ...m, why: `caught by the wrong test: ${failed.join(' | ')}` });
+      } else if (v.verdict === 'imprecise') {
+        console.log(`\n  IMPRECISE  ${m.name}  (not counted as caught)`);
+        console.log(`          -> ${v.reason}  [${r.scope}]`);
+        console.log(`          -> EXPECTED: "${m.mustFail}"  <- the coverage claim is wrong`);
+      } else if (v.verdict === 'error') {
+        console.log(`\n  ERROR   ${m.name}  (not counted as caught)`);
+        console.log(`          -> ${v.reason}  [${r.scope}]`);
+        console.log(`          -> last output:\n${r.out.replace(/\r/g, '').split('\n').slice(-12).map((l) => `             ${l}`).join('\n')}`);
       } else {
         console.log(`\n  ESCAPED ${m.name}`);
         console.log(`          -> ${r.scope} stayed GREEN. Nothing tests this.`);
-        escaped.push({ ...m, why: 'suite stayed green' });
       }
     } finally {
       fs.writeFileSync(file, original);
@@ -11432,24 +11549,33 @@ if (require.main !== module) return;
     }
   }
 
-  console.log('\n' + '='.repeat(60));
-  const applied = selected.length;
-  const scope = [ONLY ? `filtered by --only "${ONLY}"` : '', shard ? `shard ${shard.label} of ${total} runnable` : ''].filter(Boolean).join(', ');
-  console.log(`${caught}/${applied} mutations caught${scope ? `  (${scope})` : ''}`);
-
-  const real = escaped.filter((e) => e.why === 'suite stayed green' || e.why.startsWith('anchor'));
-  if (real.length) {
-    console.log('\nUNTESTED MECHANISMS:');
-    for (const e of real) console.log(` - ${e.name}\n   ${e.why}`);
-  }
-  const imprecise = escaped.filter((e) => e.why.startsWith('caught by the wrong test'));
-  if (imprecise.length) {
-    console.log('\nCAUGHT, BUT NOT BY THE NAMED TEST:');
-    for (const e of imprecise) console.log(` - ${e.name}\n   ${e.why}`);
-  }
-
-  // A green baseline restored is part of the contract.
+  // A clean baseline restored is part of the contract, judged as the first one was.
   const after = runTests({});
-  console.log(`\nsource restored, baseline re-run: ${after.code === 0 ? 'green' : 'RED'}`);
-  process.exit(real.length || after.code !== 0 ? 1 : 0);
+  const restore = judgeBaseline(after);
+  const result = summarise(outcomes, restore, selected.length);
+
+  console.log('\n' + '='.repeat(60));
+  const scope = [ONLY ? `filtered by --only "${ONLY}"` : '', shard ? `shard ${shard.label} of ${total} runnable` : ''].filter(Boolean).join(', ');
+  console.log(`${result.caught}/${selected.length} mutations caught${scope ? `  (${scope})` : ''}`);
+
+  const named = (verdicts) => outcomes.filter((o) => verdicts.includes(o.verdict));
+  const section = (title, rows) => {
+    if (!rows.length) return;
+    console.log(`\n${title}`);
+    for (const o of rows) console.log(` - ${o.mutation.name}\n   ${o.reason}`);
+  };
+  section('UNTESTED MECHANISMS (not counted as caught):', named(['escaped', 'anchor']));
+  section('FAILED ON A TEST OTHER THAN THE NAMED ONE (not counted as caught):', named(['imprecise']));
+  section('NO VERDICT: THE SUITE DID NOT FINISH CLEANLY (not counted as caught):', named(['error']));
+
+  console.log(`\nsource restored, baseline re-run: ${restore.ok ? 'green' : `RED (${restore.reason})`}`);
+  if (!restore.ok) console.log(after.out.split('\n').slice(-30).join('\n'));
+  if (!result.complete) console.log(`\nONLY ${result.applied} OF ${selected.length} SELECTED MUTATIONS PRODUCED AN OUTCOME.`);
+  const problems = [];
+  if (selected.length - result.caught) problems.push(`${selected.length - result.caught} of ${selected.length} selected mutations were not caught by their named test`);
+  if (!restore.ok) problems.push('the restored source does not re-run as a clean baseline');
+  console.log(result.accepted
+    ? '\nACCEPTED: every selected mutation was caught by its named test.'
+    : `\nNOT ACCEPTED: ${problems.join('; ') || 'the run was incomplete'}.`);
+  process.exit(result.exitCode);
 })();

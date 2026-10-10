@@ -19,7 +19,7 @@ const path = require('path');
 
 const {
   readSquad, isSquadWorkspace, parseTeam, parseTeamCapabilitiesBlock, parseDecisions, parseModels, inferActiveMember,
-  resolveSquadDoc, listSquadDocs, resolveSquadDirs, resolveGlobalSquadPath,
+  resolveSquadDoc, listSquadDocs, resolveSquadDirs, resolveGlobalSquadPath, readFileSafe,
 } = require('../src/squad-context');
 const hubConfig = require('../src/config');
 
@@ -672,6 +672,26 @@ check('an empty .squad directory is still a squad', () => {
   assert.ok(sq, 'an empty .squad was treated as not-a-squad');
   assert.strictEqual(sq.memberCount, 0);
   assert.strictEqual(sq.decisionCount, 0);
+});
+
+// The empty-.squad case above never reaches readFileSafe for a missing file:
+// readFileConfined resolves the real path first and gives up on a path that
+// does not exist, and the one direct read (a local config.json) sits inside a
+// try whose fallback is the same local result. So the missing-file contract of
+// readFileSafe itself is pinned here, where nothing can stand in for it.
+check('readFileSafe reads a missing path and a directory as absent, and a real file as its text', () => {
+  const d = mkSquad({ 'team.md': teamMd('present') });
+  try {
+    const squadDir = path.join(d, '.squad');
+    const read = (p) => {
+      let out;
+      assert.doesNotThrow(() => { out = readFileSafe(p); }, `reading ${path.basename(p)} raised instead of reporting it absent`);
+      return out;
+    };
+    assert.strictEqual(read(path.join(squadDir, 'absent.md')), null, 'a missing file was not reported absent');
+    assert.strictEqual(read(squadDir), null, 'a directory was read as if it were a file');
+    assert.strictEqual(read(path.join(squadDir, 'team.md')), teamMd('present'), 'a real file did not come back as its text');
+  } finally { cleanup(d); }
 });
 
 // ---------------------------------------------------------------------------
