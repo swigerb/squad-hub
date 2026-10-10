@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "session-fix-pr-243-stale-sync-popstate-target",
+  "sessionId": "fix-pr-243-stale-sync-popstate-target",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": null,
+  "dispatchSource": "local-cli",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-10T00:36:32.452Z",
+  "lastHeartbeatAt": "2026-10-10T00:36:32.452Z",
+  "updatedAt": "2026-10-10T00:36:32.452Z",
+  "terminalReason": null,
+  "executionRef": null
+}
