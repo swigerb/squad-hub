@@ -55,7 +55,7 @@ import { loadPrefs, renameSession, toggleFavorite } from './js/prefs-sync.js';
 import {
   acaRepoName, acaSessionRepo, acaTitle, acaNewIssueLink, acaComment, acaIssueLink, openAca,
 } from './js/aca.js';
-import { refreshAcaStatus, ACA_POLL_MS } from './js/aca-status.js';
+import { refreshAcaStatus, ACA_STATUS_POLL_MS } from './js/aca-status.js';
 import { peopleVisible, peopleRows, peopleSummary, openPeople } from './js/access.js';
 import { isInstalled, installSteps, showInstallHelp } from './js/install.js';
 import { urlBase64ToUint8Array, pushSupported } from './js/push.js';
@@ -194,6 +194,6 @@ function runShortcut(id) {
   // store. Started right away rather than waiting a full interval, so the
   // card never sits on "Checking…" longer than it has to.
   refreshAcaStatus();
-  setInterval(refreshAcaStatus, ACA_POLL_MS);
+  setInterval(refreshAcaStatus, ACA_STATUS_POLL_MS);
   return undefined;
 }());

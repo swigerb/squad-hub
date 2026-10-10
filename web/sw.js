@@ -30,8 +30,12 @@
 
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
-// strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v16';
+// strategy already keeps content fresh on its own. v22: the combined shell of
+// #179 (v16: /js/review.js joined SHELL) and #178 (v21: /js/aca-pending.js and
+// /js/aca-match.js joined SHELL and the pending row's attach logic was
+// reworked). Neither branch's value describes the merged shell, and 22 is
+// above both and unique among the open branches' bumps.
+const CACHE = 'squad-hub-shell-v22';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -68,6 +72,8 @@ const SHELL = [
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
+  '/js/aca-match.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',

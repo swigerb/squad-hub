@@ -1045,7 +1045,7 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', model: 'x'.repeat(65) }).ok, false);
   });
 
-  check('reviewer must be a valid GitHub username', () => {
+  check('reviewer must be a valid identifier (the Squad member id, not an arbitrary GitHub username)', () => {
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: 'octocat' }).ok, true);
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: 'oct-o-cat' }).ok, true);
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: '-bad' }).ok, false);

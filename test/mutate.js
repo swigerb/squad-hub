@@ -3237,6 +3237,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
+  '/js/aca-match.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
@@ -3283,7 +3285,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v16';`,
+    find: `const CACHE = 'squad-hub-shell-v22';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6534,6 +6536,673 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  if (authBuf.length !== AUTH_SECRET_LEN) {`,
     replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
     mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
+  },
+  // ---------------------------------------------------------------------
+  // #178: New ACA job dialog / "Queued on ACA" pending rows
+  // ---------------------------------------------------------------------
+  {
+    name: 'acaBuildDispatchBody stops refusing a blank repository',
+    file: 'web/js/aca.js',
+    find: `  const repo = acaRepoName(form.repo);
+  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+    replace: `  const repo = process.env.MUTANT ? (form.repo || 'x/x') : acaRepoName(form.repo); // MUTATION
+  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+    mustFail: 'a blank repository is refused before any request is made',
+  },
+  {
+    name: 'acaBuildDispatchBody stops requiring a positive integer for an existing issue',
+    file: 'web/js/aca.js',
+    find: `    const n = Number(form.issueNumber);
+    if (!Number.isInteger(n) || n <= 0) {`,
+    replace: `    const n = Number(form.issueNumber);
+    if (process.env.MUTANT ? false : (!Number.isInteger(n) || n <= 0)) { // MUTATION`,
+    mustFail: 'an existing issue needs a positive integer number',
+  },
+  {
+    name: 'acaBuildDispatchBody stops falling back to acaTitle for a blank new-issue title',
+    file: 'web/js/aca.js',
+    find: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim() || acaTitle(prompt);`,
+    replace: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim(); // MUTATION: dropped the acaTitle(prompt) fallback`,
+    mustFail: 'a blank new-issue title falls back to acaTitle of the instructions',
+  },
+  {
+    // A dispatch the hub reports as errored is a failure, with the hub's own
+    // reason shown verbatim -- never softened into "Queued on ACA".
+    name: 'acaStepsForStatus stops reporting an errored dispatch as failed',
+    file: 'web/js/aca.js',
+    find: `  if (st === 'error' || runFailed) {`,
+    replace: `  if ((!process.env.MUTANT && st === 'error') || runFailed) { // MUTATION`,
+    mustFail: 'an errored dispatch is reported as failed, with the reason shown verbatim',
+  },
+  {
+    // Bounded polling depends on this: a terminal outcome that is not marked
+    // `resolved` would be polled for as long as the tab stays open.
+    name: 'acaStepsForStatus stops marking a failed dispatch resolved (terminal polling would never stop)',
+    file: 'web/js/aca.js',
+    find: `      failed: true,
+      resolved: true,`,
+    replace: `      failed: true,
+      resolved: !process.env.MUTANT, // MUTATION`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    name: 'acaStepsForStatus stops reporting a completed run that never confirmed an execution as failed',
+    file: 'web/js/aca.js',
+    find: `  const runFailed = st === 'completed' && status.conclusion !== 'success' && !confirmed;`,
+    replace: `  const runFailed = !process.env.MUTANT && st === 'completed' && status.conclusion !== 'success' && !confirmed; // MUTATION`,
+    mustFail: 'a run that completed without a confirmed execution and without success is reported as failed',
+  },
+  {
+    // The converse: a workflow whose ARM start was confirmed DID start the
+    // job, so a failing run must not be reported as "Dispatch failed".
+    name: 'acaStepsForStatus stops sparing a failed run whose execution was confirmed',
+    file: 'web/js/aca.js',
+    find: `  const runFailed = st === 'completed' && status.conclusion !== 'success' && !confirmed;`,
+    replace: `  const runFailed = st === 'completed' && status.conclusion !== 'success' && (process.env.MUTANT || !confirmed); // MUTATION`,
+    mustFail: 'a failed run whose execution WAS confirmed is not called a failed dispatch -- the job did start',
+  },
+  {
+    // WHAT MAY BE MARKED done is only what the hub proved. A running Actions
+    // workflow proves a run exists, not that the lease was claimed.
+    name: 'acaStepsForStatus stops being honest about in_progress evidence (falsely marks "Lease claimed" done)',
+    file: 'web/js/aca.js',
+    find: `  return view('Queued on ACA', 'q', { steps: steps(1, st === 'in_progress' ? 2 : 1) });`,
+    replace: `  return view('Queued on ACA', 'q', { steps: steps(process.env.MUTANT && st === 'in_progress' ? 2 : 1, st === 'in_progress' ? 2 : 1) }); // MUTATION`,
+    mustFail: 'an in_progress run with no confirmed execution shows "Starting job" current, with only Dispatched proven done',
+  },
+  {
+    name: 'acaStepsForStatus stops being honest about queued evidence (falsely marks "Lease claimed" done)',
+    file: 'web/js/aca.js',
+    find: `  return view('Queued on ACA', 'q', { steps: steps(1, st === 'in_progress' ? 2 : 1) });`,
+    replace: `  return view('Queued on ACA', 'q', { steps: steps(process.env.MUTANT && st !== 'in_progress' ? 2 : 1, st === 'in_progress' ? 2 : 1) }); // MUTATION`,
+    mustFail: 'a queued run shows "Lease claimed" current, with only Dispatched proven done -- Actions queued is not lease proof',
+  },
+  {
+    // A receipt only means something once the run is in flight or finished.
+    name: 'acaStepsForStatus stops requiring an in-flight or finished run before honoring an execution name',
+    file: 'web/js/aca.js',
+    find: `  const confirmed = !!executionName && (st === 'in_progress' || st === 'completed');`,
+    replace: `  const confirmed = !!executionName && (process.env.MUTANT || st === 'in_progress' || st === 'completed'); // MUTATION`,
+    mustFail: 'an execution name is only honored for an in-flight or finished run, never for queued/pending',
+  },
+  {
+    name: 'acaStepsForStatus stops marking a confirmed execution done through "Starting job"',
+    file: 'web/js/aca.js',
+    find: `  if (confirmed) return view('Queued on ACA', 'q', { steps: steps(3, 3) });`,
+    replace: `  if (confirmed) return view('Queued on ACA', 'q', { steps: steps(process.env.MUTANT ? 1 : 3, 3) }); // MUTATION`,
+    mustFail: 'a hub-confirmed execution proves "Lease claimed" and "Starting job"; only "Attached" is left',
+  },
+  {
+    name: 'acaStepsForStatus stops reporting an attached job regardless of the last run status',
+    file: 'web/js/aca.js',
+    find: `  if (attached) return view('Queued on ACA', 'q', { steps: steps(4, -1) });`,
+    replace: `  if (!process.env.MUTANT && attached) return view('Queued on ACA', 'q', { steps: steps(4, -1) }); // MUTATION`,
+    mustFail: 'attached is reported once the session shows up, regardless of the last known run status',
+  },
+  {
+    // A workflow with no hub_correlation_id can never prove its run: a
+    // terminal, explained outcome -- never a guess.
+    name: 'acaStepsForStatus stops treating an unsupported workflow as a terminal unknown outcome',
+    file: 'web/js/aca.js',
+    find: `  if (st === 'unsupported') {`,
+    replace: `  if (!process.env.MUTANT && st === 'unsupported') { // MUTATION`,
+    mustFail: 'an unsupported workflow (no correlation receipt) is a terminal unknown outcome carrying the hub\'s reason',
+  },
+  {
+    // The bounded-wait terminal state must be reachable, or a run that
+    // finishes with no receipt would read "Queued on ACA" forever.
+    name: 'acaStepsForStatus stops surfacing the bounded-wait unknown-outcome state',
+    file: 'web/js/aca.js',
+    find: `  if (waitExpired) {`,
+    replace: `  if (!process.env.MUTANT && waitExpired) { // MUTATION`,
+    mustFail: 'a confirmed execution whose device never attached within the bound is an unknown outcome, not a failure',
+  },
+  {
+    name: 'acaStepsForStatus stops telling a confirmed execution apart from one that never confirmed',
+    file: 'web/js/aca.js',
+    find: `    return unknown(confirmed
+      ? 'the ACA execution started`,
+    replace: `    return unknown((!process.env.MUTANT && confirmed) // MUTATION
+      ? 'the ACA execution started`,
+    mustFail: 'a confirmed execution whose device never attached within the bound is an unknown outcome, not a failure',
+  },
+  // -- aca-match.js: the join from a dispatch to the device it started ------
+  {
+    name: 'acaDeviceIdFor stops validating the execution name',
+    file: 'web/js/aca-match.js',
+    find: `typeof executionName === 'string' && EXEC_NAME_RE.test(executionName)`,
+    replace: `typeof executionName === 'string' && (process.env.MUTANT || EXEC_NAME_RE.test(executionName)) // MUTATION`,
+    mustFail: 'the job device id is aca- plus a valid execution name, and nothing else',
+  },
+  {
+    name: 'acaDeviceIdFor stops building the aca- device id',
+    file: 'web/js/aca-match.js',
+    find: `? \`aca-\${executionName}\` : null;`,
+    replace: `? \`\${process.env.MUTANT ? 'cloud' : 'aca'}-\${executionName}\` : null; // MUTATION`,
+    mustFail: 'the job device id is aca- plus a valid execution name, and nothing else',
+  },
+  {
+    // Binding by the dispatch's OWN trackerId is the first link of the chain.
+    name: 'acaDispatchEvidence stops requiring the entry\'s own trackerId',
+    file: 'web/js/aca-match.js',
+    find: `  if (!entry || !entry.trackerId || !row || row.id !== entry.trackerId) return null;`,
+    replace: `  if (!entry || !entry.trackerId || !row || (!process.env.MUTANT && row.id !== entry.trackerId)) return null; // MUTATION`,
+    mustFail: 'a row is ignored unless it carries this entry\'s own trackerId',
+  },
+  {
+    name: 'acaDispatchEvidence stops ignoring a different run',
+    file: 'web/js/aca-match.js',
+    find: `    if (entry.runId != null && st.runId !== entry.runId) return null;`,
+    replace: `    if (!process.env.MUTANT && entry.runId != null && st.runId !== entry.runId) return null; // MUTATION`,
+    mustFail: 'a different run, or a LOWER attempt, is never merged into what is already known',
+  },
+  {
+    name: 'acaDispatchEvidence stops ignoring a lower run attempt',
+    file: 'web/js/aca-match.js',
+    find: `    if (attempt !== null && entry.runAttempt != null && attempt < entry.runAttempt) return null;`,
+    replace: `    if (!process.env.MUTANT && attempt !== null && entry.runAttempt != null && attempt < entry.runAttempt) return null; // MUTATION`,
+    mustFail: 'a stale reply (lower run attempt) arriving after a newer one cannot undo it',
+  },
+  {
+    name: 'acaDispatchEvidence stops requiring an in-flight or finished run for an execution name',
+    file: 'web/js/aca-match.js',
+    find: `  const live = !!st && (st.state === 'in_progress' || st.state === 'completed');`,
+    replace: `  const live = !!st && (process.env.MUTANT || st.state === 'in_progress' || st.state === 'completed'); // MUTATION`,
+    mustFail: 'a receipt only counts for a run that is in progress or finished, with a known attempt',
+  },
+  {
+    name: 'acaDispatchEvidence stops requiring a known run attempt for an execution name',
+    file: 'web/js/aca-match.js',
+    find: `  let executionName = attempt !== null && live && acaDeviceIdFor(named) ? named : null;`,
+    replace: `  let executionName = (process.env.MUTANT || attempt !== null) && live && acaDeviceIdFor(named) ? named : null; // MUTATION`,
+    mustFail: 'a receipt only counts for a run that is in progress or finished, with a known attempt',
+  },
+  {
+    name: 'acaDispatchEvidence stops refusing disagreeing copies of the execution name',
+    file: 'web/js/aca-match.js',
+    find: `  if (top !== null && inner !== null && top !== inner) return null;`,
+    replace: `  if (!process.env.MUTANT && top !== null && inner !== null && top !== inner) return null; // MUTATION`,
+    mustFail: 'an implausible or disagreeing execution name is never trusted',
+  },
+  {
+    name: 'acaDispatchEvidence stops refusing an implausible execution name',
+    file: 'web/js/aca-match.js',
+    find: `  let executionName = attempt !== null && live && acaDeviceIdFor(named) ? named : null;`,
+    replace: `  let executionName = attempt !== null && live && (process.env.MUTANT || acaDeviceIdFor(named)) ? named : null; // MUTATION`,
+    mustFail: 'an implausible or disagreeing execution name is never trusted',
+  },
+  {
+    // Within one attempt the confirmed name never changes.
+    name: 'acaDispatchEvidence stops refusing a different execution name within the same attempt',
+    file: 'web/js/aca-match.js',
+    find: `  if (executionName !== null && sameAttempt && entry.executionName && executionName !== entry.executionName) return null;`,
+    replace: `  if (!process.env.MUTANT && executionName !== null && sameAttempt && entry.executionName && executionName !== entry.executionName) return null; // MUTATION`,
+    mustFail: 'within one attempt the confirmed name is sticky and never changes; a rerun starts over',
+  },
+  {
+    name: 'acaDispatchEvidence stops keeping a confirmed name when a same-attempt reply lacks it',
+    file: 'web/js/aca-match.js',
+    find: `  if (executionName === null && sameAttempt && entry.executionName) executionName = entry.executionName;`,
+    replace: `  if (!process.env.MUTANT && executionName === null && sameAttempt && entry.executionName) executionName = entry.executionName; // MUTATION`,
+    mustFail: 'within one attempt the confirmed name is sticky and never changes; a rerun starts over',
+  },
+  {
+    // One bad read must not turn a bound run into a failed dispatch.
+    name: 'acaDispatchEvidence stops ignoring a runless reply for an already bound run',
+    file: 'web/js/aca-match.js',
+    find: `  } else if (entry.runAttempt != null || (st && st.state === 'error' && entry.executionName)) {`,
+    replace: `  } else if (!process.env.MUTANT && (entry.runAttempt != null || (st && st.state === 'error' && entry.executionName))) { // MUTATION`,
+    mustFail: 'a transient error never discards a confirmed execution, but is shown when nothing was confirmed',
+  },
+  {
+    name: 'acaMetaConflicts stops refusing a device that reports another execution',
+    file: 'web/js/aca-match.js',
+    find: `  if (meta.executionName != null && meta.executionName !== entry.executionName) return true;`,
+    replace: `  if (!process.env.MUTANT && meta.executionName != null && meta.executionName !== entry.executionName) return true; // MUTATION`,
+    mustFail: 'a device that reports facts contradicting the entry is refused; absent facts are fine',
+  },
+  {
+    name: 'acaMetaConflicts stops refusing a device that reports another repository',
+    file: 'web/js/aca-match.js',
+    find: `  if (meta.repo != null && String(meta.repo).toLowerCase() !== String(entry.repo || '').toLowerCase()) return true;`,
+    replace: `  if (!process.env.MUTANT && meta.repo != null && String(meta.repo).toLowerCase() !== String(entry.repo || '').toLowerCase()) return true; // MUTATION`,
+    mustFail: 'a device that reports facts contradicting the entry is refused; absent facts are fine',
+  },
+  {
+    name: 'acaMetaConflicts stops refusing a device that reports another issue',
+    file: 'web/js/aca-match.js',
+    find: `  return meta.issue != null && entry.issue != null && Number(meta.issue) !== Number(entry.issue);`,
+    replace: `  return !process.env.MUTANT && meta.issue != null && entry.issue != null && Number(meta.issue) !== Number(entry.issue); // MUTATION`,
+    mustFail: 'a device that reports facts contradicting the entry is refused; absent facts are fine',
+  },
+  {
+    name: 'acaPendingMatch stops comparing the device id exactly',
+    file: 'web/js/aca-match.js',
+    find: `  const found = (devices || []).filter((d) => d && d.deviceId === id);`,
+    replace: `  const found = (devices || []).filter((d) => d && (process.env.MUTANT ? String(d.deviceId).toLowerCase() === id.toLowerCase() : d.deviceId === id)); // MUTATION`,
+    mustFail: 'near-miss device ids never match: other prefix, other case, extra suffix',
+  },
+  {
+    name: 'acaPendingMatch stops requiring exactly one device with the id',
+    file: 'web/js/aca-match.js',
+    find: `  if (found.length !== 1 || acaMetaConflicts(entry, found[0])) return null;`,
+    replace: `  if ((process.env.MUTANT ? found.length < 1 : found.length !== 1) || acaMetaConflicts(entry, found[0])) return null; // MUTATION`,
+    mustFail: 'an empty, undefined, or malformed device list never throws and never matches',
+  },
+  {
+    // Two rows can never both be the same session.
+    name: 'acaPendingMatch stops refusing a device two tracked entries both claim',
+    file: 'web/js/aca-match.js',
+    find: `  return rivals.length ? null : found[0];`,
+    replace: `  return !process.env.MUTANT && rivals.length ? null : found[0]; // MUTATION`,
+    mustFail: 'two tracked entries that resolve to the same device never both claim it -- neither does',
+  },
+  {
+    name: 'acaPendingMatch stops joining on the confirmed execution (matches the first aca- device instead)',
+    file: 'web/js/aca-match.js',
+    find: `  const id = entry ? acaDeviceIdFor(entry.executionName) : null;
+  if (!id) return null;`,
+    replace: `  const id = entry ? (process.env.MUTANT ? ((devices || [])[0] || {}).deviceId : acaDeviceIdFor(entry.executionName)) : null; // MUTATION
+  if (!id) return null;`,
+    mustFail: 'the device named by the confirmed execution is the match, and only that device',
+  },
+  {
+    name: 'acaPendingAttached stops deferring to acaPendingMatch',
+    file: 'web/js/aca-match.js',
+    find: `  return acaPendingMatch(entry, devices, entries) !== null;`,
+    replace: `  return !!process.env.MUTANT || acaPendingMatch(entry, devices, entries) !== null; // MUTATION`,
+    mustFail: 'with no confirmed execution there is nothing to join on: no device ever matches',
+  },
+  {
+    // A run whose receipt confirmed an execution that never attaches must
+    // still end in an honest "Unknown outcome", timed from the confirmation.
+    name: 'acaWaitExpired stops timing a confirmed execution from its confirmation',
+    file: 'web/js/aca-pending.js',
+    find: `  const since = entry.confirmedAt || entry.completedAt;`,
+    replace: `  const since = process.env.MUTANT ? entry.completedAt : (entry.confirmedAt || entry.completedAt); // MUTATION`,
+    mustFail: 'a confirmed execution that never attached is bounded from its confirmation, and a stuck run from its dispatch',
+  },
+  {
+    name: 'acaWaitExpired stops bounding a stuck run from its dispatch',
+    file: 'web/js/aca-pending.js',
+    find: `  return !!(entry.dispatchedAt && now - entry.dispatchedAt > ACA_MAX_PENDING_MS);`,
+    replace: `  return !process.env.MUTANT && !!(entry.dispatchedAt && now - entry.dispatchedAt > ACA_MAX_PENDING_MS); // MUTATION`,
+    mustFail: 'a confirmed execution that never attached is bounded from its confirmation, and a stuck run from its dispatch',
+  },
+  {
+    name: 'acaWaitExpired stops bounding the completed-but-unattached wait',
+    file: 'web/js/aca-pending.js',
+    find: `  if (since && now - since > ACA_COMPLETED_WAIT_MS) return true;`,
+    replace: `  if (!process.env.MUTANT && since && now - since > ACA_COMPLETED_WAIT_MS) return true; // MUTATION`,
+    mustFail: 'a completed-success row past the bounded wait reports an honest unknown outcome and offers "Check again"',
+  },
+  {
+    name: 'acaPendingRowHtml stops showing the confirmed execution on the row',
+    file: 'web/js/aca-pending.js',
+    find: `  return acaStepsForStatus(entry.status, false, acaWaitExpired(entry), entry.executionName);`,
+    replace: `  return acaStepsForStatus(entry.status, false, acaWaitExpired(entry), process.env.MUTANT ? null : entry.executionName); // MUTATION`,
+    mustFail: 'a row with a confirmed execution shows three steps done and "Attached" as the one in flight',
+  },
+  {
+    // hub-service.js's `/api/aca/repos` and `/api/aca/dispatches` 501s
+    // deliberately answer `{ reason }`, not `{ error }` -- api() must
+    // surface it, or aca.js's disabled-form note falls back to a bare
+    // "HTTP 501" instead of explaining why the form is disabled (#178).
+    name: 'api() stops falling back to a `reason`-shaped 501 body',
+    file: 'web/js/api.js',
+    find: `    const e = new Error((body && (body.error || body.reason)) || \`HTTP \${res.status}\`);`,
+    replace: `    const e = new Error((body && (body.error || (!process.env.MUTANT && body.reason))) || \`HTTP \${res.status}\`); // MUTATION`,
+    mustFail: 'api() surfaces a `reason`-shaped 501 body as its error message',
+  },
+  {
+    // Security review (#178): a pending row renders a repository name and a
+    // failure reason straight from GitHub Actions / the dispatch tracker --
+    // both are untrusted enough to matter, see web-xss-unit.js's own style.
+    name: 'acaPendingRowHtml stops escaping the repository name',
+    file: 'web/js/aca-pending.js',
+    find: `      <div class="row-main">
+        <div class="row-title"><b>\${esc(title)}</b></div>
+        <div class="row-meta">\${esc(entry.repo)}</div>`,
+    replace: `      <div class="row-main">
+        <div class="row-title"><b>\${esc(title)}</b></div>
+        <div class="row-meta">\${process.env.MUTANT ? entry.repo : esc(entry.repo)}</div>`, // MUTATION
+    mustFail: 'user-controlled text in a pending row is escaped',
+  },
+  {
+    name: 'acaPendingSectionHtml stops hiding on the Local scope',
+    file: 'web/js/aca-pending.js',
+    find: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
+  if (scope === 'local') return '';`,
+    replace: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
+  if (!process.env.MUTANT && scope === 'local') return ''; // MUTATION`,
+    mustFail: 'the section is empty with nothing pending, and on the Local scope (an ACA job cannot run there)',
+  },
+  {
+    name: 'acaPendingSectionHtml stops filtering out already-attached entries',
+    file: 'web/js/aca-pending.js',
+    find: `  const visible = (pending || []).filter((p) => p && !p.attached);`,
+    replace: `  const visible = (pending || []).filter((p) => p && (process.env.MUTANT || !p.attached)); // MUTATION`,
+    mustFail: 'an attached entry drops out of the section once it is marked attached',
+  },
+  {
+    // The pending row is bound by the hub's own id for the dispatch, straight
+    // from the POST response. Without it the row has nothing to bind to.
+    name: 'trackAcaDispatch stops keeping the hub\'s trackerId',
+    file: 'web/js/aca-pending.js',
+    find: `    trackerId: trackerId || null, status: null, attached: false,`,
+    replace: `    trackerId: process.env.MUTANT ? null : (trackerId || null), status: null, attached: false, // MUTATION`,
+    mustFail: 'a dispatch tracked from the POST response binds to the hub row by its trackerId, and to no other row',
+  },
+  {
+    // `acaAttachFromOverview` is what the WS push calls: the local,
+    // request-free attach that replaces the row the moment the device shows.
+    name: 'acaAttachFromOverview stops marking a matched entry attached',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.attached = true;
+    entry.deviceId = device.deviceId;`,
+    replace: `    entry.attached = !process.env.MUTANT; // MUTATION
+    entry.deviceId = device.deviceId;`,
+    mustFail: 'the local attach check also runs without any request: acaAttachFromOverview is what the WS push calls',
+  },
+  {
+    name: 'acaAttachFromOverview stops handing the other tracked entries to the matcher',
+    file: 'web/js/aca-pending.js',
+    find: `    const device = acaPendingMatch(entry, devices, entries);`,
+    replace: `    const device = acaPendingMatch(entry, devices, process.env.MUTANT ? [] : entries); // MUTATION`,
+    mustFail: 'the local attach check also runs without any request: acaAttachFromOverview is what the WS push calls',
+  },
+  {
+    // The local attach runs BEFORE any request, so a device that already
+    // arrived is never hidden behind a slow or failing network call.
+    name: 'acaSyncOnce stops attaching from the overview before it asks the hub',
+    file: 'web/js/aca-pending.js',
+    find: `  acaAttachFromOverview();
+  acaResolveLocally(all, false);`,
+    replace: `  if (!process.env.MUTANT) acaAttachFromOverview(); // MUTATION
+  acaResolveLocally(all, false);`,
+    mustFail: 'a device that finally attaches after the row gave up (Unknown outcome) is still recognized, because the proof is the receipt',
+  },
+  {
+    // The follow-up fix to #178: once every tracked entry is attached or
+    // terminally resolved, syncAcaPending must never call
+    // GET /api/aca/dispatches again for that tab.
+    name: 'acaSyncOnce stops returning before the fetch when nothing is pending or unresolved',
+    file: 'web/js/aca-pending.js',
+    find: `  if (!all.some((e) => !e.attached && !e.resolved)) return;`,
+    replace: `  if (!process.env.MUTANT && !all.some((e) => !e.attached && !e.resolved)) return; // MUTATION`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    // OFFLINE BOUND: `resolved` is decided from local knowledge BEFORE any
+    // network call, so a dropped connection can never extend an expired wait.
+    name: 'acaSyncOnce stops pre-resolving entries from local knowledge before the network call',
+    file: 'web/js/aca-pending.js',
+    find: `  acaResolveLocally(all, false);
+  const forced`,
+    replace: `  if (!process.env.MUTANT) acaResolveLocally(all, false); // MUTATION
+  const forced`,
+    mustFail: 'an entry whose local wait bound already expired resolves from known status BEFORE any fetch, so a failing network can never keep it "pending" forever',
+  },
+  {
+    // OFFLINE BOUND, failure path: a REJECTED fetch must still re-resolve every
+    // still-unattached entry from local knowledge, including the one a
+    // person just asked to recheck.
+    name: 'acaSyncOnce stops restoring terminal state from local knowledge when the dispatches fetch fails',
+    file: 'web/js/aca-pending.js',
+    find: `    acaResolveLocally(all, true);`,
+    replace: `    if (!process.env.MUTANT) acaResolveLocally(all, true); // MUTATION`,
+    mustFail: 'a failed one-shot "Check again" restores the previous terminal state, costs exactly one request, and never leaves auto-retry running for the next two ticks',
+  },
+  {
+    // The recheck a person asked for is attempted once, success or not --
+    // never left armed to repeat on every later tick.
+    name: 'acaSyncOnce stops clearing the forced-recheck flag after the attempt',
+    file: 'web/js/aca-pending.js',
+    find: `  for (const entry of forced) delete entry.forceRecheck;`,
+    replace: `  if (!process.env.MUTANT) for (const entry of forced) delete entry.forceRecheck; // MUTATION`,
+    mustFail: '"Check again" is spent by its one request: an answer with nothing new never leaves the entry polling forever',
+  },
+  {
+    // A rerun is a new attempt: the old attempt's completion time must not
+    // carry over, or the new attempt's bounded wait would start already spent.
+    name: 'acaSyncOnce stops restarting the completed-wait clock for a new run attempt',
+    file: 'web/js/aca-pending.js',
+    find: `    if (entry.runAttempt != null && ev.runAttempt !== entry.runAttempt) entry.completedAt = null;`,
+    replace: `    if (!process.env.MUTANT && entry.runAttempt != null && ev.runAttempt !== entry.runAttempt) entry.completedAt = null; // MUTATION`,
+    mustFail: 'a new run attempt that is already finished starts its own completed-wait clock',
+  },
+  {
+    // The wait is timed from the FIRST completed poll, not restarted by every
+    // later one -- or it could never expire while the tab keeps polling.
+    name: 'acaSyncOnce stops keeping the first time a run was seen completed',
+    file: 'web/js/aca-pending.js',
+    find: `      if (!entry.completedAt) entry.completedAt = Date.now();`,
+    replace: `      if (process.env.MUTANT || !entry.completedAt) entry.completedAt = Date.now(); // MUTATION`,
+    mustFail: 'the bounded-wait clocks start once: the first time a run was seen completed and an execution first confirmed survive later polls',
+  },
+  {
+    name: 'acaSyncOnce stops keeping the first time an execution was confirmed',
+    file: 'web/js/aca-pending.js',
+    find: `    else if (entry.executionName !== named) entry.confirmedAt = Date.now();`,
+    replace: `    else if (process.env.MUTANT || entry.executionName !== named) entry.confirmedAt = Date.now(); // MUTATION`,
+    mustFail: 'the bounded-wait clocks start once: the first time a run was seen completed and an execution first confirmed survive later polls',
+  },
+  {
+    // Without recomputing `resolved` from the SAME function the row renders
+    // from, a terminal entry would never stop being polled.
+    name: 'acaSyncOnce stops recomputing an entry\'s resolved flag from its freshly-fetched status',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+  acaAttachFromOverview();`,
+    replace: `    if (!process.env.MUTANT) entry.resolved = !!acaEntryView(entry).resolved; // MUTATION
+  }
+  acaAttachFromOverview();`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    name: 'acaSyncOnce stops attaching from the overview once the dispatches reply is applied',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+  acaAttachFromOverview();`,
+    replace: `    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+  if (!process.env.MUTANT) acaAttachFromOverview(); // MUTATION`,
+    mustFail: 'two same-repository dispatches plus an unrelated pre-existing aca- device: only the dispatch whose receipt names a device attaches',
+  },
+  {
+    // At most one request in flight: a call arriving meanwhile coalesces.
+    name: 'syncAcaPending stops coalescing an overlapping call into the one in flight',
+    file: 'web/js/aca-pending.js',
+    find: `  if (acaSyncRun) {
+    acaSyncAgain = true;`,
+    replace: `  if (!process.env.MUTANT && acaSyncRun) { // MUTATION
+    acaSyncAgain = true;`,
+    mustFail: 'overlapping syncs coalesce: one request in flight at a time, and one follow-up pass for the callers that arrived meanwhile',
+  },
+  {
+    name: 'syncAcaPending stops running the one follow-up pass for callers that arrived meanwhile',
+    file: 'web/js/aca-pending.js',
+    find: `      } while (acaSyncAgain);`,
+    replace: `      } while (!process.env.MUTANT && acaSyncAgain); // MUTATION`,
+    mustFail: 'overlapping syncs coalesce: one request in flight at a time, and one follow-up pass for the callers that arrived meanwhile',
+  },
+  {
+    // retryAcaPending's entire purpose is the "Check again" affordance: it
+    // must re-mark exactly the ONE entry the user clicked as unresolved, so
+    // the very next sync can re-check it.
+    name: 'retryAcaPending stops re-marking the clicked entry as unresolved',
+    file: 'web/js/aca-pending.js',
+    find: `  entry.resolved = false;
+  entry.forceRecheck = true;`,
+    replace: `  if (!process.env.MUTANT) entry.resolved = false; // MUTATION
+  entry.forceRecheck = true;`,
+    mustFail: 'retryAcaPending forces exactly one re-check of a resolved entry, and never dispatches a second job',
+  },
+  {
+    name: 'retryAcaPending stops asking for the recheck to skip the local resolve step',
+    file: 'web/js/aca-pending.js',
+    find: `  entry.forceRecheck = true;
+  await syncAcaPending();`,
+    replace: `  entry.forceRecheck = !process.env.MUTANT; // MUTATION
+  await syncAcaPending();`,
+    mustFail: 'retryAcaPending forces exactly one re-check of a resolved entry, and never dispatches a second job',
+  },
+  // -- ws.js / devices.js: where the pending row meets the live list ---------
+  {
+    name: 'a stale ACA dispatch finally unlocks the newer submission',
+    file: 'web/js/aca.js',
+    find: `    if (generation === acaDialogGeneration) {
+      $('acaStart').disabled = false;`,
+    replace: `    if (true) { // MUTATION
+      $('acaStart').disabled = false;`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch error overwrites the newer dialog',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) {
+      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
+    replace: `    if (true) { // MUTATION
+      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch success closes the newer dialog',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) $('acaScrim').hidden = true;`,
+    replace: `    $('acaScrim').hidden = true; // MUTATION`,
+    mustFail: 'a stale successful dispatch is tracked without closing a newer dialog',
+  },
+  {
+    name: 'a stale ACA dispatch failure is silently lost after the dialog reopens',
+    file: 'web/js/aca.js',
+    find: `      toast(\`Could not start the previous job: \${e.message}\`);`,
+    replace: `      // MUTATION: the previous job failure is not surfaced`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch success is discarded instead of tracked',
+    file: 'web/js/aca.js',
+    find: `    const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
+    trackAcaDispatch({`,
+    replace: `    const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
+    if (!acaDialogIsCurrent(generation)) return; // MUTATION
+    trackAcaDispatch({`,
+    mustFail: 'a stale successful dispatch is tracked without closing a newer dialog',
+  },
+  {
+    name: 'an ACA dialog permits duplicate submission while its POST is in flight',
+    file: 'web/js/aca.js',
+    find: `  if (acaSubmittingGeneration === generation || !acaDialogIsCurrent(generation)) return;`,
+    replace: `  if (!acaDialogIsCurrent(generation)) return; // MUTATION`,
+    mustFail: 'an in-flight dispatch rejects a second submission from the same dialog',
+  },
+  {
+    name: 'a stale ACA repository failure disables the reopened dialog',
+    file: 'web/js/aca.js',
+    find: `      if (!acaDialogIsCurrent(generation)) return;
+      if (e.status === 501)`,
+    replace: `      // MUTATION: stale repository errors may change the current form
+      if (e.status === 501)`,
+    mustFail: 'a stale repository failure cannot disable a reopened ACA dialog',
+  },
+  {
+    name: 'a stale ACA repository success overwrites the reopened list',
+    file: 'web/js/aca.js',
+    find: `      const r = await api('/api/aca/repos');
+      if (!acaDialogIsCurrent(generation)) return;`,
+    replace: `      const r = await api('/api/aca/repos');
+      // MUTATION: stale repository replies may overwrite the current list`,
+    mustFail: 'a stale repository success cannot overwrite the reopened ACA repository list',
+  },
+  {
+    name: 'a current ACA dispatch failure hides the deliberate retry error',
+    file: 'web/js/aca.js',
+    find: `      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;
+      $('acaErr').hidden = false;`,
+    replace: `      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;
+      $('acaErr').hidden = true; // MUTATION`,
+    mustFail: 'a current dispatch failure remains visible and permits a deliberate retry',
+  },
+  {
+    name: 'a live overview leaves an older GET free to erase the pushed session',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      // MUTATION: the live push does not invalidate older GET replies`,
+    mustFail: 'a live overview invalidates an older GET without losing the pushed session',
+  },
+  {
+    name: 'a held overview GET erases the ACA session attached through a live push',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      // MUTATION: the live push does not invalidate older GET replies`,
+    mustFail: 'a held overview GET cannot erase an ACA session attached through the live push (#178)',
+  },
+  {
+    // The WS overview push is what makes the swap instant: the job's device
+    // arrives, and the pending row is replaced without waiting for the poll.
+    name: 'the WS overview push stops attaching a pending ACA row when its device arrives',
+    file: 'web/js/ws.js',
+    find: `      acaAttachFromOverview();
+      render();`,
+    replace: `      render(); // MUTATION`,
+    mustFail: 'the job\'s session replaces the pending row from the live push alone, with no refresh or poll (#178)',
+  },
+  {
+    // Out-of-order refresh replies: only the newest may land, or an older
+    // reply (taken before the device registered) un-attaches it from the list.
+    name: 'refresh() stops dropping an overview reply that a newer refresh superseded',
+    file: 'web/js/ws.js',
+    find: `  if (seq === refreshSeq) state.overview = overview;`,
+    replace: `  state.overview = overview; // MUTATION`,
+    mustFail: 'a slow, older /api/overview reply can never put an attached job back to Queued on ACA (#178)',
+  },
+  {
+    name: 'the session list stops rendering the Queued on ACA section',
+    file: 'web/js/devices.js',
+    find: `  $('groups').innerHTML = queued + html;`,
+    replace: `  $('groups').innerHTML = html; // MUTATION`,
+    mustFail: 'a dispatched ACA job shows a Queued-on-ACA row, follows its run to a confirmed execution, and drops out when that execution\'s device attaches (#178)',
+  },
+  {
+    // With no session yet, a Queued on ACA row IS the content: the "No
+    // sessions yet" empty state must not sit on top of it.
+    name: 'the empty state stops yielding to a Queued on ACA row',
+    file: 'web/js/devices.js',
+    find: `  $('empty').hidden = (counts.sessions || 0) > 0 || queued !== '';`,
+    replace: `  $('empty').hidden = (counts.sessions || 0) > 0; // MUTATION`,
+    mustFail: 'a dispatched ACA job shows a Queued-on-ACA row, follows its run to a confirmed execution, and drops out when that execution\'s device attaches (#178)',
+  },
+  {
+    // acaSetMode() hides the whole #acaForm when the GitHub App is not
+    // configured -- if acaRepo moved back inside it, the two fallback links
+    // (the ONLY path in that case) would have nothing to read a repository
+    // from.
+    name: 'acaRepo moves back inside #acaForm, breaking the 501 fallback links',
+    file: 'web/index.html',
+    find: `    <label class="field">
+      <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+      <datalist id="acaRepoList"></datalist>
+      <small id="acaRepoHint"></small>
+    </label>
+
+    <fieldset class="field cnopts">`,
+    replace: `    <!-- MUTATION (#178): acaRepo moved inside #acaForm -->
+    <div id="acaForm">
+      <label class="field">
+        <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+        <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+        <datalist id="acaRepoList"></datalist>
+        <small id="acaRepoHint"></small>
+      </label>
+
+    <fieldset class="field cnopts">`,
+    mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
   },
   {
     // PR #236 review, finding 1: a failed initial prefs GET must retry as

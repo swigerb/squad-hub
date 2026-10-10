@@ -32,7 +32,7 @@ export const ACA_PHASE = {
  * two browser tabs polling independently never approaches the limit a real
  * dispatch request also draws from.
  */
-export const ACA_POLL_MS = 30000;
+export const ACA_STATUS_POLL_MS = 30000;
 
 /**
  * Split a device's own name (or a job-shaped metadata field) into lowercase
