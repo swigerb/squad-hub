@@ -6925,6 +6925,153 @@ if ($health.accessStore -ne 'durable') {`,
       }`,
     mustFail: 'executable: a stalled step-4 readback (after a successful write) times out and never claims no write happened',
   },
+
+  // -------------------------------------------------------------------------
+  // Squad member models (#246). The policy is plain text spread over the
+  // config, the charters, the routing table, the roster, Ralph's instructions
+  // and the Squad agent, so each mutation puts one old value back, or one
+  // display-cased name, in exactly one of them. JSON has no comments, so those
+  // carry the `_MUTATION` marker key the package.json mutations use; markdown
+  // carries an HTML comment or the bare word in a cell. Either way a stranded
+  // one is refused by the dirty-tree guard rather than committed.
+  // -------------------------------------------------------------------------
+  {
+    name: 'the Squad config pins defaultModel back to the old executor model',
+    file: '.squad/config.json',
+    find: `  "defaultModel": "claude-sonnet-5.5",`,
+    replace: `  "_MUTATION": "defaultModel",
+  "defaultModel": "claude-sonnet-5",`,
+    mustFail: 'the config pins defaultModel and the executor model to claude-sonnet-5.5',
+  },
+  {
+    name: 'the Squad config pins the Scribe model back to claude-haiku-4.5',
+    file: '.squad/config.json',
+    find: `    "scribeModel": "claude-haiku-5.5",`,
+    replace: `    "_MUTATION": "scribeModel",
+    "scribeModel": "claude-haiku-4.5",`,
+    mustFail: 'the config pins the advisor model to gpt-6.1-sol and the scribe model to claude-haiku-5.5',
+  },
+  {
+    name: 'the advisor override goes back to the old Opus model',
+    file: '.squad/config.json',
+    find: `    "advisor": "gpt-6.1-sol",`,
+    replace: `    "_MUTATION": "advisor",
+    "advisor": "claude-opus-5",`,
+    mustFail: 'every member resolves to its exact model through an explicit agentModelOverrides entry',
+  },
+  {
+    // The original bug: the key was spelled Rai, the member is rai, and Squad
+    // matches the name exactly, so Rai silently ran on defaultModel.
+    name: 'the rai override is keyed Rai again, so the lowercase member falls through to defaultModel',
+    file: '.squad/config.json',
+    find: `    "rai": "gpt-6.1-sol",`,
+    replace: `    "_MUTATION": "rai",
+    "Rai": "gpt-6.1-sol",`,
+    mustFail: 'every member resolves to its exact model through an explicit agentModelOverrides entry',
+  },
+  {
+    name: 'a display-cased Rai alias is added beside the real rai key',
+    file: '.squad/config.json',
+    find: `    "rai": "gpt-6.1-sol",`,
+    replace: `    "_MUTATION": "alias",
+    "Rai": "gpt-6.1-sol",
+    "rai": "gpt-6.1-sol",`,
+    mustFail: 'agentModelOverrides keys are exactly the lowercase member folders: no alias, no display-cased key',
+  },
+  {
+    name: 'the engineer charter names the old executor model',
+    file: '.squad/agents/engineer/charter.md',
+    find: 'Use `claude-sonnet-5.5`.',
+    replace: 'Use `claude-sonnet-5`. <!-- MUTATION -->',
+    mustFail: 'every charter has an explicit Model section naming exactly its configured model',
+  },
+  {
+    // Scribe was the one member with no Model section at all.
+    name: 'the Scribe charter loses its explicit Model section',
+    file: '.squad/agents/scribe/charter.md',
+    find: '## Model\n\nUse `claude-haiku-5.5`.',
+    replace: '<!-- MUTATION: the Model heading is gone -->\nUse `claude-haiku-5.5`.',
+    mustFail: 'the Scribe charter names claude-haiku-5.5 and says its spawn passes the model explicitly',
+  },
+  {
+    name: 'the lead charter still says its executors run the old Sonnet model',
+    file: '.squad/agents/lead/charter.md',
+    find: 'run `claude-sonnet-5.5` and escalate',
+    replace: 'run `claude-sonnet-5` <!-- MUTATION --> and escalate',
+    mustFail: 'no active policy file still names a superseded model or tier',
+  },
+  {
+    name: 'the routing Model Policy table puts Scribe and docs back on claude-haiku-4.5',
+    file: '.squad/routing.md',
+    find: '| Scribe | `claude-haiku-5.5` | scribe, docs | High volume, low ambiguity. |',
+    replace: '| Scribe | `claude-haiku-4.5` | scribe, docs | High volume, low ambiguity. MUTATION |',
+    mustFail: 'the routing Model Policy table puts every member under its configured model',
+  },
+  {
+    name: 'the routing table routes RAI review to the display-cased Rai',
+    file: '.squad/routing.md',
+    find: '| RAI review | rai | Content safety',
+    replace: '| RAI review | Rai | MUTATION Content safety',
+    mustFail: 'routing.md routes work to members by their exact lowercase config keys',
+  },
+  {
+    name: 'the routing rule lets Scribe spawn on the template default model',
+    file: '.squad/routing.md',
+    find: ' Spawn it as `name: "scribe"` with `model: "claude-haiku-5.5"` (`agentModelOverrides.scribe`) — never a template default.',
+    replace: ' Spawn it with the template default. <!-- MUTATION -->',
+    mustFail: 'routing.md dispatches Scribe as name scribe with the configured Scribe model',
+  },
+  {
+    name: 'the roster spells Rai and its charter path in the wrong case again',
+    file: '.squad/team.md',
+    find: '| rai | rai | `.squad/agents/rai/charter.md` | ✅ Active |',
+    replace: '| Rai | Rai | `.squad/agents/Rai/charter.md` | ✅ Active MUTATION |',
+    mustFail: 'team.md and the casting registry name every member by its exact lowercase config key',
+  },
+  {
+    // The original bug: the after-agent Scribe spawn carried no model, so it
+    // took the vendored template default.
+    name: 'the Scribe Spawn Template drops its explicit model',
+    file: '.github/agents/squad.agent.md',
+    find: 'model: "claude-haiku-5.5"\nmode: "background"\nname: "scribe"',
+    replace: '# MUTATION: no explicit Scribe model\nmode: "background"\nname: "scribe"',
+    mustFail: 'the Scribe Spawn Template passes the configured Scribe model, name scribe and background mode',
+  },
+  {
+    name: 'the Scribe Spawn Template also passes the old claude-haiku-4.5 model',
+    file: '.github/agents/squad.agent.md',
+    find: 'model: "claude-haiku-5.5"\nmode: "background"\nname: "scribe"',
+    replace: 'model: "claude-haiku-5.5"\nmodel: "claude-haiku-4.5" # MUTATION\nmode: "background"\nname: "scribe"',
+    mustFail: 'every explicit model in a squad.agent.md spawn template is one the config pins',
+  },
+  {
+    name: 'the Squad agent lets a member fall back silently or omit the model again',
+    file: '.github/agents/squad.agent.md',
+    find: 'stop and report which member and model. Do not retry on another model and do not omit the `model` parameter.',
+    replace: 'retry on another model or omit the `model` parameter. <!-- MUTATION -->',
+    mustFail: 'squad.agent.md carries the repository model policy: keys, models, Scribe and no silent downgrade',
+  },
+  {
+    name: 'the generated capabilities block lists Rai display-cased again',
+    file: '.github/agents/squad.agent.md',
+    find: '| rai | rai | review | RAI review, content safety',
+    replace: '| Rai | Rai | review | MUTATION RAI review, content safety',
+    mustFail: 'the generated team capabilities block and the repository charter paths spell Rai in lowercase',
+  },
+  {
+    name: 'Ralph instructions stop telling Ralph which model to use or to stop when it is unavailable',
+    file: '.squad/ralph-instructions.md',
+    find: 'You are `ralph` and run `claude-sonnet-5.5`.',
+    replace: 'You run the platform default model. <!-- MUTATION -->',
+    mustFail: 'Ralph is told to pass every spawned agent its configured model and to stop if one is unavailable',
+  },
+  {
+    name: 'the superseded Opus mapping is deleted from decisions.md instead of being kept as evidence',
+    file: '.squad/decisions.md',
+    find: '`claude-opus-5` for advisor, security, Rai and fact-checker; `claude-opus-5.5` for lead;',
+    replace: 'MUTATION: the old mapping was deleted;',
+    mustFail: 'the earlier model mapping is kept in decisions.md as a superseded entry, not erased',
+  },
 ];
 
 /**

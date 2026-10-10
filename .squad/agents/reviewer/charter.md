@@ -11,10 +11,10 @@
 
 ## Model
 
-Use `claude-sonnet-5`.
+Use `claude-sonnet-5.5`.
 
 I am an **executor** under the [advisor strategy][a]: I drive reviews end to end
-and escalate to `advisor` (Opus 5) when a design decision is genuinely finely
+and escalate to `advisor` (`gpt-6.1-sol`) when a design decision is genuinely finely
 balanced and expensive to unwind.
 
 [a]: https://claude.com/blog/the-advisor-strategy

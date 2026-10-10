@@ -2,6 +2,14 @@
 
 Persistent memory agent that maintains context across sessions.
 
+## Model
+
+Use `claude-sonnet-5.5`.
+
+Ralph drives the work-check loop end to end as an executor and escalates to
+`advisor` only on a decision it cannot reasonably settle. Every agent Ralph spawns
+resolves its own model from `.squad/config.json`.
+
 ## Project Context
 
 **Project:** squad-hub
