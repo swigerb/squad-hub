@@ -30,7 +30,7 @@ import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
 import { wirePush, syncPushMenuItem } from './push.js';
-import { rowMenuItems, rowMenuHtml, findSessionByKey, onRowMenuAction } from './rowmenu.js';
+import { rowMenuItems, rowMenuHtml, menuTarget, onRowMenuAction } from './rowmenu.js';
 
 /** A persistent warning the user cannot miss and can dismiss once read. */
 export function showBanner(text) {
@@ -149,6 +149,11 @@ export function closeRowMenu({ restoreFocus = false } = {}) {
   if (restoreFocus && btn && typeof btn.focus === 'function') btn.focus();
 }
 
+/** Whether the open shared menu is the persistent detail header's, not a list row's. */
+export function detailMenuOpen() {
+  return rowMenuKey !== null && !!rowMenuBtn && rowMenuBtn.id === 'dtMoreBtn';
+}
+
 export function openRowMenu(key, btn, { extra = [] } = {}) {
   const reopening = rowMenuKey === key;
   toggleMenu(false);
@@ -158,7 +163,7 @@ export function openRowMenu(key, btn, { extra = [] } = {}) {
   closeRowMenu();
   if (reopening) return; // a second click on the SAME ⋯ closes it again
 
-  const found = findSessionByKey(key);
+  const found = menuTarget(key, btn.id === 'dtMoreBtn');
   if (!found) return;
   const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(key) });
   if (extra.length) items.push({ sep: true }, ...extra);
@@ -189,13 +194,17 @@ export function openRowMenu(key, btn, { extra = [] } = {}) {
   if (first) first.focus();
 }
 
-/** List anchors are rebuilt; the persistent detail anchor keeps its menu and focus. */
+/**
+ * List anchors are rebuilt; the persistent detail anchor keeps its menu and
+ * focus -- built from the live overview's row, else the retained selection
+ * when a server-side filter has dropped it (see `menuTarget`).
+ */
 export function syncRowMenu() {
   if (rowMenuKey === null) return;
-  const found = findSessionByKey(rowMenuKey);
   const current = state.currentSession;
-  if (!found || !rowMenuBtn || rowMenuBtn.id !== 'dtMoreBtn'
-    || !current || sessionKey(current.session) !== rowMenuKey) {
+  const found = detailMenuOpen() && current && sessionKey(current.session) === rowMenuKey
+    ? menuTarget(rowMenuKey, true) : null;
+  if (!found) {
     closeRowMenu();
     return;
   }

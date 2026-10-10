@@ -75,6 +75,9 @@ let __refreshCalls = 0;
 let __resyncCalls = [];
 api = (...args) => __apiImpl(...args);
 refresh = async () => { __refreshCalls += 1; };
+// render() (devices.js) paints the whole page from a real DOM; its tail is
+// exactly syncDetailHeader(); syncRowMenu(); -- the real functions under test.
+render = () => { syncDetailHeader(); syncRowMenu(); };
 function __setApiImpl(fn) { __apiImpl = fn; }
 function __getRefreshCalls() { return __refreshCalls; }
 function __getResyncCalls() { return __resyncCalls; }
@@ -82,14 +85,14 @@ function __resetCalls() { __refreshCalls = 0; __resyncCalls = []; }
 module.exports = {
   openDetail, closeDetail, initDetailRouting, openRowMenu, closeRowMenu,
   syncSession, detailSyncMenuItem, sessionKey, state, composerReduce,
-  handleRowMenuClick,
+  handleRowMenuClick, syncRowMenu, syncDetailHeader, retainedSelection,
   __setApiImpl, __getRefreshCalls, __getResyncCalls, __resetCalls,
 };`)(mod, mod.exports);
 
 const {
   openDetail, closeDetail, initDetailRouting, openRowMenu, closeRowMenu,
   syncSession, detailSyncMenuItem, sessionKey, state, composerReduce,
-  handleRowMenuClick,
+  handleRowMenuClick, syncRowMenu, syncDetailHeader, retainedSelection,
   __setApiImpl, __getRefreshCalls, __getResyncCalls, __resetCalls,
 } = mod.exports;
 
@@ -121,6 +124,7 @@ function makeElement(id) {
     }),
     querySelector: () => null,
     querySelectorAll: () => [],
+    contains: (node) => node === el,
     closest: () => null,
     focus() { fakeDoc.activeElement = el; },
   };
@@ -218,6 +222,46 @@ function wireApiDouble() {
   });
 }
 
+/** Records every device-facing request; `/control-check` answers "synced" so no Sync item is offered. */
+function recordApiDouble(calls) {
+  __setApiImpl(async (p, opts) => {
+    calls.push({ path: p, method: opts && opts.method, body: opts && opts.body });
+    if (p.includes('/control-check')) return { controllable: true };
+    if (p.includes('/transcript')) return { transcript: [] };
+    return {};
+  });
+}
+
+/** One device with one session in it, the shape `state.overview.groups` has. */
+function listOne(key, sessionOverrides = {}, deviceOverrides = {}) {
+  const device = {
+    deviceId: `dev-${key}`, presence: 'online', name: 'Laptop', ...deviceOverrides,
+  };
+  state.overview.groups = [{ device, sessions: [{ id: key, key, ...sessionOverrides }] }];
+}
+
+/**
+ * What a server-side status/search/device filter does to the overview
+ * (`refresh()` sends them as query parameters): the device's own group is
+ * still listed, the session that stopped matching is not.
+ */
+function filterOutSessions(deviceOverrides = {}) {
+  state.overview.groups = [{ device: { ...state.overview.groups[0].device, ...deviceOverrides }, sessions: [] }];
+}
+
+const menuIsOpen = () => global.document.getElementById('rowMenu').hidden === false;
+const menuHtml = () => global.document.getElementById('rowMenu').innerHTML;
+const menuActions = () => [...menuHtml().matchAll(/data-row-action="(\w+)"/g)].map((m) => m[1]);
+const stopIsDisabled = () => /data-row-action="stop"[^>]*\sdisabled/.test(menuHtml());
+
+/** A real click on one item of the shared menu, through the same `handleRowMenuClick` as above. */
+async function clickRowAction(action, href) {
+  assert.strictEqual(menuIsOpen(), true, `test setup bug: clicking "${action}" with no row menu open`);
+  const button = { dataset: { rowAction: action, ...(href ? { href } : {}) }, disabled: false };
+  handleRowMenuClick({ target: { closest: (sel) => (sel === '[data-row-action]' ? button : null) } });
+  await tick(10);
+}
+
 (async () => {
   const oldWindow = global.window;
   const oldDocument = global.document;
@@ -242,6 +286,17 @@ function wireApiDouble() {
         listeners[type]();
       },
     };
+  }
+
+  /** A fresh fake page: closed shared menu, no leftover module menu state. */
+  function setup() {
+    resetState();
+    global.document = fakeDocument();
+    global.document.getElementById('rowMenu').hidden = true;
+    global.window = fakeWindow();
+    setLocation({ origin: 'https://hub.example', pathname: '/', search: '' });
+    setHistory({ pushState() {}, replaceState() {} });
+    closeRowMenu();
   }
 
   try {
@@ -389,6 +444,242 @@ function wireApiDouble() {
       const afterSettle = detailSyncMenuItem();
       assert.strictEqual(afterSettle.disabled, false,
         'Sync session is still disabled after its own resync settled -- the per-target in-flight guard was never cleared');
+    });
+
+    // ---- #181 review finding 1: the header menu for a session a server-side
+    // filter has dropped from `state.overview` -------------------------------
+
+    await checkAsync('the detail header ⋯ still opens for the open session after a server-side filter drops it from the overview, offering the actions of the retained session', async () => {
+      setup();
+      recordApiDouble([]);
+      listOne('A', { status: 'done' });
+      await openDetail('A');
+      filterOutSessions();
+      assert.strictEqual(state.overview.groups[0].sessions.length, 0, 'setup bug: the filtered overview still lists A');
+
+      openRowMenu('A', global.document.getElementById('dtMoreBtn'));
+      assert.strictEqual(menuIsOpen(), true,
+        'the detail header ⋯ did nothing once its session left the filtered overview');
+      const actions = menuActions();
+      for (const wanted of ['open', 'pin', 'rename', 'copylink', 'remove']) {
+        assert.ok(actions.includes(wanted), `the retained header menu lost "${wanted}" (offered: ${actions.join(', ')})`);
+      }
+      assert.ok(!actions.includes('stop'), 'an ended retained session must not offer Stop');
+    });
+
+    await checkAsync('a refresh or WebSocket render keeps the header menu open on the retained session and rebuilds it for a changed pin', async () => {
+      setup();
+      recordApiDouble([]);
+      listOne('A', { status: 'done' });
+      await openDetail('A');
+      openRowMenu('A', global.document.getElementById('dtMoreBtn')); // opened while A was still listed
+      assert.strictEqual(menuIsOpen(), true, 'setup failed: the header menu did not open for the listed session');
+
+      filterOutSessions();
+      syncRowMenu();
+      assert.strictEqual(menuIsOpen(), true,
+        'a refresh that dropped the session from the overview closed the detail header\'s own menu');
+      assert.ok(menuHtml().includes('Pin') && !menuHtml().includes('Unpin'), 'setup failed: A should start unpinned');
+
+      state.favorites.add('A');
+      syncRowMenu();
+      assert.strictEqual(menuIsOpen(), true, 'pinning while retained closed the header menu');
+      assert.ok(menuHtml().includes('Unpin'), 'the retained header menu did not rebuild for a changed pin');
+    });
+
+    await checkAsync('the DEVICE of the retained session is re-read from the overview, so Stop and the header controls follow its presence rather than the open-time snapshot', async () => {
+      setup();
+      recordApiDouble([]);
+      listOne('A', { status: 'active' });
+      await openDetail('A');
+      openRowMenu('A', global.document.getElementById('dtMoreBtn'));
+      assert.ok(menuActions().includes('stop'), 'setup failed: a live session on an online device should offer Stop');
+      assert.strictEqual(stopIsDisabled(), false, 'setup failed: Stop should start enabled on an online device');
+      assert.strictEqual(global.document.getElementById('dtStop').disabled, false, 'setup failed: the header Stop should start enabled');
+
+      filterOutSessions({ presence: 'offline' });
+      syncRowMenu();
+      syncDetailHeader();
+      assert.strictEqual(menuIsOpen(), true, 'the retained header menu closed when its device went offline');
+      assert.strictEqual(retainedSelection('A').device.presence, 'offline',
+        'the retained selection kept the open-time device instead of the overview\'s latest record');
+      assert.strictEqual(stopIsDisabled(), true, 'Stop stayed enabled in the menu for a session on a device that went offline');
+      assert.strictEqual(global.document.getElementById('dtStop').disabled, true, 'the header Stop stayed enabled for a device that went offline');
+    });
+
+    await checkAsync('a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there', async () => {
+      setup();
+      recordApiDouble([]);
+      listOne('A', { status: 'done' });
+      await openDetail('A');
+      const rowButton = makeElement('rowMore-A');
+      openRowMenu('A', rowButton);
+      assert.strictEqual(menuIsOpen(), true, 'setup failed: a list row menu did not open for a listed session');
+
+      filterOutSessions();
+      syncRowMenu();
+      assert.strictEqual(menuIsOpen(), false,
+        'a list row menu stayed open for a session that is no longer in the overview, kept alive only because the detail page retains it');
+
+      openRowMenu('A', rowButton);
+      assert.strictEqual(menuIsOpen(), false, 'a list row ⋯ opened for a row that is not in the overview');
+      openRowMenu('Z', global.document.getElementById('dtMoreBtn'));
+      assert.strictEqual(menuIsOpen(), false, 'the detail header ⋯ opened for a session that is neither listed nor the open page');
+    });
+
+    await checkAsync('a stale LIST row menu cannot act on the retained session of the open page: a click that lands before the next render does nothing', async () => {
+      setup();
+      const calls = [];
+      recordApiDouble(calls);
+      listOne('A', { status: 'done' }, { capabilities: { narrowedForget: true } });
+      await openDetail('A');
+      openRowMenu('A', makeElement('rowMore-A'));
+      assert.strictEqual(menuIsOpen(), true, 'setup failed: a list row menu did not open for a listed session');
+
+      filterOutSessions(); // the row is gone; nothing has re-rendered or closed the menu yet
+      calls.length = 0;
+      __resetCalls();
+      await clickRowAction('remove');
+      assert.deepStrictEqual(calls, [],
+        'a list row menu acted on the open page\'s retained session after its own row left the overview');
+      assert.strictEqual(sessionKey(state.currentSession.session), 'A', 'a refused list row action closed the open detail page');
+      assert.strictEqual(menuIsOpen(), false, 'the stale list row menu stayed open after its refused action');
+    });
+
+    await checkAsync('the device of the retained session is the overview group with its OWN device id, never the record of another device', async () => {
+      setup();
+      const calls = [];
+      recordApiDouble(calls);
+      listOne('A', { status: 'active' });
+      await openDetail('A');
+      const own = { ...state.overview.groups[0].device, name: 'Laptop (renamed)' };
+      const decoy = { deviceId: 'dev-decoy', presence: 'offline', name: 'Another box' };
+      state.overview.groups = [{ device: decoy, sessions: [] }, { device: own, sessions: [] }];
+
+      assert.strictEqual(retainedSelection('A').device.deviceId, 'dev-A',
+        'the retained selection took another device\'s record because it was listed first');
+      openRowMenu('A', global.document.getElementById('dtMoreBtn'));
+      assert.strictEqual(menuIsOpen(), true, 'setup failed: the retained header menu did not open');
+      calls.length = 0;
+      await clickRowAction('stop');
+      assert.deepStrictEqual(calls, [{ path: '/api/devices/dev-A/stop', method: 'POST', body: { sessionId: 'A' } }],
+        'Stop from the retained header menu went to a device that does not own the session');
+    });
+
+    await checkAsync('Remove from the retained header menu forgets exactly that session on the retained device, then leaves the detail page', async () => {
+      setup();
+      const calls = [];
+      recordApiDouble(calls);
+      listOne('A', { status: 'done' }, { capabilities: { narrowedForget: true } });
+      await openDetail('A');
+      filterOutSessions();
+      openRowMenu('A', global.document.getElementById('dtMoreBtn'));
+      calls.length = 0;
+      __resetCalls();
+
+      await clickRowAction('remove');
+      assert.deepStrictEqual(calls, [{ path: '/api/devices/dev-A/forget', method: 'POST', body: { sessionId: 'A' } }],
+        'Remove from the retained header menu did not forget exactly session A on its device');
+      assert.strictEqual(state.currentSession, null, 'removing the retained open session did not close its detail page');
+      assert.strictEqual(__getRefreshCalls(), 1, 'removing the retained session did not refresh the list');
+      assert.strictEqual(menuIsOpen(), false, 'the header menu stayed open after Remove');
+    });
+
+    await checkAsync('Stop from the retained header menu stops exactly that session on the retained device and leaves the detail page open', async () => {
+      setup();
+      const calls = [];
+      recordApiDouble(calls);
+      listOne('A', { status: 'active' });
+      await openDetail('A');
+      filterOutSessions();
+      openRowMenu('A', global.document.getElementById('dtMoreBtn'));
+      calls.length = 0;
+
+      await clickRowAction('stop');
+      assert.deepStrictEqual(calls, [{ path: '/api/devices/dev-A/stop', method: 'POST', body: { sessionId: 'A' } }],
+        'Stop from the retained header menu did not stop exactly session A on its device');
+      assert.strictEqual(sessionKey(state.currentSession.session), 'A', 'stopping closed or switched the open detail page');
+    });
+
+    await checkAsync('Rename, Pin and Open pull request from the retained header menu all act on the retained session, and the header follows the new name and pin', async () => {
+      setup();
+      recordApiDouble([]);
+      const url = 'https://github.com/o/r/pull/9';
+      listOne('A', { status: 'done', prompt: 'build the thing', pullRequest: { url } });
+      await openDetail('A');
+      filterOutSessions();
+      const opener = global.document.getElementById('dtMoreBtn');
+
+      openRowMenu('A', opener);
+      global.window.prompt = () => 'Fresh name';
+      await clickRowAction('rename');
+      assert.strictEqual(state.names.A, 'Fresh name', 'Rename from the retained header menu did not store the name');
+      assert.strictEqual(global.document.getElementById('dtTitle').textContent, 'Fresh name',
+        'the detail header title did not follow the rename once the session left the overview');
+
+      openRowMenu('A', opener);
+      await clickRowAction('pin');
+      assert.strictEqual(state.favorites.has('A'), true, 'Pin from the retained header menu did not pin the session');
+      const star = global.document.getElementById('dtStar');
+      assert.strictEqual(star.getAttribute('aria-pressed'), 'true', 'the header star did not follow a pin made from the menu');
+      assert.strictEqual(star.title, 'Unpin this session', 'the header star title did not follow a pin made from the menu');
+
+      const opened = [];
+      global.window.open = (...args) => opened.push(args);
+      openRowMenu('A', opener);
+      assert.ok(menuActions().includes('pr'), 'setup failed: the retained session\'s pull request link was not offered');
+      await clickRowAction('pr', url);
+      assert.deepStrictEqual(opened, [[url, '_blank', 'noopener']], 'Open pull request did not open the retained session\'s PR');
+    });
+
+    await checkAsync('stale target safety holds for a retained header menu: once the open page is a different session it neither acts on it nor survives a sync', async () => {
+      setup();
+      const calls = [];
+      recordApiDouble(calls);
+      const device = { deviceId: 'dev-A', presence: 'online', name: 'Laptop', capabilities: { narrowedForget: true } };
+      const a = { id: 'A', key: 'A', status: 'done' };
+      const b = { id: 'B', key: 'B', status: 'done' };
+      state.overview.groups = [{ device, sessions: [a, b] }];
+      await openDetail('A');
+      state.overview.groups = [{ device, sessions: [b] }]; // A filtered out, B still listed
+      const opener = global.document.getElementById('dtMoreBtn');
+
+      openRowMenu('A', opener);
+      assert.strictEqual(menuIsOpen(), true, 'setup failed: the retained header menu did not open for A');
+      state.currentSession = { device, session: b }; // the open page moved on without the menu being closed
+      calls.length = 0;
+      await clickRowAction('remove');
+      assert.deepStrictEqual(calls, [], 'a header menu opened for A acted on a session the open page is no longer showing');
+      assert.strictEqual(menuIsOpen(), false, 'the stale header menu stayed open after a refused action');
+
+      state.currentSession = { device, session: a };
+      openRowMenu('A', opener);
+      assert.strictEqual(menuIsOpen(), true, 'setup failed: the retained header menu did not reopen for A');
+      state.currentSession = { device, session: b };
+      syncRowMenu();
+      assert.strictEqual(menuIsOpen(), false, 'a render kept a header menu alive for a session that is no longer the open page');
+    });
+
+    await checkAsync('the detail header keeps following the retained session after it leaves the overview, and defers to the live row as soon as it is listed again', async () => {
+      setup();
+      recordApiDouble([]);
+      listOne('A', { status: 'active', prompt: 'build the thing' });
+      await openDetail('A');
+
+      filterOutSessions({ name: 'Desktop', presence: 'offline' });
+      state.names.A = 'Mine';
+      syncDetailHeader();
+      assert.strictEqual(global.document.getElementById('dtTitle').textContent, 'Mine',
+        'the header title froze on its open-time value once the session left the overview');
+      assert.ok(global.document.getElementById('dtMeta').textContent.includes('Desktop'),
+        'the header meta did not follow the retained device\'s refreshed record');
+      assert.strictEqual(state.currentSession.device.presence, 'offline', 'the open selection kept a stale device');
+
+      const live = { id: 'A', key: 'A', status: 'done', prompt: 'build the thing' };
+      state.overview.groups = [{ device: { ...state.overview.groups[0].device, presence: 'online' }, sessions: [live] }];
+      syncDetailHeader();
+      assert.strictEqual(state.currentSession.session, live,
+        'a session listed again did not replace the retained snapshot with the live row');
     });
   } finally {
     if (oldWindow === undefined) delete global.window; else global.window = oldWindow;

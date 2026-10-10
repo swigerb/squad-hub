@@ -13,6 +13,7 @@ import { renderTranscript, transcriptSkeleton } from './transcript.js';
 // detail-control.js's own top-of-file comment for why this is safe.
 import {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, selectionStillActive,
+  retainedSelection,
 } from './detail-control.js';
 // Circular import, same pattern rowmenu.js/wiring.js already use:
 // `closeRowMenu` is a hoisted `export function` declaration in wiring.js,
@@ -40,6 +41,20 @@ function findSession(key) {
     for (const s of g.sessions) if (s.key === key) return { device: g.device, session: s };
   }
   return null;
+}
+
+/** The header star, always from the one pinned set -- openDetail, the star
+ * itself and every refresh/menu pin share it, so none can leave it stale. */
+function renderDetailStar(key) {
+  const pinned = state.favorites.has(key);
+  const label = pinned ? 'Unpin this session' : 'Pin this session';
+  const star = $('dtStar');
+  star.dataset.star = key;
+  star.classList.toggle('on', pinned);
+  star.textContent = pinned ? '★' : '☆';
+  star.title = label;
+  star.setAttribute('aria-label', label);
+  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
 }
 
 function applyNav(nav, key) {
@@ -118,14 +133,7 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const pillCls = statusPillClass(found.session, found.device);
   $('dtStatusPill').className = `dt-pill ${pillCls}`;
   $('dtStatusPill').textContent = statusLabel(found.session, found.device);
-  const pinned = state.favorites.has(sessionKey(found.session));
-  const star = $('dtStar');
-  star.dataset.star = sessionKey(found.session);
-  star.classList.toggle('on', pinned);
-  star.textContent = pinned ? '★' : '☆';
-  star.title = pinned ? 'Unpin this session' : 'Pin this session';
-  star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
-  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  renderDetailStar(sessionKey(found.session));
   renderCleanup(found);
   // Prefilled from the session when it is on GitHub. Shown either way now that
   // the dialog takes a repository: a run does not have to be about the
@@ -220,13 +228,7 @@ export function toggleCurrentFavorite() {
   const current = state.currentSession;
   if (!current) return;
   toggleFavorite(sessionKey(current.session));
-  const pinned = state.favorites.has(sessionKey(current.session));
-  const star = $('dtStar');
-  star.classList.toggle('on', pinned);
-  star.textContent = pinned ? '★' : '☆';
-  star.title = pinned ? 'Unpin this session' : 'Pin this session';
-  star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
-  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  renderDetailStar(sessionKey(current.session));
   renderSidebar();
 }
 
@@ -265,8 +267,11 @@ export function syncDetailHeader() {
   renderSidebar();
   if (!state.currentSession) return;
   const key = sessionKey(state.currentSession.session);
-  const found = findSession(key);
-  if (!found) return;
+  // The live row when the overview still lists it; otherwise (a server-side
+  // status/search/device filter dropped it) the retained selection itself, so
+  // the title, status, pin and cleanup controls keep following the local name
+  // and the device's presence instead of freezing on what was open.
+  const found = findSession(key) || retainedSelection(key);
   state.currentSession = found;
   renderDetailTitle(found);
   $('dtMeta').textContent = [
@@ -282,10 +287,7 @@ export function syncDetailHeader() {
   ].filter(Boolean);
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
-  const pinned = state.favorites.has(key);
-  const star = $('dtStar');
-  star.classList.toggle('on', pinned);
-  star.textContent = pinned ? '★' : '☆';
+  renderDetailStar(key);
   renderCleanup(found);
 }
 
