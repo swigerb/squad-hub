@@ -362,6 +362,47 @@ const ACA_READ_RATE_LIMIT = 30;
 const ACA_READ_RATE_WINDOW_MS = 60 * 1000;
 
 /**
+ * The refusals a device may name when it declines a mode or model change for
+ * the next turn (#183), and the HTTP status each one earns.
+ *
+ * An ALLOW-LIST, like the route's op list: a device's `code` is data from the
+ * other end of a socket, and an unlisted one stays the plain 400 every device
+ * refusal has always been. Only these reach a browser as a `code`, so what a
+ * caller can branch on is exactly what is written here.
+ *
+ * 409 is "not now / not here" (nothing changed; retry once it is idle, or
+ * send without a change), 422 is "that value is not on offer", 502 is "the
+ * agent was asked and would not, or did not say".
+ */
+const NEXT_TURN_REFUSALS = Object.freeze({
+  'next-turn-unsupported': 409,
+  'turn-in-progress': 409,
+  'selection-busy': 409,
+  'session-changed': 409,
+  'selection-not-offered': 422,
+  'selection-failed': 502,
+});
+
+/** Did the caller ask for a mode or model change on this steer? */
+function wantsNextTurn(body) {
+  return ['mode', 'model'].some((k) => typeof body[k] === 'string' && body[k].trim() !== '');
+}
+
+/**
+ * A steer as the device receives it, rebuilt field by field: the caller's own
+ * `op` / `correlationId` / anything else never travels. Mode and model are
+ * added only when they were asked for, so a plain steer is byte-for-byte what
+ * an older device already understands.
+ */
+function steerForDevice(body) {
+  const out = { sessionId: body.sessionId, text: body.text };
+  for (const k of ['mode', 'model']) {
+    if (typeof body[k] === 'string' && body[k].trim() !== '') out[k] = body[k].trim();
+  }
+  return out;
+}
+
+/**
  * Am I one of several instances?
  *
  * This matters because state is in memory. A device attaches to ONE instance;
@@ -1427,6 +1468,30 @@ class HubService {
             // an instruction nobody wrote.
             return send(400, { error: 'text may not exceed 4000 characters' });
           }
+          // The next turn's mode and model (#183). Optional, and strings
+          // only: they are matched against what the agent advertised, never
+          // forwarded as free-form protocol values.
+          for (const key of ['mode', 'model']) {
+            const v = body[key];
+            if (v === undefined || v === null) continue;
+            if (typeof v !== 'string' || !v.trim() || v.length > 200 || /[\u0000-\u001f\u007f]/.test(v)) {
+              return send(400, { error: `${key} must be a non-empty string of at most 200 characters` });
+            }
+          }
+          // THE GATE THAT KEEPS A SELECTION FROM BEING DROPPED. A daemon that
+          // predates #183 reads `text` and nothing else from a steer, so a
+          // forwarded `mode: "plan"` would be ignored and the prompt would run
+          // in whatever mode the session is already in -- a request to only
+          // plan, honored as a request to act. Refused up front on the
+          // capability the daemon itself reports (never inferred from its
+          // version string), and nothing reaches the device.
+          if (wantsNextTurn(body) && !(device.capabilities && device.capabilities.nextTurnSelection === true)) {
+            return send(409, {
+              error: 'this device cannot change the mode or model for the next turn; '
+                + 'update Squad Hub on it, or send the message without a mode or model change',
+              code: 'next-turn-unsupported',
+            });
+          }
         }
         const withActor = op === 'approve' ? { ...body, answeredBy: me.name || me.key }
           : op === 'forget' ? {
@@ -1446,7 +1511,7 @@ class HubService {
             // is one line.
             : op === 'squad-doc' ? { sessionId: body ? body.sessionId : undefined, doc: body ? body.doc : undefined }
               : op === 'squad-docs' ? { sessionId: body ? body.sessionId : undefined }
-                : op === 'steer' ? { sessionId: body.sessionId, text: body.text }
+                : op === 'steer' ? steerForDevice(body)
                   : body;
         const result = await this.command(me.key, deviceId, op, withActor);
         if (op === 'transcript' && result) {
@@ -1458,7 +1523,10 @@ class HubService {
         }
         return send(200, result);
       } catch (e) {
-        return send(e.status || 502, { error: e.message });
+        // Only an allow-listed device refusal carries its `code` out; any
+        // other error keeps the bare `{ error }` it has always had.
+        const named = Object.prototype.hasOwnProperty.call(NEXT_TURN_REFUSALS, e.code);
+        return send(e.status || 502, named ? { error: e.message, code: e.code } : { error: e.message });
       }
     }
 
@@ -1771,7 +1839,13 @@ class HubService {
           this._pending.delete(msg.correlationId);
           clearTimeout(p.timer);
           if (msg.ok) p.resolve(msg.result);
-          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));
+          else {
+            const known = Object.prototype.hasOwnProperty.call(NEXT_TURN_REFUSALS, msg.code);
+            p.reject(Object.assign(
+              new Error(msg.error || 'the device refused'),
+              known ? { status: NEXT_TURN_REFUSALS[msg.code], code: msg.code } : { status: 400 },
+            ));
+          }
         }
         return;
       }

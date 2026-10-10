@@ -101,9 +101,13 @@ async function checkAsync(name, fn) {
 // extended (classList/setAttribute/innerHTML/value) for the real-call-site
 // tests below, which drive the actual `openDetail`/`closeDetail` DOM writes
 // rather than only the composer-reducer path the earlier tests exercise.
+// `closest`/`addEventListener`/`querySelectorAll` are what the Mode and Model
+// bar (#183) reads whenever `renderControl` repaints; this page has no bar,
+// so each answers as an element with nothing around it would.
 function fakeDocument() {
   const byId = {};
   return {
+    querySelectorAll: () => [],
     getElementById(id) {
       if (!byId[id]) {
         byId[id] = {
@@ -121,6 +125,9 @@ function fakeDocument() {
           classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
           setAttribute() {},
           removeAttribute() {},
+          getAttribute() { return null; },
+          closest: () => null,
+          addEventListener() {},
         };
       }
       return byId[id];
@@ -163,16 +170,25 @@ api = (...args) => __apiImpl(...args);
 refresh = async () => { __refreshCalls += 1; };
 function __setApiImpl(fn) { __apiImpl = fn; }
 function __getRefreshCalls() { return __refreshCalls; }
+// The Mode and Model bar (#183) still runs for real; this only records when it
+// was painted and what the composer said at that moment.
+let __ntPaints = [];
+const __realRenderNextTurn = renderNextTurn;
+renderNextTurn = () => {
+  __ntPaints.push({ key: state.currentSession ? sessionKey(state.currentSession.session) : '', control: state.composer.control });
+  return __realRenderNextTurn();
+};
+function __takeNtPaints() { const out = __ntPaints; __ntPaints = []; return out; }
 module.exports = {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
-  openDetail, closeDetail,
-  __setApiImpl, __getRefreshCalls,
+  openDetail, closeDetail, syncDetailHeader,
+  __setApiImpl, __getRefreshCalls, __takeNtPaints,
 };`)(mod, mod.exports);
 
 const {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
-  openDetail, closeDetail,
-  __setApiImpl, __getRefreshCalls,
+  openDetail, closeDetail, syncDetailHeader,
+  __setApiImpl, __getRefreshCalls, __takeNtPaints,
 } = mod.exports;
 
 function session(key, overrides = {}) {
@@ -640,6 +656,49 @@ function resetComposer() {
     // ever have been asked for.
     assert.strictEqual(state.composer.control, 'synced',
       'an abandoned open\u2019s late transcript fetch disturbed the composer of the session actually open now');
+  });
+
+  await checkAsync('(real call sites, #182 with #183) the Mode and Model bar follows the open session on every live push and on the control answer that applies, never on one a reopen superseded', async () => {
+    resetComposer();
+    const key = 'real-next-turn-key';
+    makeFindable(key);
+    const router = apiRouter();
+    __setApiImpl(router.impl);
+    __takeNtPaints();
+
+    const open1 = openDetail(key);
+    await Promise.resolve();
+    router.resolveTranscript(0, { transcript: [] });
+    await open1;
+    await tick();
+    assert.ok(__takeNtPaints().some((p) => p.key === key),
+      'opening a session never painted the Mode and Model bar for it');
+
+    // A live push rebuilds the open session's record and must repaint the
+    // bar from it: the session going idle or busy is what enables it.
+    syncDetailHeader();
+    assert.ok(__takeNtPaints().some((p) => p.key === key),
+      'a live push to the open session did not repaint the Mode and Model bar');
+
+    // Close, then reopen the identical session, with the first open's control
+    // answer still pending: that answer is #182's A-B-A case and the bar must
+    // not be repainted from it.
+    closeDetail();
+    const open2 = openDetail(key);
+    await Promise.resolve();
+    router.resolveTranscript(1, { transcript: [] });
+    await open2;
+    await tick();
+    __takeNtPaints();
+    router.resolveControlCheck(0, { controllable: true });
+    await tick();
+    assert.deepStrictEqual(__takeNtPaints(), [],
+      'a control answer from before the reopen repainted the Mode and Model bar of the reopened session');
+
+    router.resolveControlCheck(1, { controllable: true });
+    await tick();
+    assert.ok(__takeNtPaints().some((p) => p.key === key && p.control === 'synced'),
+      'the control answer for the session actually open never repainted the Mode and Model bar as synced');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

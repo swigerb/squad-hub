@@ -1298,6 +1298,19 @@ async function suitePush() {
   runChildSuite(path.join(__dirname, 'push-frontend-unit.js'), 'push-frontend');
 }
 
+/**
+ * Next-turn Mode and Model controls (#183): the ACP change RPCs over a fake agent that
+ * speaks the shapes the real Copilot CLI does, the daemon and hub plumbing that
+ * carries a selection and its refusals, and the capability states a selector
+ * must be disabled for rather than pretend.
+ */
+async function suiteNextTurn() {
+  console.log('\n[NEXT TURN] Mode and Model for the next turn: confirmed before the prompt, refused when unknown, disabled with a reason when unsupported');
+  runChildSuite(path.join(__dirname, 'next-turn-unit.js'), 'next-turn');
+  // Needs Playwright and says so loudly when it is not there, as the other browser suite does.
+  runChildSuite(path.join(__dirname, 'next-turn-browser-unit.js'), 'next-turn-browser');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1383,6 +1396,7 @@ async function suitePush() {
   await suiteBellInbox();
   await suiteDetailTabs();
   await suitePush();
+  await suiteNextTurn();
 
   console.log('');
   console.log('='.repeat(60));

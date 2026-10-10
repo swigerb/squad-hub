@@ -123,6 +123,7 @@ function makeElement(id) {
     querySelector: () => null,
     querySelectorAll: () => [],
     closest: () => null,
+    addEventListener() {},
     focus() { fakeDoc.activeElement = el; },
   };
   return el;
@@ -138,6 +139,7 @@ function fakeDocument() {
   const byId = new Map();
   fakeDoc = {
     activeElement: null,
+    querySelectorAll: () => [],
     getElementById(id) {
       if (!byId.has(id)) byId.set(id, makeElement(id));
       return byId.get(id);

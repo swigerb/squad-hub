@@ -314,6 +314,49 @@ curl -X POST "$HUB/api/devices/$DEVICE/approve" \
 `optionId` is one the agent offered: `allow_once`, `allow_always` or
 `reject_once`.
 
+#### Sending follow-up input (`steer`)
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/steer" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"...","text":"outline the change first","mode":"plan","model":"claude-sonnet-5.5"}'
+```
+
+`text` is required (at most 4000 characters, refused rather than truncated).
+`mode` and `model` are **optional** — leave them out and the request is exactly
+the steer it has always been: `{ "sent": true }`, or `{ "queued": true,
+"position": n }` for a watched terminal session.
+
+When present they are strings of at most 200 characters with no control
+characters, matched against what the session's agent advertises (see
+`nextTurn` below): by id, by display name, or by the part of a mode id after
+`#`, ignoring case. The device validates both before anything is sent, changes
+the model and then the mode, waits for the agent to confirm each, and only then
+sends `text`. On success the answer lists what the agent confirmed:
+
+```json
+{ "sent": true, "changes": [ { "field": "mode", "from": "…#agent", "to": "…#plan" } ] }
+```
+
+A change that cannot be made is refused, **never** applied-and-sent anyway, and
+the body carries the reason in `error` and the machine-readable `code`:
+
+| Status | `code` | Meaning | `text` sent? |
+|---|---|---|---|
+| `400` | — | `mode` or `model` is not a short string | No |
+| `409` | `next-turn-unsupported` | The device does not support it (older device, one-shot job, watched terminal session, or an agent that does not advertise it) — refused by the hub before it reaches a device that does not claim `capabilities.nextTurnSelection` | No |
+| `409` | `turn-in-progress` | The agent is mid-turn; a change applies to the next one | No |
+| `409` | `selection-busy` | Another change for this session is still being applied | No |
+| `409` | `session-changed` | The session ended while the change was being applied | No |
+| `422` | `selection-not-offered` | The value is not one the agent offers | No |
+| `502` | `selection-failed` | The agent refused it, or did not confirm it in time — it **may or may not** have applied; the error says which changes, if any, stay in effect | No |
+
+Each session in `GET /api/sessions` and `GET /api/overview` may carry `nextTurn`:
+`{ supported, reason, mode, model }`, where `mode` and `model` are each
+`{ supported, reason, current, choices: [{ id, name }] }`. `choices` is empty
+and `reason` says why whenever `supported` is false. A session from a device
+that predates the feature carries no `nextTurn` at all.
+
 Removing the record of sessions that have already ended:
 
 ```bash

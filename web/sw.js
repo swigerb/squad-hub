@@ -65,6 +65,11 @@
 // 23 is above every value any branch has used so far (v22 is the highest).
 // `/js/forget.js` (the "Remove ended sessions" action, moved out of wiring.js
 // so that file stays inside its size budget) joined the shell in the same bump.
+//
+// #183 (the composer's next-turn mode and model controls) added /js/next-turn.js
+// and /css/composer-next-turn.css to the shell. Its own branch called that v16,
+// which #179 had already spent, so the integrated shell stays v23: the value
+// every file of #179, #178, #181/#243, #182 and #183 is cached under together.
 const CACHE = 'squad-hub-shell-v23';
 
 /**
@@ -84,6 +89,7 @@ const SHELL = [
   '/css/detail-tabs.css',
   '/css/squad.css',
   '/css/inbox.css',
+  '/css/composer-next-turn.css',
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
@@ -105,6 +111,7 @@ const SHELL = [
   '/js/session-info.js',
   '/js/squad-panel.js',
   '/js/transcript.js',
+  '/js/next-turn.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',

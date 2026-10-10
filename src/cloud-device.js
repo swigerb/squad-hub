@@ -140,7 +140,10 @@ if (!hasAgentCredential && !process.env.SQUAD_HUB_AGENT) {
  */
 const deviceId = cloudDeviceId(process.env);
 
-const d = new Daemon();
+// A one-shot job ends its session when the turn does (see ONESHOT below), so
+// there is never a next turn to change the mode or model of -- and the hub is
+// told so rather than left to offer a selector that cannot work (#183).
+const d = new Daemon({ nextTurnSelection: !ONESHOT });
 d.deviceName = deviceName;
 
 async function publishTranscript(sessionId) {

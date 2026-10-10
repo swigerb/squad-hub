@@ -949,6 +949,58 @@ sends them looking in the wrong place.
 clearing it in order to report a transport problem is the wrong trade in every
 case.
 
+### Mode and Model for the next message
+
+Under the message box, **Mode** and **Model** choose how the agent runs the
+message you are about to send.
+
+**What is offered is what the agent said it can do.** The device reads the
+choices from its own agent when the session starts. Copilot (ACP protocol
+version 1) advertises Agent, Plan and Autopilot for Mode and about thirty
+models; nothing is hardcoded in the page, so a model the CLI adds shows up
+without a Squad Hub release, and one it removes disappears. The `i` beside each
+selector explains it on hover; press it (on a phone, tap it) and the same words
+appear under the bar.
+
+**A pick is pending until you press Send.** Then the device, in this order:
+
+1. checks every value against the agent's list **before anything is sent** — a
+   good mode is never applied next to a bad model;
+2. changes the model, then the mode, with `session/set_config_option` and the
+   id the agent advertised, and waits for the agent to report the value it now
+   has (`session/set_mode` and `session/set_model` answer an empty `{}`, which
+   confirms nothing, so they are not used);
+3. writes a line such as `mode: Agent → Plan` into the transcript for each
+   confirmed change;
+4. sends your message.
+
+If any step is refused, is not confirmed, or the session ends in the middle,
+**the message is not sent**, your draft and your pick are kept, and the reason
+is shown under the bar. A change the agent did confirm before the refusal is
+reported as such and stays in effect. There is no "applied anyway" fallback: an
+agent that accepts a change but reports the old value, or says nothing, is not
+believed.
+
+**A selector is disabled, with an `i` that says why, when it cannot be
+honored:**
+
+| Situation | Why |
+|---|---|
+| The session is not `Synced` | The sync banner explains; the selectors wait for it |
+| The agent is working | A change applies to the **next** turn; the protocol has no way to queue one |
+| A one-shot ACA job | The job ends with its prompt; it has no next turn |
+| A watched terminal (`--tui`) session | It is driven from its own terminal, and a queued message cannot be run in a mode the terminal does not know about |
+| A device older than this feature | It would ignore the field and run the message in the old mode, so the hub refuses the request instead (`409 next-turn-unsupported`) |
+| An agent that does not advertise it | For example a model list with no way to confirm a change |
+
+A device reports that it applies the selection as
+`capabilities.nextTurnSelection`, and the hub believes only a literal `true` —
+never a version string.
+
+`SQUAD_HUB_SELECTION_TIMEOUT_MS` bounds how long one change waits for the
+agent. A change that outlives it is reported as unconfirmed ("may or may not
+have applied") rather than assumed either way.
+
 ### What an approval card shows
 
 The **command itself**, not just the tool that would run it.
@@ -1319,6 +1371,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_STEER_WATCH_WINDOW_MS` | How recent a `control-check` has to be for a session to count as "watched" and be eligible for the hold above. Default 30000ms. |
 | `SQUAD_HUB_STEER_MAX_FORCED_TURNS` | The runaway guard: the most consecutive turns the daemon will force by returning `block`. Clamped to at most 7 — strictly below Copilot's own 8-block guard — regardless of what this is set to. |
 | `SQUAD_HUB_STEER_IPC_TIMEOUT_MS` | How long the `squad-hub hook agentStop` shim waits for the daemon to answer. Default 8000ms; must exceed `SQUAD_HUB_STEER_HOLD_MS` with room to spare. |
+| `SQUAD_HUB_SELECTION_TIMEOUT_MS` | How long ONE Mode or Model change waits for the agent to confirm it. Default 8000ms — two changes (model, then mode) stay under the hub's 20-second command timeout. A change that outlives it is reported as unconfirmed ("may or may not have applied"), never assumed applied. See [Mode and Model for the next message](#mode-and-model-for-the-next-message). |
 
 `--acp` is the protocol the daemon speaks to the agent, so the default argv is
 just that. `SQUAD_HUB_AGENT_ARGS` replaces it rather than adding to it, because

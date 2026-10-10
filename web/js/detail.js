@@ -23,6 +23,7 @@ import {
 // `closeDetail` below actually call it, wiring.js's module body has long
 // finished.
 import { closeRowMenu } from './wiring.js';
+import { renderNextTurn } from './next-turn.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -289,6 +290,7 @@ export function syncDetailHeader() {
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
   syncReviewDetail(found.session);
+  renderNextTurn();
   const pinned = state.favorites.has(key);
   const star = $('dtStar');
   star.classList.toggle('on', pinned);
@@ -416,6 +418,7 @@ export function renderControl() {
   $('dtInput').placeholder = b.enabled
     ? 'Send follow-up input to the running agent'
     : 'Controls are disabled until this session is verified';
+  renderNextTurn();
 }
 
 /**

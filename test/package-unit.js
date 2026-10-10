@@ -816,6 +816,12 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // is already the shell of #179 and #178, so the integrated value is v23. The
   // value is pinned so a missed bump fails loudly instead of silently serving
   // stale cached UI.
+  //
+  // #183 then added `web/js/next-turn.js` and `web/css/composer-next-turn.css`
+  // (the composer's next-turn mode and model controls) to the same shell. Its
+  // own branch called that v16, which #179 had already spent, so the integrated
+  // shell stays v23 rather than reusing a number two branches already mean
+  // different things by.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
   assert.match(sw, /const CACHE = 'squad-hub-shell-v23';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
