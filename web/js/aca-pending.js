@@ -8,37 +8,43 @@ import { state, api } from './api.js';
 import { esc, toast } from './util.js';
 // Circular by necessity, the same way devices.js's own import of wiring.js is
 // (see the comment there), and the same way aca.js's own import of devices.js
-// is: `acaPendingRowHtml` below needs aca.js's pure link helpers, and aca.js's
+// is: `acaPendingRowHtml` below needs aca.js's `acaStepsForStatus`, and aca.js's
 // `submitAcaDispatch`/`wireAca` need `trackAcaDispatch`/`startAcaPolling` from
 // here. Neither module touches the other at module-evaluation time, only
 // from inside functions that run later, so the cycle resolves the same way
 // any other two ES modules that call back into each other do.
 import { acaStepsForStatus } from './aca.js';
-import { acaPendingMatch } from './aca-match.js';
+import { acaDispatchEvidence, acaPendingMatch } from './aca-match.js';
 import { render } from './devices.js';
 
 
-/** How long a `completed`-with-`success` Actions run may sit with no `aca-`
- * device having attached before this stops showing "Queued on ACA" and
- * surfaces an honest unknown/terminal outcome instead (#178's release-gate
- * review: "bound completed-success-without-attachment waiting ... instead
- * of polling forever"). A successful run finishing and an ACA job actually
- * registering with this hub are two different systems reporting in on two
- * different clocks -- some real gap between them is normal -- but an
- * unbounded one just means the row lies forever. 5 minutes is generous
- * against `ACA_POLL_MS`'s own 15-second cadence (20 polls) while still being
- * a bounded, visible ceiling rather than none at all. */
+/** How long a run may sit with a CONFIRMED execution (or, with none, a
+ * `completed`/`success` run) and no matching device attached before the row
+ * stops saying "Queued on ACA" and reports an honest "Unknown outcome" (#178's
+ * release-gate review: bound the wait, never poll forever). 5 minutes is
+ * generous against `ACA_POLL_MS`'s 15s cadence (20 polls). */
 export const ACA_COMPLETED_WAIT_MS = 5 * 60 * 1000;
 
-/** Has a completed-successfully run's bounded wait for an attach expired?
- * `Date.now()` is read here, and ONLY here -- the one shared place that
- * reads the clock, so both callers below (the render path and the
- * poll-exclusion path) can never silently disagree about "is this entry's
- * wait over yet", and a mutation or a unit test can still exercise
- * `acaStepsForStatus` itself against a fixed instant rather than real
- * elapsed time (see that function's own doc comment in aca.js). */
-function acaWaitExpired(entry) {
-  return !!(entry.completedAt && (Date.now() - entry.completedAt > ACA_COMPLETED_WAIT_MS));
+/** The overall ceiling from `dispatchedAt`, for a row that never gets as far
+ * as a confirmed execution or a completed run (a run stuck queued, a receipt
+ * that never lands). The hub itself gives up on an unmatched dispatch after an
+ * hour, so this only bites when the hub keeps answering something in flight. */
+export const ACA_MAX_PENDING_MS = 90 * 60 * 1000;
+
+/** Has this entry's bounded wait run out? `Date.now()` is read here, and ONLY
+ * here -- the one shared place, so the render path and the poll-exclusion
+ * path can never disagree about "is this entry's wait over yet". */
+export function acaWaitExpired(entry) {
+  const now = Date.now();
+  const since = entry.confirmedAt || entry.completedAt;
+  if (since && now - since > ACA_COMPLETED_WAIT_MS) return true;
+  return !!(entry.dispatchedAt && now - entry.dispatchedAt > ACA_MAX_PENDING_MS);
+}
+
+/** The one view of an entry, shared by rendering and the poll-exclusion
+ * logic -- never a second hand-maintained notion of "is this terminal". */
+function acaEntryView(entry) {
+  return acaStepsForStatus(entry.status, false, acaWaitExpired(entry), entry.executionName);
 }
 
 /** The pending row's own markup -- a `.row`, same shape a real session row
@@ -46,19 +52,16 @@ function acaWaitExpired(entry) {
  * reading as a second kind of thing. Never clickable: there is no detail
  * view for a dispatch that has no session yet. */
 export function acaPendingRowHtml(entry) {
-  const view = acaStepsForStatus(entry.status, false, acaWaitExpired(entry));
+  const view = acaEntryView(entry);
   const stepsHtml = view.steps.map((s) => (
     `<span class="aca-step${s.done ? ' done' : ''}${s.current ? ' now' : ''}">${esc(s.label)}</span>`
   )).join('');
   const title = entry.issue ? `#${entry.issue} \u00b7 ${entry.repo}` : entry.repo;
   const failure = view.failureReason ? `<div class="row-meta aca-fail">${esc(view.failureReason)}</div>` : '';
-  // A terminal outcome (`view.resolved`, the SAME single source of truth
-  // `syncAcaPending` uses to stop polling this entry -- see acaStepsForStatus
-  // in aca.js) still deserves a way back: the person may know the run was
-  // retried, or simply want one more look, without this hub ever starting a
-  // SECOND real job on their behalf. This button only ever re-marks the
-  // entry unresolved and asks `syncAcaPending` to recheck it (wired in
-  // wiring.js's delegated `#groups` click handler) -- never
+  // A terminal outcome (`view.resolved`) still deserves a way back: the person
+  // may know the run was retried, or want one more look. This button only ever
+  // re-marks the entry unresolved and asks `syncAcaPending` to recheck it
+  // (wired in wiring.js's delegated `#groups` click handler) -- never
   // `POST /api/aca/dispatch` again.
   const retry = view.resolved ? `<button type="button" class="ghost aca-retry" data-aca-retry="${esc(entry.localId)}">Check again</button>` : '';
   return `
@@ -98,21 +101,15 @@ let acaLocalIdSeq = 0;
  * among the handful of jobs one browser tab dispatches. */
 function nextAcaLocalId() { acaLocalIdSeq += 1; return `aca-local-${Date.now()}-${acaLocalIdSeq}`; }
 
-/** Begin tracking a dispatch this browser tab just made, so it can show as a
- * "Queued on ACA" row until its own authoritative GitHub Actions run status
- * resolves it (#178; see `aca-match.js`'s `acaPendingMatch` doc comment for
- * why this row no longer clears on a device "attach" heuristic). In-memory
- * only and per-tab, same durability posture `DispatchTracker` itself
- * documents -- a reload loses the row, not the dispatch, which the hub still
- * knows about.
+/** Begin tracking a dispatch this browser tab just made, so it shows as a
+ * "Queued on ACA" row until its own job's device attaches (#178). In-memory
+ * and per-tab, the same durability posture `DispatchTracker` documents -- a
+ * reload loses the row, not the dispatch, which the hub still knows about.
  *
- * `trackerId` is this hub's own stable identity for the dispatch, straight
- * from the `POST /api/aca/dispatch` response (`hub-service.js`'s
- * `DispatchTracker.record`). Binding to it directly is what lets
- * `syncAcaPending` below look this entry's status up by id -- never by
- * re-guessing "the newest unclaimed record for this repository", which two
- * racing dispatches on the same repository could resolve to each other's
- * record (#178's release-gate review). */
+ * `trackerId` is the hub's own stable identity for the dispatch, straight from
+ * the `POST /api/aca/dispatch` response. Everything below binds by it, never
+ * by re-guessing "the newest record for this repository" (two racing
+ * dispatches on one repository could resolve to each other's record). */
 export function trackAcaDispatch({
   repo, issue, runUrl, trackerId,
 }) {
@@ -121,178 +118,155 @@ export function trackAcaDispatch({
     localId: nextAcaLocalId(), repo, issue: issue || null, runUrl: runUrl || null,
     dispatchedAt: Date.now(), owner: repo.split('/')[0], name: repo.split('/')[1],
     trackerId: trackerId || null, status: null, attached: false,
-    // When this entry's status is last observed as `completed`, the moment
-    // it was FIRST observed that way -- used to bound how long "completed
-    // successfully but no session has attached yet" is still shown as
-    // "Queued on ACA" before surfacing an honest unknown/terminal outcome
-    // instead of polling forever (see acaStepsForStatus in aca.js and the
-    // release-gate review). Cleared if status ever reports something other
-    // than `completed` again (a status flap), so the window always measures
-    // from the most recent completion.
-    completedAt: null,
-    // Set by syncAcaPending once this entry's outcome is TERMINAL (a failed
-    // dispatch, a non-success conclusion, or a completed-success run whose
-    // attach wait expired -- see acaStepsForStatus's `resolved` field, the
-    // one place this is actually decided). Once true, syncAcaPending stops
-    // fetching `GET /api/aca/dispatches` for this entry forever -- there is
-    // nothing left this hub can learn by asking again, short of the retry
-    // affordance (`retryAcaPending` below) explicitly asking once more.
+    // The hub's own Actions run binding and the hub-confirmed execution for
+    // the CURRENT run attempt (see aca-match.js's `acaDispatchEvidence`).
+    // `executionName` is what the join to the job's `aca-` device id needs.
+    runId: null, runAttempt: null, executionName: null, deviceId: null,
+    // When the status was first seen `completed`, and when the execution was
+    // first confirmed: the starts of the bounded waits (`acaWaitExpired`).
+    completedAt: null, confirmedAt: null,
+    // Set once the outcome is TERMINAL (`resolved` in `acaStepsForStatus`).
+    // `syncAcaPending` then stops fetching for this entry, short of the
+    // explicit `retryAcaPending`.
     resolved: false,
   });
 }
 
 /**
- * Refresh every tracked-but-unresolved dispatch (#178): called once from
- * `refresh()` (ws.js, itself event-driven rather than on a timer), and again
- * every `ACA_POLL_MS` by the interval `startAcaPolling` below starts.
- *
- * Costs NOTHING when there is nothing pending: a fresh page load starts with
- * an empty `state.acaPending` (it is per-tab, never fetched on load -- see
- * `trackAcaDispatch`), so this returns before ever calling
- * `GET /api/aca/dispatches`. That is deliberate: it is what keeps a hub with
- * no GitHub App configured from ever hitting that 501 on an ordinary load,
- * the exact failure mode #233 broke CI with.
- *
- * Also costs nothing once every tracked entry is either `attached` or
- * terminally `resolved` (an errored/failed/unknown-outcome row -- see
- * acaStepsForStatus's `resolved` field in aca.js): the fetch below is
- * skipped for exactly the same reason, so a tab left open after every job it
- * ever dispatched has either attached or given its final honest answer never
- * touches `/api/aca/dispatches` again, even though `startAcaPolling`'s own
- * interval keeps ticking for the lifetime of the tab.
- *
- * OFFLINE BOUND (ground-truth regression): `resolved` must be decided from
- * whatever status/completedAt is ALREADY locally known BEFORE this function
- * ever attempts the network call below, not only after one succeeds. A
- * dropped connection, a 429, or a de-configured App (any rejected
- * `GET /api/aca/dispatches`) must never be able to EXTEND an already-expired
- * local wait bound (`acaWaitExpired`) -- that would let a network outage
- * alone keep a tab fetching forever for a row whose own bound already ran
- * out. So the very first thing every call does is re-derive `resolved` for
- * every still-unattached entry from local knowledge alone, with the SAME
- * `acaStepsForStatus`/`acaWaitExpired` pair the render path and the
- * post-fetch path both already use -- never a second, hand-maintained
- * notion of "is this terminal". `forceRecheck` (set by `retryAcaPending`
- * below) deliberately skips this ONE step for the single entry a person
- * just explicitly asked to recheck, so this same call still attempts the
- * network request that click is asking for; every other entry is resolved
- * the same way regardless.
+ * Attach every tracked dispatch whose job's own device is now in
+ * `state.overview.devices` (#178): a local, request-free check, run before
+ * any network call and from the WS overview push and `refresh()`, so the
+ * pending row is replaced by the real session the moment the device
+ * appears. Returns true when anything attached. `attached` is sticky: it is
+ * only ever set here, from the proven identity in `acaPendingMatch`.
  */
-export async function syncAcaPending() {
-  state.acaPending = state.acaPending || [];
-
-  for (const entry of state.acaPending) {
-    if (entry.attached || entry.forceRecheck) continue;
-    entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;
-  }
-
-  // `entry.attached` can never become `true` below: `acaPendingMatch`
-  // (aca-match.js) always returns `null` now -- repo+issue+timing is never
-  // treated as proof of dispatch-attempt identity, see that function's own
-  // doc comment for the full review history and why. The call is kept (not
-  // merely removed) so a future squad-on-aca release that reports a
-  // verifiable run/execution identity can reinstate this join by changing
-  // aca-match.js alone, with nothing here to rewire. Every entry's outward
-  // progress is therefore driven solely by the authoritative GitHub Actions
-  // run status fetched below (Dispatched / Lease claimed / Starting job),
-  // or by its own `resolved` terminal outcome (Dispatch failed / Unknown
-  // outcome, see `acaStepsForStatus` in aca.js).
-  for (const entry of state.acaPending) {
+export function acaAttachFromOverview() {
+  const entries = state.acaPending || [];
+  const devices = (state.overview && state.overview.devices) || [];
+  let changed = false;
+  for (const entry of entries) {
     if (entry.attached) continue;
-    if (acaPendingMatch()) entry.attached = true; // never true today, see above
+    const device = acaPendingMatch(entry, devices, entries);
+    if (!device) continue;
+    entry.attached = true;
+    entry.deviceId = device.deviceId;
+    entry.resolved = false;
+    changed = true;
   }
+  return changed;
+}
 
-  const pendingBeforeFetch = state.acaPending.filter((e) => !e.attached && !e.resolved);
+/** Re-derive `resolved` for every entry not attached (and, unless `all`, not
+ * being force-rechecked) from what is ALREADY known locally. */
+function acaResolveLocally(all, includeForced) {
+  for (const entry of all) {
+    if (entry.attached || (!includeForced && entry.forceRecheck)) continue;
+    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+}
+
+async function acaSyncOnce() {
+  state.acaPending = state.acaPending || [];
+  const all = state.acaPending;
+
+  // OFFLINE BOUND: `resolved` is decided from local knowledge BEFORE any
+  // network call, so a dropped connection, a 429 or a de-configured App can
+  // never EXTEND an already-expired wait and keep a tab fetching forever.
+  // `forceRecheck` (set by `retryAcaPending`) skips this one step for the
+  // entry a person just asked to recheck, so the request they asked for is
+  // still attempted.
+  acaAttachFromOverview();
+  acaResolveLocally(all, false);
+  const forced = all.filter((e) => e.forceRecheck);
+  if (!all.some((e) => !e.attached && !e.resolved)) return;
+
   let dispatches = null;
-  let fetchFailed = false;
-  if (pendingBeforeFetch.length) {
-    try {
-      ({ dispatches } = await api('/api/aca/dispatches'));
-    } catch {
-      // A 429, a dropped connection, or (once a hub's App is de-configured
-      // mid-session) a 501: handled below, never silently swallowed, and
-      // never left to leave an already-expired entry stuck re-polling
-      // forever (see this function's own doc comment above).
-      fetchFailed = true;
-    }
+  try {
+    ({ dispatches } = await api('/api/aca/dispatches'));
+  } catch {
+    // A 429, a dropped connection, or a de-configured App (501): handled
+    // below, never swallowed, and never left to re-poll an expired entry.
+    dispatches = null;
   }
+  // The recheck each forced entry asked for was attempted, success or not.
+  for (const entry of forced) delete entry.forceRecheck;
 
-  if (fetchFailed) {
-    // Same bound as the top of this function: re-resolve from whatever is
-    // already known locally -- never from the failed network call -- so a
-    // row whose wait already expired cannot keep this tab fetching forever
-    // just because the network happens to be down. `forceRecheck` is
-    // cleared either way: the explicit recheck this pass was asked to
-    // perform DID happen (the request above was attempted and failed), so a
-    // FUTURE "Check again" click can ask again.
-    for (const entry of state.acaPending) {
-      if (entry.attached) continue;
-      entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;
-      if (entry.forceRecheck) {
-        delete entry.forceRecheck;
-        if (entry.resolved) {
-          // Best-effort only: a DOM-less harness exercising this pure logic
-          // path (no `#toast` element, no `document`) must never see this
-          // purely-cosmetic notification break the actual state-restoring
-          // fix above.
-          try { toast(`Could not refresh "${entry.repo}" -- showing its last known status.`); } catch { /* no DOM here */ }
-        }
-      }
+  if (!Array.isArray(dispatches)) {
+    acaResolveLocally(all, true);
+    for (const entry of forced) {
+      if (!entry.resolved) continue;
+      // Best-effort: a DOM-less harness has no `#toast`, and this purely
+      // cosmetic notice must never break the state restore above.
+      try { toast(`Could not refresh "${entry.repo}" -- showing its last known status.`); } catch { /* no DOM here */ }
     }
     return;
   }
-  if (!dispatches) return;
 
-  // Bound by `trackerId` ONLY -- the stable id this entry's own
-  // `POST /api/aca/dispatch` response returned (see `trackAcaDispatch`).
-  // An entry with no `trackerId` (a hub too old to have sent one, or a
-  // dispatch made before this field existed) has nothing authoritative to
-  // bind to and is left with no status, rather than falling back to the
-  // repository-and-recency guess this replaces -- the exact swap #178's
-  // release-gate review found two racing same-repo dispatches could trigger.
-  const byId = new Map(dispatches.map((d) => [d.id, d]));
-  const stillPending = state.acaPending.filter((e) => !e.attached && !e.resolved);
-  for (const entry of stillPending) {
-    if (entry.forceRecheck) delete entry.forceRecheck;
-    if (!entry.trackerId) continue;
-    const d = byId.get(entry.trackerId);
-    if (!d) continue;
-    entry.status = d.status;
-    const completed = !!(d.status && d.status.state === 'completed');
-    if (completed) {
+  const byId = new Map(dispatches.map((d) => [d && d.id, d]));
+  for (const entry of all) {
+    if (entry.attached || entry.resolved) continue;
+    const ev = acaDispatchEvidence(entry, byId.get(entry.trackerId));
+    if (!ev) continue;
+    const named = entry.executionName;
+    if (entry.runAttempt != null && ev.runAttempt !== entry.runAttempt) entry.completedAt = null;
+    Object.assign(entry, ev);
+    if (ev.status && ev.status.state === 'completed') {
       if (!entry.completedAt) entry.completedAt = Date.now();
     } else {
       entry.completedAt = null;
     }
-    // The SAME function the render path uses (acaStepsForStatus, aca.js),
-    // fed the SAME waitExpired computation (acaWaitExpired, above) -- never
-    // a second, hand-maintained copy of "is this terminal" that could
-    // silently disagree with what the row itself shows.
-    entry.resolved = !!acaStepsForStatus(entry.status, false, acaWaitExpired(entry)).resolved;
+    if (!entry.executionName) entry.confirmedAt = null;
+    else if (entry.executionName !== named) entry.confirmedAt = Date.now();
+    entry.resolved = !!acaEntryView(entry).resolved;
   }
+  acaAttachFromOverview();
+}
+
+let acaSyncRun = null;
+let acaSyncAgain = false;
+
+/**
+ * Refresh every tracked-but-unresolved dispatch (#178): called from
+ * `refresh()` (ws.js) and every `ACA_POLL_MS` by `startAcaPolling` below.
+ *
+ * Free when there is nothing to learn: with nothing pending, or every entry
+ * `attached` or terminally `resolved`, it returns before any request -- so a
+ * fresh load (per-tab, nothing tracked) and a hub with no GitHub App never
+ * touch `GET /api/aca/dispatches` here (#233).
+ *
+ * Overlapping calls (a refresh landing while a poll is in flight) COALESCE:
+ * at most one request runs at a time, and a call that arrives meanwhile asks
+ * for exactly one more pass afterwards, so a reply can never be overwritten by
+ * an older one and the 30/min read limit (#213) is never stacked.
+ */
+export function syncAcaPending() {
+  if (acaSyncRun) {
+    acaSyncAgain = true;
+    return acaSyncRun;
+  }
+  acaSyncRun = (async () => {
+    try {
+      do {
+        acaSyncAgain = false;
+        await acaSyncOnce();
+      } while (acaSyncAgain);
+    } finally {
+      acaSyncRun = null;
+    }
+  })();
+  return acaSyncRun;
 }
 
 /**
  * Force exactly ONE re-check of a single terminally-resolved entry (the
  * "Check again" button `acaPendingRowHtml` shows once `resolved` is true) --
  * never a new dispatch. Re-marks only THIS entry unresolved, and sets
- * `forceRecheck` so the very next `syncAcaPending` call's own pre-fetch
- * local-resolve step (see that function's doc comment) does not immediately
- * flip it straight back to `resolved` before the network request this click
- * is asking for ever happens; every OTHER already-resolved entry stays
- * excluded, so clicking one row's retry can never resume polling for every
- * row this tab has ever resolved, and never issues a second
- * `POST /api/aca/dispatch` -- only ever the same read-only
- * `GET /api/aca/dispatches` the normal poll already uses.
- *
- * If the recheck's `GET` itself fails (offline, a 429, a de-configured
- * App), `syncAcaPending` restores this entry's previous terminal state from
- * local knowledge and surfaces a toast describing the refresh limitation --
- * never leaves it stuck "unresolved" so it would otherwise auto-retry on
- * every subsequent `ACA_POLL_MS` tick forever. If nothing has actually
- * changed upstream (the `GET` succeeds but reports the same outcome),
- * `syncAcaPending` simply marks it `resolved` again from the same evidence
- * -- an honest no-op, not a retry that silently never terminates.
+ * `forceRecheck` so the next pass's local-resolve step does not flip it
+ * straight back before the request this click asks for is made; every OTHER
+ * resolved entry stays excluded. It only ever issues the same read-only
+ * `GET /api/aca/dispatches` the normal poll uses. If that fails,
+ * `syncAcaPending` restores the previous terminal state from local knowledge
+ * and toasts -- it never leaves the entry unresolved to auto-retry forever.
  */
 export async function retryAcaPending(localId) {
   const entry = (state.acaPending || []).find((e) => e.localId === localId);
@@ -303,33 +277,13 @@ export async function retryAcaPending(localId) {
 }
 
 
-/** How often a pending dispatch is rechecked while one exists (#178).
- *
- * Most of this app IS WS-push driven -- `ws.js`'s `onmessage` calls
- * `render()` straight off an `overview` push -- and that is genuinely how
- * devices and sessions update here, because a device's own socket tells the
- * hub the instant something changes. That said, this is NOT the only timer
- * in the client: `web/app.js` (line ~176, in `main()`) already runs its own
- * unrelated `setInterval(refresh, 15000)` that has existed since before this
- * feature, polling the whole `/api/overview` for the lifetime of every tab
- * regardless of ACA dispatch state. The interval below is a SEPARATE,
- * ACA-specific one, needed for a reason `app.js`'s own poll does not cover:
- * nothing pushes a message purely because a GitHub Actions run's status
- * moved from queued to in_progress, `DispatchTracker` only ever learns that
- * by being ASKED (`GET /api/aca/dispatches`). Without a timer of its own, a
- * pending row would sit on "Dispatched" forever unless the person happened
- * to trigger an unrelated `refresh()` (a filter change, a reconnect) --
- * neither `app.js`'s poll nor a WS push ever calls `syncAcaPending` for its
- * own reasons, so this interval is what actually advances it.
- *
- * Still costs nothing while idle: `syncAcaPending` returns before any
- * network call whenever nothing is pending OR every pending entry is
- * `attached`/terminally `resolved` -- the gate below short-circuits before
- * even calling it, so this keeps firing forever but stops doing anything the
- * moment there is nothing left to learn (see `syncAcaPending` and the #233
- * note on `refresh()`). 15s keeps this well under the 30/min read limit
- * (#213) even stacked with `refresh()`'s own call to the same endpoint.
- */
+/** How often a pending dispatch is rechecked while one exists (#178). Most of
+ * this app is WS-push driven, but nothing pushes a message when a GitHub
+ * Actions run moves from queued to in_progress or publishes its execution
+ * receipt: `DispatchTracker` only learns that by being ASKED. So this
+ * ACA-specific interval (separate from `app.js`'s own overview poll) is what
+ * advances a pending row. It costs nothing once nothing is left to learn (the
+ * gate below), and 15s keeps it well under the 30/min read limit (#213). */
 const ACA_POLL_MS = 15000;
 
 /** Start the interval above. Called once, from `wireAca()` (aca.js). */

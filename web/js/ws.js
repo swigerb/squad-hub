@@ -1,7 +1,7 @@
 import { state, api } from './api.js';
 import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
-import { syncAcaPending } from './aca-pending.js';
+import { syncAcaPending, acaAttachFromOverview } from './aca-pending.js';
 import { renderTranscript } from './transcript.js';
 import { $, VIEW_PARAM_KEYS } from './util.js';
 import { showSignIn } from './signin.js';
@@ -80,6 +80,8 @@ export function connect() {
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'overview') {
       state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };
+      // A pending ACA row is replaced the moment its job's device shows up.
+      acaAttachFromOverview();
       render();
     } else if (msg.type === 'transcript' && state.currentSession
       && msg.sessionId === state.currentSession.session.id) {
@@ -256,7 +258,13 @@ export function registerServiceWorker() {
   navigator.serviceWorker.register('/sw.js').catch(() => { /* insecure context, or blocked */ });
 }
 
+// Overlapping refreshes (a filter changed while the 15s poll was in flight)
+// can resolve out of order; only the newest one's overview may land, or an
+// older reply could drop a just-attached ACA device from the list again.
+let refreshSeq = 0;
+
 export async function refresh() {
+  const seq = ++refreshSeq;
   const params = new URLSearchParams();
   if (state.filters.q) params.set('q', state.filters.q);
   // "Action needed" (#169) aggregates two session statuses the store cannot
@@ -266,7 +274,8 @@ export async function refresh() {
   // session ever literally has, and get an empty list back every time.
   if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);
   if (state.filters.device) params.set('device', state.filters.device);
-  state.overview = await api(`/api/overview?${params}`);
+  const overview = await api(`/api/overview?${params}`);
+  if (seq === refreshSeq) state.overview = overview;
   // Only hits `/api/aca/dispatches` when a dispatch this tab made is still
   // unresolved (#178) -- an ordinary load has nothing pending and never
   // calls it, which is what keeps a hub with no GitHub App configured from

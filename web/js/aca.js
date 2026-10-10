@@ -8,7 +8,7 @@ import { $, esc, toast, copyToClipboard } from './util.js';
 // (see the comment there), and the same way aca-pending.js's own import of
 // this file is: `submitAcaDispatch`/`wireAca` below need `trackAcaDispatch`/
 // `startAcaPolling` from the pending-row module, which in turn needs this
-// file's `acaRepoName`/`acaStepsForStatus`. Neither module touches the other
+// file's `acaStepsForStatus`. Neither module touches the other
 // at module-evaluation time, only from inside functions that run later, so
 // the cycle resolves the same way any other two ES modules that call back
 // into each other do.
@@ -168,143 +168,64 @@ export function acaBuildDispatchBody(form = {}) {
 }
 
 /** The four steps a dispatch moves through, in order -- see the row this
- * renders into, and the acceptance criteria on issue #178. The hub can only
- * ever observe the first three through GitHub Actions' own run status
- * (`pending` -> `queued` -> `in_progress`); "Attached" is never read off a
- * run at all, and is never actually reached in production anymore --
- * `acaPendingAttached` (aca-match.js) always returns `false` as of a later
- * review (see that function's own doc comment for why no join this hub can
- * perform ever proves a device belongs to a specific dispatch). The
- * `attached` parameter below is kept for callers/tests that still want to
- * exercise this branch directly. */
+ * renders into, and the acceptance criteria on issue #178. */
 export const ACA_DISPATCH_STEPS = ['Dispatched', 'Lease claimed', 'Starting job', 'Attached'];
 
 /**
  * What to show for one pending dispatch: the status pill, the step row, and
- * a failure reason when there is one. Pure -- given a `status` (as returned
- * by `GET /api/aca/dispatches`, or `null` before the first poll resolves one),
- * whether a real session has already attached, and whether a
- * completed-successfully-but-unattached wait has run past its bound (see
- * `ACA_COMPLETED_WAIT_MS` in aca-pending.js) -- with no DOM and no
- * `Date.now()` here -- so the step mapping below can be proven in Node and a
- * mutation in it actually has somewhere to bite.
+ * a failure reason when there is one. Pure -- no DOM and no clock -- so the
+ * mapping below can be proven in Node. `status` is `GET /api/aca/dispatches`'s
+ * `status` (or `null` before the first poll), `attached` says the job's own
+ * device has registered, `waitExpired` says a bounded wait ran out (see
+ * `acaWaitExpired` in aca-pending.js), and `executionName` is the hub-confirmed
+ * Container App Job execution for the current run attempt, or `null`.
  *
- * ONLY TWO THINGS ARE EVER MARKED `done`: "Dispatched" (the `POST` itself
- * already succeeded, or this view would never be reached) and, if `attached`
- * is ever true, every step including "Attached" -- in production `attached`
- * is always `false` (see `ACA_DISPATCH_STEPS`'s own doc comment above).
- * GitHub Actions' own `queued` /
- * `in_progress` states are evidence that A RUN EXISTS AND IS PROGRESSING --
- * they are not evidence that this hub's dispatch lease was claimed, or that
- * the ACA job itself has started: a runner can sit `queued` for reasons that
- * have nothing to do with a lease, and a `squad-dispatch.yml` run can go
- * `in_progress` and finish `completed`/`success` while SKIPPING the ACA job
- * entirely because the lease was already held elsewhere (see docs/aca.md).
- * A prior version of this function marked "Lease claimed" done the instant
- * GitHub reported `queued`, and "Starting job" done at `in_progress` --
- * asserting facts about ACA (not Actions) that Actions' own state can never
- * prove. Issue #178's release-gate review caught this. So `queued` and
- * `in_progress` only ever move which step is shown as `current` ("probably
- * in flight"); neither ever marks a prior step `done`.
+ * WHAT MAY BE MARKED `done` is only ever what the hub itself proved:
+ * "Dispatched" (the POST succeeded); "Lease claimed" and "Starting job" only
+ * with an `executionName` -- the workflow publishes that receipt only after
+ * the lease claim said `start` AND Azure returned the execution; "Attached"
+ * only when the device itself registered. A bare Actions `queued` or
+ * `in_progress` proves a run exists, nothing more (a run can finish
+ * `success` having skipped the job because the lease was held elsewhere), so
+ * those only move the `current` marker.
  *
- * The returned shape also carries `resolved`: true for exactly the two
- * TERMINAL outcomes this function can report -- "Dispatch failed" (an
- * errored dispatch, or a completed run whose conclusion was not `success`)
- * and "Unknown outcome" (a completed-success run whose attach wait expired)
- * -- false for every other branch, including `attached`. This is the ONE
- * place that decides "is this pending dispatch done changing", so
- * `acaPendingRowHtml`'s rendering and `syncAcaPending`'s poll-exclusion
- * (aca-pending.js) both read it from here rather than each re-deriving their
- * own copy of the same three conditions -- the exact divergence a second,
- * hand-maintained copy would eventually drift from this one.
+ * `resolved` is true for exactly the terminal outcomes: "Dispatch failed", and
+ * "Unknown outcome" (a workflow that publishes no receipt, or a bounded wait
+ * that expired). It is the ONE place that decides "has this stopped
+ * changing", shared by the row rendering and the poll-exclusion path.
  */
-export function acaStepsForStatus(status, attached = false, completedWaitExpired = false) {
-  const stepsThrough = (doneCount, currentIndex) => ACA_DISPATCH_STEPS.map((label, i) => ({
-    label, done: i < doneCount, current: i === currentIndex,
-  }));
-
-  if (attached) {
-    return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(4, -1),
-    };
-  }
+export function acaStepsForStatus(status, attached = false, waitExpired = false, executionName = null) {
+  const steps = (done, now) => ACA_DISPATCH_STEPS.map((label, i) => ({ label, done: i < done, current: i === now }));
+  const view = (pillLabel, pillClass, extra) => ({
+    pillLabel, pillClass, failed: false, failureReason: null, resolved: false, ...extra,
+  });
+  if (attached) return view('Queued on ACA', 'q', { steps: steps(4, -1) });
 
   const st = status && status.state;
+  const confirmed = !!executionName && (st === 'in_progress' || st === 'completed');
+  const unknown = (reason) => view('Unknown outcome', 'stale', { resolved: true, failureReason: reason, steps: steps(1, -1) });
 
-  if (st === 'error') {
-    return {
-      pillLabel: 'Dispatch failed', pillClass: 'failed', failed: true, resolved: true,
-      failureReason: (status && status.reason) || 'the dispatch failed', steps: stepsThrough(1, -1),
-    };
+  if (st === 'unsupported') {
+    return unknown(status.reason || "this repository's squad-dispatch.yml does not report which ACA execution it started");
   }
-
-  if (st === 'completed') {
-    const ok = (status && status.conclusion) === 'success';
-    if (ok && completedWaitExpired) {
-      // The one terminal state this hub genuinely cannot resolve on its
-      // own: the Actions run finished reporting success, but no `aca-`
-      // device ever registered with a matching repository/issue within the
-      // bound wait. That could mean the ACA job itself failed after the
-      // workflow's own steps succeeded, a slow or never-started device, or
-      // a squad-on-aca worker too old to report the `issue` metadata this
-      // hub now requires to prove an attach (see acaPendingMatch). Shown as
-      // an honest "do not know", never silently left reading "Queued on
-      // ACA" forever, and never asserted as a failure this hub has no
-      // evidence for. Terminal: there is nothing further this hub can learn
-      // by asking GitHub again, so `resolved` is true and `syncAcaPending`
-      // stops polling for it -- a person can still force one re-check (see
-      // the retry affordance in aca-pending.js).
-      return {
-        pillLabel: 'Unknown outcome', pillClass: 'stale', failed: false, resolved: true,
-        failureReason: 'the Actions run finished successfully, but no ACA session attached in time -- check the run directly',
-        steps: stepsThrough(1, -1),
-      };
-    }
-    return {
-      pillLabel: ok ? 'Queued on ACA' : 'Dispatch failed',
-      pillClass: ok ? 'q' : 'failed',
-      failed: !ok,
-      // Terminal the instant the run's own conclusion was not `success` --
-      // there is no wait to bound here, GitHub has already given its final
-      // word. Still within the bounded wait when `ok` is true, so not
-      // resolved yet -- the branch above handles it once the wait expires.
-      resolved: !ok,
-      failureReason: ok ? null : `the Actions run finished (${(status && status.conclusion) || 'no conclusion'}) without the job attaching`,
-      // Still only "Dispatched" done -- a successful Actions conclusion is
-      // not proof the ACA job itself ran, only that the workflow's own
-      // steps did. "Starting job" is shown as the current best guess while
-      // the wait above has not yet expired.
-      steps: stepsThrough(1, ok ? 2 : -1),
-    };
+  const runFailed = st === 'completed' && status.conclusion !== 'success' && !confirmed;
+  if (st === 'error' || runFailed) {
+    return view('Dispatch failed', 'failed', {
+      failed: true,
+      resolved: true,
+      failureReason: st === 'error'
+        ? (status.reason || 'the dispatch failed')
+        : `the Actions run finished (${status.conclusion || 'no conclusion'}) without the job attaching`,
+      steps: steps(1, -1),
+    });
   }
-
-  if (st === 'in_progress') {
-    // The Actions run is executing -- real evidence that SOMETHING is
-    // happening, never evidence that the lease was claimed or the ACA job
-    // itself has started (see the function doc above). Shown as "Starting
-    // job" in flight; nothing before it is marked done.
-    return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 2),
-    };
+  if (waitExpired) {
+    return unknown(confirmed
+      ? 'the ACA execution started, but its session never attached to this hub in time -- check the run directly'
+      : 'the Actions run reported no confirmed ACA execution in time (the lease may be held elsewhere) -- check the run directly');
   }
-
-  if (st === 'queued') {
-    // A run exists and is bound to this dispatch -- GitHub Actions has
-    // accepted it but not yet started executing it. This is NOT evidence the
-    // lease was claimed (that happens inside the job, which has not run
-    // yet); shown as "Lease claimed" merely in flight.
-    return {
-      pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 1),
-    };
-  }
-
-  // `pending` (no Actions run matched yet), or no status has resolved at all
-  // -- the first poll has not returned, or this dispatch was just made. The
-  // POST itself already succeeded, so "Dispatched" is done; what is left is
-  // the lease being claimed by whichever run this becomes.
-  return {
-    pillLabel: 'Queued on ACA', pillClass: 'q', failed: false, failureReason: null, resolved: false, steps: stepsThrough(1, 1),
-  };
+  if (confirmed) return view('Queued on ACA', 'q', { steps: steps(3, 3) });
+  return view('Queued on ACA', 'q', { steps: steps(1, st === 'in_progress' ? 2 : 1) });
 }
 
 

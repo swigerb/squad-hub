@@ -232,144 +232,90 @@ for the trust-boundary change that comes with it.
 
 ### Queued on ACA (issue #178)
 
-A successful dispatch does not yet have a device — the job is still starting
-on GitHub's side of the gap in the table above (own Azure subscription,
-own Actions runner). Squad Hub shows it as a **"Queued on ACA"** row in the
-session list, in the same place a real session would appear, through four
-step labels — Dispatched, Lease claimed, Starting job, Attached — though
-only the first three are ever reachable in production today (see below for
-why "Attached" is kept in the UI but never marked done). Most of the
-app IS WS-push driven (a device's own socket tells the hub the instant
-something changes), and that is genuinely how devices and sessions update
-here — but this is not the only timer in the client: `web/app.js` (around
-line 176, in `main()`) already runs its own unrelated
-`setInterval(refresh, 15000)` that polls the whole `/api/overview`, for the
-lifetime of every tab, regardless of ACA dispatch state. The timer described
-here is a SEPARATE, ACA-specific one, needed because a GitHub Actions run's
-status is pull-only — nothing pushes a message purely because a run moves
-from queued to in_progress — so this is the place the web UI polls
-`GET /api/aca/dispatches` on its own 15-second cadence, and only while a tab
-has an unresolved dispatch of its own (see below).
+A successful dispatch does not have a device yet: the job is still starting on
+the far side of the gap in the table above (your own Azure subscription, your
+own Actions runner). Squad Hub shows it as a **"Queued on ACA"** row at the top
+of the session list, on the **All** and **Cloud** scopes (an ACA job cannot run
+on **Local**), through four steps: *Dispatched*, *Lease claimed*, *Starting
+job*, *Attached*. When the job's own session attaches, the row is replaced by
+the real session row.
 
-**This row is never silently replaced by a device "attach" heuristic.** An
-earlier design matched a pending row against whichever `aca-`-prefixed
-device/session reported the same repository and issue, within a time-
-ordering bound, as proof that device was the dispatch's own job. A third
-review (after two earlier rounds already removed a prior proximity-ranking
-refinement of that same idea — see `aca-match.js`'s own `acaPendingMatch` doc
-comment, "REVIEW HISTORY", for the full account) proved this is **never**
-actually proof, even in the single-candidate case with no known competing
-sibling:
+**How a row finds its job.** Only by identity the hub itself proved, in three
+links, none of them a guess:
 
-- GitHub's `workflow_dispatch` API returns HTTP 204 with no run id
-  synchronously (`src/service/github-app.js`'s `dispatch()`), so the
-  dispatching browser never learns a run id to bind to directly.
-- `resolveRunStatus()` *does* bind an authoritative GitHub Actions `runId`
-  to a dispatch server-side (earliest created run after `dispatchedAt` on
-  the matching ref, excluding already-claimed run ids) and exposes it via
-  `GET /api/aca/dispatches`'s per-entry `status.runId` — but a device has no
-  way to report that same run id back. `src/device-meta.js`'s `FIELDS`
-  allowlist (`displayName`, `repo`, `issue`, `executionName`, `jobName`,
-  `role`, `approvalMode`, `lastSweepAt`) has no run/execution-id field, and
-  inventing one (or a mapping from `executionName`/`jobName` free text to a
-  run id) would be exactly the kind of fabricated join this project
-  deliberately refuses to add.
-- Without that join, repository+issue+timing is evidence that a session is
-  *plausible* for a given dispatch, never that it is *proven*: a dispatch
-  whose own run later resolves "Unknown outcome" (this hub's own bounded-
-  wait timeout, below — not an authoritative GitHub fact that the job can
-  never produce a session) can still have its real device attach late, and
-  an unrelated, still-pending sibling dispatch for the same repo+issue can
-  wrongly claim that late session for itself the instant the "resolved"
-  sibling stops counting as a competitor. And even with no sibling in sight,
-  `GET /api/aca/dispatches` only ever reports dispatches made through *this
-  hub's own* `/api/aca/dispatch` endpoint for the signed-in subject — it has
-  no visibility into a manual `/squad-aca` slash-command dispatch, a
-  Ralph-initiated dispatch, or any other way the same person could have
-  triggered the same workflow for the same repo+issue outside this feature.
-  "I am the only known candidate" is not the same fact as "I am the only
-  real candidate."
+1. **The dispatch.** `POST /api/aca/dispatch` answers with `trackerId`. The row
+   binds to the entry of `GET /api/aca/dispatches` whose `id` is that
+   `trackerId`, never to "the newest dispatch for this repository".
+2. **The execution.** That entry's status carries `runId`, `runAttempt` and,
+   once the workflow has published its receipt (see the section above),
+   `executionName`. The row accepts the name only for a run that is
+   `in_progress` or `completed`, with a known attempt, a plausible DNS-label
+   name, and the same value in both places the hub reports it. Within one run
+   attempt the confirmed name is sticky and a different one is a contradiction,
+   ignored. A manual rerun is a higher attempt and starts over (the old
+   attempt's execution never carries over); a lower attempt, or a different
+   run, is ignored.
+3. **The device.** The job registers as `aca-<execution name>`. The row attaches
+   when exactly one device in the overview has exactly that id, the device's
+   reported repository, issue or execution (when it reports any) do not
+   contradict the row, and no other tracked row claims the same device.
 
-So `acaPendingMatch` (`web/js/aca-match.js`) now always returns `null`, and
-`acaPendingAttached` always returns `false`: this hub will not guess dispatch
-identity from repository, issue, and timing alone. **A known, intentional
-consequence:** a pending row no longer disappears once a same-repo/issue
-`aca-` device registers and starts a session — the pending row and the real
-session row simply coexist in the list from that point on, since this hub
-correctly refuses to assert they are the same thing without proof. If a
-future `squad-on-aca` release reports a verifiable run/execution identity
-that can be joined back to `resolveRunStatus`'s server-bound `runId`, this
-heuristic can be reinstated in `aca-match.js` alone; nothing else in the
-tracking logic needs to change to support it (see that file's own doc
-comment).
+So an older session, or a concurrent one, for the same repository and issue
+never attaches, however well it seems to fit; two dispatches for one repository
+attach independently, each to its own device. The check is local and costs no
+request: it runs from the WebSocket overview push, from every refresh, and
+before each poll, so the row swaps the moment the device appears. Attaching is
+sticky; a slow, older `/api/overview` reply cannot put an attached job back.
 
-The row's progress and eventual resolution are therefore driven **solely**
-by the authoritative GitHub Actions run status this hub itself observes via
-`GET /api/aca/dispatches`, bound to the dispatch by `trackerId` alone (the
-stable id the `POST /api/aca/dispatch` response returns, never a
-repository-and-recency guess that two racing same-repo dispatches could
-resolve to each other's record):
+**The steps only claim what was proven.** A bare Actions `queued` or
+`in_progress` proves a run exists, nothing more (a run can finish `success`
+having skipped the job because the lease was held elsewhere), so those only move
+the marker: *Lease claimed* is current while queued, *Starting job* while in
+progress. With a confirmed execution, *Dispatched*, *Lease claimed* and
+*Starting job* are done and *Attached* is current; *Attached* itself is done only once
+the device attaches.
 
-- **Dispatched → Lease claimed → Starting job**: GitHub Actions reaching
-  `queued` or `in_progress` is real evidence the *workflow* is executing,
-  but it is **not** evidence the ACA job itself claimed its dispatch lease
-  or started — that only happens inside the job, which this hub cannot see
-  directly. Only "Dispatched" (the POST that already succeeded) is ever
-  marked done; "Lease claimed"/"Starting job" are shown merely as the
-  in-flight current step, never asserted as proven.
-- **"Dispatch failed"**: a run that errors, or completes with any conclusion
-  other than `success`, surfaces this immediately, with the reason shown
-  verbatim.
-- **"Unknown outcome"**: a run that reaches `completed`/`success` with no
-  device ever attaching is the one outcome this hub genuinely cannot resolve
-  on its own — rather than polling (and reading "Queued on ACA") forever,
-  the row shows this honest label once `ACA_COMPLETED_WAIT_MS` (5 minutes)
-  has elapsed since completion with still no attach. This is a *local*
-  "we gave up waiting" timeout, not an authoritative GitHub fact that the
-  job can never produce a session — see above for why that distinction
-  matters.
+**Fail closed.** If the identity cannot be proven the row does not attach to
+anything, and the job's own session simply shows as its own row:
 
-Both "Dispatch failed" and "Unknown outcome" are **terminal**: once a row
-shows either one, the entry is marked `resolved` and `syncAcaPending` stops
-fetching `GET /api/aca/dispatches` for it forever — a tab left open after
-every job it ever dispatched has either reached a terminal outcome or is
-still genuinely in flight, and never touches that endpoint again once
-resolved, even though the 15-second interval itself keeps ticking for the
-lifetime of the tab. This terminal state is decided from whatever status is
-already known locally **before** that endpoint is even asked again, not only
-after a successful reply: a dropped connection, a 429, or a de-configured
-GitHub App can never *extend* an already-expired bounded wait just because
-the network happened to be unavailable at that moment, nor can it leave the
-row "pending" forever — it already has enough locally-known evidence to
-report the same honest terminal answer regardless of whether that request
-succeeds.
+- **"Dispatch failed"**: the dispatch errored (for example the hub could not
+  find its run within an hour), or the run completed with a conclusion other
+  than `success` and never confirmed an execution. The reason is shown
+  verbatim. A run that failed *after* its execution was confirmed is not
+  called a failed dispatch; the job did start.
+- **"Unknown outcome"**: the workflow cannot prove its execution (`unsupported`:
+  it does not declare `hub_correlation_id`; the hub's reason is shown), or a
+  bounded wait ran out: `ACA_COMPLETED_WAIT_MS` (5 minutes) after the run
+  completed, or after the execution was confirmed, with no device; or
+  `ACA_MAX_PENDING_MS` (90 minutes) from the dispatch for a run that never
+  finishes. These are local "we gave up waiting" outcomes, not a GitHub fact
+  that the job can never produce a session, so a device that finally attaches
+  later is still recognized.
 
-The row stays visible (it is still meaningful — a failed or unknown-outcome
-job is not nothing), and offers a **"Check again"** button that forces
-exactly one more status re-check without ever starting a second real job
-(`retryAcaPending` only ever calls `GET /api/aca/dispatches` again, never
-`POST /api/aca/dispatch`). If that one re-check's request itself fails, the
-row is restored to the same terminal state it already had — never left stuck
-"unresolved", which would otherwise silently re-enable the 15-second
-auto-poll for a row that already gave its final answer.
+Both are **terminal**. The row marks itself `resolved` and stops asking for good,
+and that is decided from what is already known locally *before* the hub is
+asked, so a dropped connection, a 429 or a de-configured App can never extend an
+expired wait. The row stays visible and offers **Check again**, which re-reads
+`GET /api/aca/dispatches` once (it never calls `POST /api/aca/dispatch`, so it
+can never start a second job); if that read fails the row goes back to its last
+terminal state rather than polling.
 
-This tracking is **per browser tab and in-memory**, the same durability
-`DispatchTracker` itself documents server-side: reloading the page loses the
-row (the hub still ran the job; only the rendering of "it's in progress" is
-lost), and `GET /api/aca/dispatches` is polled only while a tab actually has
-an entry that is both unattached and unresolved — never on an ordinary page
-load, so a hub with no GitHub App configured never calls that route merely
-by being open (`GET /api/aca/repos` is called only when the dialog itself is
-opened, which is a deliberate action, not a page load; the "Squad on ACA"
-status card's own one-time mount-time discovery read of
-`/api/aca/status`/`/api/aca/repos`/`/api/aca/dispatches`, issue #233, is a
-separate, read-only concern covered in its own section above).
+**Polling is bounded.** While a tab holds an unattached, unresolved row it asks
+`GET /api/aca/dispatches` every 15 seconds (nothing pushes a message when an
+Actions run moves from queued to in progress, so this is the ACA-specific timer
+beside the app's ordinary overview refresh) and at most one request is in
+flight; overlapping triggers coalesce into one follow-up pass. With nothing
+pending or everything attached or resolved, it makes no request at all, so an
+ordinary page load, or a hub with no GitHub App, never calls that route, and it
+stays under the 30 per minute read limit. The tracking is per tab and in
+memory, like `DispatchTracker`: reloading loses the row, not the job.
 
-See `aca-match.js`'s own doc comment above `acaPendingMatch` for the full
-review history (including the concrete counter-example that closed this
-off), and `test/aca-dispatch-dialog-unit.js` / `test/browser-e2e-unit.js` for
-the regression coverage proving this conservative contract.
-
+**When the hub cannot dispatch.** With no GitHub App, or on a repository the App
+is not installed on or whose `squad-dispatch.yml` lacks the inputs, the dialog
+keeps its two fallback links (a prefilled issue, or the `/squad-aca` command to
+copy), the form's own hint buttons, and no row is added. A device token cannot
+start a job at all, and the hub holds no Azure credentials: the only thing it
+does is ask the workflow, as the GitHub App, to start.
 
 ### Who may start a run
 

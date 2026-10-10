@@ -246,23 +246,42 @@ async function watchCsp(pg) {
  * A minimal `githubApp` fixture implementing exactly the interface
  * `HubService`/`DispatchTracker` call (see `src/service/github-app.js` for
  * the real shape): `enabled`, `listReposWithDispatchStatus`,
- * `findInstallation`, `dispatch`, `_getRun`, `resolveRunStatus`. Deliberately
- * NOT the full HTTP-fixture `fakeGitHubApp()` in `test/github-app-unit.js` --
- * that exists to prove `GitHubApp` itself talks to the real GitHub REST API
- * correctly, which is already covered there. This only needs to prove the
- * BROWSER reacts correctly to dispatch/poll responses, so it answers
- * in-process with no HTTP involved at all.
+ * `findInstallation`, `dispatch`, `_getRun`, `resolveRunStatus`,
+ * `resolveExecutionReceipt`. Deliberately NOT the full HTTP-fixture
+ * `fakeGitHubApp()` in `test/github-app-unit.js` -- that exists to prove
+ * `GitHubApp` itself talks to the real GitHub REST API correctly, which is
+ * already covered there. This only needs to prove the BROWSER reacts
+ * correctly to dispatch/poll responses, so it answers in-process with no
+ * HTTP involved at all.
+ *
+ * It keeps the contract the real `DispatchTracker` relies on: `dispatch()`
+ * returns the hub's `correlationId` and `correlationSupported`, a run is
+ * `{runId, runAttempt, state, conclusion}`, and the confirmed execution only
+ * exists once the test publishes the workflow's receipt (`setRun(n,
+ * { executionName })`) -- a run being queued or in progress proves no job.
+ * `correlationSupported: false` is a repository whose workflow cannot prove
+ * its run (the tracker then answers `unsupported`).
  *
  * `dispatchShouldFail`, when set, makes `dispatch()` reject -- the one path
  * this fixture needs to exercise `#acaErr` on a genuine 502-shaped failure
  * rather than a 501 (no App) or 400 (bad input), both already covered
  * elsewhere.
  */
-function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' } = {}) {
-  let runIdSeq = 0;
+function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued', correlationSupported = true } = {}) {
+  const runs = [];
+  const byCorrelation = new Map();
+  const status = (run) => ({
+    state: run.state,
+    conclusion: run.conclusion,
+    runId: run.runId,
+    runAttempt: run.runAttempt,
+    htmlUrl: `https://github.com/acme/widgets/actions/runs/${run.runId}`,
+  });
   return {
     enabled: true,
     disabledReason() { return ''; },
+    /** Move the n-th dispatched run (1-based) along, as GitHub and the workflow would. */
+    setRun(n, patch) { Object.assign(runs[n - 1], patch); },
     async listReposWithDispatchStatus() {
       return [{ fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true }];
     },
@@ -275,26 +294,122 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
         err.status = 502;
         throw err;
       }
-      runIdSeq += 1;
+      const runId = runs.length + 1;
+      const run = { runId, runAttempt: 1, state: runState, conclusion: null, executionName: null };
+      runs.push(run);
+      const correlationId = correlationSupported ? `corr-${runId}` : null;
+      if (correlationId) byCorrelation.set(correlationId, run);
       return {
         // Issue number tracks the dispatch sequence (41 + the run id) rather
-        // than a fixed 42, so a test dispatching more than once (the
-        // same-repo double-dispatch case below) can tell its two pending
-        // rows apart in the rendered markup.
-        issue: { number: 41 + runIdSeq },
-        runUrl: `https://github.com/${owner}/${repo}/actions/runs/${runIdSeq}`,
+        // than a fixed 42, so a test dispatching more than once can tell its
+        // pending rows apart in the rendered markup.
+        issue: { number: 41 + runId },
+        runUrl: `https://github.com/${owner}/${repo}/actions/runs/${runId}`,
         workflowFile: 'squad-dispatch.yml',
         ref: 'main',
         dispatchedAt: Date.now(),
+        correlationId,
+        correlationSupported,
       };
     },
-    async _getRun() {
-      return { runId: runIdSeq, state: runState };
+    async _getRun(owner, repo, installationId, runId) {
+      return status(runs[runId - 1]);
     },
-    async resolveRunStatus() {
-      return { runId: runIdSeq, state: runState };
+    async resolveRunStatus({ correlationId }) {
+      const run = byCorrelation.get(correlationId);
+      return run ? status(run) : { state: 'pending', reason: 'no run has appeared yet' };
+    },
+    async resolveExecutionReceipt({ runId, runAttempt }) {
+      const run = runs[runId - 1];
+      return run && run.runAttempt === runAttempt && run.executionName ? { executionName: run.executionName } : null;
     },
   };
+}
+
+// Container App Job execution names the fake workflow "confirms", and so the
+// `aca-` device ids their jobs register as (`aca-${CONTAINER_APP_JOB_EXECUTION_NAME}`).
+const ACA_EXEC = 'squad-hub-job-x7k2q9p';
+const ACA_EXEC_2 = 'squad-hub-job-m4r8t1w';
+
+/**
+ * A hub with a (faked) GitHub App and its own signed-in page, so an ACA check
+ * cannot disturb the no-App assertions the main hub makes. `calls` records
+ * every `/api/aca/*` request the page makes.
+ */
+async function acaHub(browser, tag, appOptions) {
+  const auth = new Authenticator({ mode: MODES.DEV, devSecret: `aca-${tag}`, deviceSecret: `aca-${tag}-dev` });
+  const app = fakeInlineGithubApp(appOptions);
+  const svc = new HubService({ auth, serveWeb: true, githubApp: app });
+  const addr = await svc.listen(0, '127.0.0.1');
+  const origin = `http://127.0.0.1:${addr.port}`;
+  const subject = subjectKey(`t-${tag}`, `u-${tag}`);
+  const page = await browser.newPage();
+  const errors = [];
+  const calls = [];
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  await page.route(`${origin}/api/aca/**`, (route) => {
+    calls.push({ method: route.request().method(), url: route.request().url() });
+    route.continue();
+  });
+  await gotoSettled(page, `${origin}/?token=${auth.mintDevToken(`t-${tag}`, `u-${tag}`, `${tag} tester`)}`);
+  await page.waitForSelector('#who', { timeout: 15000 });
+  return {
+    svc, app, page, origin, subject, errors, calls,
+    async close() { await page.close(); await svc.close(); },
+  };
+}
+
+/** One job through the real dialog -- a deliberate click, as a person would. */
+async function dispatchAcaJob(page, prompt) {
+  await page.click('#newMoreBtn');
+  await page.click('[data-new="aca"]');
+  await page.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
+  await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+  await page.fill('#acaRepo', 'acme/widgets');
+  await page.fill('#acaPrompt', prompt);
+  await page.click('#acaStart');
+  await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+}
+
+/**
+ * An ordinary `refresh()` trigger (filters.js). `syncAcaPending` runs from
+ * `refresh()` or the 15 second poll, and this suite has a whole-file time
+ * budget, so changing a filter is the real, non-test-only way to have it run
+ * right away.
+ */
+async function refreshNow(page) {
+  await page.selectOption('#statusFilter', 'action');
+  await page.selectOption('#statusFilter', '');
+}
+
+/**
+ * Register an `aca-` device with one session, straight through the store (the
+ * seam test/stale-approval-unit.js already uses -- nothing here runs a real
+ * Container Apps job). `refresh()`'s own `GET /api/overview` reads it back.
+ */
+function attachAcaDevice(hub, deviceId, sessionId, meta, startedAt = Date.now()) {
+  hub.svc.store.registerDevice(hub.subject, { deviceId, name: 'aca job', platform: 'linux', kind: 'aca', meta });
+  hub.svc.store.upsertSession(hub.subject, deviceId, {
+    id: sessionId, status: 'active', startedAt, git: { host: 'github.com', repository: 'acme/widgets' },
+  });
+}
+
+/** What the Queued-on-ACA rows currently show. */
+function pendingRows(page) {
+  return page.$$eval('.row.aca-pending', (rows) => rows.map((r) => ({
+    title: r.querySelector('.row-title b').textContent,
+    pill: r.querySelector('.status').textContent,
+    done: [...r.querySelectorAll('.aca-step.done')].map((s) => s.textContent),
+    now: [...r.querySelectorAll('.aca-step.now')].map((s) => s.textContent),
+    fail: (r.querySelector('.aca-fail') || {}).textContent || '',
+    retry: !!r.querySelector('[data-aca-retry]'),
+  })));
+}
+
+/** The real session rows (not the pending ones) in the list. */
+function realSessionRows(page) {
+  return page.$$eval('.row[data-session]', (rows) => rows.map((r) => r.getAttribute('data-session')));
 }
 
 (async () => {
@@ -2314,270 +2429,158 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       }
     });
 
-    await check('a dispatched ACA job shows a Queued-on-ACA row that survives a same-repo/issue aca- device registering (#178)', async () => {
+    await check('a dispatched ACA job shows a Queued-on-ACA row, follows its run to a confirmed execution, and drops out when that execution\'s device attaches (#178)', async () => {
       // A hub with the GitHub App configured, on its own HubService/browser
       // so it cannot interfere with the no-App assertions the main `svc`
       // above makes. `fakeInlineGithubApp` stands in for `GitHubApp` itself
       // (already covered against the real GitHub API in
       // test/github-app-unit.js) -- this only needs to prove the BROWSER
       // reacts correctly to what `/api/aca/*` answers.
-      const authAca = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-e2e', deviceSecret: 'aca-e2e-dev' });
-      const githubApp = fakeInlineGithubApp();
-      const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp });
-      const addrAca = await svcAca.listen(0, '127.0.0.1');
-      const originAca = `http://127.0.0.1:${addrAca.port}`;
-      const tid = 't-aca'; const oid = 'u-aca';
-      const tokenAca = authAca.mintDevToken(tid, oid, 'aca tester');
-      const subject = subjectKey(tid, oid);
-
-      const pageAca = await browser.newPage();
-      const dispatchCalls = [];
-      await pageAca.route(`${originAca}/api/aca/**`, (route) => {
-        dispatchCalls.push({ method: route.request().method(), url: route.request().url() });
-        route.continue();
-      });
-      const errorsAca = [];
-      pageAca.on('console', (m) => { if (m.type() === 'error') errorsAca.push(m.text()); });
-      pageAca.on('pageerror', (e) => errorsAca.push(`pageerror: ${e.message}`));
+      const hub = await acaHub(browser, 'aca');
+      const { page, app, calls } = hub;
       try {
-        await gotoSettled(pageAca, `${originAca}/?token=${tokenAca}`);
-        await pageAca.waitForSelector('#who', { timeout: 15000 });
-
         // Nothing is pending yet, and nobody has opened the dialog -- but
-        // this is an ENABLED hub (a configured GitHub App, via
-        // `fakeInlineGithubApp`), so the "Squad on ACA" status card's own
-        // mount-time `refreshAcaStatus()` (#233, wired from devices.js/
-        // app.js on every page load) has ALREADY made its one-time,
-        // read-only discovery burst by now: GET /api/aca/status (always),
-        // then GET /api/aca/repos and GET /api/aca/dispatches (since status
-        // answered enabled: true). That is real, intentional, already-
-        // accepted behavior, not a regression -- the invariant that
-        // actually matters here is narrower than "zero calls": no POST
-        // (i.e. no dispatch) and no route OTHER than those three read-only
-        // discovery endpoints may happen before the user's own deliberate
+        // this is an ENABLED hub, so the "Squad on ACA" status card's own
+        // mount-time `refreshAcaStatus()` (#233) has ALREADY made its one-time,
+        // read-only discovery burst: GET /api/aca/status (always), then GET
+        // /api/aca/repos and GET /api/aca/dispatches (since status answered
+        // enabled: true). The invariant that matters is narrower than "zero
+        // calls": no POST (no dispatch) and no route OTHER than those three
+        // read-only endpoints may happen before the user's own deliberate
         // click opens the dialog. (The true "zero /api/aca/* calls at all"
-        // invariant belongs to a DISABLED hub with no GitHub App, which
-        // never reports enabled: true and so never has anything to
-        // discover -- see the "Not connected" status-card check above.)
+        // invariant belongs to a DISABLED hub with no GitHub App -- see the
+        // "Not connected" status-card check above.)
         const ALLOWED_PREOPEN_ACA_PATHS = ['/api/aca/status', '/api/aca/repos', '/api/aca/dispatches'];
-        const preOpenCalls = dispatchCalls.slice();
-        const illegalPreOpen = preOpenCalls.filter((c) => (
+        const illegalPreOpen = calls.filter((c) => (
           c.method !== 'GET' || !ALLOWED_PREOPEN_ACA_PATHS.some((p) => c.url.endsWith(p))
         ));
         assert.deepStrictEqual(illegalPreOpen, [],
           `only read-only status-card discovery GETs may happen before the dialog opens: ${JSON.stringify(illegalPreOpen)}`);
 
-        await pageAca.click('#newMoreBtn');
-        await pageAca.click('[data-new="aca"]');
-        await pageAca.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
-        await pageAca.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await page.click('#newMoreBtn');
+        await page.click('[data-new="aca"]');
+        await page.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
+        await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
 
         // Opening the dialog must not itself retrigger the status card's
-        // own discovery GET -- the real invariant this check still proves.
-        const statusCallsAfterOpen = dispatchCalls.filter((c) => c.method === 'GET' && c.url.endsWith('/api/aca/status'));
+        // own discovery GET, and nothing may be POSTed before Start.
+        const statusCallsAfterOpen = calls.filter((c) => c.method === 'GET' && c.url.endsWith('/api/aca/status'));
         assert.strictEqual(statusCallsAfterOpen.length, 1,
-          `opening the dialog retriggered /api/aca/status: ${JSON.stringify(dispatchCalls)}`);
-
-        // Nobody has clicked Start yet -- the actual dispatch POST must not
-        // have happened, no matter how much read-only discovery preceded it.
-        const dispatchPostsBeforeStart = dispatchCalls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/aca/dispatch'));
+          `opening the dialog retriggered /api/aca/status: ${JSON.stringify(calls)}`);
+        const dispatchPostsBeforeStart = calls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/aca/dispatch'));
         assert.deepStrictEqual(dispatchPostsBeforeStart, [],
           `/api/aca/dispatch was POSTed before #acaStart was ever clicked: ${JSON.stringify(dispatchPostsBeforeStart)}`);
 
-        await pageAca.fill('#acaRepo', 'acme/widgets');
-        await pageAca.fill('#acaPrompt', 'Update the docs and open a pull request');
-        await pageAca.click('#acaStart');
+        await page.fill('#acaRepo', 'acme/widgets');
+        await page.fill('#acaPrompt', 'Update the docs and open a pull request');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        assert.strictEqual(calls.filter((c) => c.method === 'POST' && c.url.endsWith('/api/aca/dispatch')).length, 1,
+          'Start did not POST exactly one dispatch');
+        // With no session yet the pending row IS the list: "No sessions yet" must not sit on top of it.
+        assert.ok(await page.evaluate(() => document.getElementById('empty').hidden),
+          'the empty state still says "No sessions yet" over a Queued on ACA row');
 
-        await pageAca.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
-        await pageAca.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        // The run is picked up by the hub (in progress), but no execution is
+        // confirmed yet: a running workflow proves a run, not a started job.
+        app.setRun(1, { state: 'in_progress' });
+        await refreshNow(page);
+        const running = await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 && r[0].now.includes('Starting job') ? r : null;
+        }, 'the in-progress run to be reflected on the row');
+        assert.deepStrictEqual(running[0].done, ['Dispatched'],
+          'a running workflow, with no confirmed execution, claimed more than the dispatch');
+        assert.strictEqual(running[0].title, '#42 \u00b7 acme/widgets');
 
-        // Register the real `aca-` device the dispatched workflow becomes,
-        // directly through the store -- the same seam
-        // test/stale-approval-unit.js and test/report-pr-unit.js already use
-        // for test setup, since nothing in this harness runs an actual
-        // Container Apps job. `refresh()`'s own `GET /api/overview` call
-        // (triggered below) reads this straight from the store, so no WS
-        // broadcast is needed to make the new device/session visible.
-        //
-        // A third Scout review found this hub has no authoritative way to
-        // join this device/session back to the specific dispatch above --
-        // GitHub's workflow_dispatch API returns no run id synchronously,
-        // `resolveRunStatus()`'s server-bound runId never reaches the
-        // device, and device-meta.js's FIELDS allowlist has no run/
-        // execution-id field a device could report back. repo+issue+timing
-        // alone was proven to produce false positives (see aca-match.js's
-        // REVIEW HISTORY), so `acaPendingMatch` now never guesses: this row
-        // MUST stay "Queued on ACA" even once a same-repo/issue aca- device
-        // and session show up, and the real session must appear separately
-        // in the roster, not replace the pending row.
-        svcAca.store.registerDevice(subject, {
-          deviceId: 'aca-test-1', name: 'aca job', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '42' },
-        });
-        svcAca.store.upsertSession(subject, 'aca-test-1', {
-          id: 'sess-1', status: 'active', startedAt: Date.now(),
-          git: { host: 'github.com', repository: 'acme/widgets' },
-        });
+        // The workflow's receipt confirms the execution the lease claim and
+        // ARM start produced: "Lease claimed" and "Starting job" are now proven.
+        app.setRun(1, { executionName: ACA_EXEC });
+        await refreshNow(page);
+        const confirmed = await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 && r[0].now.includes('Attached') ? r : null;
+        }, 'the confirmed execution to be reflected on the row');
+        assert.deepStrictEqual(confirmed[0].done, ['Dispatched', 'Lease claimed', 'Starting job']);
+        assert.strictEqual(confirmed[0].pill, 'Queued on ACA', 'attached was claimed before any device registered');
 
-        // `syncAcaPending` is only ever called from `refresh()` (ws.js) or
-        // the `ACA_POLL_MS` interval -- never from the WS 'overview' handler
-        // itself (see ws.js's `onmessage`, which only calls `render()`). The
-        // real path for this registration to be noticed is either that
-        // 15-second timer or the next explicit `refresh()` -- and this suite
-        // has a whole-file time budget (`test/run-tests.js`'s
-        // `runChildSuite`), so waiting out a real 15s tick here is not
-        // affordable. A status-filter change is a real, ordinary
-        // `refresh()` trigger (filters.js) that fires `syncAcaPending`
-        // immediately, which is exactly what proves the row's honest
-        // survival without inventing a test-only hook for it.
-        await pageAca.selectOption('#statusFilter', 'action');
-        await pageAca.selectOption('#statusFilter', '');
-        // The real session's roster re-render and the pending row's own
-        // (non-)removal are two separate render() passes -- poll for the
-        // real session to show up rather than reading #groups immediately.
-        const list = await until(
-          async () => {
-            const text = await pageAca.textContent('#groups');
-            return /acme\/widgets/.test(text) ? text : null;
-          },
-          'the attached session to appear in the list',
-          5000,
-        );
-        assert.match(list, /acme\/widgets/, 'the registered session never appeared in the list');
-        // The honest, conservative contract: the pending row is NEVER
-        // silently cleared by this heuristic. It still exists, side by side
-        // with the real session row, until an authoritative GitHub Actions
-        // run-status transition (Dispatch failed / Unknown outcome / etc.)
-        // resolves it -- which `fakeInlineGithubApp`'s default `runState:
-        // 'queued'` deliberately never reaches, so it is still here.
-        assert.ok(await pageAca.$('.row:has-text("Queued on ACA")'),
-          'the pending row was cleared by a same-repo/issue device registering -- that is exactly the false-positive this fix removes');
+        // An OLDER aca- job on the same repository that reports the same issue
+        // is not this dispatch: it gets its own session row, and the pending
+        // row stays pending.
+        attachAcaDevice(hub, 'aca-older-job-0001', 'sess-older', { repo: 'acme/widgets', issue: '42' }, Date.now() - 3600000);
+        await refreshNow(page);
+        await until(async () => (await realSessionRows(page)).length === 1, 'the older job to show as its own session');
+        assert.strictEqual((await pendingRows(page)).length, 1,
+          'an older same-repo/same-issue aca- device attached the new dispatch\'s pending row');
 
-        const broken = errorsAca.filter((e) => !/favicon/i.test(e));
+        // The job that THIS dispatch's execution became registers as
+        // `aca-<executionName>`, with no repo/issue meta at all (a real job
+        // sends none). That, and only that, attaches the row.
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-exec', {});
+        await refreshNow(page);
+        await until(async () => ((await pendingRows(page)).length === 0
+          && (await realSessionRows(page)).length === 2), 'the dispatched job\'s own session to replace the pending row');
+        assert.strictEqual(await page.$('.row:has-text("Queued on ACA")'), null, 'the Queued on ACA row survived the attach');
+
+        // An attached job needs no more polling: nothing is pending, so a
+        // further refresh must not call /api/aca/dispatches again.
+        const dispatchGets = () => calls.filter((c) => c.method === 'GET' && c.url.endsWith('/api/aca/dispatches')).length;
+        const before = dispatchGets();
+        await refreshNow(page);
+        await new Promise((r) => setTimeout(r, 500));
+        assert.strictEqual(dispatchGets(), before, 'an attached job is still being polled');
+
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
       } finally {
-        await pageAca.close();
-        await svcAca.close();
+        await hub.close();
       }
     });
 
-
-    await check('two dispatches on the SAME repository, plus an unrelated/pre-existing aca device, never falsely resolve either pending row (#178)', async () => {
-      // The bug this ONCE guarded against (the old contract): matching a
-      // pending dispatch's device purely by REPOSITORY+issue+timing would
-      // let one real aca- device attach and incorrectly clear BOTH pending
-      // rows at once (or clear the wrong one), or let an unrelated/older
-      // job on the same repository be mistaken for a brand-new dispatch's
-      // own attach.
-      //
-      // A third Scout review proved repo+issue+timing is ALSO wrong even
-      // when the reporting issue number matches exactly: no authoritative
-      // join from a device/session back to a specific dispatch's GitHub
-      // Actions run exists in this hub's contracts (see aca-match.js's
-      // REVIEW HISTORY for the concrete counter-example), so
-      // `acaPendingMatch` now never guesses identity at all. This check now
-      // proves the honest consequence: BOTH pending rows survive a device
-      // registering, even one that reports the exact same repo+issue as one
-      // of them, because this hub correctly refuses to assume which (if
-      // either) dispatch actually produced it.
-      const authTwo = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-two', deviceSecret: 'aca-two-dev' });
-      const githubAppTwo = fakeInlineGithubApp();
-      const svcTwo = new HubService({ auth: authTwo, serveWeb: true, githubApp: githubAppTwo });
-      const addrTwo = await svcTwo.listen(0, '127.0.0.1');
-      const originTwo = `http://127.0.0.1:${addrTwo.port}`;
-      const tid = 't-two'; const oid = 'u-two';
-      const tokenTwo = authTwo.mintDevToken(tid, oid, 'two tester');
-      const subject = subjectKey(tid, oid);
-
-      const pageTwo = await browser.newPage();
-      const errorsTwo = [];
-      pageTwo.on('console', (m) => { if (m.type() === 'error') errorsTwo.push(m.text()); });
-      pageTwo.on('pageerror', (e) => errorsTwo.push(`pageerror: ${e.message}`));
+    await check('two dispatches on the SAME repository attach only to their own jobs, never to a lookalike or each other (#178)', async () => {
+      // The defect matching by repository+issue+timing had: one real aca-
+      // device clearing BOTH pending rows, or the wrong one. Each row now waits
+      // for the device of ITS OWN confirmed execution.
+      const hub = await acaHub(browser, 'two');
+      const { page, app } = hub;
       try {
-        await gotoSettled(pageTwo, `${originTwo}/?token=${tokenTwo}`);
-        await pageTwo.waitForSelector('#who', { timeout: 15000 });
+        // A pre-existing job on the same repository reporting dispatch 1's issue.
+        attachAcaDevice(hub, 'aca-preexisting-0001', 'sess-old', { repo: 'acme/widgets', issue: '42' }, Date.now() - 3600000);
 
-        // An unrelated/pre-existing aca- device already running against the
-        // SAME repository but reporting a DIFFERENT issue -- never relevant
-        // to either dispatch below (fakeInlineGithubApp mints issues 42 and
-        // 43 below; 999 is neither).
-        svcTwo.store.registerDevice(subject, {
-          deviceId: 'aca-preexisting', name: 'aca job (old)', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '999' },
-        });
-        svcTwo.store.upsertSession(subject, 'aca-preexisting', {
-          id: 'sess-old', status: 'active', startedAt: Date.now() - (60 * 60 * 1000),
-          git: { host: 'github.com', repository: 'acme/widgets' },
-        });
+        await dispatchAcaJob(page, 'First job for this repository');
+        await page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        await dispatchAcaJob(page, 'Second job for the same repository');
+        await page.waitForFunction(() => document.querySelectorAll('.row.aca-pending').length === 2, null, { timeout: 10000 });
 
-        // First dispatch for acme/widgets -- fakeInlineGithubApp mints issue 42.
-        await pageTwo.click('#newMoreBtn');
-        await pageTwo.click('[data-new="aca"]');
-        await pageTwo.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
-        await pageTwo.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await pageTwo.fill('#acaRepo', 'acme/widgets');
-        await pageTwo.fill('#acaPrompt', 'First job for this repository');
-        await pageTwo.click('#acaStart');
-        await pageTwo.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
-        await pageTwo.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
+        app.setRun(2, { state: 'in_progress', executionName: ACA_EXEC_2 });
+        await refreshNow(page);
+        await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 2 && r.every((x) => x.now.includes('Attached')) ? r : null;
+        }, 'both rows to show their confirmed execution');
+        assert.strictEqual((await pendingRows(page)).length, 2, 'the pre-existing device attached a pending row');
 
-        // A second, concurrent dispatch for the SAME repository -- a
-        // different issue (43), started while the first is still unresolved.
-        await pageTwo.click('#newMoreBtn');
-        await pageTwo.click('[data-new="aca"]');
-        await pageTwo.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
-        await pageTwo.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await pageTwo.fill('#acaRepo', 'acme/widgets');
-        await pageTwo.fill('#acaPrompt', 'Second job for the same repository');
-        await pageTwo.click('#acaStart');
-        await pageTwo.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
-        await pageTwo.waitForFunction(() => document.querySelectorAll('.row.aca-pending').length === 2, null, { timeout: 10000 });
+        // The SECOND dispatch's job registers: only the second row goes.
+        attachAcaDevice(hub, `aca-${ACA_EXEC_2}`, 'sess-second', {});
+        await refreshNow(page);
+        const left = await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 ? r : null;
+        }, 'exactly one pending row to remain');
+        assert.strictEqual(left[0].title, '#42 \u00b7 acme/widgets', 'the wrong dispatch\'s row attached');
 
-        const titlesBefore = await pageTwo.$$eval('.row.aca-pending .row-title b', (els) => els.map((e) => e.textContent));
-        assert.strictEqual(titlesBefore.length, 2, 'both dispatches on this repository should show their own pending row');
+        // And then the first.
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-first', {});
+        await refreshNow(page);
+        await until(async () => ((await pendingRows(page)).length === 0
+          && (await realSessionRows(page)).length === 3), 'both jobs to have their own session row and no pending rows');
 
-        // One real aca- device registers, reporting the FIRST dispatch's own
-        // issue (42) exactly -- under the old heuristic this would have
-        // resolved that row; under the new honest contract it must not,
-        // because repo+issue+timing is never authoritative proof.
-        svcTwo.store.registerDevice(subject, {
-          deviceId: 'aca-real-1', name: 'aca job', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '42' },
-        });
-        svcTwo.store.upsertSession(subject, 'aca-real-1', {
-          id: 'sess-real-1', status: 'active', startedAt: Date.now(),
-          git: { host: 'github.com', repository: 'acme/widgets' },
-        });
-
-        // Same ordinary-refresh trick the single-dispatch test above uses
-        // (see its own comment) to fire `syncAcaPending` without waiting out
-        // the real 15-second poll.
-        await pageTwo.selectOption('#statusFilter', 'action');
-        await pageTwo.selectOption('#statusFilter', '');
-
-        // Same two-pass render gap as the single-dispatch test above: poll
-        // rather than read #groups on the instant the registered device's
-        // session appears.
-        const list = await until(
-          async () => {
-            const text = await pageTwo.textContent('#groups');
-            return /acme\/widgets/.test(text) ? text : null;
-          },
-          'the registered session to appear in the list',
-          5000,
-        );
-        assert.match(list, /acme\/widgets/, 'the registered session never appeared in the list');
-
-        // The honest, conservative contract: BOTH pending rows survive,
-        // unchanged -- neither is silently resolved by a same-repo/issue
-        // device registering, because this hub cannot prove which (if
-        // either) dispatch actually produced it.
-        const titlesAfter = await pageTwo.$$eval('.row.aca-pending .row-title b', (els) => els.map((e) => e.textContent));
-        assert.deepStrictEqual(titlesAfter, titlesBefore,
-          'a pending row was resolved by a same-repo/issue device registering -- that is exactly the false-positive this fix removes');
-
-        const broken = errorsTwo.filter((e) => !/favicon/i.test(e));
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `the dispatch flow logged console errors: ${broken.join(' | ')}`);
       } finally {
-        await pageTwo.close();
-        await svcTwo.close();
+        await hub.close();
       }
     });
 
@@ -2611,84 +2614,160 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued' }
       }
     });
 
-    await check('two overlapping refreshes while a same-repo/issue aca- device registers never corrupt pending-row state (#178)', async () => {
-      // `syncAcaPending` used to need its own exclusivity bookkeeping
-      // (claimedKeys/matchedKey) purely to arbitrate WHICH of several
-      // pending rows a single ambiguous repo+issue+timing match should
-      // claim -- see aca-match.js's REVIEW HISTORY. Now that
-      // `acaPendingMatch` never claims anything, that bookkeeping is gone
-      // (there is nothing left to race over), but two overlapping
-      // `syncAcaPending` calls (driven by two refresh-triggering actions
-      // fired back-to-back, the second started before the first's own
-      // promise has settled) must still be safe: never a duplicated
-      // pending row, never a duplicated session row, never a thrown error
-      // from touching the same `state.acaPending` entries twice at once.
-      const authOverlap = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-overlap', deviceSecret: 'aca-overlap-dev' });
-      const githubAppOverlap = fakeInlineGithubApp();
-      const svcOverlap = new HubService({ auth: authOverlap, serveWeb: true, githubApp: githubAppOverlap });
-      const addrOverlap = await svcOverlap.listen(0, '127.0.0.1');
-      const originOverlap = `http://127.0.0.1:${addrOverlap.port}`;
-      const tid = 't-overlap'; const oid = 'u-overlap';
-      const tokenOverlap = authOverlap.mintDevToken(tid, oid, 'overlap tester');
-      const subject = subjectKey(tid, oid);
-
-      const pageOverlap = await browser.newPage();
-      const errorsOverlap = [];
-      pageOverlap.on('console', (m) => { if (m.type() === 'error') errorsOverlap.push(m.text()); });
-      pageOverlap.on('pageerror', (e) => errorsOverlap.push(`pageerror: ${e.message}`));
+    await check('two overlapping refreshes while the job attaches never duplicate or lose a row (#178)', async () => {
+      // Two refresh-triggering actions fired back-to-back, the second started
+      // before the first has settled, so two `syncAcaPending` passes genuinely
+      // overlap. The attach must still happen exactly once: one real session
+      // row, no leftover pending row, no console error.
+      const hub = await acaHub(browser, 'overlap');
+      const { page } = hub;
       try {
-        await gotoSettled(pageOverlap, `${originOverlap}/?token=${tokenOverlap}`);
-        await pageOverlap.waitForSelector('#who', { timeout: 15000 });
+        await dispatchAcaJob(page, 'Overlapping-poll regression');
+        await page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        hub.app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-overlap-1', {});
 
-        await pageOverlap.click('#newMoreBtn');
-        await pageOverlap.click('[data-new="aca"]');
-        await pageOverlap.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await pageOverlap.fill('#acaRepo', 'acme/widgets');
-        await pageOverlap.fill('#acaPrompt', 'Overlapping-poll regression');
-        await pageOverlap.click('#acaStart');
-        await pageOverlap.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
-        await pageOverlap.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
-
-        svcOverlap.store.registerDevice(subject, {
-          deviceId: 'aca-overlap-1', name: 'aca job', platform: 'linux', kind: 'aca', meta: { repo: 'acme/widgets', issue: '42' },
-        });
-        svcOverlap.store.upsertSession(subject, 'aca-overlap-1', {
-          id: 'sess-overlap-1', status: 'active', startedAt: Date.now(),
-          git: { host: 'github.com', repository: 'acme/widgets' },
-        });
-
-        // Two refresh-triggering filter changes, fired WITHOUT awaiting the
-        // first's settle -- this is what makes the two resulting
-        // `syncAcaPending` calls genuinely overlap rather than run strictly
-        // one after the other.
         await Promise.all([
-          pageOverlap.selectOption('#statusFilter', 'action'),
-          pageOverlap.selectOption('#statusFilter', ''),
+          page.selectOption('#statusFilter', 'action'),
+          page.selectOption('#statusFilter', ''),
         ]);
 
-        const list = await until(
-          async () => {
-            const text = await pageOverlap.textContent('#groups');
-            return /acme\/widgets/.test(text) ? text : null;
-          },
-          'the registered session to appear in the list',
-          5000,
-        );
-        assert.match(list, /acme\/widgets/, 'the registered session never appeared in the list');
-
-        // Exactly one real session row for the one registered device/
-        // session, and the pending row survives (never attached), and
-        // critically, never DUPLICATED by the overlap.
-        const sessionRowCount = await pageOverlap.$$eval('.row:has-text("acme/widgets"):not(.aca-pending)', (els) => els.length);
-        assert.strictEqual(sessionRowCount, 1, `the overlapping refreshes produced ${sessionRowCount} rows for one real session`);
-        const pendingRowCount = await pageOverlap.$$eval('.row.aca-pending', (els) => els.length);
-        assert.strictEqual(pendingRowCount, 1, `the overlapping refreshes produced ${pendingRowCount} pending rows for one dispatch`);
-
-        const broken = errorsOverlap.filter((e) => !/favicon/i.test(e));
+        await until(async () => ((await realSessionRows(page)).length === 1
+          && (await pendingRows(page)).length === 0), 'the attached session row to replace the pending row');
+        assert.strictEqual((await realSessionRows(page)).length, 1,
+          'the overlapping refreshes produced more than one row for one real session');
+        assert.strictEqual((await pendingRows(page)).length, 0,
+          'the overlapping refreshes left a pending row behind for a job that attached');
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
         assert.deepStrictEqual(broken, [], `overlapping refreshes logged console errors: ${broken.join(' | ')}`);
       } finally {
-        await pageOverlap.close();
-        await svcOverlap.close();
+        await hub.close();
+      }
+    });
+
+    await check('a slow, older /api/overview reply can never put an attached job back to Queued on ACA (#178)', async () => {
+      // Out-of-order replies: refresh A's reply (taken BEFORE the job's device
+      // registered) lands after refresh B's. Only the newest reply may update
+      // the overview, or the just-attached session would vanish from the list.
+      const hub = await acaHub(browser, 'stale');
+      const { page } = hub;
+      const hold = { armed: false, held: false, response: null, release: null };
+      try {
+        await page.route(`${hub.origin}/api/overview**`, async (route) => {
+          if (!hold.armed) return route.continue();
+          hold.armed = false;
+          hold.response = await route.fetch();
+          hold.held = true;
+          await new Promise((resolve) => { hold.release = resolve; });
+          return route.fulfill({ response: hold.response });
+        });
+        await dispatchAcaJob(page, 'Out-of-order overview replies');
+        await page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        hub.app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
+
+        hold.armed = true;
+        await page.selectOption('#statusFilter', 'action');
+        await until(() => hold.held, 'refresh A to be taken and held');
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-stale-1', {});
+        await page.selectOption('#statusFilter', '');
+        await until(async () => ((await realSessionRows(page)).length === 1
+          && (await pendingRows(page)).length === 0), 'refresh B to show the attached session');
+
+        hold.release();
+        await new Promise((r) => setTimeout(r, 800));
+        assert.strictEqual((await realSessionRows(page)).length, 1,
+          'the older overview reply removed the attached session from the list again');
+        assert.strictEqual((await pendingRows(page)).length, 0, 'the attached job went back to a pending row');
+      } finally {
+        if (hold.release) hold.release();
+        await hub.close();
+      }
+    });
+
+    await check('the job\'s session replaces the pending row from the live push alone, with no refresh or poll (#178)', async () => {
+      // Once the hub has confirmed the execution, the job's device registering
+      // is pushed over the WebSocket: the row must swap right then, not on the
+      // next 15 second poll or the next filter change.
+      const hub = await acaHub(browser, 'push');
+      const { page } = hub;
+      try {
+        await dispatchAcaJob(page, 'Swap on the live push');
+        hub.app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
+        await refreshNow(page);
+        await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 && r[0].now.includes('Attached') ? r : null;
+        }, 'the confirmed execution to be reflected on the row');
+
+        await page.waitForFunction(() => document.getElementById('conn').dataset.state === 'live', null, { timeout: 5000 });
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-push-1', {}); // the store write alone pushes nothing,
+        // so send what a registering device's own message makes the hub send
+        hub.svc._broadcast(hub.subject, { type: 'overview', ...hub.svc.store.overview(hub.subject) });
+        await until(async () => ((await realSessionRows(page)).length === 1
+          && (await pendingRows(page)).length === 0), 'the pushed device to replace the pending row', 5000);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('a repository whose workflow cannot prove its run stays "Unknown outcome" and never guesses an aca- device (#178)', async () => {
+      // `unsupported`: the workflow has no hub_correlation_id, so the hub cannot
+      // say which run is this dispatch. A same-repository, same-issue aca- job
+      // arriving meanwhile is exactly the lookalike the old matcher attached.
+      const hub = await acaHub(browser, 'unsupported', { correlationSupported: false });
+      const { page } = hub;
+      try {
+        await dispatchAcaJob(page, 'Workflow with no correlation input');
+        attachAcaDevice(hub, 'aca-lookalike-0001', 'sess-lookalike', { repo: 'acme/widgets', issue: '42' });
+        await refreshNow(page);
+        const rows = await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 && r[0].pill === 'Unknown outcome' ? r : null;
+        }, 'the unsupported dispatch to be reported as an unknown outcome');
+        assert.match(rows[0].fail, /hub_correlation_id/, `the row did not say why: ${rows[0].fail}`);
+        assert.deepStrictEqual(rows[0].done, ['Dispatched'], 'an unprovable dispatch claimed progress it cannot prove');
+        assert.ok(rows[0].retry, 'an unknown outcome offers no way to check again');
+        await until(async () => (await realSessionRows(page)).length === 1, 'the lookalike session to show on its own');
+        assert.strictEqual((await pendingRows(page)).length, 1,
+          'a same-repo/same-issue aca- device was guessed to be this dispatch');
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the unsupported flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('a run that finishes without the job attaching shows Dispatch failed with its reason, and Check again follows a rerun (#178)', async () => {
+      const hub = await acaHub(browser, 'failed-run');
+      const { page } = hub;
+      try {
+        await dispatchAcaJob(page, 'A run that ends badly');
+        hub.app.setRun(1, { state: 'completed', conclusion: 'failure' });
+        await refreshNow(page);
+        const failed = await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 && r[0].pill === 'Dispatch failed' ? r : null;
+        }, 'the failed run to be reported');
+        assert.match(failed[0].fail, /finished \(failure\)/, `no reason shown: ${failed[0].fail}`);
+        assert.ok(failed[0].retry, 'a failed dispatch offers no Check again');
+
+        // A manual rerun is a new run attempt; the job it starts is a new
+        // execution, so the row follows it rather than staying failed.
+        hub.app.setRun(1, { runAttempt: 2, state: 'in_progress', conclusion: null, executionName: ACA_EXEC });
+        await page.click('[data-aca-retry]');
+        const rerun = await until(async () => {
+          const r = await pendingRows(page);
+          return r.length === 1 && r[0].now.includes('Attached') ? r : null;
+        }, 'the rerun to be followed after Check again');
+        assert.strictEqual(rerun[0].pill, 'Queued on ACA');
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-rerun-1', {});
+        await refreshNow(page);
+        await until(async () => ((await pendingRows(page)).length === 0
+          && (await realSessionRows(page)).length === 1), 'the rerun job to attach');
+        const broken = hub.errors.filter((e) => !/favicon/i.test(e));
+        assert.deepStrictEqual(broken, [], `the failed-run flow logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
       }
     });
 

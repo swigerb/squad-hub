@@ -396,11 +396,10 @@ export function render() {
     : ''}
     </div>`).join('');
 
-  const pendingAca = (state.acaPending || []).filter((p) => !p.attached);
-
-  $('groups').innerHTML = acaPendingSectionHtml(state.acaPending, state.scope) + html;
+  const queued = acaPendingSectionHtml(state.acaPending, state.scope);
+  $('groups').innerHTML = queued + html;
   closeRowMenu();
-  $('empty').hidden = (counts.sessions || 0) > 0 || (pendingAca.length > 0 && state.scope !== 'local');
+  $('empty').hidden = (counts.sessions || 0) > 0 || queued !== '';
 
   // With no device online there is nothing + New could do, so say what to do
   // first rather than leaving a live button that opens a dialog with an empty

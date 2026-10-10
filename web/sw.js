@@ -30,8 +30,10 @@
 
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
-// strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v15';
+// strategy already keeps content fresh on its own. v21: #178 added
+// /js/aca-pending.js and /js/aca-match.js to SHELL and reworked the pending
+// row's attach logic; the value is unique among the open branches' bumps.
+const CACHE = 'squad-hub-shell-v21';
 
 /**
  * The shell. Everything here is a public static asset.
