@@ -1088,7 +1088,10 @@ running on — `cloud` includes both a generic cloud device and an Azure
 Container Apps job execution, since both are "not a machine you are sitting
 at". `--status` filters by the session's own status (`active`,
 `waiting_approval`, `idle`, `done`, and so on — the same values `status`
-prints locally). `--json` prints the raw session objects, for scripting.
+prints locally), or by `review` for the sessions that are **ready for review**:
+ended, carrying a valid pull request, and with nobody blocked on them. `review`
+is not a status any device reports, so it is derived the same way the web app's
+Status filter derives it. `--json` prints the raw session objects, for scripting.
 
 ## Open the hub in a browser
 

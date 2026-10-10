@@ -72,6 +72,22 @@
 .phone-only { display: none; }
 .detail-head-line .detail-actions { align-items: center; height: 32px; }
 .detail-head-line .detail-actions button { height: 32px; box-sizing: border-box; }
+/* A phone cannot hold the back arrow, the star, a title, the status pill AND
+   the actions on one 32px line: the title was squeezed to nothing and, once
+   "Ready for review" (#179) made the pill wider, the right-hand actions ran off
+   the screen. Under this width the actions drop to their own right-aligned line
+   below. The first line -- arrow, star, title, pill -- is still one 32px line
+   box, which is the rule the comment above states and the browser suite checks. */
+@media (max-width: 600px) {
+  .detail-head-line { height: auto; min-height: 32px; flex-wrap: wrap; row-gap: 8px; }
+  .detail-head-line h2 { flex: 1 1 80px; }
+  .detail-head-line .spacer { display: none; }
+  .detail-head-line .detail-actions {
+    margin-left: auto; height: auto; min-height: 32px; max-width: 100%;
+    flex-wrap: wrap; justify-content: flex-end;
+  }
+  .detail-head-line .detail-actions button { white-space: nowrap; }
+}
 
 /* The status pill: fully rounded, 22px tall, a tinted fill and a leading dot
    rather than a clickable-looking outline -- a status is a fact, not a

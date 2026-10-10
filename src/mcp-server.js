@@ -39,7 +39,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         device: { type: 'string', description: 'Only sessions on this device id.' },
-        status: { type: 'string', description: 'Only sessions in this status (e.g. "active", "waiting_approval", "done").' },
+        status: { type: 'string', description: 'Only sessions in this status (e.g. "active", "waiting_approval", "done"), or "review" for ended sessions that report a pull request and are ready for review.' },
         keyword: { type: 'string', description: 'A substring to match against the prompt, working directory, or session id.' },
         actionNeeded: { type: 'boolean', description: 'Only sessions with a pending approval.' },
       },

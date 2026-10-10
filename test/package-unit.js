@@ -756,11 +756,11 @@ check("the service worker's shell lists the split css, not the old single file",
 check('CACHE was actually bumped for the shell-shape change', () => {
   // Pinned to the specific new value, not merely "a string" -- a revert that
   // restores the old literal must fail this, not slip past a loose assertion.
-  // Bumped again to v15 because /js/aca-status.js changed and that file sits
-  // in the shell pre-cache list. The value is pinned so a missed bump fails
+  // Bumped again to v16 because /js/review.js (#179) joined the shell pre-cache
+  // list. The value is pinned so a missed bump fails
   // loudly instead of silently serving stale cached UI.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v15';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v16';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

@@ -2414,6 +2414,793 @@ async function watchCsp(pg) {
       }
     });
 
+    // -----------------------------------------------------------------------
+    // READY FOR REVIEW AND SQUAD HEALTH (#179), driven in a real browser.
+    //
+    // A hub of its own with one real device socket, so every session below is
+    // published exactly as a device publishes it (`register`, then `session`
+    // frames) and reaches the page through the hub's own routes and its live
+    // socket. Nothing is injected into the DOM: the rows, the pill, the link,
+    // the filter and the health badge are all what the app drew from that data.
+    // -----------------------------------------------------------------------
+    const RV_PR = {
+      url: 'https://github.com/acme/widgets/pull/179', number: 179, title: 'Ready for review & health',
+    };
+    const RV_FAILING = {
+      status: 'fail',
+      checks: [
+        { id: 'routing', status: 'fail' }, { id: 'state-backend', status: 'fail' },
+        { id: 'docs', status: 'pass' }, { id: 'lint', status: 'skip' },
+      ],
+    };
+    const RV_PASSING = { status: 'pass', checks: [{ id: 'routing', status: 'pass' }, { id: 'docs', status: 'pass' }] };
+    const rvSquad = (health) => ({
+      isSquad: true, project: 'widgets', memberCount: 6, activeMembers: 0, decisionCount: 4, health,
+    });
+    const rvSession = (id, over) => ({
+      id, status: 'done', prompt: `rv ${id}`, cwd: '/work/widgets', agent: 'Copilot CLI',
+      startedAt: Date.now() - 60000, toolCallCount: 3, pendingApprovals: [], pullRequest: null, ...over,
+    });
+    const rvKey = (id) => `rv-device:${id}`;
+    const rv = {};
+
+    await check('a Ready for review fixture starts: a hub, a device, and sessions in every state that matters', async () => {
+      const authRv = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-rv', deviceSecret: 'e2e-rv-dev' });
+      rv.svc = new HubService({ auth: authRv, serveWeb: true, persistStore: false, persistDeviceTokens: false });
+      // Presence is read from the clock, so the last check below can make the
+      // device unreachable in seconds rather than minutes. The device
+      // heartbeats until then, as a real daemon does, so it stays online.
+      rv.svc.store.staleAfterMs = 2000;
+      rv.svc.store.offlineAfterMs = 4000;
+      const addrRv = await rv.svc.listen(0, '127.0.0.1');
+      rv.origin = `http://127.0.0.1:${addrRv.port}`;
+      rv.token = authRv.mintDevToken('t-rv', 'u-rv', 'rv person');
+      rv.link = new HubLink({
+        url: `${rv.origin.replace('http', 'ws')}/ws`, token: rv.token, deviceId: 'rv-device',
+      });
+      await rv.link.connect();
+      rv.link.send({ type: 'register', device: { name: 'RV Device', platform: 'linux', meta: null } });
+      rv.send = (session) => rv.link.send({ type: 'session', session });
+      rv.beat = setInterval(() => { try { rv.link.send({ type: 'heartbeat', device: {} }); } catch { /* socket closed */ } }, 300);
+      rv.send(rvSession('ready', { prompt: 'Ship the ready for review pill', pullRequest: RV_PR, squad: rvSquad(RV_FAILING) }));
+      rv.send(rvSession('failed-pr', { status: 'failed', prompt: 'A failed run that opened a PR', pullRequest: { ...RV_PR, number: 180, url: 'https://github.com/acme/widgets/pull/180' } }));
+      rv.send(rvSession('working', { status: 'active', prompt: 'Still working on it', pullRequest: { ...RV_PR, number: 181, url: 'https://github.com/acme/widgets/pull/181' }, squad: rvSquad(RV_PASSING) }));
+      rv.send(rvSession('idle', { status: 'idle', prompt: 'Waiting on your answer', pullRequest: { ...RV_PR, number: 182, url: 'https://github.com/acme/widgets/pull/182' } }));
+      rv.send(rvSession('no-pr', { prompt: 'Done, but no pull request' }));
+      rv.send(rvSession('bad-pr', { prompt: 'Done, with a pull request nobody should open', pullRequest: { url: 'javascript:alert(1)', number: 9, title: 'x' } }));
+      rv.page = await browser.newPage();
+      rv.errors = [];
+      rv.page.on('console', (m) => { if (m.type() === 'error') rv.errors.push(m.text()); });
+      rv.page.on('pageerror', (e) => rv.errors.push(`pageerror: ${e.message}`));
+      // A 409 is the hub saying "that device is not connected", which the app
+      // reports on screen. The browser still logs it as a resource error, so the
+      // last check below accounts for each one rather than ignoring the kind.
+      rv.conflicts = [];
+      rv.page.on('response', (r) => { if (r.status() === 409) rv.conflicts.push({ url: r.url(), gone: !!rv.gone }); });
+      rv.csp = await watchCsp(rv.page);
+      // A pull request link opens github.com in a new tab; nothing here may
+      // reach the real one.
+      await rv.page.context().route('https://github.com/**', (route) => route.fulfill({
+        status: 200, contentType: 'text/html', body: '<title>a pull request</title>',
+      }));
+      await gotoSettled(rv.page, `${rv.origin}/?token=${rv.token}`);
+      await until(async () => (await rv.page.$$('#groups .row')).length >= 6 || null, 'all six sessions to render');
+    });
+
+    /** What one row says, read from the DOM the way a person reads it. */
+    const rvRow = (id, pg) => (pg || rv.page).evaluate((key) => {
+      const row = document.querySelector(`#groups .row[data-session="${key}"]`);
+      if (!row) return null;
+      const pill = row.querySelector(':scope > .status');
+      const link = row.querySelector('a[data-pr-link]');
+      const health = row.querySelector('.health');
+      return {
+        rowClass: row.className,
+        rowEdge: getComputedStyle(row).boxShadow,
+        pill: pill && pill.textContent.trim(),
+        pillClass: pill && pill.className,
+        pillHeight: pill && Math.round(pill.getBoundingClientRect().height),
+        pillTag: pill && pill.tagName,
+        pillColor: pill && getComputedStyle(pill).color,
+        link: link && {
+          href: link.getAttribute('href'), target: link.target, rel: link.rel, text: link.textContent.trim(),
+          aria: link.getAttribute('aria-label'), title: link.title,
+        },
+        health: health && {
+          text: health.textContent.trim(), title: health.title, tag: health.tagName, cls: health.className,
+          role: health.getAttribute('role'), tabindex: health.getAttribute('tabindex'),
+        },
+      };
+    }, rvKey(id));
+
+    const rvViolet = () => rv.page.evaluate(() => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--violet)';
+      document.body.appendChild(probe);
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return c;
+    });
+
+    await check('an ended session with a pull request reads "Ready for review": a violet 22px pill, a violet row, an Open PR link (#179)', async () => {
+      assert.ok(rv.page, 'the fixture did not start');
+      const row = await rvRow('ready');
+      assert.ok(row, 'the ready session has no row');
+      assert.strictEqual(row.pill, 'Ready for review');
+      assert.match(row.pillClass, /\bready\b/);
+      assert.ok(/\bready\b/.test(row.rowClass), `the row is not marked ready: ${row.rowClass}`);
+      assert.strictEqual(row.pillColor, await rvViolet(), 'the pill is not the violet of the design');
+      assert.ok(row.rowEdge.includes(await rvViolet()) && /\b3px\b/.test(row.rowEdge), `the row has no violet edge: "${row.rowEdge}"`);
+      assert.strictEqual(row.pillHeight, 22, `a pill is 22px tall, this one is ${row.pillHeight}px`);
+      assert.notStrictEqual(row.pillTag, 'BUTTON', 'the pill is a button');
+      assert.ok(row.link, 'the row has no Open PR link');
+      assert.strictEqual(row.link.href, RV_PR.url);
+      assert.strictEqual(row.link.text, 'Open PR ↗');
+      assert.strictEqual(row.link.target, '_blank');
+      assert.ok(/noopener/.test(row.link.rel) && /noreferrer/.test(row.link.rel), `rel is "${row.link.rel}"`);
+      assert.match(row.link.title, /#179/);
+      assert.match(row.link.aria, /Open PR #179/);
+    });
+
+    await check('"ended" includes a run that failed, so a failed run with a pull request is ready for review too (#179)', async () => {
+      const row = await rvRow('failed-pr');
+      assert.strictEqual(row.pill, 'Ready for review');
+      assert.strictEqual(row.link && row.link.href, 'https://github.com/acme/widgets/pull/180');
+    });
+
+    await check('a session still going, one awaiting your reply, one with no pull request and one with an unusable one are NOT ready (#179)', async () => {
+      for (const [id, want] of [['working', null], ['idle', /awaiting/i], ['no-pr', null], ['bad-pr', null]]) {
+        const row = await rvRow(id);
+        assert.ok(row, `${id} has no row`);
+        assert.ok(!/ready for review/i.test(row.pill), `${id} reads "${row.pill}"`);
+        assert.ok(!/\bready\b/.test(row.rowClass) && !/\bready\b/.test(row.pillClass), `${id} is styled as ready`);
+        assert.ok(!row.rowEdge.includes(await rvViolet()), `${id} carries the violet edge of a ready row: "${row.rowEdge}"`);
+        assert.strictEqual(row.link, null, `${id} offers an Open PR link`);
+        if (want) assert.match(row.pill, want);
+      }
+      const wrong = await rv.page.evaluate(() => [...document.querySelectorAll('a[data-pr-link]')]
+        .filter((a) => !/^https:\/\/github\.com\/acme\/widgets\/pull\/\d+$/.test(a.getAttribute('href'))).length);
+      assert.strictEqual(wrong, 0, 'a link that is not a github.com pull request reached the page');
+    });
+
+    await check('following Open PR opens the pull request in a new tab and does NOT open the session (#179)', async () => {
+      const [popup] = await Promise.all([
+        rv.page.context().waitForEvent('page', { timeout: 10000 }),
+        rv.page.click(`#groups .row[data-session="${rvKey('ready')}"] a[data-pr-link]`),
+      ]);
+      try {
+        await popup.waitForLoadState('domcontentloaded');
+        assert.strictEqual(popup.url(), RV_PR.url);
+        assert.strictEqual(await popup.evaluate(() => window.opener), null, 'the new tab can reach back to the hub');
+      } finally {
+        await popup.close();
+      }
+      assert.strictEqual(await rv.page.$eval('#detailScrim', (el) => el.hidden), true,
+        'following the link also opened the session');
+      assert.ok(!/session=/.test(rv.page.url()), `the address changed to ${rv.page.url()}`);
+    });
+
+    await check('the Status filter offers "Ready for review" once a session is ready, and choosing it keeps exactly those sessions (#179)', async () => {
+      const shown = await rv.page.evaluate(() => {
+        const o = document.getElementById('statusFilter').querySelector('option[value="review"]');
+        return o && { hidden: o.hidden, text: o.text };
+      });
+      assert.ok(shown && shown.hidden === false, 'the option is still hidden with two ready sessions on screen');
+      assert.strictEqual(shown.text, 'Ready for review');
+
+      const asked = rv.page.waitForRequest((r) => /\/api\/overview\?.*status=review/.test(r.url()), { timeout: 10000 });
+      await rv.page.click('#statusFilter >> xpath=..');
+      await rv.page.click('.sp-opt >> text=Ready for review');
+      await asked;
+      const keys = await until(async () => {
+        const k = await rv.page.evaluate(() => [...document.querySelectorAll('#groups .row')].map((r) => r.dataset.session).sort());
+        return k.length === 2 ? k : null;
+      }, 'the list to narrow to the two ready sessions');
+      assert.deepStrictEqual(keys, [rvKey('failed-pr'), rvKey('ready')].sort());
+      assert.strictEqual(await rv.page.$eval('#statusFilter', (el) => el.value), 'review');
+    });
+
+    await check('the review filter also holds against a live push, which the hub sends unfiltered (#179)', async () => {
+      rv.send(rvSession('late-no-pr', { prompt: 'Finished without a pull request' }));
+      rv.send(rvSession('late-ready', { prompt: 'Finished with a pull request', pullRequest: { ...RV_PR, number: 183, url: 'https://github.com/acme/widgets/pull/183' } }));
+      await until(async () => (await rv.page.$(`#groups .row[data-session="${rvKey('late-ready')}"]`)) || null,
+        'the newly ready session to join the filtered list');
+      // Counts, never the handle itself: a failing assert would otherwise try to print a Playwright object graph.
+      assert.strictEqual((await rv.page.$$(`#groups .row[data-session="${rvKey('late-no-pr')}"]`)).length, 0,
+        'a session that is not ready joined the review list');
+      assert.strictEqual((await rv.page.$$(`#groups .row[data-session="${rvKey('working')}"]`)).length, 0,
+        'a working session joined the review list');
+    });
+
+    await check('the ready-for-review filter is a deep link, and the raw Done filter still lists a ready session, in the rows on screen (#179)', async () => {
+      await gotoSettled(rv.page, `${rv.origin}/?status=review`);
+      await until(async () => (await rv.page.$$('#groups .row')).length === 3 || null, 'the deep link to land on the review list');
+      assert.strictEqual(await rv.page.$eval('#statusFilter', (el) => el.value), 'review');
+
+      await rv.page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        sel.value = 'done';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      const rows = () => rv.page.evaluate(() => [...document.querySelectorAll('#groups .row')].map((r) => r.dataset.session).sort());
+      const done = ['ready', 'no-pr', 'bad-pr', 'late-no-pr', 'late-ready'].map(rvKey).sort();
+      await until(async () => JSON.stringify(await rows()) === JSON.stringify(done) || null, 'the list to narrow to the done sessions');
+      assert.ok(!(await rows()).includes(rvKey('failed-pr')), 'the Done filter listed a failed session');
+
+      // The hub pushes every session, filter or no filter. A session that is not done must not slip onto the list
+      // because a push replaced the narrowed answer: the next frame is drawn from the push, not the filtered fetch.
+      rv.send(rvSession('push-active', { status: 'active', prompt: 'Pushed while Done is chosen' }));
+      rv.send(rvSession('push-done', { prompt: 'Pushed done session' }));
+      await until(async () => (await rows()).includes(rvKey('push-done')) || null, 'the pushed done session to join the Done list');
+      const after = await rows();
+      assert.ok(!after.includes(rvKey('push-active')), 'a session that is not done joined the Done list on a live push');
+      assert.deepStrictEqual(after, [...done, rvKey('push-done')].sort());
+
+      await rv.page.evaluate(() => {
+        const sel = document.getElementById('statusFilter');
+        sel.value = '';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await until(async () => (await rv.page.$$('#groups .row')).length >= 8 || null, 'the unfiltered list to come back');
+    });
+
+    await check('a Squad session row shows "● healthy" or "● health: N failing", with the failing check ids in its tooltip (#179)', async () => {
+      const failing = await rvRow('ready');
+      assert.ok(failing.health, 'the failing Squad row has no health badge');
+      assert.strictEqual(failing.health.text, '● health: 2 failing');
+      assert.strictEqual(failing.health.title, 'Squad health: failing checks — routing, state-backend');
+      assert.ok(/\bfailing\b/.test(failing.health.cls));
+      const healthy = await rvRow('working');
+      assert.strictEqual(healthy.health.text, '● healthy');
+      assert.strictEqual(healthy.health.title, 'Squad health: healthy — no failing checks');
+      assert.ok(/\bhealthy\b/.test(healthy.health.cls));
+      const none = await rvRow('no-pr');
+      assert.strictEqual(none.health, null, 'a session with no Squad health drew a badge');
+    });
+
+    await check('the health badge is an indicator, not a pill or a button, and it reads red when failing and green when healthy (#179)', async () => {
+      const seen = await rv.page.evaluate(() => ['ready', 'working'].map((id) => {
+        const el = document.querySelector(`#groups .row[data-session="rv-device:${id}"] .health`);
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { tag: el.tagName, role: el.getAttribute('role'), tab: el.getAttribute('tabindex'), cursor: cs.cursor, color: cs.color, inStatus: !!el.closest('.status') };
+      }));
+      assert.ok(seen.every(Boolean), 'nothing was left to check, so this proves nothing');
+      for (const h of seen) {
+        assert.ok(h.tag !== 'BUTTON' && h.tag !== 'A' && h.role !== 'button' && h.tab == null && h.cursor !== 'pointer' && !h.inStatus,
+          `the health badge behaves like a control: ${JSON.stringify(h)}`);
+      }
+      assert.notStrictEqual(seen[0].color, seen[1].color, 'healthy and failing look the same');
+      const hue = (scheme) => rv.page.emulateMedia({ colorScheme: scheme }).then(() => rv.page.evaluate(() => {
+        const cx = Object.assign(document.createElement('canvas'), { width: 1, height: 1 }).getContext('2d', { willReadFrequently: true });
+        const rgb = (id) => {
+          cx.clearRect(0, 0, 1, 1); cx.fillStyle = '#000';
+          cx.fillStyle = getComputedStyle(document.querySelector(`#groups .row[data-session="rv-device:${id}"] .health`)).color;
+          cx.fillRect(0, 0, 1, 1);
+          return [...cx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+        };
+        return { failing: rgb('ready'), healthy: rgb('working') };
+      }));
+      try {
+        for (const scheme of ['dark', 'light']) {
+          const { failing: [fr, fg, fb], healthy: [hr, hg, hb] } = await hue(scheme);
+          assert.ok(fr - fg >= 40 && fr - fb >= 40, `the failing badge is not red in the ${scheme} theme: rgb(${fr}, ${fg}, ${fb})`);
+          assert.ok(hg - hr >= 30 && hg > hb, `the healthy badge is not green in the ${scheme} theme: rgb(${hr}, ${hg}, ${hb})`);
+        }
+      } finally {
+        await rv.page.emulateMedia({ colorScheme: null });
+      }
+    });
+
+    await check('the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)', async () => {
+      // The page is judged the moment it first appears: a live push repairs a
+      // missing link a moment later, and waiting for it would hide the gap.
+      await rv.page.evaluate(() => {
+        const scrim = document.getElementById('detailScrim');
+        window.__rvFirstPaint = null;
+        new MutationObserver((_, obs) => {
+          if (scrim.hidden) return;
+          obs.disconnect();
+          const links = document.getElementById('dtLinks');
+          const health = document.getElementById('dtSquadHealth');
+          window.__rvFirstPaint = {
+            link: !!links.querySelector('a[data-pr-link]'), linksHidden: links.hidden,
+            healthHidden: health.hidden, checks: health.querySelectorAll('.sq-checks li').length,
+          };
+        }).observe(scrim, { attributes: true, attributeFilter: ['hidden'] });
+      });
+      await rv.page.click(`#groups .row[data-session="${rvKey('ready')}"] .row-title`);
+      await rv.page.waitForSelector('#detailScrim:not([hidden])', { timeout: 10000 });
+      const first = await rv.page.evaluate(() => window.__rvFirstPaint);
+      assert.deepStrictEqual(first, { link: true, linksHidden: false, healthHidden: false, checks: 4 },
+        'the detail page opened without its Open PR link and health list');
+      const d = await until(async () => {
+        const r = await rv.page.evaluate(() => {
+          const links = document.getElementById('dtLinks');
+          const a = links && links.querySelector('a[data-pr-link]');
+          const pill = document.getElementById('dtStatusPill');
+          const health = document.getElementById('dtSquadHealth');
+          return {
+            pill: pill.textContent.trim(), pillClass: pill.className, pillHeight: Math.round(pill.getBoundingClientRect().height),
+            pillColor: getComputedStyle(pill).color,
+            linksHidden: links.hidden, href: a && a.getAttribute('href'), target: a && a.target, rel: a && a.rel,
+            healthHidden: health && health.hidden,
+            badge: health && health.querySelector('.health') && health.querySelector('.health').textContent.trim(),
+            checks: health ? [...health.querySelectorAll('.sq-checks li')].map((li) => `${li.querySelector('b').textContent}=${li.className}`) : [],
+            inSquadPanel: !!(health && health.closest('#dtSquad')),
+          };
+        });
+        return r.healthHidden === false ? r : null;
+      }, 'the Squad panel to show the health list');
+      assert.strictEqual(d.pill, 'Ready for review');
+      assert.match(d.pillClass, /\bready\b/);
+      assert.strictEqual(d.pillColor, await rvViolet());
+      assert.strictEqual(d.pillHeight, 22);
+      assert.strictEqual(d.linksHidden, false);
+      assert.strictEqual(d.href, RV_PR.url);
+      assert.strictEqual(d.target, '_blank');
+      assert.ok(/noopener/.test(d.rel) && /noreferrer/.test(d.rel));
+      assert.strictEqual(d.badge, '● health: 2 failing');
+      assert.deepStrictEqual(d.checks, ['routing=fail', 'state-backend=fail', 'docs=pass', 'lint=skip']);
+      assert.ok(d.inSquadPanel, 'the per-check list is not in the existing Squad panel');
+    });
+
+    await check('the detail page follows the session live: health recovers, and a lost pull request takes the link away (#179)', async () => {
+      rv.send(rvSession('ready', { prompt: 'Ship the ready for review pill', pullRequest: RV_PR, squad: rvSquad(RV_PASSING) }));
+      await until(async () => (await rv.page.$eval('#dtSquadHealth .health', (el) => el.textContent.trim()).catch(() => null)) === '● healthy' || null,
+        'the open detail page to show the recovered health');
+      assert.deepStrictEqual(await rv.page.$$eval('#dtSquadHealth .sq-checks li', (li) => li.map((e) => e.className)), ['pass', 'pass']);
+
+      rv.send(rvSession('ready', { prompt: 'Ship the ready for review pill', pullRequest: null, squad: rvSquad({ status: 'unknown' }) }));
+      await until(async () => (await rv.page.$eval('#dtLinks', (el) => el.hidden)) || null, 'the Open PR link to leave the open detail page');
+      assert.strictEqual(await rv.page.$eval('#dtSquadHealth', (el) => el.hidden), true, 'an unknown health still draws a block');
+      assert.notStrictEqual(await rv.page.$eval('#dtStatusPill', (el) => el.textContent.trim()), 'Ready for review');
+
+      rv.send(rvSession('ready', { prompt: 'Ship the ready for review pill', pullRequest: RV_PR, squad: rvSquad(RV_FAILING) }));
+      await until(async () => (await rv.page.$eval('#dtLinks', (el) => !el.hidden)) || null, 'the Open PR link to come back');
+    });
+
+    await check('every sidebar row on the detail page carries the same pill as the list (#179)', async () => {
+      const pills = await rv.page.evaluate(() => {
+        const row = document.querySelector(`#detailSidebarList [data-session="rv-device:ready"]`);
+        const pill = row && row.querySelector('.status');
+        return pill && pill.textContent.trim();
+      });
+      assert.strictEqual(pills, 'Ready for review');
+    });
+
+    /**
+     * Everything about the Ready for review row (or the detail page) that a
+     * person would call "broken": the page wider than the screen, a piece of it
+     * outside the row or the screen, a link or badge that wrapped, a pill that
+     * is not 22px or does not sit on the title's line, a title squeezed to
+     * nothing, or text under 4.5:1 against what it sits on. Returns a list of
+     * plain strings, so a failure says what was wrong instead of printing a
+     * browser object.
+     */
+    const rvFit = (view) => rv.page.evaluate((which) => {
+      const problems = [];
+      const vw = document.documentElement.clientWidth;
+      if (document.documentElement.scrollWidth > vw) {
+        problems.push(`the page is ${document.documentElement.scrollWidth}px wide in a ${vw}px viewport`);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const cx = canvas.getContext('2d', { willReadFrequently: true });
+      const rgba = (css) => {
+        cx.clearRect(0, 0, 1, 1); cx.fillStyle = '#000'; cx.fillStyle = css; cx.fillRect(0, 0, 1, 1);
+        const d = cx.getImageData(0, 0, 1, 1).data;
+        return [d[0], d[1], d[2], d[3] / 255];
+      };
+      const backdrop = (el) => {
+        const layers = [];
+        for (let n = el; n; n = n.parentElement) {
+          const c = rgba(getComputedStyle(n).backgroundColor);
+          if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+        }
+        let out = [255, 255, 255];
+        for (let i = layers.length - 1; i >= 0; i--) {
+          const [r, g, b, a] = layers[i];
+          out = [r * a + out[0] * (1 - a), g * a + out[1] * (1 - a), b * a + out[2] * (1 - a)];
+        }
+        return out;
+      };
+      const luminance = ([r, g, b]) => {
+        const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+      };
+      const legible = (name, el) => {
+        const hi = luminance(rgba(getComputedStyle(el).color)) + 0.05;
+        const lo = luminance(backdrop(el)) + 0.05;
+        const ratio = Math.max(hi, lo) / Math.min(hi, lo);
+        if (ratio < 4.5) problems.push(`${name} has ${ratio.toFixed(2)}:1 contrast, under 4.5:1`);
+      };
+      const inside = (name, el, box) => {
+        if (!el) { problems.push(`${name} is missing`); return null; }
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) problems.push(`${name} has no size`);
+        else if (r.left < box.left - 0.5 || r.right > box.right + 0.5) {
+          problems.push(`${name} spans ${Math.round(r.left)}..${Math.round(r.right)}, outside ${Math.round(box.left)}..${Math.round(box.right)}`);
+        }
+        return r;
+      };
+      const centre = (r) => r.top + r.height / 2;
+      const screen = { left: 0, right: vw };
+
+      if (which === 'list') {
+        const row = document.querySelector('#groups .row[data-session="rv-device:ready"]');
+        if (!row) return ['the ready row is missing'];
+        const rowBox = inside('the row', row, screen);
+        const pill = row.querySelector(':scope > .status');
+        const link = row.querySelector('a[data-pr-link]');
+        const health = row.querySelector('.health');
+        const title = row.querySelector('.row-title');
+        const pillBox = inside('the pill', pill, rowBox);
+        inside('the Open PR link', link, rowBox);
+        inside('the health badge', health, rowBox);
+        const titleBox = inside('the title', title, rowBox);
+        if (link && link.getClientRects().length !== 1) problems.push('the Open PR link wrapped');
+        if (health && health.getClientRects().length !== 1) problems.push('the health badge wrapped');
+        if (pillBox && Math.round(pillBox.height) !== 22) problems.push(`the pill is ${Math.round(pillBox.height)}px tall`);
+        if (pillBox && titleBox && Math.abs(centre(pillBox) - centre(titleBox)) > 1) problems.push('the pill is not on the title\'s line');
+        for (const [name, el] of [['the pill', pill], ['the Open PR link', link], ['the health badge', health]]) if (el) legible(name, el);
+        return problems;
+      }
+
+      const pill = document.getElementById('dtStatusPill');
+      const title = document.getElementById('dtTitle');
+      const pillBox = inside('the pill', pill, screen);
+      const titleBox = inside('the title', title, screen);
+      if (titleBox && titleBox.width < 40) problems.push(`the title is squeezed to ${Math.round(titleBox.width)}px`);
+      if (pillBox && Math.round(pillBox.height) !== 22) problems.push(`the pill is ${Math.round(pillBox.height)}px tall`);
+      const line = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtStatusPill']
+        .map((id) => document.getElementById(id)).filter((el) => el && el.offsetParent !== null)
+        .map((el) => centre(el.getBoundingClientRect()));
+      if (Math.max(...line) - Math.min(...line) > 1) problems.push(`the header items do not share a line: ${line.map(Math.round).join(', ')}`);
+      const link = document.querySelector('#dtLinks a[data-pr-link]');
+      inside('the Open PR link', link, screen);
+      inside('the health block', document.getElementById('dtSquadHealth'), screen);
+      inside('the check list', document.querySelector('#dtSquadHealth .sq-checks'), screen);
+      for (const id of ['dtAca', 'dtStop', 'dtMoreBtn']) {
+        const el = document.getElementById(id);
+        if (el && el.offsetParent !== null) inside(`#${id}`, el, screen);
+      }
+      for (const [name, el] of [['the pill', pill], ['the Open PR link', link], ['the health badge', document.querySelector('#dtSquadHealth .health')],
+        ['a failing check', document.querySelector('#dtSquadHealth li.fail span')], ['a passing check', document.querySelector('#dtSquadHealth li.pass span')],
+        ['the health label', document.querySelector('#dtSquadHealth .sq-hlabel')]]) if (el) legible(name, el);
+      return problems;
+    }, view);
+
+    await check('at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)', async () => {
+      try {
+        for (const view of ['list', 'detail']) {
+          if (view === 'list') await gotoSettled(rv.page, `${rv.origin}/?token=${rv.token}`);
+          else await gotoSettled(rv.page, `${rv.origin}/?session=${encodeURIComponent(rvKey('ready'))}`);
+          await rv.page.waitForSelector(view === 'list' ? '#groups .row' : '#detailScrim:not([hidden])', { timeout: 20000 });
+          await until(async () => (await rv.page.$$(view === 'list' ? '#groups .row a[data-pr-link]' : '#dtLinks a[data-pr-link]')).length || null,
+            'the Open PR link to be drawn');
+          await rv.page.waitForSelector(view === 'list' ? '#groups .row .health' : '#dtSquadHealth .health', { timeout: 10000 });
+          for (const width of [1280, 900, 390]) {
+            // The third pass is a person who chose Light on a dark system: the
+            // explicit `data-theme` block of tokens.css, which the two system
+            // passes never reach.
+            for (const [scheme, os, chosen] of [['dark', 'dark', null], ['light', 'light', null], ['chosen light', 'dark', 'light']]) {
+              await rv.page.setViewportSize({ width, height: 900 });
+              await rv.page.emulateMedia({ colorScheme: os });
+              await rv.page.evaluate((t) => {
+                if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme');
+                return new Promise((r) => requestAnimationFrame(r));
+              }, chosen);
+              const problems = await rvFit(view);
+              assert.deepStrictEqual(problems, [], `${view} at ${width}px in the ${scheme} theme: ${problems.join('; ')}`);
+            }
+          }
+        }
+      } finally {
+        await rv.page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+        await rv.page.emulateMedia({ colorScheme: null });
+        await rv.page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('the Ready for review states are captured at 1280, 900 and 390px, dark and light, when a folder is given (#179)', async () => {
+      const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
+      if (!outDir) { assert.ok(true); return; }
+      assert.ok(fs.statSync(outDir).isDirectory(), `SQUAD_HUB_SCREENSHOT_DIR is not a directory: ${outDir}`);
+      const shots = [
+        { width: 1280, height: 900, scheme: 'dark', suffix: 'desktop-dark' },
+        { width: 1280, height: 900, scheme: 'light', suffix: 'desktop-light' },
+        { width: 900, height: 800, scheme: 'dark', suffix: 'tablet-900-dark' },
+        { width: 900, height: 800, scheme: 'light', suffix: 'tablet-900-light' },
+        { width: 390, height: 844, scheme: 'dark', suffix: 'phone-390-dark' },
+        { width: 390, height: 844, scheme: 'light', suffix: 'phone-390-light' },
+      ];
+      try {
+        for (const view of ['list', 'detail']) {
+          if (view === 'list') await gotoSettled(rv.page, `${rv.origin}/?token=${rv.token}`);
+          else await gotoSettled(rv.page, `${rv.origin}/?session=${encodeURIComponent(rvKey('ready'))}`);
+          await rv.page.waitForSelector(view === 'list' ? '#groups .row' : '#detailScrim:not([hidden])', { timeout: 20000 });
+          await until(async () => (await rv.page.$$(view === 'list' ? '#groups .row a[data-pr-link]' : '#dtLinks a[data-pr-link]')).length || null,
+            'the Open PR link to be drawn');
+          await rv.page.waitForSelector(view === 'list' ? '#groups .row .health' : '#dtSquadHealth .health', { timeout: 10000 });
+          for (const shot of shots) {
+            await rv.page.setViewportSize({ width: shot.width, height: shot.height });
+            await rv.page.emulateMedia({ colorScheme: shot.scheme });
+            await rv.page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const file = path.join(outDir, `${view}-${shot.suffix}.png`);
+            await rv.page.screenshot({ path: file });
+            assert.ok(fs.statSync(file).size > 0, `${file} was written empty`);
+          }
+        }
+      } finally {
+        await rv.page.emulateMedia({ colorScheme: null });
+        await rv.page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('a pending approval outranks Ready for review: the row stays amber, reads "Needs approval" and offers no link (#179)', async () => {
+      await gotoSettled(rv.page, `${rv.origin}/?token=${rv.token}`);
+      await rv.page.waitForSelector('#groups .row', { timeout: 10000 });
+      rv.send(rvSession('pending', {
+        status: 'waiting_approval', prompt: 'Waiting on an approval', pullRequest: { ...RV_PR, number: 190, url: 'https://github.com/acme/widgets/pull/190' },
+        pendingApprovals: [{ approvalId: 'ap-rv', title: 'Run the tests', command: 'npm test', requestedAt: Date.now(), options: [{ id: 'allow_once', label: 'Allow once' }] }],
+      }));
+      const row = await until(async () => {
+        const r = await rvRow('pending');
+        return r && /approval/i.test(r.pill) ? r : null;
+      }, 'the pending session to show its approval');
+      assert.ok(/\battention\b/.test(row.rowClass) && !/\bready\b/.test(row.rowClass), `row class: ${row.rowClass}`);
+      assert.strictEqual(row.link, null);
+    });
+
+    await check('an unreachable device outranks everything: its live session reads Unreachable, an ended one stays Ready for review (#179)', async () => {
+      clearInterval(rv.beat);
+      rv.link.stop();
+      rv.gone = true;
+      await new Promise((r) => setTimeout(r, rv.svc.store.offlineAfterMs + 700));
+      await gotoSettled(rv.page, `${rv.origin}/?token=${rv.token}`);
+      const idle = await until(async () => {
+        const r = await rvRow('idle');
+        return r && /unreachable/i.test(r.pill) ? r : null;
+      }, 'the idle session to read Unreachable once its device went quiet');
+      assert.ok(/\bstale\b/.test(idle.pillClass), `the pill class is "${idle.pillClass}"`);
+      assert.strictEqual(idle.link, null);
+      const ready = await rvRow('ready');
+      assert.strictEqual(ready.pill, 'Ready for review', 'an ended session lost its pill when the device went away');
+      assert.ok(ready.link, 'an ended session lost its link when the device went away');
+    });
+
+    await check('a stale session shows every header action at once and still fits a phone, because the actions take their own line (#179)', async () => {
+      try {
+        await rv.page.setViewportSize({ width: 390, height: 900 });
+        await gotoSettled(rv.page, `${rv.origin}/?session=${encodeURIComponent(rvKey('idle'))}`);
+        await rv.page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        const seen = await until(async () => {
+          const r = await rv.page.evaluate(() => {
+            const vw = document.documentElement.clientWidth;
+            const shown = ['dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'].map((id) => {
+              const el = document.getElementById(id);
+              if (!el || el.offsetParent === null) return { id, shown: false };
+              const r = el.getBoundingClientRect();
+              return { id, shown: true, left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) };
+            });
+            const title = document.getElementById('dtTitle').getBoundingClientRect();
+            return { vw, sw: document.documentElement.scrollWidth, shown, titleWidth: Math.round(title.width) };
+          });
+          return r.shown.every((b) => b.shown) ? r : null;
+        }, 'the stale session to show Run on ACA, Forget, Stop and the more button together');
+        assert.ok(seen.sw <= seen.vw, `the page is ${seen.sw}px wide in a ${seen.vw}px viewport`);
+        for (const b of seen.shown) {
+          assert.ok(b.left >= 0 && b.right <= seen.vw, `#${b.id} spans ${b.left}..${b.right} in a ${seen.vw}px viewport`);
+          assert.strictEqual(b.height, 32, `#${b.id} is ${b.height}px tall; its label wrapped`);
+        }
+        assert.ok(seen.titleWidth >= 40, `the title is squeezed to ${seen.titleWidth}px`);
+      } finally {
+        await rv.page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // The hub's keyword, status and device filters, held by the page itself.
+    //
+    // A filtered fetch is answered by the hub, but a live push carries every
+    // session, so the page must narrow it again or the list falls back to
+    // everything the moment anything changes. Two devices of their own (online,
+    // heartbeating) so "device" is a real choice; every prompt carries a word
+    // nothing else on the hub has, so what the filters leave is exactly known.
+    // -----------------------------------------------------------------------
+    const fl = {};
+    const flKey = (device, id) => `${device}:${id}`;
+    const flRows = () => rv.page.evaluate(() => [...document.querySelectorAll('#groups .row')].map((r) => r.dataset.session).sort());
+    const flHeads = () => rv.page.evaluate(() => [...document.querySelectorAll('#groups .group')]
+      .map((g) => g.querySelector('.group-head').textContent.replace(/\s+/g, ' ').trim()));
+    /** Every list the page drew from now until `flFrames`, even one that was on screen for a single frame. */
+    const flRecord = () => rv.page.evaluate(() => {
+      window.__flFrames = [];
+      window.__flObs = new MutationObserver(() => {
+        window.__flFrames.push([...document.querySelectorAll('#groups .row')].map((r) => r.dataset.session).sort());
+      });
+      window.__flObs.observe(document.getElementById('groups'), { childList: true, subtree: true });
+    });
+    const flFrames = () => rv.page.evaluate(() => { window.__flObs.disconnect(); return window.__flFrames; });
+    // No `?token=` here: the app claims a token by dropping the whole query string, view state included.
+    // The token is already in this browser's storage, so the address carries only the view.
+    const flOpen = (query) => gotoSettled(rv.page, `${rv.origin}/?${query}`);
+    const flWait = async (keys, what) => {
+      try {
+        return await until(async () => {
+          const now = await flRows();
+          return JSON.stringify(now) === JSON.stringify([...keys].sort()) ? now : null;
+        }, what);
+      } catch (e) {
+        throw new Error(`${e.message}; wanted ${JSON.stringify([...keys].sort())}, the page had ${JSON.stringify(await flRows())}`);
+      }
+    };
+    const flOnly = (frames, allowed, what) => {
+      const stray = frames.flat().filter((k) => !allowed.includes(k));
+      assert.deepStrictEqual([...new Set(stray)], [], `${what}: a session outside the filter was on screen`);
+    };
+
+    await check('two more devices start, with sessions that say which filter each should survive (#179)', async () => {
+      assert.ok(rv.page, 'the fixture did not start');
+      for (const [id, name] of [['fl-a', 'FL A'], ['fl-b', 'FL B']]) {
+        const link = new HubLink({ url: `${rv.origin.replace('http', 'ws')}/ws`, token: rv.token, deviceId: id });
+        await link.connect();
+        link.send({ type: 'register', device: { name, platform: 'linux', meta: null } });
+        fl[id] = link;
+      }
+      fl.beat = setInterval(() => { for (const id of ['fl-a', 'fl-b']) { try { fl[id].send({ type: 'heartbeat', device: {} }); } catch { /* socket closed */ } } }, 300);
+      const send = (device, id, over) => fl[device].send({ type: 'session', session: rvSession(id, over) });
+      send('fl-a', 'idle-1', { status: 'idle', prompt: 'zqneedle alpha' });
+      send('fl-a', 'act-1', { status: 'active', prompt: 'zqneedle bravo' });
+      send('fl-a', 'done-1', { prompt: 'zqneedle charlie' });
+      send('fl-a', 'other-1', { status: 'idle', prompt: 'zqplain delta' });
+      send('fl-b', 'idle-1', { status: 'idle', prompt: 'zqneedle echo' });
+      send('fl-b', 'done-1', { prompt: 'zqplain foxtrot' });
+      send('fl-b', 'cwd-hit', { status: 'idle', prompt: 'zqplain golf', cwd: '/work/ZQNEEDLE-repo' });
+      fl.send = send;
+      await flOpen('q=zqneedle');
+      await flWait([flKey('fl-a', 'idle-1'), flKey('fl-a', 'act-1'), flKey('fl-a', 'done-1'), flKey('fl-b', 'idle-1'), flKey('fl-b', 'cwd-hit')],
+        'both devices to publish their sessions');
+    });
+
+    await check('a keyword filter keeps the list to the prompt, folder or id it matches, in any case, through a live push (#179)', async () => {
+      const hits = [flKey('fl-a', 'idle-1'), flKey('fl-a', 'act-1'), flKey('fl-a', 'done-1'), flKey('fl-b', 'idle-1'), flKey('fl-b', 'cwd-hit')];
+      await flOpen('q=ZQNeedle');
+      await flWait(hits, 'a keyword in another case to find the prompts and the folder');
+      await flRecord();
+      fl.send('fl-a', 'late-miss', { prompt: 'zqplain pushed while a keyword is typed' });
+      fl.send('fl-b', 'late-hit', { prompt: 'zqneedle pushed while a keyword is typed' });
+      await flWait([...hits, flKey('fl-b', 'late-hit')], 'the matching push to join the list');
+      flOnly(await flFrames(), [...hits, flKey('fl-b', 'late-hit')], 'the keyword');
+      assert.strictEqual(await rv.page.$eval('#q', (el) => el.value), 'ZQNeedle');
+    });
+
+    await check('a keyword and a status together keep exactly the sessions with both, through a live push (#179)', async () => {
+      const hits = [flKey('fl-a', 'idle-1'), flKey('fl-b', 'idle-1'), flKey('fl-b', 'cwd-hit')];
+      await flOpen('q=zqneedle&status=idle');
+      await flWait(hits, 'the keyword and the status to narrow the list');
+      await flRecord();
+      fl.send('fl-a', 'late-active', { status: 'active', prompt: 'zqneedle active, pushed' });
+      fl.send('fl-a', 'late-other', { status: 'idle', prompt: 'zqplain idle, pushed' });
+      fl.send('fl-a', 'late-idle', { status: 'idle', prompt: 'zqneedle idle, pushed' });
+      await flWait([...hits, flKey('fl-a', 'late-idle')], 'the matching push to join the list');
+      flOnly(await flFrames(), [...hits, flKey('fl-a', 'late-idle')], 'the keyword and status');
+    });
+
+    await check('a device filter keeps one device, and the other still reads as empty, through a live push (#179)', async () => {
+      const hits = [flKey('fl-b', 'idle-1'), flKey('fl-b', 'cwd-hit')];
+      await flOpen('q=zqneedle&status=idle&device=fl-b');
+      await flWait(hits, 'the device to narrow the list');
+      const heads = await flHeads();
+      assert.ok(heads.some((h) => /^FL A\b.*\b0 sessions\b/.test(h)), `the other online device was not shown empty: ${JSON.stringify(heads)}`);
+      await flRecord();
+      fl.send('fl-a', 'late-a', { status: 'idle', prompt: 'zqneedle idle on the other device' });
+      fl.send('fl-b', 'late-b', { status: 'idle', prompt: 'zqneedle idle on this device' });
+      await flWait([...hits, flKey('fl-b', 'late-b')], 'the push for the chosen device to join the list');
+      flOnly(await flFrames(), [...hits, flKey('fl-b', 'late-b')], 'the device');
+      const after = await flHeads();
+      assert.ok(after.some((h) => /^FL A\b.*\b0 sessions\b/.test(h)), `a push turned the empty device into a full one: ${JSON.stringify(after)}`);
+      assert.ok(after.some((h) => /^FL B\b.*\b3 sessions\b/.test(h)), `the chosen device does not count its own sessions: ${JSON.stringify(after)}`);
+    });
+
+    await check('a filtered answer that lands after the live push cannot put the other sessions back (#179)', async () => {
+      const hits = [flKey('fl-a', 'idle-1'), flKey('fl-b', 'idle-1'), flKey('fl-b', 'cwd-hit'), flKey('fl-a', 'late-idle'), flKey('fl-a', 'late-a'), flKey('fl-b', 'late-b')];
+      await flOpen('q=zqneedle&status=idle');
+      await flWait(hits, 'the filtered list to settle');
+
+      // The hub answers the next filtered fetch right away, but the answer is
+      // held back until a live push, which carries every session, has been drawn.
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      let held = 0;
+      let arrived;
+      const inFlight = new Promise((resolve) => { arrived = resolve; });
+      await rv.page.route(/\/api\/overview\?.*q=zqneedle/, async (route) => {
+        if (held) { await route.continue(); return; }
+        held += 1;
+        const answer = await route.fetch();
+        arrived();
+        await gate;
+        await route.fulfill({ response: answer });
+      });
+      try {
+        await flRecord();
+        await rv.page.fill('#q', 'zqneedle');
+        await inFlight;
+        fl.send('fl-b', 'held-active', { status: 'active', prompt: 'zqneedle active, pushed while a fetch is out' });
+        fl.send('fl-b', 'held-other', { status: 'idle', prompt: 'zqplain idle, pushed while a fetch is out' });
+        fl.send('fl-a', 'held-idle', { status: 'idle', prompt: 'zqneedle idle, pushed while a fetch is out' });
+        await until(async () => (await flRows()).includes(flKey('fl-a', 'held-idle')) || null, 'the push to be drawn while the fetch is held');
+        const during = await flRows();
+        assert.ok(!during.includes(flKey('fl-b', 'held-active')) && !during.includes(flKey('fl-b', 'held-other')),
+          `the push put sessions outside the filter on screen while the fetch was out: ${JSON.stringify(during)}`);
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        const allowed = [...hits, flKey('fl-a', 'held-idle')];
+        flOnly(await flFrames(), allowed, 'the push and the late fetch');
+        const settled = await flRows();
+        assert.ok(settled.every((k) => allowed.includes(k)), `the list ended on sessions outside the filter: ${JSON.stringify(settled)}`);
+      } finally {
+        release();
+        await rv.page.unroute(/\/api\/overview\?.*q=zqneedle/);
+      }
+    });
+
+    await check('a chosen Status stays on the control while no session qualifies for it, and leaves it once cleared (#179)', async () => {
+      const hidden = (value) => rv.page.$eval(`#statusFilter option[value="${value}"]`, (o) => o.hidden);
+      await flOpen('status=queued');
+      // "Ready for review" is offered once a session is ready, so it is the sign that the control has been drawn.
+      await until(async () => (await hidden('review')) === false || null, 'the Status control to be drawn from the sessions');
+      assert.strictEqual(await rv.page.$eval('#statusFilter', (el) => el.value), 'queued');
+      assert.strictEqual(await hidden('queued'), false, 'the Status that is chosen was hidden because no session is queued');
+      assert.deepStrictEqual(await flRows(), [], 'a session was listed under Queued on ACA');
+      await rv.page.evaluate(() => {
+        const el = document.getElementById('statusFilter');
+        el.value = '';
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await until(async () => (await hidden('queued')) === true || null, 'the unused Status to be hidden again once it is not chosen');
+    });
+
+    await check('clearing the keyword, the status and the device brings every session back (#179)', async () => {
+      // The saved view follows a person to the hub (/api/prefs), so it is cleared the way a person clears it.
+      await rv.page.fill('#q', '');
+      await rv.page.evaluate(() => {
+        for (const id of ['statusFilter', 'deviceFilter']) {
+          const el = document.getElementById(id);
+          el.value = '';
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
+      const all = await until(async () => {
+        const rows = await flRows();
+        return rows.includes(flKey('fl-b', 'done-1')) && rows.includes(flKey('fl-a', 'other-1')) && rows.includes(rvKey('ready')) ? rows : null;
+      }, 'every session to be listed again');
+      assert.ok(all.length >= 14, `only ${all.length} sessions came back`);
+      assert.strictEqual(await rv.page.$eval('#q', (el) => el.value), '');
+    });
+
+    try { if (fl.beat) clearInterval(fl.beat); } catch { /* closing */ }
+    for (const id of ['fl-a', 'fl-b']) { try { if (fl[id]) fl[id].stop(); } catch { /* closing */ } }
+
+    await check('the Ready for review page ran without a console error or a CSP violation, the 409s all from the device it disconnected (#179)', async () => {
+      // A 409 is the hub refusing to reach a device that is not connected -- what opening the
+      // unreachable device's session does. It is allowed only from that device, after it went.
+      const isConflict = (e) => /status of 409/.test(e);
+      const strays = rv.conflicts.filter((c) => !c.gone || !/rv-device/.test(c.url));
+      assert.deepStrictEqual(strays, [], `a request was refused before the device went away, or for another device: ${JSON.stringify(strays)}`);
+      assert.ok(rv.errors.filter(isConflict).length <= rv.conflicts.length, 'a 409 was logged that the page was never sent');
+      const broken = rv.errors.filter((e) => !/favicon/i.test(e) && !isConflict(e));
+      assert.deepStrictEqual(broken, [], `the page reported errors: ${broken.join(' | ')}`);
+      assert.deepStrictEqual(rv.csp, [], `the CSP was tripped: ${JSON.stringify(rv.csp)}`);
+    });
+
+    try { if (rv.beat) clearInterval(rv.beat); } catch { /* closing */ }
+    try { if (rv.page) await rv.page.close(); } catch { /* closing */ }
+    try { if (rv.link) rv.link.stop(); } catch { /* closing */ }
+    try { if (rv.svc) await rv.svc.close(); } catch { /* closing */ }
+
     await check('the whole suite ran under the enforced CSP with zero securitypolicyviolation events', async () => {
       // The exit criterion from issue #84: a policy strict enough to matter
       // and loose enough that nothing it actually touched -- sessions,
