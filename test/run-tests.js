@@ -1362,6 +1362,17 @@ async function suiteMutateShard() {
   runChildSuite(path.join(__dirname, 'mutate-shard-unit.js'), 'mutate-shard');
 }
 
+/**
+ * The verdict the mutation harness reaches for each mutation: only a named failure
+ * from a suite that finished with a nonzero status is a catch, and everything else
+ * (a wrong-test failure, a crash, a timeout, a green run) fails the sweep. Proven on
+ * the real harness main against a throwaway catalogue.
+ */
+async function suiteMutateVerdict() {
+  console.log('\n[MUTATE VERDICT] mutation harness: only a named failure from a finished suite is a catch, and every other outcome exits nonzero');
+  runChildSuite(path.join(__dirname, 'mutate-verdict-unit.js'), 'mutate-verdict');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1453,6 +1464,7 @@ async function suiteMutateShard() {
   await suiteRequiredModel();
   await suiteSuiteIndex();
   await suiteMutateShard();
+  await suiteMutateVerdict();
 
   console.log('');
   console.log('='.repeat(60));
