@@ -822,8 +822,14 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // own branch called that v16, which #179 had already spent, so the integrated
   // shell stays v23 rather than reusing a number two branches already mean
   // different things by.
+  //
+  // Bumped to v24 for #243's retained header menu (over the v23 shell): the
+  // detail page's header and shared menu now follow the retained selection
+  // when a server-side filter drops the session, which changed `detail.js`,
+  // `detail-control.js`, `rowmenu.js` and `wiring.js`. No module was added to
+  // the shell, so only the version moves.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v23';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v24';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

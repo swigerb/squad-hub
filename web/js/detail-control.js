@@ -198,6 +198,24 @@ export async function syncSession(targetKey) {
 }
 
 /**
+ * The open detail page's own selection, for when `state.overview` has stopped
+ * listing it. `refresh()` sends the status/search/device filters to the server,
+ * so a session that stops matching one is simply absent from the next
+ * overview while the person is still reading it -- `state.currentSession` is
+ * what they are looking at, and it is retained until they leave or
+ * explicitly remove it. Only the device is re-read from the overview (a
+ * filter drops sessions, never a device's own group), so its presence and
+ * capabilities stay current. `null` for any other key.
+ */
+export function retainedSelection(key) {
+  const current = state.currentSession;
+  if (!current || sessionKey(current.session) !== key) return null;
+  const group = ((state.overview && state.overview.groups) || [])
+    .find((g) => g.device && g.device.deviceId === current.device.deviceId);
+  return { device: group ? group.device : current.device, session: current.session };
+}
+
+/**
  * Whether the detail header's ⋯ menu should also offer "Sync session": the
  * same condition the detail controls expose (`canSync` AND device reachable).
  * While a resync for THIS session is in flight, the item still shows but

@@ -70,7 +70,14 @@
 // and /css/composer-next-turn.css to the shell. Its own branch called that v16,
 // which #179 had already spent, so the integrated shell stays v23: the value
 // every file of #179, #178, #181/#243, #182 and #183 is cached under together.
-const CACHE = 'squad-hub-shell-v23';
+//
+// v24 (#243's retained header menu over v23): detail.js, detail-control.js,
+// rowmenu.js and wiring.js changed again. The open page's header and its shared
+// ⋯ menu now follow the retained selection when a server-side filter drops the
+// session from the overview, and the header star renders from one helper. A v23
+// install would keep serving the old scripts, so this is v24: above the v23 of
+// the integrated shell, with no module added to SHELL.
+const CACHE = 'squad-hub-shell-v24';
 
 /**
  * The shell. Everything here is a public static asset.

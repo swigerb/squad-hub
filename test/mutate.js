@@ -952,11 +952,174 @@ const MUTATIONS = [
     mustFail: 'the session detail panel reads activeMember from the same field the row does',
   },
   {
+    // Plain behaviour only: this mustFail lives in the real-browser suite,
+    // where `process` does not exist, so an `process.env.MUTANT` guard here
+    // would throw a ReferenceError inside Chromium and "catch" the mutant for
+    // the wrong reason. Dropping the `canSync` half of the condition makes
+    // Sync session appear for an already-synced session -- the one thing the
+    // named assertion exists to rule out.
     name: 'the detail header menu always offers Sync session again, even when the session is already synced (#181 part 2)',
     file: 'web/js/detail-control.js',
     find: `  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;`,
-    replace: `  if (!isDeviceUnreachable(current.device) && !process.env.MUTANT && !canSync(state.composer.control)) return null; // MUTATION`,
+    replace: `  if (isDeviceUnreachable(current.device)) return null; // MUTATION: Sync offered even when already synced`,
     mustFail: 'the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)',
+  },
+  // ---- #181 review finding 1: the detail header ⋯ for a session a
+  // server-side status/search/device filter has dropped from the overview.
+  // Every mutation below is a distinct edit, each caught by an ASSERTION of
+  // the named check (never by an exception), and plain behaviour only: the
+  // browser-owned ones run in Chromium, where `process` does not exist.
+  {
+    name: 'the detail header menu stops falling back to the retained session, so its ⋯ does nothing once a filter drops the session (unit)',
+    file: 'web/js/rowmenu.js',
+    find: `  return findSessionByKey(key) || (fromDetail ? retainedSelection(key) : null);`,
+    replace: `  return findSessionByKey(key); // MUTATION: no retained fallback for the detail header`,
+    mustFail: 'the detail header ⋯ still opens for the open session after a server-side filter drops it from the overview, offering the actions of the retained session',
+  },
+  {
+    name: 'a render closes the detail header menu as soon as its session leaves the overview',
+    file: 'web/js/wiring.js',
+    find: `    ? menuTarget(rowMenuKey, true) : null;`,
+    replace: `    ? menuTarget(rowMenuKey, false) : null; // MUTATION: syncRowMenu ignores the retained selection`,
+    mustFail: 'a refresh or WebSocket render keeps the header menu open on the retained session and rebuilds it for a changed pin',
+  },
+  {
+    name: 'a header menu action resolves its target through the overview alone, so Remove/Stop/Rename/Pin/PR do nothing for a retained session (unit)',
+    file: 'web/js/rowmenu.js',
+    find: `  const found = menuTarget(key, detailMenuOpen());`,
+    replace: `  const found = menuTarget(key, false); // MUTATION: actions ignore the retained selection`,
+    mustFail: 'Remove from the retained header menu forgets exactly that session on the retained device, then leaves the detail page',
+  },
+  {
+    name: 'a click on any row menu may act on the open page retained session once its own row has left the overview',
+    file: 'web/js/rowmenu.js',
+    find: `  const found = menuTarget(key, detailMenuOpen());`,
+    replace: `  const found = menuTarget(key, true); // MUTATION: every menu may fall back to the detail session`,
+    mustFail: 'a stale LIST row menu cannot act on the retained session of the open page: a click that lands before the next render does nothing',
+  },
+  {
+    name: 'a LIST row menu may borrow the open detail page retained session when its own row has left the overview',
+    file: 'web/js/wiring.js',
+    find: `  const found = menuTarget(key, btn.id === 'dtMoreBtn');`,
+    replace: `  const found = menuTarget(key, true); // MUTATION: every opener may fall back to the detail session`,
+    mustFail: 'a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there',
+  },
+  {
+    name: 'a render keeps a LIST row menu alive on the open detail page retained session after its row left the overview',
+    file: 'web/js/wiring.js',
+    find: `  const found = detailMenuOpen() && current && sessionKey(current.session) === rowMenuKey`,
+    replace: `  const found = current && sessionKey(current.session) === rowMenuKey // MUTATION: not restricted to the detail header menu`,
+    mustFail: 'a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there',
+  },
+  {
+    name: 'detailMenuOpen stops telling the detail header menu apart from a list row menu',
+    file: 'web/js/wiring.js',
+    find: `  return rowMenuKey !== null && !!rowMenuBtn && rowMenuBtn.id === 'dtMoreBtn';`,
+    replace: `  return rowMenuKey !== null && !!rowMenuBtn; // MUTATION: any open menu counts as the detail header's`,
+    mustFail: 'a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there',
+  },
+  {
+    name: 'syncDetailHeader freezes the title, status and pin once the session leaves the overview',
+    file: 'web/js/detail.js',
+    find: `  const found = findSession(key) || retainedSelection(key);`,
+    replace: `  const found = findSession(key);
+  if (!found) return; // MUTATION: the header freezes once the session leaves the overview`,
+    mustFail: 'the detail header keeps following the retained session after it leaves the overview, and defers to the live row as soon as it is listed again',
+  },
+  {
+    name: 'the header star is no longer re-rendered from the pinned set on a refresh',
+    file: 'web/js/detail.js',
+    find: `  renderDetailStar(key);
+  renderCleanup(found);
+  // The inline approval card,`,
+    replace: `  // MUTATION: the star is not re-rendered on refresh
+  renderCleanup(found);
+  // The inline approval card,`,
+    mustFail: 'Rename, Pin and Open pull request from the retained header menu all act on the retained session, and the header follows the new name and pin',
+  },
+  {
+    name: 'the retained selection keeps the open-time device instead of re-reading the overview latest record',
+    file: 'web/js/detail-control.js',
+    find: `  return { device: group ? group.device : current.device, session: current.session };`,
+    replace: `  return { device: current.device, session: current.session }; // MUTATION: stale device`,
+    mustFail: 'the DEVICE of the retained session is re-read from the overview, so Stop and the header controls follow its presence rather than the open-time snapshot',
+  },
+  {
+    name: 'the retained selection takes the first device group in the overview instead of the session\'s own device',
+    file: 'web/js/detail-control.js',
+    find: `    .find((g) => g.device && g.device.deviceId === current.device.deviceId);`,
+    replace: `    .find((g) => g.device); // MUTATION: the first device, not this session's`,
+    mustFail: 'the device of the retained session is the overview group with its OWN device id, never the record of another device',
+  },
+  {
+    name: 'the retained selection answers for ANY key, so a stale header menu acts on whatever session is open now',
+    file: 'web/js/detail-control.js',
+    find: `  if (!current || sessionKey(current.session) !== key) return null;
+  const group`,
+    replace: `  if (!current) return null; // MUTATION: the key is never compared
+  const group`,
+    mustFail: 'stale target safety holds for a retained header menu: once the open page is a different session it neither acts on it nor survives a sync',
+  },
+  {
+    name: 'the retained header ⋯ no longer opens once a filter drops its session, from the click handler\'s own opener (browser)',
+    file: 'web/js/wiring.js',
+    find: `  const found = menuTarget(key, btn.id === 'dtMoreBtn');`,
+    replace: `  const found = menuTarget(key, false); // MUTATION: openRowMenu ignores the retained selection`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'Copy link from the retained header menu copies the bare session id URL instead of the session key (browser)',
+    file: 'web/js/rowmenu.js',
+    find: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`);`,
+    replace: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(session.id)}\`); // MUTATION: the bare id, not the key`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'Remove from the retained header menu sweeps every ended session of the device instead of exactly this one (browser)',
+    file: 'web/js/rowmenu.js',
+    find: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/forget\`, {
+        method: 'POST', body: { sessionId: session.id },
+      });`,
+    replace: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/forget\`, {
+        method: 'POST', body: {}, // MUTATION: not narrowed to this session
+      });`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'the header star title stops following a pin made from the retained header menu (browser)',
+    file: 'web/js/detail.js',
+    find: `  star.title = label;`,
+    replace: `  star.title = 'Pin this session'; // MUTATION: the title never follows the pin`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'Stop from the retained header menu sends the session key instead of the device-local session id (browser)',
+    file: 'web/js/rowmenu.js',
+    find: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/stop\`, {
+        method: 'POST', body: { sessionId: session.id },
+      });`,
+    replace: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/stop\`, {
+        method: 'POST', body: { sessionId: key }, // MUTATION: the key, not the id
+      });`,
+    mustFail: 'a live detail session that leaves a search filter keeps a header ⋯ that can Open its pull request, Sync and Stop on its own device (#181 review)',
+  },
+  {
+    name: 'Sync session from the retained header menu resyncs the session key instead of the device-local session id (browser)',
+    file: 'web/js/detail-control.js',
+    find: `    await api(\`/api/devices/\${encodeURIComponent(current.device.deviceId)}/resync\`, {
+      method: 'POST', body: { sessionId: current.session.id },
+    });`,
+    replace: `    await api(\`/api/devices/\${encodeURIComponent(current.device.deviceId)}/resync\`, {
+      method: 'POST', body: { sessionId: key }, // MUTATION: the key, not the id
+    });`,
+    mustFail: 'a live detail session that leaves a search filter keeps a header ⋯ that can Open its pull request, Sync and Stop on its own device (#181 review)',
+  },
+  {
+    name: 'the header menu is anchored to the button\'s left edge, so it runs off the right of the viewport (browser)',
+    file: 'web/js/wiring.js',
+    find: `  m.style.left = \`\${left}px\`;`,
+    replace: `  m.style.left = \`\${rect.left}px\`; // MUTATION: ignores the viewport clamp`,
+    mustFail: 'a retained header keeps one line box and an on-screen ⋯ menu at 1280, 900 and 390px, in dark and light (#181 review)',
   },
   {
     // The real-browser CI regression this whole fix addresses: comparing by
@@ -1398,14 +1561,14 @@ import { syncSession } from './js/detail-control.js';`,
     name: 'the browser reconnects every two seconds forever',
     file: 'web/js/ws.js',
     find: `    const wait = Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000);`,
-    replace: `    const wait = process.env.MUTANT ? 2000 : Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000); // MUTATION`,
+    replace: `    const wait = 2000; // MUTATION: a fixed two-second retry, no back-off`,
     mustFail: 'the connection state backs off instead of strobing',
   },
   {
     name: 'Refresh now gives no visible timestamp',
     file: 'web/js/wiring.js',
     find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
-    replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
+    replace: `    stamp.textContent = 'refreshing…'; // MUTATION: the stamp never gets its timestamp`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
   },
   {
@@ -2169,8 +2332,8 @@ import { syncSession } from './js/detail-control.js';`,
     const copyBtn = e.target.closest('[data-copy-cmd]');
     if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
   });`,
-    replace: `  if (!process.env.MUTANT) document.addEventListener('click', (e) => { // MUTATION
-    const copyBtn = e.target.closest('[data-copy-cmd]');
+    replace: `  document.addEventListener('click', (e) => { // MUTATION: only a button inside the device rail is wired
+    const copyBtn = e.target.closest('#deviceRail [data-copy-cmd]');
     if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
   });`,
     mustFail: 'the local-devices pitch copies its start command (#172)',
@@ -2547,14 +2710,14 @@ import { syncSession } from './js/detail-control.js';`,
     name: 'devices.js stops withholding the "action" status from the server, so Action needed asks the store for a status that never matches',
     file: 'web/js/ws.js',
     find: `  if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);`,
-    replace: `  if (state.filters.status && (state.filters.status !== 'action' || process.env.MUTANT)) params.set('status', state.filters.status); // MUTATION`,
+    replace: `  if (state.filters.status) params.set('status', state.filters.status); // MUTATION: "action" is sent to the server too`,
     mustFail: '"Action needed" (#169) narrows to blocked and awaiting-reply sessions, without a server round trip for a status no session has',
   },
   {
     name: 'the custom dropdown popup stops skipping a hidden <option>, so "Queued on ACA" / "Ready for review" appear with no data behind them',
     file: 'web/js/dropdowns.js',
     find: `      if (o.hidden) return;`,
-    replace: `      if (o.hidden && !process.env.MUTANT) return; // MUTATION`,
+    replace: `      if (false) return; // MUTATION: a hidden option is listed anyway`,
     mustFail: 'a dropdown opens on click and lists exactly the VISIBLE options its select holds',
   },
   {
@@ -3517,7 +3680,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v23';`,
+    find: `const CACHE = 'squad-hub-shell-v24';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -6117,7 +6280,7 @@ if ($health.accessStore -ne 'durable') {`,
   undoTimer = setTimeout(() => finish(commit), undoDelayMs);`,
     replace: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => finish(undo);
-  undoTimer = setTimeout(() => finish(commit), process.env.MUTANT ? 0 : undoDelayMs); // MUTATION`,
+  undoTimer = setTimeout(() => finish(commit), 0); // MUTATION: the commit fires at once, with no window`,
     mustFail: 'a forget sweep offers an Undo toast and waits out the window before telling the device anything',
   },
   {
@@ -6128,7 +6291,7 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => finish(undo);`,
     replace: `  const btn = $('toastUndo');
-  if (btn) btn.onclick = () => { if (!process.env.MUTANT) finish(undo); }; // MUTATION`,
+  if (btn) btn.onclick = () => {}; // MUTATION: Undo is shown but does nothing`,
     mustFail: 'clicking Undo on a forget sweep cancels it -- the device is never told',
   },
   {
@@ -8542,8 +8705,8 @@ prompt: |
   {
     name: '#179 detail: the open detail page stops following the session\'s pull request and health',
     file: 'web/js/detail.js',
-    find: `  $('dtWarn').hidden = warnings.length === 0;\n  syncReviewDetail(found.session);\n  renderNextTurn();\n  const pinned = state.favorites.has(key);`,
-    replace: `  $('dtWarn').hidden = warnings.length === 0;\n  renderNextTurn();\n  const pinned = state.favorites.has(key);`,
+    find: `  $('dtWarn').hidden = warnings.length === 0;\n  syncReviewDetail(found.session);\n  renderNextTurn();\n  renderDetailStar(key);`,
+    replace: `  $('dtWarn').hidden = warnings.length === 0;\n  renderNextTurn();\n  renderDetailStar(key);`,
     mustFail: 'the detail page follows the session live: health recovers, and a lost pull request takes the link away (#179)',
   },
   {
@@ -8722,7 +8885,7 @@ prompt: |
   {
     name: 'a filtered-out detail session is mistaken for a removed session',
     file: 'web/js/detail.js',
-    find: "  const found = findSession(key);\n  if (!found) return;\n  state.currentSession = found;",
+    find: "  const found = findSession(key) || retainedSelection(key);\n  state.currentSession = found;",
     replace: "  const found = findSession(key);\n  if (!found) { closeDetail({ nav: NAV.REPLACE }); return; } // MUTATION\n  state.currentSession = found;",
     mustFail: 'an open detail session survives leaving the active list filter',
   },
@@ -9224,8 +9387,8 @@ prompt: |
   {
     name: '#182+#183 detail.js: a live push to the open session stops repainting the Mode and Model bar',
     file: 'web/js/detail.js',
-    find: `  syncReviewDetail(found.session);\n  renderNextTurn();\n  const pinned = state.favorites.has(key);`,
-    replace: `  syncReviewDetail(found.session);\n  const pinned = state.favorites.has(key); // MUTATION: no repaint of the bar`,
+    find: `  syncReviewDetail(found.session);\n  renderNextTurn();\n  renderDetailStar(key);`,
+    replace: `  syncReviewDetail(found.session);\n  renderDetailStar(key); // MUTATION: no repaint of the bar`,
     mustFail: '(real call sites, #182 with #183) the Mode and Model bar follows the open session on every live push and on the control answer that applies, never on one a reopen superseded',
   },
   // ---------------------------------------------------------------------

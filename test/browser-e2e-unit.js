@@ -162,6 +162,21 @@ async function gotoSettled(page, url, opts) {
 }
 
 /**
+ * Open a session's detail page once the hub actually lists it. The fake device
+ * reports a session it has just started over its own socket, so loading the
+ * page straight after `start-session` can beat the hub's bookkeeping and find
+ * nothing to open (the detail scrim then never appears).
+ */
+async function openListedDetail(page, origin, key) {
+  await until(async () => {
+    await page.evaluate(() => window.__squadHubTest.refresh());
+    return page.evaluate((k) => window.__squadHubTest.state.overview.groups
+      .some((g) => g.sessions.some((s) => s.key === k)), key);
+  }, `the hub to list ${key}`);
+  await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+  await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+}
+/**
  * Wait until the page can genuinely reach the network again.
  *
  * `page.context().setOffline(false)` resolves before the browser can actually
@@ -2733,9 +2748,7 @@ function realSessionRows(page) {
     await check('an open detail session survives leaving the active list filter', async () => {
       const started = await daemon.handle({ op: 'start-session', prompt: 'filtered detail transition', cwd: process.cwd() });
       const key = `e2e-device:${started.id}`;
-      await page.evaluate(() => window.__squadHubTest.refresh());
-      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
-      await page.waitForSelector('#detailScrim:not([hidden])');
+      await openListedDetail(page, origin, key);
       try {
         await page.fill('#dtInput', 'Preserve this unsent follow-up');
         await page.evaluate(() => { window.__squadHubTest.state.filters.status = 'active'; });
@@ -2749,6 +2762,272 @@ function realSessionRows(page) {
       } finally {
         await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });
         await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
+    });
+
+    await check('after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'filtered header menu', cwd: process.cwd() });
+      const bystander = await daemon.handle({ op: 'start-session', prompt: 'filtered header bystander', cwd: process.cwd() });
+      await daemon.handle({ op: 'stop-session', sessionId: bystander.id });
+      const key = `e2e-device:${started.id}`;
+      await openListedDetail(page, origin, key);
+      const menu = () => page.evaluate(() => ({
+        open: !document.getElementById('rowMenu').hidden,
+        actions: [...document.querySelectorAll('#rowMenu [data-row-action]')].map((b) => b.dataset.rowAction),
+      }));
+      try {
+        await page.evaluate(() => { window.__squadHubTest.state.filters.status = 'active'; });
+        await daemon.handle({ op: 'stop-session', sessionId: started.id });
+        // The retained snapshot is only as fresh as the last overview that
+        // listed the session, so wait for the stop to reach the open page
+        // through the WebSocket's (unfiltered) overview before freezing it.
+        await until(() => page.evaluate(() => !['active', 'starting', 'waiting_approval', 'idle']
+          .includes(window.__squadHubTest.state.currentSession.session.status)),
+        'the stopped status to reach the open detail page');
+        // A WebSocket push replaces the overview with the UNFILTERED one and
+        // would race the filtered REST refresh this check is about.
+        await page.evaluate(() => { window.__squadHubTest.state.ws.onmessage = () => {}; });
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.evaluate((k) => window.__squadHubTest.state.overview.groups
+          .some((g) => g.sessions.some((s) => s.key === k)), key), false,
+        'precondition: the active filter should have dropped the stopped session from the live overview');
+
+        // #181 review finding 1: the retained header's ⋯ used to do nothing
+        // from here on -- every menu step resolved the session through the
+        // (now filtered) overview alone.
+        await page.click('#dtMoreBtn');
+        const opened = await menu();
+        assert.strictEqual(opened.open, true, 'the detail header ⋯ did nothing once its session left the filtered overview');
+        for (const wanted of ['open', 'pin', 'rename', 'copylink', 'remove']) {
+          assert.ok(opened.actions.includes(wanted), `the retained header menu lost "${wanted}" (offered: ${opened.actions.join(', ')})`);
+        }
+        assert.ok(!opened.actions.includes('stop'), 'an ended retained session still offered Stop session');
+
+        // Copy link is judged by what reaches the clipboard and what the toast
+        // claims, not by the toast alone: the page's clipboard is replaced by a
+        // recorder so the written text is the evidence.
+        await page.evaluate(() => {
+          window.__copied = [];
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText: (text) => { window.__copied.push(text); return Promise.resolve(); } },
+          });
+          document.getElementById('toast').textContent = '';
+        });
+        await page.click('#rowMenu [data-row-action="copylink"]');
+        await until(async () => ((await page.textContent('#toast')) === 'Link copied' ? true : null),
+          'Copy link from the retained header menu to report that it copied');
+        assert.deepStrictEqual(await page.evaluate(() => window.__copied), [`${origin}/?session=${encodeURIComponent(key)}`],
+          'Copy link from the retained header menu did not put this session\'s own deep link on the clipboard');
+
+        const renamed = `Retained header rename ${Date.now()}`;
+        await page.click('#dtMoreBtn');
+        page.once('dialog', (dialog) => dialog.accept(renamed));
+        await page.click('#rowMenu [data-row-action="rename"]');
+        await until(async () => ((await page.textContent('#dtTitle')) === renamed ? true : null),
+          'the detail header title to follow a rename made from the retained header menu');
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.textContent('#dtTitle'), renamed,
+          'a later filtered refresh reverted the retained header\'s renamed title');
+
+        await page.click('#dtMoreBtn');
+        await page.click('#rowMenu [data-row-action="pin"]');
+        assert.deepStrictEqual(await page.evaluate(() => {
+          const star = document.getElementById('dtStar');
+          return { pressed: star.getAttribute('aria-pressed'), title: star.title };
+        }), { pressed: 'true', title: 'Unpin this session' }, 'the header star did not follow a pin made from the retained header menu');
+        await page.click('#dtMoreBtn');
+        assert.ok((await page.textContent('#rowMenu [data-row-action="pin"]')).includes('Unpin'),
+          'the reopened retained header menu did not offer Unpin for a pinned session');
+        await page.click('#rowMenu [data-row-action="pin"]'); // leave nothing pinned behind
+
+        await page.click('#dtMoreBtn');
+        page.once('dialog', (dialog) => dialog.accept('')); // clearing the name puts the prompt back
+        await page.click('#rowMenu [data-row-action="rename"]');
+        await until(async () => ((await page.textContent('#dtTitle')) === 'filtered header menu' ? true : null),
+          'clearing the rename from the retained header menu to put the prompt back');
+
+        await page.click('#dtMoreBtn');
+        page.once('dialog', (dialog) => dialog.accept());
+        await page.click('#rowMenu [data-row-action="remove"]');
+        await until(async () => page.evaluate(() => (
+          document.getElementById('detailScrim').hidden
+          && window.__squadHubTest.state.currentSession === null
+          && !new URL(location.href).searchParams.has('session')
+        )), 'removing the retained session to close and clear its detail page');
+        assert.strictEqual(daemon.sessions.has(started.id), false,
+          'Remove from the retained header menu did not remove the ended session from its device');
+        assert.strictEqual(daemon.sessions.has(bystander.id), true,
+          'Remove from the retained header menu swept another ended session instead of exactly this one');
+      } finally {
+        await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        daemon.forgetSessions({ sessionId: bystander.id });
+      }
+    });
+
+    await check('a live detail session that leaves a search filter keeps a header ⋯ that can Open its pull request, Sync and Stop on its own device (#181 review)', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'retained live header menu', cwd: process.cwd() });
+      const key = `e2e-device:${started.id}`;
+      const prUrl = 'https://github.com/squad-hub/e2e/pull/181';
+      const resyncs = [];
+      const stops = [];
+      const recordStop = (request) => {
+        const url = new URL(request.url());
+        if (request.method() === 'POST' && url.pathname.endsWith('/stop')) {
+          stops.push({ path: url.pathname, sessionId: (request.postDataJSON() || {}).sessionId });
+        }
+      };
+      // Forced Not-synced so Sync session is offered, same isolation as the
+      // Sync checks above; the resync itself is captured, not performed.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'the agent process is gone' }),
+      }));
+      await page.route('**/resync', async (route) => {
+        const url = new URL(route.request().url());
+        resyncs.push({ path: url.pathname, sessionId: (route.request().postDataJSON() || {}).sessionId });
+        await route.fulfill({
+          status: 200, contentType: 'application/json', body: JSON.stringify({ id: key, pid: 1, cwd: '/' }),
+        });
+      });
+      page.on('request', recordStop);
+      const menu = () => page.evaluate(() => ({
+        open: !document.getElementById('rowMenu').hidden,
+        actions: [...document.querySelectorAll('#rowMenu [data-row-action]')].map((b) => b.dataset.rowAction),
+      }));
+      try {
+        await openListedDetail(page, origin, key);
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render');
+
+        // The e2e daemon never reports a pull request, so seed one on the
+        // snapshot the page already holds (the one it will retain), then
+        // freeze the WebSocket (its pushes carry the UNFILTERED overview and
+        // would race the filtered refresh) and filter by a search nothing
+        // matches.
+        await page.evaluate((url) => {
+          const t = window.__squadHubTest;
+          t.state.ws.onmessage = () => {};
+          t.state.currentSession.session.pullRequest = { url };
+          window.__opened = [];
+          window.open = (...args) => { window.__opened.push(args); return null; };
+          t.state.filters.q = 'zzz-matches-no-session';
+        }, prUrl);
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.evaluate((k) => window.__squadHubTest.state.overview.groups
+          .some((g) => g.sessions.some((s) => s.key === k)), key), false,
+        'precondition: the search filter should have dropped the live session from the overview');
+
+        await page.click('#dtMoreBtn');
+        const first = await menu();
+        assert.strictEqual(first.open, true, 'the detail header ⋯ did nothing once its live session left the filtered overview');
+        for (const wanted of ['open', 'pin', 'rename', 'copylink', 'pr', 'stop', 'sync']) {
+          assert.ok(first.actions.includes(wanted), `the retained live header menu lost "${wanted}" (offered: ${first.actions.join(', ')})`);
+        }
+        assert.ok(!first.actions.includes('remove'), 'a live retained session offered Remove');
+
+        await page.keyboard.press('Escape');
+        assert.deepStrictEqual(await page.evaluate(() => ({
+          open: !document.getElementById('rowMenu').hidden,
+          focus: document.activeElement && document.activeElement.id,
+        })), { open: false, focus: 'dtMoreBtn' }, 'Escape did not close the retained header menu and return focus to its ⋯ button');
+
+        await page.click('#dtMoreBtn');
+        await page.click('#rowMenu [data-row-action="pr"]');
+        assert.deepStrictEqual(await page.evaluate(() => window.__opened), [[prUrl, '_blank', 'noopener']],
+          'Open pull request from the retained header menu did not open the session\'s PR');
+
+        await page.click('#dtMoreBtn');
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await until(async () => (resyncs.length ? true : null), 'Sync session from the retained header menu to reach the device');
+        assert.deepStrictEqual(resyncs, [{ path: '/api/devices/e2e-device/resync', sessionId: started.id }],
+          'Sync session from the retained header menu did not resync exactly this session on its own device');
+
+        await page.click('#dtMoreBtn');
+        page.once('dialog', (dialog) => dialog.accept());
+        await page.click('#rowMenu [data-row-action="stop"]');
+        await until(async () => (stops.length ? true : null), 'Stop session from the retained header menu to reach the device');
+        assert.deepStrictEqual(stops, [{ path: '/api/devices/e2e-device/stop', sessionId: started.id }],
+          'Stop session from the retained header menu did not stop exactly this session on its own device');
+        await until(() => ['stopped', 'done', 'failed'].includes(daemon.sessions.get(started.id).status),
+          'the device to actually stop the retained session');
+        assert.strictEqual(await page.evaluate((k) => window.__squadHubTest.state.currentSession.session.key === k, key), true,
+          'stopping the retained session closed or switched the open detail page');
+      } finally {
+        page.off('request', recordStop);
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+        await page.evaluate(() => { window.__squadHubTest.state.filters.q = ''; });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        daemon.forgetSessions({ sessionId: started.id });
+      }
+    });
+
+    await check('a retained header keeps one line box and an on-screen ⋯ menu at 1280, 900 and 390px, in dark and light (#181 review)', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'retained header geometry', cwd: process.cwd() });
+      const key = `e2e-device:${started.id}`;
+      await openListedDetail(page, origin, key);
+      try {
+        await page.evaluate(() => {
+          const t = window.__squadHubTest;
+          t.state.ws.onmessage = () => {};
+          t.state.filters.q = 'zzz-matches-no-session';
+        });
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.evaluate((k) => window.__squadHubTest.state.overview.groups
+          .some((g) => g.sessions.some((s) => s.key === k)), key), false,
+        'precondition: the search filter should have dropped the live session from the overview');
+
+        for (const scheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme: scheme });
+          for (const width of [1280, 900, 390]) {
+            const where = `at ${width}px, ${scheme}`;
+            await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const centers = await page.evaluate((w) => {
+              const ids = w <= 900
+                ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill']
+                : ['dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca'];
+              return ids.map((id) => {
+                const el = document.getElementById(id);
+                if (!el || el.offsetParent === null) return null;
+                const r = el.getBoundingClientRect();
+                return r.top + r.height / 2;
+              }).filter((v) => v !== null);
+            }, width);
+            assert.ok(centers.length >= 2, `${where}, fewer than 2 retained header items were visible to compare`);
+            const spread = Math.max(...centers) - Math.min(...centers);
+            assert.ok(spread <= 1, `${where}, the retained header items do not share a line box -- vertical centers span ${spread}px`);
+
+            await page.click('#dtMoreBtn');
+            const menu = await page.evaluate(() => {
+              const m = document.getElementById('rowMenu');
+              const r = m.getBoundingClientRect();
+              return {
+                open: !m.hidden,
+                left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width,
+                vw: window.innerWidth, vh: window.innerHeight,
+                actions: [...m.querySelectorAll('[data-row-action]')].map((b) => b.dataset.rowAction),
+              };
+            });
+            assert.strictEqual(menu.open, true, `${where}, the retained header ⋯ did not open its menu`);
+            assert.ok(menu.width > 0 && menu.actions.includes('copylink'), `${where}, the retained header menu has no usable items`);
+            assert.ok(menu.left >= -0.5 && menu.right <= menu.vw + 0.5 && menu.top >= -0.5 && menu.bottom <= menu.vh + 0.5,
+              `${where}, the retained header ⋯ menu runs off the viewport (left=${menu.left}, right=${menu.right}, top=${menu.top}, bottom=${menu.bottom}, viewport=${menu.vw}x${menu.vh})`);
+            await page.keyboard.press('Escape');
+            assert.strictEqual(await page.evaluate(() => document.getElementById('rowMenu').hidden), true,
+              `${where}, Escape did not close the retained header menu`);
+          }
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.evaluate(() => { window.__squadHubTest.state.filters.q = ''; });
+        await daemon.handle({ op: 'stop-session', sessionId: started.id });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        daemon.forgetSessions({ sessionId: started.id });
       }
     });
 
