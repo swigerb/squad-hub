@@ -36,6 +36,12 @@
  * `openRowMenu`/`closeRowMenu` and detail.js's new circular import of
  * `closeRowMenu` are both the SAME code that ships) and concatenates every
  * reachable module's stripped source into one eval'd function body.
+ *
+ * `clickSyncRowAction` below dispatches through `handleRowMenuClick`, the
+ * exact function wiring.js's `wire()` installs as `$('rowMenu').onclick` --
+ * not a reimplementation of its body. A mutation that dropped or broke the
+ * target capture inside the real handler would be caught here; a restated
+ * copy of the handler's logic would not catch it.
  */
 
 const assert = require('assert');
@@ -76,12 +82,14 @@ function __resetCalls() { __refreshCalls = 0; __resyncCalls = []; }
 module.exports = {
   openDetail, closeDetail, initDetailRouting, openRowMenu, closeRowMenu,
   syncSession, detailSyncMenuItem, sessionKey, state, composerReduce,
+  handleRowMenuClick,
   __setApiImpl, __getRefreshCalls, __getResyncCalls, __resetCalls,
 };`)(mod, mod.exports);
 
 const {
   openDetail, closeDetail, initDetailRouting, openRowMenu, closeRowMenu,
   syncSession, detailSyncMenuItem, sessionKey, state, composerReduce,
+  handleRowMenuClick,
   __setApiImpl, __getRefreshCalls, __getResyncCalls, __resetCalls,
 } = mod.exports;
 
@@ -178,22 +186,23 @@ function forceNotSynced() {
 }
 
 /**
- * Mirrors the real `#rowMenu` click dispatch's Sync branch (wiring.js's
- * `wire()`), same convention as escape-focus-unit.js's
- * `pressEscapeLikeApp`: neither handler is its own exported function, so a
- * test exercising it faithfully re-states its exact, tiny body rather than
- * skip it. `menuOpenKey` is the key the test itself last passed to the real
- * `openRowMenu` -- which is exactly what the production `rowMenuKey`
- * closure variable holds at click time, asserted against the menu's own
- * visible `hidden` state below so this can never silently pass against an
- * already-closed menu.
+ * Dispatches a real click on the shared `#rowMenu`'s Sync item through
+ * `handleRowMenuClick` -- the exact function wiring.js's `wire()` installs
+ * as `$('rowMenu').onclick`, unchanged and unduplicated. `menuOpenKey` is
+ * the key the test itself last passed to the real `openRowMenu`, asserted
+ * against the resulting resync call below so a mutation that drops or
+ * breaks the production target capture inside `handleRowMenuClick` cannot
+ * silently pass.
  */
 function clickSyncRowAction(doc, menuOpenKey) {
   assert.strictEqual(doc.getElementById('rowMenu').hidden, false,
     'test setup bug: clickSyncRowAction called with no row menu actually open');
-  const target = menuOpenKey;
-  closeRowMenu();
-  return syncSession(target);
+  const syncButton = { dataset: { rowAction: 'sync' }, disabled: false };
+  const fakeClickEvent = {
+    target: { closest: (sel) => (sel === '[data-row-action]' ? syncButton : null) },
+  };
+  void menuOpenKey; // documents which session the caller expects; verified via __getResyncCalls()
+  return handleRowMenuClick(fakeClickEvent);
 }
 
 /** A resolvable `/resync` + `/control-check` double that records every call. */

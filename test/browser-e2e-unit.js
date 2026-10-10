@@ -2285,6 +2285,96 @@ async function watchCsp(pg) {
       }
     });
 
+    await check('a real browser Back/Forward away from a session with its shared Sync menu open closes the stale menu, with no outside click and no resync for the wrong target (#243 Scout review of ab5ef90, PR comment 6091670737)', async () => {
+      // Forced Not-synced for BOTH sessions this test visits, same reasoning
+      // as the in-flight-guard check above: isolates the frontend stale-menu
+      // guard from the real daemon/agent lifecycle.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'forced not-synced for this fixture' }),
+      }));
+      const resyncCalls = [];
+      await page.route('**/resync', async (route) => {
+        const body = route.request().postDataJSON();
+        resyncCalls.push(body && body.sessionId);
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: body && body.sessionId, pid: 1, cwd: '/' }),
+        });
+      });
+
+      try {
+        // Build a REAL two-entry history stack by navigating entirely
+        // through in-app clicks -- list -> A -> B -- so the Back/Forward
+        // below are genuine browser session-history traversals, not a
+        // synthetic `history.pushState` the test fabricated itself.
+        await gotoSettled(page, origin);
+        await page.waitForSelector('[data-session]', { timeout: 20000 });
+        const keyA = await page.getAttribute('[data-session]', 'data-session');
+        await page.click(`[data-session="${keyA}"]`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render for A');
+
+        const keyB = await page.evaluate((openKey) => {
+          const rows = [...document.querySelectorAll('#detailSidebarList [data-session]')];
+          const other = rows.find((r) => r.dataset.session !== openKey);
+          return other && other.dataset.session;
+        }, keyA);
+        assert.ok(keyB, 'there is no second session to navigate to for this fixture');
+
+        await page.click(`#detailSidebarList [data-session="${keyB}"]`);
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
+          'the URL to switch to session B via the sidebar');
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render for B');
+
+        // Real Back: B -> A. Still no outside click, no menu open yet.
+        await page.goBack();
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyA)}`),
+          'Back to land on session A');
+
+        // Open A's shared row menu (Sync offered) -- the exact state a
+        // stale menu was left in across a popstate before this fix.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const offeredOnA = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { present: true, disabled: b.disabled } : { present: false };
+        });
+        assert.ok(offeredOnA.present, 'Sync session is not offered for A (Not-synced, reachable)');
+        assert.strictEqual(offeredOnA.disabled, false, 'Sync session should not start disabled');
+
+        // Real Forward: A -> B, menu still open, driven by the browser's
+        // OWN history stack -- no click anywhere in the document, so any
+        // close has to come from the popstate listener itself, not an
+        // outside-click handler standing in for it.
+        await page.goForward();
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
+          'Forward to land on session B');
+
+        const afterNav = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+        assert.strictEqual(afterNav, true,
+          'the shared row menu was still visible after a real Back/Forward navigation away from the session it was opened for');
+        assert.deepStrictEqual(resyncCalls, [],
+          'no Sync click was simulated, yet a resync request reached the device during the navigation itself');
+
+        // Fresh positive: a genuine Sync click on B, the session actually
+        // open now, still reaches the device exactly once.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await until(async () => resyncCalls.length > 0 || null, 'the fresh Sync click on B to reach the device');
+        assert.deepStrictEqual(resyncCalls, [keyB],
+          'a fresh Sync click on the session actually open (B) did not reach the device exactly once, for the right target');
+      } finally {
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
     await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
       await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
       await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });

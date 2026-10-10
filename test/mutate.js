@@ -1422,6 +1422,22 @@ import { syncSession } from './js/detail-control.js';`,
     mustFail: 'Escape closes the detail header row menu first, returns focus, and only the next Escape closes detail',
   },
   {
+    name: 'the row menu Sync click reads rowMenuKey fresh instead of capturing it before closing the menu',
+    file: 'web/js/wiring.js',
+    find: `    const target = rowMenuKey;
+    closeRowMenu();
+    // Returned (not just fired) so tests can await the real request this
+    // click actually issues; a bare \`onclick\` return value is otherwise
+    // ignored by the browser, so this changes nothing in production.
+    return syncSession(target);`,
+    replace: `    const target = rowMenuKey;
+    closeRowMenu();
+    // MUTATION: re-reads rowMenuKey AFTER closeRowMenu() clears it, instead
+    // of the target captured beforehand -- the exact #243 stale-menu bug.
+    return syncSession(process.env.MUTANT ? rowMenuKey : target);`,
+    mustFail: 'the accepted-positive path is unaffected: Sync for the session actually open fires exactly once through the real row-menu click dispatch, and re-enables once it settles',
+  },
+  {
     name: 'a transient Windows file lock is not retried',
     file: 'src/service/device-token-store.js',
     find: `      if (!retryable.has(e.code) || attempt >= 7) throw e;`,
@@ -3488,7 +3504,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v19';`,
+    find: `const CACHE = 'squad-hub-shell-v20';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },

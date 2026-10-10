@@ -796,8 +796,14 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // another in-flight branch, so this is v19, not v18, to avoid a cross-PR
   // cache collision -- and the sibling `squad/hub-178-aca-job-dialog`
   // branch already spent v16.
+  //
+  // Bumped again to v20: this PR's completion slice extracted the Sync
+  // click dispatch into `handleRowMenuClick` so a real click (not a
+  // restated proxy) exercises the production handler in tests -- cached
+  // CODE in `web/js/wiring.js` changed again, so an existing install must
+  // not keep serving the pre-extraction file out of its cache.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v19';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v20';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

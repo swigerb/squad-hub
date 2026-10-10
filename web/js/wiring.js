@@ -372,6 +372,32 @@ async function onMenu(action) {
 }
 
 /**
+ * The shared `#rowMenu`'s click dispatch, extracted so tests can drive the
+ * exact function `wire()` installs as the real `onclick` -- not a
+ * reimplementation of its body (#243: a stale-menu wrong-target regression
+ * in the Sync branch was only caught because the real handler, not a proxy
+ * restating it, was exercised).
+ */
+export function handleRowMenuClick(e) {
+  const b = e.target.closest('[data-row-action]');
+  if (!b || b.disabled || !rowMenuKey) return;
+  if (b.dataset.rowAction === 'sync') {
+    // Captured before `closeRowMenu()` clears `rowMenuKey` -- `syncSession`
+    // revalidates against this target itself (detail-control.js), the
+    // same identity every other row action already gets below (#243
+    // Scout review of ab5ef90: Sync alone discarded it and resynced
+    // whatever session happened to be open at click time instead).
+    const target = rowMenuKey;
+    closeRowMenu();
+    // Returned (not just fired) so tests can await the real request this
+    // click actually issues; a bare `onclick` return value is otherwise
+    // ignored by the browser, so this changes nothing in production.
+    return syncSession(target);
+  }
+  onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
+}
+
+/**
  * Attach every control's event handler. Called once, from main(), after the
  * page has a token and is past the sign-in gate.
  */
@@ -397,22 +423,7 @@ export function wire() {
     if (row) openDetail(row.dataset.session);
   };
 
-  $('rowMenu').onclick = (e) => {
-    const b = e.target.closest('[data-row-action]');
-    if (!b || b.disabled || !rowMenuKey) return;
-    if (b.dataset.rowAction === 'sync') {
-      // Captured before `closeRowMenu()` clears `rowMenuKey` -- `syncSession`
-      // revalidates against this target itself (detail-control.js), the
-      // same identity every other row action already gets below (#243
-      // Scout review of ab5ef90: Sync alone discarded it and resynced
-      // whatever session happened to be open at click time instead).
-      const target = rowMenuKey;
-      closeRowMenu();
-      syncSession(target);
-      return;
-    }
-    onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
-  };
+  $('rowMenu').onclick = handleRowMenuClick;
   $('rowMenu').onkeydown = (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveRowMenuFocus(1); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveRowMenuFocus(-1); }

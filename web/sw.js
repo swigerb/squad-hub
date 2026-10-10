@@ -41,8 +41,12 @@
 // network-first path alone since that only helps while online. v16 is
 // already spent by #178's branch (`squad/hub-178-aca-job-dialog`), so this
 // uses v17 -- a value neither sibling branch has used -- to avoid a
-// cross-PR cache collision if both merge close together.
-const CACHE = 'squad-hub-shell-v19';
+// cross-PR cache collision if both merge close together. v20: this PR's
+// completion slice changed cached code (web/js/wiring.js's row-menu click
+// dispatch was extracted into `handleRowMenuClick`), not just tests, so an
+// existing install's cache must actually refresh rather than keep serving
+// the old file forever.
+const CACHE = 'squad-hub-shell-v20';
 
 /**
  * The shell. Everything here is a public static asset.
