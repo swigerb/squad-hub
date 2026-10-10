@@ -10765,6 +10765,63 @@ prompt: |
     if (argv.length !== 1) {`,
     mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
   },
+  {
+    // A plain steer is a second session/prompt. With the gate gone it goes out
+    // while the agent is still confirming the model and runs on the old one.
+    name: '[required-model acp] a plain steer is not held while the required model is being confirmed',
+    file: 'src/acp-session.js',
+    find: `    const blocked = text ? this._requiredModelBlock() : null;`,
+    replace: `    const blocked = null; // MUTATION`,
+    mustFail: 'required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted',
+  },
+  {
+    name: '[required-model acp] a held steer is answered as sent, so the caller sees success for a prompt that never went out',
+    file: 'src/acp-session.js',
+    find: `    if (blocked) return { ok: false, reason: blocked };`,
+    replace: `    if (blocked) return true; // MUTATION`,
+    mustFail: 'required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted',
+  },
+  {
+    name: '[required-model acp] an unconfirmed model no longer says why a steer is held',
+    file: 'src/acp-session.js',
+    find: `    if (!rm.confirmed) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted',
+  },
+  {
+    // Confirmed is not the same as ready: the mode is applied after the model,
+    // and the first prompt follows it.
+    name: '[required-model acp] a steer is let through once the model is confirmed, while the mode is still being applied',
+    file: 'src/acp-session.js',
+    find: `    if (this.status === STATUS.STARTING) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: a steer after the model is confirmed but before the first prompt, while the mode is still being applied, is refused',
+  },
+  {
+    name: '[required-model acp] a refused required-model session is not reported as refused to a later steer',
+    file: 'src/acp-session.js',
+    find: `    if (rm.failure) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: a steer while the model request is stuck is refused, and after the timeout the refusal stands and still sends nothing',
+  },
+  {
+    // The gate belongs to the requirement, not to the session type: an
+    // optional session is steered exactly as it always was.
+    name: '[required-model acp] an optional session is held at startup as if its model were required',
+    file: 'src/acp-session.js',
+    find: `    if (!rm) return null;`,
+    replace: `    if (!rm) return this.status === STATUS.STARTING ? 'held' : null; // MUTATION`,
+    mustFail: 'required model: a session with no required model takes a steer as before, even while it is applying its model',
+  },
+  {
+    name: '[required-model daemon] the daemon steer op does not carry the refusal to the caller',
+    file: 'src/daemon.js',
+    find: `        const r = normaliseControl(s.steer(req.text));
+        if (!r.ok) {`,
+    replace: `        const r = normaliseControl(s.steer(req.text));
+        if (false) { // MUTATION`,
+    mustFail: 'required model: the daemon refuses a plain steer with NOT_STEERABLE while a session, started or resynced, is still confirming its model',
+  },
 ];
 
 /**

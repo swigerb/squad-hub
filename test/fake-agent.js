@@ -51,6 +51,9 @@
  *                 lookup by NAME finds a model a lookup by id does not.
  *   renamed       as `copilot`, but the modes carry display names that are not
  *                 the end of their ids (Ask first, Think first, Hands off).
+ * FAKE_AGENT_WITH_AGENT=1 also advertises an `agent` config option (one custom
+ * agent, `squad`), changed the same way as mode and model -- and as slowly under
+ * `slow` -- so a test can stand in the wait that comes BEFORE the model change.
  * FAKE_AGENT_RPC_LOG names a file (resolved against the session's cwd) that
  * gets one JSON line per mode/model RPC and per prompt, in arrival order, with
  * the mode and model the prompt would RUN in -- the side effect a test asserts.
@@ -94,6 +97,8 @@ const MODEL_CHOICES = [
   { value: 'fake-deep', name: 'Fake Deep', description: 'A deliberate model' },
   { value: 'auto', name: 'Auto', description: 'Let the agent pick the best model' },
 ];
+const AGENT_CHOICES = [{ value: 'squad', name: 'Squad', description: 'A custom agent' }];
+const WITH_AGENT = process.env.FAKE_AGENT_WITH_AGENT === '1';
 if (NEXT === 'aliased') MODEL_CHOICES.forEach((m) => { if (m.value !== 'auto') m.name = m.value.replace(/^fake-/, ''); });
 
 let buf = '';
@@ -118,6 +123,9 @@ function configOptions(s) {
       type: 'select', id: 'reasoning_effort', name: 'Reasoning effort', category: 'thought_level', currentValue: 'medium',
       options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }],
     },
+    ...(WITH_AGENT ? [{
+      type: 'select', id: 'agent', name: 'Agent', category: 'agent', currentValue: s.agent || 'default', options: AGENT_CHOICES,
+    }] : []),
   ];
 }
 
@@ -157,7 +165,8 @@ function handleChange(msg) {
     return fail(-32601, `"Method not found": ${msg.method}`);
   }
   if (NEXT === 'stuck') return undefined;
-  const choices = field === 'mode' ? MODE_CHOICES : field === 'model' ? MODEL_CHOICES : null;
+  const choices = field === 'mode' ? MODE_CHOICES : field === 'model' ? MODEL_CHOICES
+    : field === 'agent' && WITH_AGENT ? AGENT_CHOICES : null;
   if (!choices) return fail(-32602, `Unknown config option '${field}'`);
   if (NEXT === `refuse-${field}`) return fail(-32602, `Cannot change the ${field} right now.`);
   if (!choices.some((c) => c.value === value)) {

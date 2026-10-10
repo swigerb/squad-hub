@@ -369,6 +369,12 @@ reason for a person. A refused session is `failed` with `applied.model` still
 `null` and no prompt ever sent. `agentSelection.requiredModel` is `true` on such
 a session. A session whose model is only a preference carries neither.
 
+Until the model is confirmed and the session's own first prompt is on its way, a
+session with a required model **refuses a `steer`**: the device answers with the
+error code `NOT_STEERABLE` and a reason, and nothing is sent to the agent. A
+refused session keeps refusing. A session whose model is only a preference is
+steered exactly as before.
+
 Removing the record of sessions that have already ended:
 
 ```bash

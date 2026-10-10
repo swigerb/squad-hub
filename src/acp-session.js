@@ -649,6 +649,38 @@ class AcpSession extends EventEmitter {
     return this._rm;
   }
 
+  /**
+   * Why a steered prompt cannot go out yet, or null when none is in the way.
+   *
+   * The first prompt of a required-model session is spoken for: it is written
+   * only after the agent has confirmed the model (`_applyRequiredModel`). A
+   * steered prompt that got there first would run on whatever model the agent
+   * happened to be on, which is the one outcome a required model exists to
+   * prevent. Neither `_nt.busy` (not set while the initial selection waits) nor
+   * IDLE (not reached until the first turn ends) says so; this does, from the
+   * record of the confirmation itself.
+   *
+   * STARTING is the whole window and ends the moment the first prompt is
+   * written, so it also covers the mode that is applied after the model.
+   * An optional session has no requirement and is never held here.
+   */
+  _requiredModelBlock() {
+    const rm = this._requiredModel();
+    if (!rm) return null;
+    if (rm.failure) {
+      return `the required model was refused (${rm.failure.code}), so this session takes no input`;
+    }
+    if (!rm.confirmed) {
+      return `the required model${rm.requested ? ` ${rm.requested}` : ''} is not confirmed by the agent yet, `
+        + 'so nothing can be sent to this session; send again once it is running';
+    }
+    if (this.status === STATUS.STARTING) {
+      return 'this session is still starting and its first prompt has not been sent; '
+        + 'a message now would go ahead of it. Send again in a moment';
+    }
+    return null;
+  }
+
   /** The agent process is gone, or the session already ended without us. */
   _agentGone() {
     return TERMINAL.includes(this.status) || this.isAgentDead();
@@ -806,6 +838,10 @@ class AcpSession extends EventEmitter {
    * otherwise would be worse than saying so.
    */
   steer(text) {
+    // First of all, before anything is checked that could let a prompt through
+    // and before any state moves: see `_requiredModelBlock`.
+    const blocked = text ? this._requiredModelBlock() : null;
+    if (blocked) return { ok: false, reason: blocked };
     // DONE, STOPPED and FAILED are genuinely over. IDLE is not: the agent
     // finished a turn and is waiting, which is exactly when a reply is most
     // likely.

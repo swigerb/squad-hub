@@ -74,6 +74,7 @@ const readLog = (dir) => {
 };
 const calls = (log) => log.map((e) => (e.field ? `${e.method}:${e.field}` : e.method));
 const prompts = (log) => log.filter((e) => e.method === 'session/prompt');
+const texts = (log) => prompts(log).map((p) => p.text);
 
 // ---------------------------------------------------------------------------
 // In-process: a real AcpSession and a real fake-agent child
@@ -87,7 +88,9 @@ const killAll = () => { for (const s of live) { try { s.proc.kill(); } catch { /
  * does. The selection is the product of the real `selectAgent`, handed over
  * after `new` and before `run()` exactly as the daemon does.
  */
-function start(variant, { model, mode, strict = true, agentArgs, env = {} } = {}) {
+function start(variant, {
+  model, mode, agent, strict = true, agentArgs, env = {},
+} = {}) {
   const dir = work();
   const s = new AcpSession({
     id: `rm-${live.length}`,
@@ -104,7 +107,7 @@ function start(variant, { model, mode, strict = true, agentArgs, env = {} } = {}
   });
   s.dir = dir;
   s.agentSelection = selectAgent({
-    cwd: dir, explicitModel: model, explicitMode: mode, requireModel: strict,
+    cwd: dir, explicitAgent: agent, explicitModel: model, explicitMode: mode, requireModel: strict,
   });
   live.push(s);
   s.outcome = s.run().then(() => null, (e) => e);
@@ -533,6 +536,148 @@ async function refused(s, code) {
     const rm = s.toJSON().requiredModel;
     assert.strictEqual(rm.confirmed, true);
     assert.strictEqual(rm.failure, null, 'a confirmed model was reported as refused');
+  });
+
+  // -------------------------------------------------------------------------
+  // D2. Nothing overtakes the first prompt of a required-model session
+  //
+  // A plain steer is a second `session/prompt`. Until the agent has confirmed
+  // the model, one that got through would run on whatever model the agent is
+  // on, and the session's own first prompt would follow it. `_nt.busy` does not
+  // cover these waits and the session is not IDLE, so each window is stood in
+  // with a real agent that is slow or silent, and the log says what arrived.
+  // -------------------------------------------------------------------------
+
+  const inFlight = (s, call) => until(() => calls(readLog(s.dir)).includes(call), `${call} to reach the agent`);
+  const held = (r, pattern) => {
+    assert.ok(r && typeof r === 'object', `a steer that should have been held answered ${JSON.stringify(r)}`);
+    assert.strictEqual(r.ok, false, `the steer was accepted: ${JSON.stringify(r)}`);
+    assert.match(r.reason, pattern);
+  };
+
+  await check('required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted', async () => {
+    const s = start('slow', { model: 'fake-deep', env: { FAKE_AGENT_SLOW_MS: '900' } });
+    await inFlight(s, 'session/set_config_option:model');
+    assert.ok(s.acpSessionId, 'there is no live agent session, so this is not the window under test');
+    assert.strictEqual(s.status, STATUS.STARTING);
+    assert.strictEqual(s.toJSON().requiredModel.confirmed, false);
+
+    held(s.steer('HUB-STEER'), /not confirmed/);
+    const plain = await s.steerWithSelection('HUB-STEER', {});
+    assert.strictEqual(plain.ok, false, JSON.stringify(plain));
+    assert.strictEqual(plain.sent, false);
+    assert.match(plain.reason, /not confirmed/);
+    const picked = await s.steerWithSelection('HUB-STEER', { model: 'fake-fast' });
+    assert.strictEqual(picked.ok, false, JSON.stringify(picked));
+    assert.strictEqual(picked.sent, false);
+    assert.deepStrictEqual(calls(readLog(s.dir)), ['session/set_config_option:model'],
+      'something reached the agent while the model was unconfirmed');
+    assert.strictEqual(JSON.stringify(s.transcript).includes('HUB-STEER'), false, 'a refused steer was recorded as sent');
+
+    await ran(s);
+    const log = readLog(s.dir);
+    assert.deepStrictEqual(calls(log), ['session/set_config_option:model', 'session/prompt']);
+    assert.deepStrictEqual(texts(log), ['first turn'], 'a steer ran before, or instead of, the first prompt');
+    assert.strictEqual(prompts(log)[0].model, 'fake-deep', 'the first prompt did not run on the confirmed model');
+
+    assert.strictEqual(s.steer('later'), true, 'a confirmed session refused an ordinary steer');
+    await until(() => prompts(readLog(s.dir)).length === 2, 'the later steer to reach the agent');
+    assert.deepStrictEqual(prompts(readLog(s.dir)).map((p) => [p.text, p.model]),
+      [['first turn', 'fake-deep'], ['later', 'fake-deep']]);
+  });
+
+  await check('required model: a steer while the model request is stuck is refused, and after the timeout the refusal stands and still sends nothing', async () => {
+    const s = start('stuck', { model: 'fake-deep' });
+    await inFlight(s, 'session/set_config_option:model');
+    held(s.steer('HUB-STEER'), /not confirmed/);
+    await refused(s, 'REQUIRED_MODEL_TIMEOUT');
+    held(s.steer('HUB-STEER'), /REQUIRED_MODEL_TIMEOUT/);
+    assert.deepStrictEqual(texts(readLog(s.dir)), [], 'a prompt reached the agent after the refusal');
+    assert.strictEqual(s.status, STATUS.FAILED);
+  });
+
+  await check('required model: a steer after the model is confirmed but before the first prompt, while the mode is still being applied, is refused', async () => {
+    const s = start('slow', { model: 'fake-deep', mode: 'plan', env: { FAKE_AGENT_SLOW_MS: '600' } });
+    await inFlight(s, 'session/set_config_option:mode');
+    assert.strictEqual(s.toJSON().requiredModel.confirmed, true, 'the model is not confirmed yet, so this is not the window under test');
+    assert.strictEqual(s.status, STATUS.STARTING);
+    held(s.steer('HUB-STEER'), /still starting/);
+    await ran(s);
+    const log = readLog(s.dir);
+    assert.deepStrictEqual(calls(log), ['session/set_config_option:model', 'session/set_config_option:mode', 'session/prompt']);
+    assert.deepStrictEqual(texts(log), ['first turn'], 'a steer went ahead of the first prompt');
+    assert.strictEqual(prompts(log)[0].model, 'fake-deep');
+    assert.strictEqual(prompts(log)[0].mode, 'plan');
+  });
+
+  await check('required model: a steer while the agent is still being selected, before the model is even asked for, is refused', async () => {
+    const s = start('slow', {
+      model: 'fake-deep', agent: 'squad', env: { FAKE_AGENT_SLOW_MS: '700', FAKE_AGENT_WITH_AGENT: '1' },
+    });
+    await inFlight(s, 'session/set_config_option:agent');
+    assert.deepStrictEqual(calls(readLog(s.dir)), ['session/set_config_option:agent'],
+      'the model was already asked for, so this is not the window under test');
+    held(s.steer('HUB-STEER'), /not confirmed/);
+    await ran(s);
+    const log = readLog(s.dir);
+    assert.deepStrictEqual(calls(log), [
+      'session/set_config_option:agent', 'session/set_config_option:model', 'session/prompt',
+    ]);
+    assert.deepStrictEqual(texts(log), ['first turn'], 'a steer ran before the model was confirmed');
+    assert.strictEqual(prompts(log)[0].model, 'fake-deep');
+  });
+
+  await check('required model: the daemon refuses a plain steer with NOT_STEERABLE while a session, started or resynced, is still confirming its model', async () => {
+    const dir = work('daemon-steer');
+    await scoped({
+      FAKE_AGENT_MODE: 'no-permission',
+      FAKE_AGENT_NEXT_TURN: 'slow',
+      FAKE_AGENT_SLOW_MS: '700',
+      FAKE_AGENT_RPC_LOG: 'rpc.jsonl',
+    }, async () => {
+      const d = daemon();
+      const steer = (id) => d.handle({ op: 'steer', sessionId: id, text: 'HUB-STEER' }).then(() => null, (e) => e);
+      const asked = (n) => () => calls(readLog(dir)).filter((c) => c === 'session/set_config_option:model').length === n;
+      const refusal = (e, what) => {
+        assert.ok(e, `the daemon accepted a steer ${what}`);
+        assert.strictEqual(e.code, 'NOT_STEERABLE', e.message);
+        assert.match(e.message, /not confirmed/);
+      };
+
+      const started = await d.handle({
+        op: 'start-session', prompt: 'first turn', localCwd: dir, model: 'fake-deep', requiredModel: true,
+      });
+      const first = d.sessions.get(started.id);
+      live.push(first);
+      await until(asked(1), 'the first model request');
+      refusal(await steer(started.id), 'while the model was being confirmed');
+      await until(() => first.status === STATUS.IDLE, 'the first turn to end');
+
+      const again = d.resyncSession(started.id);
+      live.push(again);
+      await until(asked(2), 'the replayed model request');
+      refusal(await steer(started.id), 'while the resynced session was confirming its model again');
+      await until(() => again.status === STATUS.IDLE, 'the replayed turn to end');
+
+      assert.deepStrictEqual(calls(readLog(dir)), [
+        'session/set_config_option:model', 'session/prompt', 'session/set_config_option:model', 'session/prompt',
+      ]);
+      assert.deepStrictEqual(texts(readLog(dir)), ['first turn', 'first turn'], 'a steer was sent to the agent');
+    });
+  });
+
+  await check('required model: a session with no required model takes a steer as before, even while it is applying its model', async () => {
+    const s = start('slow', { model: 'fake-deep', strict: false, env: { FAKE_AGENT_SLOW_MS: '700' } });
+    await inFlight(s, 'session/set_model:model');
+    assert.strictEqual(s.toJSON().requiredModel, undefined);
+    assert.strictEqual(s.steer('HUB-STEER'), true, 'an optional session was held by the required-model gate');
+    await until(() => texts(readLog(s.dir)).includes('HUB-STEER'), 'the steer to reach the agent');
+    await ran(s);
+
+    const ready = start('copilot', { model: 'fake-deep', strict: false });
+    await ran(ready);
+    assert.strictEqual(ready.steer('again'), true);
+    await until(() => texts(readLog(ready.dir)).includes('again'), 'the ordinary steer to reach the agent');
   });
 
   // -------------------------------------------------------------------------
