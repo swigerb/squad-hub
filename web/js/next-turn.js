@@ -2,6 +2,7 @@ import { state, api } from './api.js';
 import { $ } from './util.js';
 import { syncSelectPills } from './dropdowns.js';
 import { CONTROL, controlsEnabled } from './composer.js';
+import { captureSelection, selectionStillActive } from './detail-control.js';
 
 // ---------------------------------------------------------------------------
 // Mode and Model for the NEXT turn (#183), in the composer bar.
@@ -40,13 +41,17 @@ function ntKey(cur) {
 }
 
 /**
- * Is this still the session on screen? A change can take seconds to confirm,
- * and the person may open another session meanwhile. Compared by key, never by
- * object: every live refresh rebuilds the open session's record.
+ * Is the page a send began on still the one on screen? A change can take
+ * seconds to confirm, and the person may close the session, open another, or
+ * come back to the same one meanwhile. `view` is what `captureSelection`
+ * returned when the send started. Its generation moves on every open and
+ * close and never on a live refresh, so a rebuilt record of the open session
+ * still counts and a REOPENED one does not: the same key is not enough, the
+ * reopened page has its own draft, pick and note. Never by object identity --
+ * every live push rebuilds the open session's record.
  */
-export function ntStillOpen(device, session) {
-  const key = ntKey({ device, session });
-  return !!key && key === ntKey(state.currentSession);
+export function ntViewActive(view) {
+  return !!view && selectionStillActive(view.key, view.generation);
 }
 
 /** "this agent did not offer a choice of mode" -> a sentence with a capital and a stop. */
@@ -233,8 +238,17 @@ export function ntOnType() {
  * not also raise a dialog; the draft and the pick are left exactly as they
  * were, and the session is refreshed so a change the agent DID confirm before
  * the refusal shows as the current value rather than as a pick.
+ *
+ * `sentFrom` is the page the send began on (`captureSelection`, taken before
+ * anything awaits). The request belongs to the SESSION: it is deduplicated per
+ * session, always settles, and the session is always refreshed from what the
+ * device confirmed. What it writes to the PAGE -- the note, the pick -- it
+ * writes only if that page is still the one on screen. A reply that outlives
+ * its page cannot claim a result, or erase a choice, on one opened since, even
+ * of the same session; a refusal then has no note to go in, so it is thrown
+ * without `ntHandled` and the caller says it in a dialog instead of losing it.
  */
-export async function ntSteer(device, session, text, refreshNow) {
+export async function ntSteer(device, session, text, refreshNow, sentFrom = captureSelection()) {
   const key = ntKey({ device, session });
   if (ntSending.has(key)) {
     throw Object.assign(new Error('The previous message is still being sent.'), { ntHandled: true });
@@ -251,29 +265,40 @@ export async function ntSteer(device, session, text, refreshNow) {
     r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, { method: 'POST', body });
   } catch (e) {
     ntSending.delete(key);
-    if (carried.length) {
+    if (carried.length && refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
+    if (carried.length && ntViewActive(sentFrom)) {
       ntOutcome = {
         key, kind: 'error',
         text: `${ntSentence(e.message)} Your message and choices are kept.`,
       };
       e.ntHandled = true;
-      if (refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
     }
     renderNextTurn();
     throw e;
   }
   ntSending.delete(key);
-  if (carried.length) {
-    ntPicked.delete(key);
-    // Only what the agent confirmed is reported, and in its own words.
-    const done = (Array.isArray(r && r.changes) ? r.changes : []).map((c) => {
-      const f = session.nextTurn && session.nextTurn[c.field];
-      const hit = f && (f.choices || []).find((x) => x.id === c.to);
-      return `${NT_LABEL[c.field] || c.field} is now ${hit ? hit.name : c.to}.`;
-    });
-    ntOutcome = done.length ? { key, kind: 'ok', text: `The agent confirmed: ${done.join(' ')}` } : null;
-  }
+  const confirmed = Array.isArray(r && r.changes) ? r.changes : [];
   if (refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
+  if (carried.length) {
+    if (ntViewActive(sentFrom)) {
+      ntPicked.delete(key);
+      // Only what the agent confirmed is reported, and in its own words.
+      const done = confirmed.map((c) => {
+        const f = session.nextTurn && session.nextTurn[c.field];
+        const hit = f && (f.choices || []).find((x) => x.id === c.to);
+        return `${NT_LABEL[c.field] || c.field} is now ${hit ? hit.name : c.to}.`;
+      });
+      ntOutcome = done.length ? { key, kind: 'ok', text: `The agent confirmed: ${done.join(' ')}` } : null;
+    } else {
+      // Not this page's to tidy, but the agent has the pick now: a choice it
+      // confirmed has nothing left to choose, and must not come back as a
+      // pending pick if the agent later moves off it. A DIFFERENT choice, made
+      // on a page opened since, is not this send's to take.
+      const left = { ...(ntPicked.get(key) || {}) };
+      for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];
+      ntPicked.set(key, left);
+    }
+  }
   renderNextTurn();
   return r;
 }

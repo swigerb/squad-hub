@@ -77,7 +77,17 @@
 // session from the overview, and the header star renders from one helper. A v23
 // install would keep serving the old scripts, so this is v24: above the v23 of
 // the integrated shell, with no module added to SHELL.
-const CACHE = 'squad-hub-shell-v24';
+//
+// v25 (the composer's send-generation fix over v24): next-turn.js,
+// detail-control.js and wiring.js changed. A send now writes its outcome to the
+// page it began on, not to any page that happens to share the key or the text
+// (draft, queued note and error all check the page's generation), and an
+// unhandled failure on a page the person left is shown as a dialog. The
+// composer's handlers (`wireComposer`) moved out of wiring.js into the new
+// `/js/composer-wire.js` so that file stays inside its size budget, which adds
+// one module to SHELL. A v24 install has neither the changed scripts nor the
+// new module, so this is v25: above the v24 of the retained header shell.
+const CACHE = 'squad-hub-shell-v25';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -119,6 +129,7 @@ const SHELL = [
   '/js/squad-panel.js',
   '/js/transcript.js',
   '/js/next-turn.js',
+  '/js/composer-wire.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',

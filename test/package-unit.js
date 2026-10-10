@@ -828,8 +828,14 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // when a server-side filter drops the session, which changed `detail.js`,
   // `detail-control.js`, `rowmenu.js` and `wiring.js`. No module was added to
   // the shell, so only the version moves.
+  //
+  // Bumped to v25 for the composer's send-generation fix (over the v24 shell):
+  // `next-turn.js`, `detail-control.js` and `wiring.js` changed so a send writes
+  // to the page it began on, and `wireComposer` moved out of `wiring.js` (over
+  // its size budget once the fix landed) into the new `composer-wire.js`, which
+  // joined the shell in the same bump.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v24';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v25';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

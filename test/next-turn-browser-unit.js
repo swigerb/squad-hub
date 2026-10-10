@@ -426,7 +426,7 @@ async function gotoSettled(page, url) {
     const waitReplies = async (n, what) => { await until(() => steerReplies.length >= n, what, 20000); await new Promise((r) => setTimeout(r, 400)); };
     const selectorsOn = (id = 'dtNtMode') => until(async () => !(await page.$eval(`#${id}`, (el) => el.disabled)), `${id} to enable`);
 
-    await check('composer: while a change is confirmed Send and the selectors are held, and a sent message does not linger as the draft of another session', async () => {
+    await check('composer: while a change is confirmed Send and the selectors are held, and a send that lands after the person moved on leaves the box of the session they are in alone', async () => {
       await openSession(l);
       await selectorsOn();
       await choose('dtNtMode', 'Plan');
@@ -447,14 +447,15 @@ async function gotoSettled(page, url) {
       await waitReplies(1, 'the slow change to be confirmed');
       assert.strictEqual(steerBodies.length, 1, `a second press sent a second message: ${JSON.stringify(steerBodies)}`);
       assert.strictEqual(steerReplies[0], 200);
-      assert.strictEqual(await page.inputValue('#dtInput'), '', 'the message that landed was left as a draft in the other session');
+      assert.strictEqual(await page.inputValue('#dtInput'), 'slow message', 'a send that landed after the person moved on changed the box of the session they are in');
       assert.ok(!(await page.textContent('#dtNtNote')).includes('The agent confirmed'), 'another session\'s outcome showed here');
       const log = rpcLog(l);
       const ran = log.find((e) => e.method === 'session/prompt' && e.text === 'slow message');
       assert.ok(ran, 'the slow message never reached the agent');
       assert.strictEqual(ran.mode, 'plan', 'the slow message did not run in the mode it was sent with');
       await openSession(l);
-      assert.match(await page.textContent('#dtNtNote'), /The agent confirmed: Mode is now Plan\./, 'the outcome is not shown on the session it belongs to');
+      await until(async () => (await selectedText('dtNtMode')) === 'Plan', 'the session to show the mode the agent confirmed');
+      assert.ok(!(await page.textContent('#dtNtNote')).includes('The agent confirmed'), 'a send that outlived its page wrote its outcome on a page opened since');
       assert.strictEqual(await page.$eval('#dtSend', (el) => el.disabled), false, 'Send was left held after the send finished');
     });
 
@@ -521,13 +522,14 @@ async function gotoSettled(page, url) {
       }
       const why = await page.textContent('#dtControlWhy');
       assert.ok(!/queued/i.test(why), `another session was told its message was queued: ${why}`);
-      assert.strictEqual(await page.inputValue('#dtInput'), '', 'the sent message was left as a draft in the other session');
+      assert.strictEqual(await page.inputValue('#dtInput'), 'queued for a watched terminal', 'the landing of a send from another session changed the box of this one');
       await openSession(a);
       assert.deepStrictEqual(rpcLog(a).filter((e) => e.text === 'queued for a watched terminal'), [], 'the held request reached the device, so the stand-in is not the only answer there was');
     });
 
-    await check('composer: a refusal that arrives after the person moved on lands on the session it was for, and nothing is claimed', async () => {
+    await check('composer: a refusal that arrives after the person moved on is shown in a dialog, keeps the pick on its session, and nothing is claimed', async () => {
       process.env.SQUAD_HUB_SELECTION_TIMEOUT_MS = '2500';
+      dialogs.length = 0;
       try {
         await openSession(s);
         await selectorsOn();
@@ -551,9 +553,11 @@ async function gotoSettled(page, url) {
       assert.strictEqual(await page.$eval('#dtSend', (el) => el.disabled), false);
       await openSession(s);
       const note = await page.textContent('#dtNtNote');
-      assert.strictEqual(await page.getAttribute('#dtNtNote', 'data-kind'), 'error');
-      assert.match(note, /may or may not have applied/i, `the unconfirmed change was not reported: ${note}`);
-      assert.match(note, /kept/i);
+      assert.notStrictEqual(await page.getAttribute('#dtNtNote', 'data-kind'), 'error', 'a refusal from a page that was left was written under the bar of the session opened since');
+      assert.ok(!/may or may not|kept/i.test(note), `a refusal from a page that was left showed under the bar: ${note}`);
+      assert.strictEqual(dialogs.length, 1, `the refusal was shown ${dialogs.length} times, not once: ${JSON.stringify(dialogs)}`);
+      assert.match(dialogs[0], /may or may not have applied/i, `the unconfirmed change was not reported: ${dialogs[0]}`);
+      assert.match(dialogs[0], /session you left/i, `the dialog did not say it came from a session left behind: ${dialogs[0]}`);
       assert.strictEqual(await selectedText('dtNtMode'), 'Plan', 'the pick was lost');
       assert.strictEqual(await page.$eval('#dtSend', (el) => el.disabled), false, 'Send was left held after the failure');
       assert.deepStrictEqual(rpcLog(s).filter((e) => e.text === 'doomed message'), [], 'the message ran although the change was never confirmed');

@@ -128,6 +128,9 @@ function fakeDocument() {
           getAttribute() { return null; },
           closest: () => null,
           addEventListener() {},
+          // What `dtInput`'s Enter key does to `dtSend`; the promise is kept so
+          // a test can wait for the send the key started.
+          click() { this.lastClick = this.onclick && this.onclick(); return this.lastClick; },
         };
       }
       return byId[id];
@@ -181,13 +184,13 @@ renderNextTurn = () => {
 function __takeNtPaints() { const out = __ntPaints; __ntPaints = []; return out; }
 module.exports = {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
-  openDetail, closeDetail, syncDetailHeader,
+  openDetail, closeDetail, syncDetailHeader, wireComposer,
   __setApiImpl, __getRefreshCalls, __takeNtPaints,
 };`)(mod, mod.exports);
 
 const {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
-  openDetail, closeDetail, syncDetailHeader,
+  openDetail, closeDetail, syncDetailHeader, wireComposer,
   __setApiImpl, __getRefreshCalls, __takeNtPaints,
 } = mod.exports;
 
@@ -233,6 +236,76 @@ function apiRouter() {
 function resetComposer() {
   state.composer = composerReduce(undefined, { type: 'reset' });
 }
+
+// ---- the send ownership tests below drive the page's real handlers ---------
+
+const dom = (id) => global.document.getElementById(id);
+
+/** What a person typing in the draft box does: the box changes, then `oninput` fires. */
+function typeInBox(text) {
+  dom('dtInput').value = text;
+  dom('dtInput').oninput({ target: dom('dtInput') });
+}
+
+/**
+ * Two sessions, A and B, on one device that can change Mode. `publish()` is a
+ * live push: the whole list is rebuilt as new objects, as the socket does.
+ */
+function sendWorld(tag) {
+  const device = { deviceId: `dev-${tag}`, name: `Device ${tag}`, presence: 'online' };
+  const choices = [{ id: 'm-agent', name: 'Agent' }, { id: 'm-plan', name: 'Plan' }, { id: 'm-auto', name: 'Autopilot' }];
+  const build = (id, current) => ({
+    id,
+    key: `${tag}:${id}`,
+    status: 'idle',
+    nextTurn: {
+      supported: true,
+      mode: { supported: true, current, choices },
+      model: { supported: false, reason: 'This agent did not offer a choice of model.', current: null, choices: [] },
+    },
+  });
+  const world = {
+    keyA: `${tag}:A`,
+    keyB: `${tag}:B`,
+    publish(modeOfA = 'm-agent') {
+      state.overview.groups = [{ device, sessions: [build('A', modeOfA), build('B', 'm-agent')] }];
+    },
+  };
+  world.publish();
+  return world;
+}
+
+/** The device: transcripts and control checks answer at once, every steer is held for the test to settle. */
+function steerApi() {
+  const steers = [];
+  __setApiImpl((path, opts) => {
+    if (path.includes('/transcript')) return Promise.resolve({ transcript: [] });
+    if (path.includes('/control-check')) return Promise.resolve({ controllable: true });
+    if (path.includes('/steer')) {
+      const held = deferred();
+      steers.push({ body: opts.body, resolve: held.resolve, reject: held.reject });
+      return held.promise;
+    }
+    throw new Error(`unexpected path: ${path}`);
+  });
+  return steers;
+}
+
+function captureAlerts() {
+  const shown = [];
+  global.alert = (message) => { shown.push(String(message)); };
+  return shown;
+}
+
+/** The real `openDetail`, then enough turns for the control check to settle as synced. */
+async function openSynced(key) {
+  assert.strictEqual(await openDetail(key), true, `${key} could not be opened`);
+  await tick(8);
+  assert.strictEqual(state.composer.control, 'synced', `${key} never became controllable`);
+}
+
+/** Press Send as a person does; resolves when the handler has finished with the reply. */
+const pressSend = () => dom('dtSend').onclick();
 
 (async () => {
   global.document = fakeDocument();
@@ -699,6 +772,267 @@ function resetComposer() {
     await tick();
     assert.ok(__takeNtPaints().some((p) => p.key === key && p.control === 'synced'),
       'the control answer for the session actually open never repainted the Mode and Model bar as synced');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Send ownership (#183 follow-up). A send belongs to the SESSION it was made
+  // for: it is deduplicated per session, it always settles, and the session is
+  // always refreshed from what the device confirmed. What it writes to the PAGE
+  // -- the draft, the note, the pick -- it writes only if the page it began on
+  // is still the one on screen, decided by the selection generation that
+  // `openDetail`/`closeDetail` move (never by key alone, never by object).
+  //
+  // Everything below runs the page's real Send, Mode, hint and draft handlers
+  // (`wireComposer`), the real `ntSteer`, the real `openDetail`/`closeDetail`
+  // and the real store; only the device (`api`) and the list refresh are doubles.
+  // ---------------------------------------------------------------------------
+  wireComposer();
+
+  await checkAsync('(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words', async () => {
+    resetComposer();
+    const world = sendWorld('own-b');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    const sending = pressSend();
+    assert.strictEqual(steers.length, 1, 'pressing Send on A never reached the device');
+    const refreshedBefore = __getRefreshCalls();
+
+    await openSynced(world.keyB);
+    typeInBox('same words');
+    steers[0].resolve({ sent: true });
+    await sending;
+
+    assert.strictEqual(dom('dtInput').value, 'same words', 'the landing of the send from A cleared the box of session B, which held the same words');
+    assert.strictEqual(state.composer.draft, 'same words', 'the landing of the send from A cleared the draft of session B');
+    assert.ok(!state.composer.outcome, 'the landing of the send from A told the composer of session B that it had sent');
+    assert.deepStrictEqual(alerts, [], 'a send that succeeded raised a dialog');
+    assert.ok(__getRefreshCalls() > refreshedBefore, 'a send that outlived its page was not folded into the session list');
+    assert.strictEqual(steers.length, 1, 'the landing of A caused a second request');
+  });
+
+  await checkAsync('(send ownership) a send held across a close and reopen of the SAME session cannot clear the reopened draft, even with the same key and the same words', async () => {
+    resetComposer();
+    const world = sendWorld('own-a');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    const sending = pressSend();
+
+    closeDetail();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    steers[0].resolve({ sent: true });
+    await sending;
+
+    assert.strictEqual(dom('dtInput').value, 'same words', 'the landing of the send from the first page of A cleared the box of the reopened A');
+    assert.strictEqual(state.composer.draft, 'same words', 'the landing of the send from the first page of A cleared the draft of the reopened A');
+    assert.ok(!state.composer.outcome, 'the landing of the send from the first page of A told the reopened A that it had sent');
+    assert.deepStrictEqual(alerts, [], 'a send that succeeded raised a dialog');
+  });
+
+  await checkAsync('(send ownership) a confirmed choice from a send that outlived its page is still spent and does not return as a pending pick', async () => {
+    resetComposer();
+    const world = sendWorld('own-spent');
+    const steers = steerApi();
+    captureAlerts();
+    await openSynced(world.keyA);
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+    const sending = pressSend();
+    assert.strictEqual(steers[0].body.mode, 'm-plan', 'the send did not carry the pick');
+
+    closeDetail();
+    await openSynced(world.keyA);
+    const refreshedBefore = __getRefreshCalls();
+    steers[0].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-plan' }] });
+    await sending;
+
+    assert.ok(!/agent confirmed/i.test(dom('dtNtNote').textContent),
+      'a send from a page that was left wrote its outcome under the bar of the reopened page');
+    assert.strictEqual(dom('dtInput').value, 'plan it', 'a send from a page that was left cleared the reopened draft');
+    assert.ok(__getRefreshCalls() > refreshedBefore, 'a send that outlived its page did not refresh the session it confirmed a change on');
+
+    // The agent took Plan, then moved off it by itself: the choice was spent by
+    // the send, so nothing is left to send again.
+    world.publish('m-plan'); syncDetailHeader();
+    world.publish('m-agent'); syncDetailHeader();
+    const again = pressSend();
+    assert.strictEqual(steers.length, 2, 'the second Send never reached the device');
+    assert.strictEqual(steers[1].body.mode, undefined, 'a choice the agent confirmed to a page that was left came back as a pending pick');
+    steers[1].resolve({ sent: true });
+    await again;
+  });
+
+  await checkAsync('(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one', async () => {
+    resetComposer();
+    const world = sendWorld('own-newer');
+    const steers = steerApi();
+    captureAlerts();
+    await openSynced(world.keyA);
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+    const sending = pressSend();
+
+    closeDetail();
+    await openSynced(world.keyA);
+    // The bar holds its selectors while a change is confirmed, so this drives
+    // the handler itself: what it proves is that the landing does not take it.
+    dom('dtNtMode').onchange({ target: { value: 'm-auto' } });
+    steers[0].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-plan' }] });
+    await sending;
+
+    const again = pressSend();
+    assert.strictEqual(steers.length, 2, 'the second Send never reached the device');
+    assert.strictEqual(steers[1].body.mode, 'm-auto', 'a send from a page that was left erased the choice made on the reopened page');
+    steers[1].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-auto' }] });
+    await again;
+  });
+
+  await checkAsync('(send ownership) a refusal that outlives its page is shown in a dialog and leaves the reopened page note, composer and pick alone', async () => {
+    resetComposer();
+    const world = sendWorld('own-refused');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+    const sending = pressSend();
+
+    closeDetail();
+    await openSynced(world.keyA);
+    steers[0].reject(new Error('mode refused'));
+    await sending;
+
+    assert.strictEqual(alerts.length, 1, `a refusal that outlived its page was shown ${alerts.length} times, not once`);
+    assert.ok(/mode refused/.test(alerts[0]), `the dialog did not carry the reason: ${alerts[0]}`);
+    assert.ok(!/kept|refused/i.test(dom('dtNtNote').textContent) && dom('dtNtNote').dataset.kind !== 'error',
+      'a refusal from a page that was left was written under the bar of the reopened page');
+    assert.notStrictEqual(state.composer.outcome, 'failed', 'a refusal from a page that was left marked the reopened composer as failed');
+    assert.strictEqual(dom('dtInput').value, 'plan it', 'a refusal from a page that was left changed the reopened draft');
+
+    // The pick is where it was: the next send carries it.
+    const again = pressSend();
+    assert.strictEqual(steers.length, 2, 'the second Send never reached the device');
+    assert.strictEqual(steers[1].body.mode, 'm-plan', 'a refusal from a page that was left dropped the pick');
+    steers[1].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-plan' }] });
+    await again;
+  });
+
+  await checkAsync('(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed', async () => {
+    resetComposer();
+    const world = sendWorld('own-plain-err');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    const sending = pressSend();
+
+    closeDetail();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    steers[0].reject(new Error('device exploded'));
+    await sending;
+
+    assert.strictEqual(alerts.length, 1, `an error that outlived its page was shown ${alerts.length} times, not once`);
+    assert.ok(/device exploded/.test(alerts[0]), `the dialog did not carry the reason: ${alerts[0]}`);
+    assert.notStrictEqual(state.composer.outcome, 'failed', 'an error from a page that was left marked the reopened composer as failed');
+    assert.strictEqual(dom('dtInput').value, 'same words', 'an error from a page that was left changed the reopened draft');
+  });
+
+  await checkAsync('(send ownership) the one message at a time guard follows the session across a close and reopen', async () => {
+    resetComposer();
+    const world = sendWorld('own-once');
+    const steers = steerApi();
+    captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('once');
+    const first = pressSend();
+
+    closeDetail();
+    await openSynced(world.keyA);
+    await pressSend();
+    assert.strictEqual(steers.length, 1, 'the reopened session issued a second message while the first was still being sent');
+    assert.strictEqual(dom('dtSend').disabled, true, 'the reopened session offered Send while its message was still being sent');
+
+    steers[0].resolve({ sent: true });
+    await first;
+    typeInBox('twice');
+    const second = pressSend();
+    assert.strictEqual(steers.length, 2, 'the session stayed held after its message had landed');
+    steers[1].resolve({ sent: true });
+    await second;
+  });
+
+  await checkAsync('(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits', async () => {
+    resetComposer();
+    const world = sendWorld('same-ok');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+
+    // Sent with Enter, as a person does.
+    typeInBox('first');
+    dom('dtInput').onkeydown({ key: 'Enter', preventDefault() {} });
+    const first = dom('dtSend').lastClick;
+    assert.strictEqual(steers.length, 1, 'Enter did not send');
+    const openRecord = state.currentSession;
+    world.publish(); syncDetailHeader();
+    assert.notStrictEqual(state.currentSession, openRecord, 'fixture: the live push did not rebuild the open record');
+    typeInBox('first, and one more thing');
+    steers[0].resolve({ sent: true });
+    await first;
+    assert.strictEqual(dom('dtInput').value, 'first, and one more thing', 'a landed send erased what was typed after it');
+    assert.strictEqual(state.composer.draft, 'first, and one more thing', 'a landed send erased the draft typed after it');
+
+    typeInBox('second');
+    const second = pressSend();
+    world.publish(); syncDetailHeader();
+    steers[1].resolve({ queued: true });
+    await second;
+    assert.strictEqual(dom('dtInput').value, '', 'a send that landed on the page it began on did not clear the unchanged draft');
+    assert.strictEqual(state.composer.draft, '', 'a send that landed on the page it began on did not clear the composer draft');
+    assert.strictEqual(state.composer.outcome, 'queued', 'a queued reply was not reported as queued on the page that sent it');
+    assert.deepStrictEqual(alerts, [], 'a send that succeeded raised a dialog');
+  });
+
+  await checkAsync('(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept', async () => {
+    resetComposer();
+    const world = sendWorld('same-err');
+    const steers = steerApi();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+
+    typeInBox('hello');
+    const plain = pressSend();
+    steers[0].reject(new Error('device offline'));
+    await plain;
+    assert.deepStrictEqual(alerts, ['Could not send: device offline'], 'a failed send on its own page was not reported');
+    assert.strictEqual(state.composer.outcome, 'failed', 'a failed send on its own page did not mark the composer as failed');
+    assert.strictEqual(state.composer.reason, 'device offline', 'the composer did not keep the reason');
+    assert.strictEqual(dom('dtInput').value, 'hello', 'a failed send threw away the draft');
+
+    alerts.length = 0;
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+    const carried = pressSend();
+    world.publish(); syncDetailHeader();
+    steers[1].reject(new Error('mode refused'));
+    await carried;
+    assert.deepStrictEqual(alerts, [], 'a refused change was reported twice: under the bar and in a dialog');
+    assert.strictEqual(dom('dtNtNote').textContent, 'Mode refused. Your message and choices are kept.', 'a refused change was not reported under the bar');
+    assert.strictEqual(dom('dtNtNote').dataset.kind, 'error', 'a refused change was not marked as an error');
+    assert.strictEqual(state.composer.outcome, 'failed', 'a refused change did not mark the composer as failed');
+    assert.strictEqual(dom('dtInput').value, 'plan it', 'a refused change threw away the draft');
+
+    const again = pressSend();
+    assert.strictEqual(steers[2].body.mode, 'm-plan', 'a refused change dropped the pick');
+    steers[2].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-plan' }] });
+    await again;
+    assert.strictEqual(dom('dtNtNote').textContent, 'The agent confirmed: Mode is now Plan.', 'a confirmed change was not reported on the page that sent it');
+    assert.strictEqual(dom('dtInput').value, '', 'a confirmed send did not clear its draft');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
