@@ -1833,6 +1833,9 @@ function realSessionRows(page) {
       await page.waitForSelector('[data-session]', { timeout: 20000 });
       // Open the session whose workspace is the one just built.
       await page.click('[data-session]');
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      // The Squad panel lives on its own tab (#182): open it, as a person would.
+      await page.click('#dtTab-squad');
       await page.waitForSelector('#dtSquad:not([hidden])', { timeout: 20000 });
 
       const member = await page.$('[data-squaddoc="charter:engineer"]');
@@ -2279,10 +2282,336 @@ function realSessionRows(page) {
       // Esc closes it -- the same global handler that closes every other
       // popup -- and must not also reopen the session detail underneath.
       await page.keyboard.press('Escape');
-      const hiddenAfterEsc = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+      const afterEsc = await page.evaluate((key) => ({
+        hidden: document.getElementById('rowMenu').hidden,
+        focusReturned: document.activeElement?.dataset?.more === key,
+      }), firstSessionKey);
+      const hiddenAfterEsc = afterEsc.hidden;
       assert.strictEqual(hiddenAfterEsc, true, 'Escape did not close the row menu');
+      assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the row ⋯ button that opened the menu');
       const detailHiddenAfterEsc = await page.evaluate(() => document.getElementById('detailScrim').hidden);
       assert.strictEqual(detailHiddenAfterEsc, true, 'closing the row menu with Esc also opened the session detail');
+    });
+
+    await check('the detail header rename pencil updates the header, the detail sidebar and the list row through one shared rename path (#181 part 2)', async () => {
+      const newName = `Header rename ${Date.now()}`;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        page.once('dialog', (dialog) => dialog.accept(newName));
+        await page.click('#dtRename');
+        await until(async () => {
+          const t = await page.textContent('#dtTitle');
+          return String(t || '').trim() === newName ? true : null;
+        }, 'the detail header title to show the new name');
+
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        const sidebarTitle = await until(async () => {
+          const t = await page.evaluate(
+            (key) => document.querySelector(`#detailSidebarList [data-session="${CSS.escape(key)}"] .dt-side-title`)?.textContent || '',
+            firstSessionKey,
+          );
+          return t === newName ? true : null;
+        }, 'the detail sidebar row to show the renamed title');
+        assert.strictEqual(sidebarTitle, true, 'the detail sidebar did not pick up the renamed title');
+
+        await page.click('#dtBack');
+        await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+        const rowTitle = await until(async () => {
+          const t = await page.evaluate(
+            (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',
+            firstSessionKey,
+          );
+          return t === newName ? true : null;
+        }, 'the list row to keep the same renamed title');
+        assert.strictEqual(rowTitle, true, 'the list row did not agree with the header rename');
+      } finally {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        page.once('dialog', (dialog) => dialog.accept(''));
+        await page.click('#dtRename');
+        await until(async () => {
+          const t = await page.textContent('#dtTitle');
+          return String(t || '').trim() !== newName ? true : null;
+        }, 'the detail header rename cleanup to restore the raw title');
+      }
+    });
+
+    await check('the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await until(async () => {
+        const label = await page.textContent('#dtControlLabel');
+        return label && label !== 'Checking control…' ? label.trim() : null;
+      }, 'the detail control check to settle before reading the header menu');
+      await page.click('#dtMoreBtn');
+      await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+      const menuState = await page.evaluate(() => ({
+        dtMenuExists: document.getElementById('dtMenu') !== null,
+        actions: [...document.querySelectorAll('#rowMenu [data-row-action]')].map((b) => b.dataset.rowAction),
+        detailOpen: !document.getElementById('detailScrim').hidden,
+      }));
+      assert.strictEqual(menuState.dtMenuExists, false, 'the old abbreviated #dtMenu still exists in the DOM');
+      for (const action of ['pin', 'rename', 'copylink']) {
+        assert.ok(menuState.actions.includes(action), `the shared row menu is missing its "${action}" action in the detail header`);
+      }
+      assert.ok(!menuState.actions.includes('sync'),
+        'Sync session should be absent once the detail page is already synced and controllable');
+      await page.keyboard.press('Escape');
+      const afterEsc = await page.evaluate(() => ({
+        rowMenuHidden: document.getElementById('rowMenu').hidden,
+        detailOpen: !document.getElementById('detailScrim').hidden,
+        focusReturned: document.activeElement?.id === 'dtMoreBtn',
+      }));
+      assert.strictEqual(afterEsc.rowMenuHidden, true, 'Escape did not close the shared row menu from the detail header');
+      assert.strictEqual(afterEsc.detailOpen, true, 'Escape closed the detail page instead of just the header menu');
+      assert.strictEqual(afterEsc.focusReturned, true, 'Escape did not return focus to the detail header ⋯ button');
+    });
+
+    await check('a live-snapshot refresh arriving mid-verification does not leave "Checking control…" stuck forever (#243 Scout review fix for 53e6a18)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await until(async () => {
+        const label = await page.textContent('#dtControlLabel');
+        return label && label !== 'Checking control…' ? label.trim() : null;
+      }, 'the initial detail control check to settle');
+
+      // Hold the NEXT control-check request open so this test controls
+      // exactly when it answers -- the real regression needed a
+      // heartbeat/refresh to land while the request was still in flight,
+      // which real network timing cannot reproduce deterministically.
+      let release;
+      const held = new Promise((r) => { release = r; });
+      let intercepted = false;
+      await page.route('**/control-check', async (route) => {
+        intercepted = true;
+        await held;
+        await route.continue();
+      });
+
+      try {
+        // Reopen the SAME session -- back to the list, then the same row --
+        // to start a fresh `verifyControl`, the exact navigation a person
+        // closing and reopening a session performs.
+        await page.click('#dtBack');
+        await page.waitForSelector('#detailScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await page.evaluate((key) => {
+          document.querySelector(`[data-session="${CSS.escape(key)}"]`).click();
+        }, firstSessionKey);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Checking control…' ? true : null),
+          'the reopened session to start a fresh control check');
+
+        // The exact regression: `syncDetailHeader` reassigns
+        // `state.currentSession` to a NEW wrapper for the SAME device/session
+        // on every refresh, even while this request is still in flight.
+        // Force two of those, same as a couple of heartbeats landing
+        // mid-check, through the real `/api/overview` endpoint -- only
+        // `control-check` above is intercepted.
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        await page.evaluate(() => window.__squadHubTest.refresh());
+
+        assert.ok(intercepted, 'the reopened session never issued a control-check request to intercept');
+        release();
+
+        const settled = await until(async () => {
+          const label = await page.textContent('#dtControlLabel');
+          return label && label !== 'Checking control…' ? label.trim() : null;
+        }, 'the detail control check to settle after a live-snapshot refresh landed mid-flight', 8000);
+        assert.notStrictEqual(settled, "Control couldn't be verified",
+          'the check only "settled" because the 8s timeout fired -- the race silently discarded the real answer instead of applying it');
+      } finally {
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
+    await check('Sync session guards one in-flight resync per target; a reopened menu shows it disabled until it resolves, with no extra request (#243 Scout review fix for 53e6a18)', async () => {
+      // Forced to Not-synced regardless of the real daemon's actual answer --
+      // isolates the FRONTEND resync guard under test from real daemon/agent
+      // lifecycle, which control-verification-unit.js already covers.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'the agent process is gone' }),
+      }));
+      let resyncCalls = 0;
+      let releaseResync;
+      const resyncHeld = new Promise((r) => { releaseResync = r; });
+      await page.route('**/resync', async (route) => {
+        resyncCalls += 1;
+        await resyncHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: firstSessionKey, pid: 1, cwd: '/', resyncCount: resyncCalls }),
+        });
+      });
+
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render');
+
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const firstOpen = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { present: true, disabled: b.disabled, label: b.textContent.trim() } : { present: false };
+        });
+        assert.ok(firstOpen.present, 'Sync session is not offered for a Not-synced, reachable device');
+        assert.strictEqual(firstOpen.disabled, false, 'Sync session should not start disabled');
+
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await page.waitForSelector('#rowMenu[hidden]', { state: 'attached', timeout: 5000 });
+
+        // Reopen the menu WHILE the resync is still held open -- the exact
+        // regression: the old dedicated #dtSync button disabled ITSELF here;
+        // the shared menu item has to too, or a second click restarts the
+        // same agent.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const reopened = await until(async () => {
+          const s = await page.evaluate(() => {
+            const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+            return b ? { disabled: b.disabled, label: b.textContent.trim() } : null;
+          });
+          return s && s.disabled ? s : null;
+        }, 'the reopened menu to show Sync session disabled while a resync is pending');
+        assert.ok(reopened.label.includes('Syncing'), `the pending label does not say so: ${reopened.label}`);
+
+        // A click on a genuinely disabled button is a no-op in a real
+        // browser, proving the guard end-to-end rather than just reading
+        // the attribute.
+        await page.click('#rowMenu [data-row-action="sync"]', { force: true }).catch(() => {});
+        assert.strictEqual(resyncCalls, 1, 'reopening the menu mid-resync issued a SECOND resync request to the device');
+
+        await page.keyboard.press('Escape');
+        const afterEsc = await page.evaluate(() => document.activeElement?.id === 'dtMoreBtn');
+        assert.strictEqual(afterEsc, true, 'Escape did not return focus to the detail header ⋯ button while Sync was pending');
+
+        releaseResync();
+        await until(async () => {
+          const label = await page.textContent('#dtControlLabel');
+          return label && label !== 'Checking control…' ? label.trim() : null;
+        }, 'the re-verification after the resync settled to finish');
+
+        assert.strictEqual(resyncCalls, 1, 'more than one resync request reached the device for one target');
+
+        // Success recovery: the guard cleared, so a later, genuine click is
+        // offered again rather than being stuck disabled forever.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const afterSettle = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { disabled: b.disabled, label: b.textContent.trim() } : { present: false };
+        });
+        assert.strictEqual(afterSettle.disabled, false,
+          'Sync session is still disabled after its resync settled -- the in-flight guard was never cleared');
+        await page.keyboard.press('Escape');
+      } finally {
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+      }
+    });
+
+    await check('a real browser Back/Forward away from a session with its shared Sync menu open closes the stale menu, with no outside click and no resync for the wrong target (#243 Scout review of ab5ef90, PR comment 6091670737)', async () => {
+      // Forced Not-synced for BOTH sessions this test visits, same reasoning
+      // as the in-flight-guard check above: isolates the frontend stale-menu
+      // guard from the real daemon/agent lifecycle.
+      await page.route('**/control-check', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ controllable: false, reason: 'forced not-synced for this fixture' }),
+      }));
+      const resyncCalls = [];
+      await page.route('**/resync', async (route) => {
+        const body = route.request().postDataJSON();
+        resyncCalls.push({
+          path: new URL(route.request().url()).pathname,
+          sessionId: body && body.sessionId,
+        });
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ id: body && body.sessionId, pid: 1, cwd: '/' }),
+        });
+      });
+
+      try {
+        // Build a REAL two-entry history stack by navigating entirely
+        // through in-app clicks -- list -> A -> B -- so the Back/Forward
+        // below are genuine browser session-history traversals, not a
+        // synthetic `history.pushState` the test fabricated itself.
+        await gotoSettled(page, origin);
+        await page.waitForSelector('[data-session]', { timeout: 20000 });
+        const keyA = await page.getAttribute('[data-session]', 'data-session');
+        await page.click(`[data-session="${keyA}"]`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render for A');
+
+        const keyB = await page.evaluate((openKey) => {
+          const rows = [...document.querySelectorAll('#detailSidebarList [data-session]')];
+          const other = rows.find((r) => r.dataset.session !== openKey);
+          return other && other.dataset.session;
+        }, keyA);
+        assert.ok(keyB, 'there is no second session to navigate to for this fixture');
+        const sessionB = svc.store.getSession(subjectKey('t1', 'u1'), keyB);
+        assert.ok(sessionB && sessionB.id, 'session B has no device-local session id');
+
+        await page.click(`#detailSidebarList [data-session="${keyB}"]`);
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
+          'the URL to switch to session B via the sidebar');
+        await until(async () => ((await page.textContent('#dtControlLabel')) === 'Not synced' ? true : null),
+          'the forced Not-synced control state to render for B');
+
+        // Real Back: B -> A. Still no outside click, no menu open yet.
+        await page.goBack();
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyA)}`),
+          'Back to land on session A');
+
+        // Open A's shared row menu (Sync offered) -- the exact state a
+        // stale menu was left in across a popstate before this fix.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        const offeredOnA = await page.evaluate(() => {
+          const b = document.querySelector('#rowMenu [data-row-action="sync"]');
+          return b ? { present: true, disabled: b.disabled } : { present: false };
+        });
+        assert.ok(offeredOnA.present, 'Sync session is not offered for A (Not-synced, reachable)');
+        assert.strictEqual(offeredOnA.disabled, false, 'Sync session should not start disabled');
+
+        // Real Forward: A -> B, menu still open, driven by the browser's
+        // OWN history stack -- no click anywhere in the document, so any
+        // close has to come from the popstate listener itself, not an
+        // outside-click handler standing in for it.
+        await page.goForward();
+        await until(async () => page.url().includes(`session=${encodeURIComponent(keyB)}`),
+          'Forward to land on session B');
+
+        const afterNav = await page.evaluate(() => document.getElementById('rowMenu').hidden);
+        assert.strictEqual(afterNav, true,
+          'the shared row menu was still visible after a real Back/Forward navigation away from the session it was opened for');
+        assert.deepStrictEqual(resyncCalls, [],
+          'no Sync click was simulated, yet a resync request reached the device during the navigation itself');
+
+        // Fresh positive: a genuine Sync click on B, the session actually
+        // open now, still reaches the device exactly once.
+        await page.click('#dtMoreBtn');
+        await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        await page.click('#rowMenu [data-row-action="sync"]');
+        await until(async () => resyncCalls.length > 0 || null, 'the fresh Sync click on B to reach the device');
+        assert.deepStrictEqual(resyncCalls, [{
+          path: `/api/devices/${encodeURIComponent(sessionB.deviceId)}/resync`,
+          sessionId: sessionB.id,
+        }],
+          'a fresh Sync click on the session actually open (B) did not reach the device exactly once, for the right target');
+      } finally {
+        await page.unroute('**/resync').catch(() => {});
+        await page.unroute('**/control-check').catch(() => {});
+      }
     });
 
     await check('the header items share one vertical line box at 1280, 900 and 390px', async () => {
@@ -2294,7 +2623,9 @@ function realSessionRows(page) {
         // it one frame before measuring.
         await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
         const centers = await page.evaluate((w) => {
-          const ids = w <= 900 ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtStatusPill'] : ['dtStar', 'dtTitle', 'dtStatusPill', 'dtAca'];
+          const ids = w <= 900
+            ? ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill']
+            : ['dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca'];
           return ids.map((id) => {
             const el = document.getElementById(id);
             if (!el || el.offsetParent === null) return null;
@@ -2308,6 +2639,1163 @@ function realSessionRows(page) {
           `at ${width}px, the header items do not share a line box -- vertical centers span ${spread}px`);
       }
       await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // #243: `offsetParent !== null` only proves an element is laid out, not
+    // that it is readable or reachable -- an element can be squeezed to zero
+    // width, wrapped onto three lines, or pushed past the right edge of the
+    // viewport and still have a non-null offsetParent. This reads the actual
+    // rendered geometry instead, which is what caught the real regression
+    // (the title unreadable, "Run on ACA…" wrapping onto 3 lines inside its
+    // 32px button, and Stop/⋯ pushed off the right edge) that the offsetParent
+    // checks above and in the capture test below did not.
+    await check('at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const bounds = await page.evaluate(() => {
+        const vw = document.documentElement.clientWidth;
+        const rectOf = (id) => {
+          const el = document.getElementById(id);
+          if (!el || el.offsetParent === null) return null;
+          const r = el.getBoundingClientRect();
+          return { left: r.left, right: r.right, width: r.width, height: r.height };
+        };
+        return {
+          vw,
+          title: rectOf('dtTitle'),
+          aca: rectOf('dtAca'),
+          stop: rectOf('dtStop'),
+          more: rectOf('dtMoreBtn'),
+        };
+      });
+      assert.ok(bounds.title && bounds.title.width > 0,
+        'the detail title has no rendered width at 390px -- it is not actually readable');
+      assert.ok(bounds.title.right <= bounds.vw + 0.5,
+        `the detail title overflows the 390px viewport (right=${bounds.title.right}, viewport=${bounds.vw})`);
+      for (const [label, rect] of [
+        ['Run on ACA…', bounds.aca],
+        ['Stop', bounds.stop],
+        ['the ⋯ (More actions) button', bounds.more],
+      ]) {
+        assert.ok(rect, `${label} is not visible at 390px`);
+        assert.ok(rect.left >= -0.5 && rect.right <= bounds.vw + 0.5,
+          `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
+        assert.ok(rect.height <= 34,
+          `${label}'s label wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    await check('the detail header menu survives overview refresh with focus intact, and Open does not duplicate history', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.click('#dtMoreBtn');
+      await page.waitForSelector('#rowMenu:not([hidden])');
+      await page.focus('#rowMenu [data-row-action="copylink"]');
+      await page.evaluate(() => {
+        window.__detailMenuButton = document.querySelector('#rowMenu [data-row-action="copylink"]');
+      });
+      await page.evaluate(() => window.__squadHubTest.refresh());
+      assert.deepStrictEqual(await page.evaluate(() => ({
+        open: !document.getElementById('rowMenu').hidden,
+        focused: document.activeElement.dataset.rowAction,
+      })), { open: true, focused: 'copylink' });
+      assert.strictEqual(await page.evaluate(() => (
+        window.__detailMenuButton === document.querySelector('#rowMenu [data-row-action="copylink"]')
+      )), true, 'an unchanged heartbeat replaced the menu button DOM node');
+      const before = await page.evaluate(() => history.length);
+      await page.click('#rowMenu [data-row-action="open"]');
+      assert.strictEqual(await page.evaluate(() => history.length), before,
+        'Open on the current session added a duplicate history entry');
+    });
+
+    await check('removing the open ended session returns to the list without stale detail controls', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'disposable detail removal', cwd: process.cwd() });
+      await daemon.handle({ op: 'stop-session', sessionId: started.id });
+      await page.evaluate(() => window.__squadHubTest.refresh());
+      const key = `e2e-device:${started.id}`;
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.click('#dtMoreBtn');
+      page.once('dialog', (dialog) => dialog.accept());
+      await page.click('#rowMenu [data-row-action="remove"]');
+      await until(async () => page.evaluate(() => (
+        document.getElementById('detailScrim').hidden
+        && window.__squadHubTest.state.currentSession === null
+        && !new URL(location.href).searchParams.has('session')
+      )), 'removing the current session to close and clear its detail page');
+      assert.strictEqual(daemon.sessions.has(started.id), false,
+        'the ended session was not actually removed from the device');
+    });
+
+    await check('an open detail session survives leaving the active list filter', async () => {
+      const started = await daemon.handle({ op: 'start-session', prompt: 'filtered detail transition', cwd: process.cwd() });
+      const key = `e2e-device:${started.id}`;
+      await page.evaluate(() => window.__squadHubTest.refresh());
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])');
+      try {
+        await page.fill('#dtInput', 'Preserve this unsent follow-up');
+        await page.evaluate(() => { window.__squadHubTest.state.filters.status = 'active'; });
+        await daemon.handle({ op: 'stop-session', sessionId: started.id });
+        await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.evaluate((expected) => (
+          !document.getElementById('detailScrim').hidden
+          && window.__squadHubTest.state.currentSession.session.key === expected
+          && document.getElementById('dtInput').value === 'Preserve this unsent follow-up'
+        ), key), true, 'a stopped session was mistaken for a removed session when the active filter excluded it');
+      } finally {
+        await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
+    });
+
+    // #243 real regression (CI run 37998832767): the two checks above proved
+    // the RIGHT-side actions stay on-screen and on one line, but neither one
+    // actually measured the FIRST row (back/star/title/pencil/pill) itself --
+    // the root cause was `flex-wrap` applied to the whole `.detail-head-line`,
+    // which let the first row's own items (not just the actions) spill onto a
+    // second line while the header kept a fixed 32px height. This measures
+    // every first-row control's own rendered geometry at 390px, the same way
+    // the actions were already checked: inside the viewport, unclipped, and a
+    // single ~32px line each -- which a height-only check on the header
+    // container cannot tell apart from "32px tall but two of these items are
+    // on a wrapped second line that overflows it".
+    await check('at 390px, every first-row header control (back/star/title/pencil/pill) stays inside the viewport, unclipped and on one line', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+      const bounds = await page.evaluate(() => {
+        const vw = document.documentElement.clientWidth;
+        const rectOf = (id) => {
+          const el = document.getElementById(id);
+          if (!el || el.offsetParent === null) return null;
+          const r = el.getBoundingClientRect();
+          return { left: r.left, right: r.right, width: r.width, height: r.height };
+        };
+        return {
+          vw,
+          back: rectOf('dtBackPhone'),
+          star: rectOf('dtStar'),
+          title: rectOf('dtTitle'),
+          rename: rectOf('dtRename'),
+          pill: rectOf('dtStatusPill'),
+        };
+      });
+      for (const [label, rect] of [
+        ['the back arrow', bounds.back],
+        ['the pin star', bounds.star],
+        ['the title', bounds.title],
+        ['the rename pencil', bounds.rename],
+        ['the status pill', bounds.pill],
+      ]) {
+        assert.ok(rect, `${label} is not visible at 390px`);
+        assert.ok(rect.width > 0, `${label} has no rendered width at 390px`);
+        assert.ok(rect.left >= -0.5 && rect.right <= bounds.vw + 0.5,
+          `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
+        assert.ok(rect.height <= 34,
+          `${label} wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    // #243 real regression: the old fix pinned `.detail-head-line` to a fixed
+    // 32px line box and relied on `flex-wrap` to push overflow onto a SECOND
+    // line that the fixed-height box never actually grew to accommodate --
+    // the row-height check above (`rect.height <= 34`) cannot catch this,
+    // because it only measures a single BUTTON's own box, not whether that
+    // button's row collided with unrelated content underneath it.
+    //
+    // This measures every CONTROL's own rendered rectangle (not the shared
+    // `.detail-head-line` container's rect) against the metadata line below
+    // it. Measuring the container itself is a false-safe check: a container
+    // with a fixed `height` (the old, broken design, or a regression back to
+    // it) always reports its own `bottom` at exactly that fixed height, which
+    // trivially stays above the metadata line even while its own children
+    // overflow past it -- `overflow` only clips what is PAINTED, it never
+    // moves the overflowing children's own boxes, so measuring the controls
+    // themselves is what actually catches the collision. Checked at every
+    // width the header's row count changes (two rows at 390px/900px, one row
+    // at 1280px).
+    await check('at 390px, the detail header controls do not spatially overlap the metadata line underneath them', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      for (const width of [1280, 900, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+        const result = await page.evaluate(() => {
+          const ids = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+          const bottoms = ids.map((id) => {
+            const el = document.getElementById(id);
+            if (!el || el.offsetParent === null) return null;
+            return el.getBoundingClientRect().bottom;
+          }).filter((v) => v !== null);
+          const meta = document.getElementById('dtMeta');
+          return {
+            maxControlBottom: bottoms.length ? Math.max(...bottoms) : null,
+            metaTop: meta ? meta.getBoundingClientRect().top : null,
+          };
+        });
+        assert.ok(result.maxControlBottom !== null, `at ${width}px, no header control was visible to measure`);
+        assert.ok(result.metaTop !== null, `at ${width}px, the metadata line could not be measured`);
+        assert.ok(result.maxControlBottom <= result.metaTop + 0.5,
+          `at ${width}px, a header control (bottom=${result.maxControlBottom}) overlaps the metadata line underneath it (top=${result.metaTop})`);
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
+    await check('at 390px, unreachable-session cleanup actions remain in bounds without overlapping metadata', async () => {
+      const subject = subjectKey('t1', 'u1');
+      const deviceId = 'phone-stale-fixture';
+      const device = svc.store.registerDevice(subject, { deviceId, name: 'Stale phone fixture', platform: 'linux' });
+      svc.store.upsertSession(subject, deviceId, {
+        id: 'stale-session', status: 'idle', prompt: 'Unreachable cleanup fixture', repo: 'acme/widgets',
+      });
+      device.lastSeen = Date.now() - svc.store.staleAfterMs - 1000;
+      const key = `${deviceId}:stale-session`;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])');
+        await page.waitForSelector('#dtForget:not([hidden])');
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+        const geometry = await page.evaluate(() => {
+          const ids = ['dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+          return {
+            width: document.documentElement.clientWidth,
+            metaTop: document.getElementById('dtMeta').getBoundingClientRect().top,
+            controls: ids.map((id) => {
+              const rect = document.getElementById(id).getBoundingClientRect();
+              return { id, left: rect.left, right: rect.right, bottom: rect.bottom, height: rect.height };
+            }),
+          };
+        });
+        for (const rect of geometry.controls) {
+          assert.ok(rect.left >= -0.5 && rect.right <= geometry.width + 0.5,
+            `${rect.id} is clipped on the unreachable session at 390px`);
+          assert.ok(rect.height <= 34 && rect.bottom <= geometry.metaTop + 0.5,
+            `${rect.id} wraps its label or overlaps metadata`);
+        }
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
+    });
+
+    // #182/#243: the integrated session header, measured the way a person sees
+    // it, at all three widths and in BOTH colour schemes: every control inside
+    // the viewport and not pushing the page sideways, no label wrapped or cut,
+    // nothing overlapping a neighbour or the summary line, one shared centre
+    // line for the title row (and for the whole header at 1280px), and the More
+    // menu opening inside the page. `actions` are the buttons this fixture must
+    // show, so a control that quietly disappeared cannot pass as "fits".
+    const headerFit182 = async (what, actions, shot) => {
+      const ids = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill', 'dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'];
+      const titleRow = ['dtBackPhone', 'dtStar', 'dtTitle', 'dtRename', 'dtStatusPill'];
+      try {
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ colorScheme: scheme });
+          for (const width of [1280, 900, 390]) {
+            const at = `${what} at ${width}px in the ${scheme} theme`;
+            await page.setViewportSize({ width, height: 844 });
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const m = await page.evaluate((list) => {
+              const rgb = (getComputedStyle(document.body).backgroundColor.match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+              const controls = [];
+              for (const id of list) {
+                const el = document.getElementById(id);
+                if (!el || el.offsetParent === null) continue;
+                const r = el.getBoundingClientRect();
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                controls.push({
+                  id, left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+                  cut: el.scrollWidth - el.clientWidth,
+                  lines: new Set([...range.getClientRects()].filter((q) => q.width > 0).map((q) => Math.round(q.top))).size,
+                });
+              }
+              const bar = document.getElementById('dtTabs');
+              return {
+                brightness: (rgb[0] + rgb[1] + rgb[2]) / 3,
+                vw: document.documentElement.clientWidth,
+                scroll: document.documentElement.scrollWidth,
+                metaTop: document.getElementById('dtMeta').getBoundingClientRect().top,
+                controls,
+                barCut: bar.scrollWidth - bar.clientWidth,
+                // Vertical: a bar whose tabs reach past its own padding box is
+                // scrollable overflow, whatever the browser does with scrollbars.
+                barHeight: bar.offsetHeight,
+                barOverflowY: bar.scrollHeight - bar.clientHeight,
+                barScrollbarX: bar.offsetWidth - bar.clientWidth,
+                barInnerBottom: bar.getBoundingClientRect().top + bar.clientTop + bar.clientHeight,
+                tabs: [...bar.querySelectorAll('[role="tab"]')].map((t) => {
+                  const r = t.getBoundingClientRect();
+                  return { id: t.id, left: r.left, right: r.right, bottom: r.bottom, height: r.height };
+                }),
+              };
+            }, ids);
+            // A theme that did not apply would make the light and dark passes the same pass twice.
+            assert.ok(scheme === 'light' ? m.brightness > 140 : m.brightness < 80,
+              `${at}: the page is not in the ${scheme} theme (background brightness ${Math.round(m.brightness)})`);
+            const by = Object.fromEntries(m.controls.map((c) => [c.id, c]));
+            for (const id of [...titleRow.slice(width <= 900 ? 0 : 1), ...actions]) {
+              assert.ok(by[id], `${at}: ${id} is not showing`);
+            }
+            assert.ok(m.scroll <= m.vw, `${at}: the page scrolls sideways (${m.scroll} > ${m.vw})`);
+            for (const c of m.controls) {
+              assert.ok(c.left >= -0.5 && c.right <= m.vw + 0.5,
+                `${at}: ${c.id} is outside the viewport (left=${Math.round(c.left)}, right=${Math.round(c.right)}, viewport=${m.vw})`);
+              assert.ok(c.bottom - c.top <= 34, `${at}: ${c.id} is ${Math.round(c.bottom - c.top)}px tall, so it wrapped`);
+              assert.ok(c.bottom <= m.metaTop + 0.5, `${at}: ${c.id} overlaps the summary line (${Math.round(c.bottom)} > ${Math.round(m.metaTop)})`);
+              if (['dtAca', 'dtForget', 'dtStop', 'dtStatusPill'].includes(c.id)) {
+                assert.strictEqual(c.lines, 1, `${at}: the label of ${c.id} wraps onto ${c.lines} lines`);
+              }
+              // The status pill may end in an ellipsis on a phone; a button label may not.
+              if (['dtAca', 'dtForget', 'dtStop'].includes(c.id)) {
+                assert.ok(c.cut <= 1, `${at}: the label of ${c.id} is cut off by ${c.cut}px`);
+              }
+            }
+            assert.strictEqual(m.tabs.length, 4, `${at}: the tab bar does not show Chat, Squad, Info and Files`);
+            assert.ok(m.barCut <= 1, `${at}: the tab bar has to scroll sideways (${m.barCut}px)`);
+            // The headless shell draws no scrollbars, so this measures the cause: content
+            // taller than the bar's box makes a classic-scrollbar browser draw a vertical
+            // scrollbar on it and clip the selected tab's underline.
+            assert.ok(m.barOverflowY <= 0, `${at}: the tab bar's content is ${m.barOverflowY}px taller than the bar, so it overflows vertically`);
+            assert.strictEqual(m.barScrollbarX, 0, `${at}: the tab bar reserves ${m.barScrollbarX}px for a scrollbar of its own`);
+            assert.ok(Math.abs(m.barHeight - 40) <= 0.5, `${at}: the tab bar is ${m.barHeight}px tall, not the intended 40px`);
+            for (const t of m.tabs) {
+              assert.ok(t.left >= -0.5 && t.right <= m.vw + 0.5 && t.height <= 48, `${at}: the ${t.id} tab is outside the viewport or wrapped`);
+              assert.ok(t.bottom <= m.barInnerBottom + 0.5, `${at}: the bar cuts the bottom of the ${t.id} tab, and with it the underline`);
+            }
+            assert.ok(by.dtTitle.right - by.dtTitle.left >= 60,
+              `${at}: only ${Math.round(by.dtTitle.right - by.dtTitle.left)}px is left for the title`);
+            for (let i = 0; i < m.controls.length; i += 1) {
+              for (let j = i + 1; j < m.controls.length; j += 1) {
+                const a = m.controls[i];
+                const b = m.controls[j];
+                const across = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                const down = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                assert.ok(!(across > 0.5 && down > 0.5), `${at}: ${a.id} and ${b.id} overlap`);
+              }
+            }
+            const center = (c) => (c.top + c.bottom) / 2;
+            const spread = (list) => Math.max(...list.map(center)) - Math.min(...list.map(center));
+            const first = m.controls.filter((c) => titleRow.includes(c.id));
+            const right = m.controls.filter((c) => !titleRow.includes(c.id));
+            if (width > 900) {
+              assert.ok(spread(m.controls) <= 1, `${at}: the header is not one line (centres span ${spread(m.controls).toFixed(1)}px)`);
+            } else {
+              assert.ok(spread(first) <= 1, `${at}: the title row is not one line (centres span ${spread(first).toFixed(1)}px)`);
+              assert.ok(right.every((c) => c.top >= Math.max(...first.map((f) => f.bottom)) - 0.5),
+                `${at}: the actions share the title row instead of sitting under it`);
+            }
+
+            if (process.env.SQUAD_HUB_SCREENSHOT_DIR) {
+              await page.screenshot({ path: path.join(process.env.SQUAD_HUB_SCREENSHOT_DIR, `detail-header-${shot}-${width}-${scheme}.png`), clip: { x: 0, y: 0, width: m.vw, height: 420 } });
+            }
+            await page.click('#dtMoreBtn');
+            await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+            const menu = await page.evaluate(() => {
+              const r = document.getElementById('rowMenu').getBoundingClientRect();
+              return { left: r.left, right: r.right, top: r.top, vw: document.documentElement.clientWidth };
+            });
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('#rowMenu', { state: 'hidden', timeout: 5000 });
+            assert.ok(menu.left >= -0.5 && menu.right <= menu.vw + 0.5 && menu.top >= -0.5,
+              `${at}: the More menu opens outside the page (left=${Math.round(menu.left)}, right=${Math.round(menu.right)}, top=${Math.round(menu.top)}, viewport=${menu.vw})`);
+          }
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    };
+
+    await check('the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)', async () => {
+      const subject = subjectKey('t1', 'u1');
+      const deviceId = 'header-fit-fixture';
+      const device = svc.store.registerDevice(subject, { deviceId, name: 'Header fit fixture', platform: 'linux' });
+      svc.store.upsertSession(subject, deviceId, {
+        id: 'header-fit-session', status: 'idle', repo: 'acme/widgets',
+        prompt: 'Header fit fixture with a long session title that has to be cut short rather than push the actions off the page',
+      });
+      device.lastSeen = Date.now() - svc.store.staleAfterMs - 1000;
+      try {
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(`${deviceId}:header-fit-session`)}`);
+        await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await page.waitForSelector('#dtForget:not([hidden])', { timeout: 5000 });
+        await headerFit182('an unreachable session', ['dtAca', 'dtForget', 'dtStop', 'dtMoreBtn'], 'unreachable');
+      } finally {
+        svc.store.removeDevice(subject, deviceId);
+        await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      }
+    });
+
+    // The headless shell this file drives draws no scrollbars at all, so a tab bar
+    // that is secretly taller inside than outside looks fine there. This runs ONE
+    // browser with classic scrollbars (what desktop Chrome and Edge on Windows and
+    // Linux show), where the same defect is a real 15px scrollbar and a cut underline.
+    await check('the tab bar draws no scrollbar of its own and keeps its whole underline when the browser shows classic scrollbars, at 1280, 900, 390 and 200px, light and dark (#182)', async () => {
+      const subject = subjectKey('t1', 'u1');
+      const deviceId = 'classic-bars-fixture';
+      const device = svc.store.registerDevice(subject, { deviceId, name: 'Classic scrollbars fixture', platform: 'linux' });
+      svc.store.upsertSession(subject, deviceId, { id: 'classic-bars-session', status: 'idle', repo: 'acme/widgets', prompt: 'Classic scrollbars fixture' });
+      device.lastSeen = Date.now() - svc.store.staleAfterMs - 1000;
+      const classic = await chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] });
+      try {
+        const p = await classic.newPage();
+        await gotoSettled(p, `${origin}/?token=${userToken}`);
+        await p.waitForSelector('#who', { timeout: 15000 });
+        await gotoSettled(p, `${origin}/?session=${encodeURIComponent(`${deviceId}:classic-bars-session`)}`);
+        await p.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+        await p.waitForSelector('#dtTabs', { state: 'visible', timeout: 5000 });
+        // Without this the test would pass on a browser that hides scrollbars too.
+        const probe = await p.evaluate(() => {
+          const d = document.createElement('div');
+          d.style.overflow = 'scroll';
+          d.style.width = '60px';
+          d.style.height = '60px';
+          document.body.appendChild(d);
+          const w = d.offsetWidth - d.clientWidth;
+          d.remove();
+          return w;
+        });
+        assert.ok(probe >= 8, `this browser draws no classic scrollbars (${probe}px), so the check below would prove nothing`);
+        for (const scheme of ['light', 'dark']) {
+          await p.emulateMedia({ colorScheme: scheme });
+          for (const width of [1280, 900, 390, 200]) {
+            const at = `the tab bar at ${width}px in the ${scheme} theme`;
+            await p.setViewportSize({ width, height: 844 });
+            await p.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const m = await p.evaluate(() => {
+              const bar = document.getElementById('dtTabs');
+              const on = bar.querySelector('.dt-tab.on');
+              const last = [...bar.querySelectorAll('.dt-tab:not(:disabled)')].pop();
+              last.focus();
+              const barBox = bar.getBoundingClientRect();
+              const onBox = on.getBoundingClientRect();
+              const lastBox = last.getBoundingClientRect();
+              return {
+                scrollbarX: bar.offsetWidth - bar.clientWidth,
+                overflowY: bar.scrollHeight - bar.clientHeight,
+                sideways: bar.scrollWidth - bar.clientWidth,
+                innerBottom: barBox.top + bar.clientTop + bar.clientHeight,
+                underline: parseFloat(getComputedStyle(on).borderBottomWidth),
+                onBottom: onBox.bottom,
+                onTop: onBox.top,
+                height: bar.offsetHeight,
+                lastReached: lastBox.left >= barBox.left - 0.5 && lastBox.right <= barBox.right + 0.5,
+              };
+            });
+            assert.strictEqual(m.scrollbarX, 0, `${at} reserves ${m.scrollbarX}px for a vertical scrollbar of its own`);
+            assert.ok(m.overflowY <= 0, `${at} has content ${m.overflowY}px taller than its box`);
+            assert.strictEqual(m.underline, 2, `${at}: the selected tab's underline is ${m.underline}px, not 2`);
+            assert.ok(m.onBottom <= m.innerBottom + 0.5,
+              `${at} cuts the selected tab's underline (the tab ends at ${m.onBottom}, the bar's box at ${m.innerBottom})`);
+            // 200px is no real phone: it only makes the tabs overflow, to prove the bar still scrolls sideways.
+            if (width === 200) {
+              assert.ok(m.sideways > 0, `${at} does not scroll sideways, so the horizontal-scroll case was not exercised`);
+            } else {
+              assert.strictEqual(m.height, 40, `${at} is ${m.height}px tall, not 40`);
+            }
+            assert.ok(m.lastReached, `${at}: the last tab cannot be scrolled to when it takes focus`);
+            if (process.env.SQUAD_HUB_SCREENSHOT_DIR && width !== 1280) {
+              await p.screenshot({ path: path.join(process.env.SQUAD_HUB_SCREENSHOT_DIR, `detail-tabbar-classic-${width}-${scheme}.png`), clip: { x: 0, y: 0, width, height: 420 } });
+            }
+          }
+        }
+      } finally {
+        await classic.close();
+        svc.store.removeDevice(subject, deviceId);
+      }
+    });
+
+    // ---- #182: detail tabs, the inline approval card, the Info history -------
+    // Everything below runs against REAL sessions on the real device, answered
+    // through the hub's real approve route. What is asserted is what the agent
+    // actually did (the marker file it writes) and what the page then shows,
+    // not merely that a request was sent.
+    const ENV_182 = ['FAKE_AGENT_MODE', 'FAKE_AGENT_MARKER', 'FAKE_AGENT_COMMAND'];
+    const live182 = {};
+
+    // A directory name with no break opportunity in it, far wider than a phone.
+    // It is what makes the Info tab's "a long path wraps instead of pushing the
+    // page sideways" rule provable: a short temp path fits at every width.
+    const LONG_SEGMENT_182 = `deeply-nested-checkout-${'x'.repeat(110)}-`;
+
+    // A session whose agent is blocked on one permission request. `repo` gives
+    // it a checkout as git writes it, and a Squad workspace, so the device
+    // reports a repository, a branch and a team. `longPath` puts that checkout
+    // under one very long directory name.
+    const gated182 = async (label, command, { repo = false, longPath = false } = {}) => {
+      const stem = longPath ? `e2eui-182-${label}-${LONG_SEGMENT_182}` : `e2eui-182-${label}-`;
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), stem));
+      if (repo) {
+        fs.mkdirSync(path.join(work, '.git'), { recursive: true });
+        fs.writeFileSync(path.join(work, '.git', 'HEAD'), 'ref: refs/heads/feature/detail-tabs\n');
+        fs.writeFileSync(path.join(work, '.git', 'config'),
+          '[remote "origin"]\n\turl = https://github.com/octo/widgets.git\n');
+        fs.mkdirSync(path.join(work, '.squad', 'agents', 'engineer'), { recursive: true });
+        fs.writeFileSync(path.join(work, '.squad', 'team.md'),
+          '# Team\n\n| Name | Role | Status |\n| --- | --- | --- |\n| engineer | engineer | active |\n');
+        fs.writeFileSync(path.join(work, '.squad', 'agents', 'engineer', 'charter.md'), '# engineer\n');
+        fs.writeFileSync(path.join(work, '.squad', 'decisions.md'), '# Decisions\n');
+      }
+      const marker = `marker-182-${label}.txt`;
+      const prompt = `detail tabs ${label}`;
+      const was = ENV_182.map((k) => process.env[k]);
+      process.env.FAKE_AGENT_MODE = 'approve-gate';
+      process.env.FAKE_AGENT_MARKER = marker;
+      process.env.FAKE_AGENT_COMMAND = command;
+      let started;
+      try {
+        started = await daemon.handle({ op: 'start-session', prompt, cwd: work });
+      } finally {
+        ENV_182.forEach((k, i) => { if (was[i] === undefined) delete process.env[k]; else process.env[k] = was[i]; });
+      }
+      const asked = await until(async () => {
+        const st = await daemon.handle({ op: 'status' });
+        const s = (st.sessions || []).find((x) => x.id === started.id);
+        const a = s && (s.pendingApprovals || [])[0];
+        return a ? { sessionId: s.id, approvalId: a.approvalId } : null;
+      }, 'the agent to ask for permission');
+      return { work, marker, prompt, ...asked };
+    };
+
+    // The pop-up raises itself for a request it has not shown on this page
+    // load; dismiss it, then open the session the way a person would.
+    const openGated182 = async (g) => {
+      await gotoSettled(page, origin);
+      await page.waitForSelector('#approvalScrim:not([hidden])', { timeout: 20000 });
+      await page.click('#apCancel');
+      await page.click(`[data-session]:has-text("${g.prompt}")`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+    };
+
+    const tabState182 = () => page.evaluate(() => {
+      const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && el.offsetParent !== null; };
+      return {
+        selected: ['chat', 'squad', 'info', 'files']
+          .filter((t) => document.getElementById(`dtTab-${t}`).getAttribute('aria-selected') === 'true'),
+        shown: ['chat', 'squad', 'info'].filter((t) => shown(`dtPane-${t}`)),
+        focus: document.activeElement && document.activeElement.id,
+      };
+    });
+
+    const historyRow182 = (outcome) => page.evaluate((o) => {
+      const r = document.querySelector(`#dtInfoHistory [data-outcome="${o}"]`);
+      return r ? { text: r.textContent.replace(/\s+/g, ' ').trim(), approval: r.dataset.approval } : null;
+    }, outcome);
+
+    // Evidence for the tab work: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.
+    const shoot182 = async (prefix) => {
+      const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
+      if (!outDir) return;
+      assert.ok(fs.statSync(outDir).isDirectory(), `SQUAD_HUB_SCREENSHOT_DIR is not a directory: ${outDir}`);
+      // A toast from the step before would sit on top of the page being captured.
+      await page.waitForSelector('#toast', { state: 'hidden', timeout: 10000 });
+      const shots = [
+        { width: 1280, height: 900, scheme: 'dark', name: 'desktop-dark' },
+        { width: 1280, height: 900, scheme: 'light', name: 'desktop-light' },
+        { width: 390, height: 844, scheme: 'dark', name: 'phone-390-dark' },
+        { width: 390, height: 844, scheme: 'light', name: 'phone-390-light' },
+      ];
+      try {
+        for (const shot of shots) {
+          await page.setViewportSize({ width: shot.width, height: shot.height });
+          await page.emulateMedia({ colorScheme: shot.scheme });
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+          const file = path.join(outDir, `${prefix}-${shot.name}.png`);
+          await page.screenshot({ path: file });
+          assert.ok(fs.statSync(file).size > 0, `${prefix}-${shot.name}.png was written empty`);
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    };
+
+    await check('the session detail has Chat, Squad and Info tabs that each show only their own pane, and a disabled Files tab (#182)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      await page.waitForSelector('#dtTabs', { state: 'visible', timeout: 5000 });
+      assert.deepStrictEqual(
+        await page.evaluate(() => [...document.querySelectorAll('#dtTabs [role="tab"]')].map((t) => t.textContent.trim())),
+        ['Chat', 'Squad', 'Info', 'Files'], 'the tabs are not Chat, Squad, Info and Files, in that order');
+      // Let the requests a freshly opened session makes finish, so the window
+      // below measures only what the tabs themselves do.
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 800)));
+
+      const requests = [];
+      const onRequest = (r) => { if (/\/api\/devices\//.test(r.url())) requests.push(r.url()); };
+      page.on('request', onRequest);
+      try {
+        let s = await tabState182();
+        assert.deepStrictEqual([s.selected, s.shown], [['chat'], ['chat']],
+          'a session must open on Chat, with only the Chat pane showing');
+
+        await page.click('#dtTab-info');
+        s = await tabState182();
+        assert.deepStrictEqual([s.selected, s.shown], [['info'], ['info']], 'the Info tab did not show only the Info pane');
+        const keys = await page.evaluate(() => [...document.querySelectorAll('#dtInfoRows tr')].map((r) => r.dataset.info));
+        for (const k of ['device', 'cwd', 'repository', 'branch', 'agent', 'model', 'mode', 'started', 'lastActivity', 'toolCalls', 'squadHealth']) {
+          assert.ok(keys.includes(k), `the Info tab has no ${k} row`);
+        }
+
+        await page.click('#dtTab-squad');
+        s = await tabState182();
+        assert.deepStrictEqual([s.selected, s.shown], [['squad'], ['squad']], 'the Squad tab did not show only the Squad pane');
+        const squad = await page.evaluate(() => ({
+          panel: document.getElementById('dtSquad').offsetParent !== null,
+          none: document.getElementById('dtSquadNone').offsetParent !== null,
+        }));
+        assert.strictEqual(squad.panel !== squad.none, true,
+          'the Squad tab must show the panel or the note that no Squad workspace was reported, never both and never neither');
+
+        // The keyboard moves between the three real tabs and wraps; it never lands on Files.
+        await page.keyboard.press('ArrowRight');
+        s = await tabState182();
+        assert.deepStrictEqual([s.selected, s.focus], [['info'], 'dtTab-info'], 'ArrowRight did not move to Info');
+        await page.keyboard.press('ArrowRight');
+        s = await tabState182();
+        assert.deepStrictEqual([s.selected, s.focus], [['chat'], 'dtTab-chat'], 'ArrowRight from Info must wrap to Chat, not stop at Files');
+        await page.keyboard.press('ArrowLeft');
+        s = await tabState182();
+        assert.deepStrictEqual(s.selected, ['info'], 'ArrowLeft from Chat must wrap to Info, not Files');
+        await page.keyboard.press('Home');
+        assert.deepStrictEqual((await tabState182()).selected, ['chat']);
+        await page.keyboard.press('End');
+        assert.deepStrictEqual((await tabState182()).selected, ['info']);
+
+        const files = await page.evaluate(() => {
+          const b = document.getElementById('dtTab-files');
+          return { disabled: b.disabled, aria: b.getAttribute('aria-disabled'), title: b.title, pane: !!document.getElementById('dtPane-files') };
+        });
+        assert.strictEqual(files.disabled, true, 'the Files tab is clickable, but it is a spike with nothing behind it');
+        assert.strictEqual(files.aria, 'true', 'the Files tab does not say it is disabled to a screen reader');
+        assert.strictEqual(files.title, 'Spike only: appears when the device allows file access');
+        assert.strictEqual(files.pane, false, 'the Files tab has a pane, so something is behind it');
+        await page.click('#dtTab-files', { force: true });
+        s = await tabState182();
+        assert.deepStrictEqual([s.selected, s.shown], [['info'], ['info']], 'clicking the disabled Files tab changed what is showing');
+      } finally {
+        page.off('request', onRequest);
+      }
+      assert.deepStrictEqual(requests, [],
+        'switching tabs only shows and hides panes, but it made a request to a device');
+    });
+
+    await check('moving between tabs keeps a half-typed message and the transcript, because the composer sits outside every pane (#182)', async () => {
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const outside = await page.evaluate(() => ['dtInput', 'dtSend']
+        .every((id) => !document.getElementById(id).closest('[role="tabpanel"]')));
+      assert.ok(outside, 'the composer is inside a tab pane, so it would vanish with that tab');
+      await page.evaluate(() => {
+        const box = document.getElementById('dtInput');
+        box.value = 'a half-typed follow-up';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('dtTranscript').dataset.kept182 = 'yes';
+      });
+      for (const tab of ['info', 'squad', 'chat']) {
+        await page.click(`#dtTab-${tab}`);
+        const composer = await page.evaluate(() => document.getElementById('dtInput').offsetParent !== null);
+        assert.ok(composer, `the composer disappeared on the ${tab} tab`);
+      }
+      const kept = await page.evaluate(() => ({
+        draft: document.getElementById('dtInput').value,
+        transcript: document.getElementById('dtTranscript').dataset.kept182,
+      }));
+      assert.strictEqual(kept.draft, 'a half-typed follow-up', 'a tab switch cost someone their half-typed message');
+      assert.strictEqual(kept.transcript, 'yes', 'a tab switch rebuilt the transcript');
+    });
+
+    await check('a pending request shows as an inline card on the Chat tab, and the pop-up and the bell still raise it (#182)', async () => {
+      live182.allow = await gated182('allow', 'git status && npm test | tee 182-out.log', { repo: true });
+      const g = live182.allow;
+      await gotoSettled(page, origin);
+
+      // The pop-up and the bell are unchanged by the card.
+      await page.waitForSelector('#approvalScrim:not([hidden])', { timeout: 20000 });
+      assert.match(await page.textContent('#apCommand'), /git status && npm test/, 'the pop-up did not show the command');
+      const bell = await page.evaluate(() => ({
+        hidden: document.getElementById('bellCount').hidden,
+        count: Number(document.getElementById('bellCount').textContent),
+      }));
+      assert.ok(!bell.hidden && bell.count >= 1, 'the bell did not count the waiting request');
+      await page.click('#apCancel');
+      await page.click('#bellBtn');
+      await page.waitForSelector('#inboxMenu:not([hidden])', { timeout: 5000 });
+      assert.ok((await page.textContent('#inboxList')).includes('git status && npm test'),
+        'the bell inbox did not list the waiting request');
+      await page.click('#bellBtn');
+
+      await page.click(`[data-session]:has-text("${g.prompt}")`);
+      await page.waitForSelector('#dtApprovals .dt-appr', { timeout: 20000 });
+      const card = await page.evaluate(() => {
+        const c = document.querySelector('#dtApprovals .dt-appr');
+        const texts = (sel) => [...c.querySelectorAll(sel)].map((e) => e.textContent.replace(/\s+/g, ' ').trim());
+        const hint = c.querySelector('.hint-btn');
+        return {
+          visible: c.offsetParent !== null,
+          inChat: !!c.closest('#dtPane-chat'),
+          title: texts('.dt-appr-title')[0],
+          command: c.querySelector('.dt-appr-cmd').textContent,
+          tools: texts('.dt-appr-tools .dt-chip'),
+          rows: [...c.querySelectorAll('.ap-row')].map((r) => ({
+            label: r.querySelector('.ap-label').textContent,
+            badge: r.querySelector('.ap-badge').textContent,
+            writes: r.classList.contains('rw'),
+          })),
+          buttons: texts('.dt-appr-actions button'),
+          rule: texts('.ap-rule')[0],
+          hint: hint ? { label: hint.getAttribute('aria-label'), title: hint.title } : null,
+          dot: !document.getElementById('dtTabChatDot').hidden,
+          chatLabel: document.getElementById('dtTab-chat').getAttribute('aria-label'),
+          text: c.textContent,
+        };
+      });
+      assert.ok(card.visible && card.inChat, 'the card is not visible on the Chat tab');
+      assert.strictEqual(card.title, 'Create marker file');
+      assert.strictEqual(card.command, 'git status && npm test | tee 182-out.log', 'the card did not show what would run');
+      assert.deepStrictEqual(card.tools, ['execute', 'git', 'npm', 'tee'], 'the tool chips are not the kind plus every program in the command');
+      assert.strictEqual(card.rows[0].label, card.command, 'the first chip row is not the tool');
+      assert.ok(card.rows.some((r) => r.label === '182-out.log'), 'the path the command names has no chip');
+      assert.ok(card.rows.every((r) => r.badge === 'writes' && r.writes),
+        'a command that pipes into tee must be badged as writing, never read-only');
+      assert.deepStrictEqual(card.buttons, ['Allow once', 'Always allow', 'Deny'], 'the card does not offer exactly what the agent offered');
+      assert.strictEqual(card.rule, 'Allow "git status && npm test | tee 182-out.log" without asking again in this session.',
+        'Always allow does not say what it would make standing');
+      assert.ok(card.hint && card.hint.label && card.hint.title, 'the card has no labelled explainer');
+      assert.strictEqual(card.dot, true, 'the Chat tab does not signal that a request is waiting');
+      assert.match(card.chatLabel, /permission request/, 'the Chat tab signal is color only');
+      assert.ok(!/teams/i.test(card.text), 'the card carries a Teams control');
+      await shoot182('detail-chat-approval');
+    });
+
+    await check('the card survives tab switches and live refreshes without being rebuilt, and the Chat dot stays (#182)', async () => {
+      await page.evaluate(() => { document.querySelector('#dtApprovals .dt-appr').dataset.kept182 = 'yes'; });
+      await page.click('#dtTab-info');
+      const away = await page.evaluate(() => ({
+        shown: document.querySelector('#dtApprovals .dt-appr').offsetParent !== null,
+        dot: !document.getElementById('dtTabChatDot').hidden,
+        empty: (document.querySelector('#dtInfoHistory .dt-empty') || {}).textContent || '',
+      }));
+      assert.strictEqual(away.shown, false, 'the card is showing on the Info tab');
+      assert.strictEqual(away.dot, true, 'the Chat dot went away while the request is still waiting');
+      assert.match(away.empty, /No permission request has been answered/, 'Info did not say nothing has been answered yet');
+
+      // A manual refresh renders the whole page again from the hub.
+      await page.click('#menuBtn');
+      await page.click('[data-menu="refresh"]');
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 600)));
+      await page.click('#dtTab-chat');
+      const back = await page.evaluate(() => ({
+        shown: document.querySelector('#dtApprovals .dt-appr').offsetParent !== null,
+        kept: document.querySelector('#dtApprovals .dt-appr').dataset.kept182,
+        cards: document.querySelectorAll('#dtApprovals .dt-appr').length,
+      }));
+      assert.deepStrictEqual(back, { shown: true, kept: 'yes', cards: 1 },
+        'the card was rebuilt, duplicated or lost by a tab switch or a refresh');
+    });
+
+    await check('the tabs, the card and its buttons keep their sizes and stay inside the page at 1280, 900 and 390px (#182)', async () => {
+      try {
+        for (const width of [1280, 900, 390]) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+          const m = await page.evaluate(() => {
+            const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, height: r.height }; };
+            const card = document.querySelector('#dtApprovals .dt-appr');
+            return {
+              vw: document.documentElement.clientWidth,
+              scroll: document.documentElement.scrollWidth,
+              pill: box(document.getElementById('dtStatusPill')).height,
+              bar: box(document.getElementById('dtTabs')),
+              tabs: [...document.querySelectorAll('#dtTabs .dt-tab')].map((t) => box(t)),
+              card: box(card),
+              buttons: [...card.querySelectorAll('.dt-appr-actions button')].map((b) => box(b)),
+              chips: [...card.querySelectorAll('.dt-chip, .ap-row')].map((c) => box(c)),
+              toolChips: [...card.querySelectorAll('.dt-chip')].map((c) => box(c).height),
+            };
+          });
+          assert.strictEqual(m.pill, 22, `at ${width}px the status pill is ${m.pill}px tall, not 22`);
+          assert.strictEqual(m.bar.height, 40, `at ${width}px the tab bar is ${m.bar.height}px tall, not 40`);
+          assert.ok(m.tabs.every((t) => t.height === 40 && Math.abs(t.top - m.tabs[0].top) <= 1),
+            `at ${width}px the tabs are not one row of equal height`);
+          assert.ok(m.tabs.every((t) => t.left >= 0 && t.right <= m.vw), `at ${width}px a tab is outside the viewport`);
+          assert.ok(m.card.left >= 0 && m.card.right <= m.vw + 0.5, `at ${width}px the card is outside the viewport`);
+          assert.ok(m.buttons.length === 3 && m.buttons.every((b) => b.height === 32),
+            `at ${width}px the card buttons are not the product's 32px: ${m.buttons.map((b) => b.height)}`);
+          assert.ok(m.buttons.every((b) => b.left >= 0 && b.right <= m.vw), `at ${width}px a card button is outside the viewport`);
+          assert.ok(m.chips.every((c) => c.left >= -0.5 && c.right <= m.vw + 0.5), `at ${width}px a chip is outside the viewport`);
+          assert.ok(m.toolChips.length >= 4 && m.toolChips.every((h) => h === 22),
+            `at ${width}px the tool chips are not the product's 22px pill height: ${m.toolChips}`);
+          assert.ok(m.scroll <= m.vw, `at ${width}px the page scrolls sideways (${m.scroll} > ${m.vw})`);
+        }
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)', async () => {
+      const g = live182.allow;
+      const posts = [];
+      let release = null;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const approveUrl = /\/api\/devices\/[^/]+\/approve$/;
+      await page.route(approveUrl, async (route) => {
+        posts.push(route.request().postDataJSON());
+        await gate;
+        await route.fulfill({
+          status: 502, contentType: 'application/json',
+          body: JSON.stringify({ error: 'the device did not accept the answer' }),
+        });
+      });
+      try {
+        await page.click('#dtApprovals [data-answer="allow_once"]');
+        await until(() => posts.length === 1, 'the answer to leave the page');
+        // In flight: the hub has not said yes, so nothing about the request may change.
+        const inflight = await page.evaluate(() => {
+          const card = document.querySelector('#dtApprovals .dt-appr');
+          return {
+            present: !!card,
+            disabled: card ? [...card.querySelectorAll('.dt-appr-actions button')].map((b) => b.disabled) : [],
+            note: card ? card.querySelector('.dt-appr-note').textContent : '',
+          };
+        });
+        assert.strictEqual(inflight.present, true, 'the card went away before the hub accepted the answer');
+        assert.deepStrictEqual(inflight.disabled, [true, true, true], 'the buttons were still live while the answer was in flight');
+        assert.strictEqual(inflight.note, '', 'the card claimed an outcome before the hub gave one');
+        await page.click('#dtApprovals [data-answer="allow_once"]', { force: true });
+        await page.click('#dtApprovals [data-answer="allow_always"]', { force: true });
+        await page.evaluate(() => new Promise((r) => setTimeout(r, 400)));
+        assert.strictEqual(posts.length, 1, 'a second click while the answer was in flight sent a second answer');
+
+        release();
+        await until(async () => /Could not answer: the device did not accept the answer/.test(
+          await page.textContent('#dtApprovals .dt-appr-note').catch(() => '')), 'the refusal to be reported on the card');
+      } finally {
+        release();
+        await page.unroute(approveUrl);
+      }
+      const after = await page.evaluate(() => {
+        const card = document.querySelector('#dtApprovals .dt-appr');
+        return { cards: document.querySelectorAll('#dtApprovals .dt-appr').length, disabled: card ? [...card.querySelectorAll('.dt-appr-actions button')].map((b) => b.disabled) : [] };
+      });
+      assert.strictEqual(after.cards, 1, 'a refused answer removed the request, so it can no longer be answered');
+      assert.deepStrictEqual(after.disabled, [false, false, false], 'a refused answer left the card unable to be answered again');
+      assert.strictEqual(fs.existsSync(path.join(g.work, g.marker)), false, 'the tool ran although the hub refused the answer');
+      assert.strictEqual(await historyRow182('allow_once'), null, 'the history recorded an answer the hub refused');
+      assert.strictEqual(await page.isVisible('#approvalScrim'), false, 'the pop-up came back for a request that is still pending');
+      assert.deepStrictEqual(posts, [{ sessionId: g.sessionId, approvalId: g.approvalId, optionId: 'allow_once' }],
+        'the refused answer was not for this request with the option that was clicked');
+    });
+
+    await check('answering Allow once from the inline card ACTUALLY runs the tool, clears the card and lands in the Info history (#182)', async () => {
+      const g = live182.allow;
+      const posts = [];
+      const onRequest = (r) => { if (r.method() === 'POST' && /\/approve$/.test(r.url())) posts.push(r.postDataJSON()); };
+      page.on('request', onRequest);
+      try {
+        await page.click('#dtApprovals [data-answer="allow_once"]');
+        // The side effect, not the reply: the agent writes this file only when it was really allowed.
+        await until(() => fs.existsSync(path.join(g.work, g.marker)), 'the approved tool to actually run');
+        await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0, 'the answered card to go');
+      } finally {
+        page.off('request', onRequest);
+      }
+      assert.deepStrictEqual(posts, [{ sessionId: g.sessionId, approvalId: g.approvalId, optionId: 'allow_once' }],
+        'the card must answer once, for this request, with the option that was clicked');
+      assert.strictEqual(await page.isVisible('#approvalScrim'), false, 'the pop-up came back for a request that was answered');
+      assert.strictEqual(await page.isHidden('#dtTabChatDot'), true, 'the Chat dot stayed after the request was answered');
+
+      await page.click('#dtTab-info');
+      await until(async () => !!(await historyRow182('allow_once')), 'the answer to appear in the Info history');
+      const row = await historyRow182('allow_once');
+      assert.strictEqual(row.approval, g.approvalId);
+      assert.match(row.text, /Allowed/, 'the history does not say what the answer was');
+      assert.match(row.text, /Create marker file/, 'the history does not say what the request was for');
+      assert.match(row.text, /by test person/, 'the history does not say who answered');
+      assert.match(row.text, /from the hub/, 'the history does not say where the answer came from');
+      assert.ok(!/not answered/.test(row.text), 'an answered request is labelled as unanswered');
+
+      // The rest of Info is what this device reported, or says it did not.
+      const info = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#dtInfoRows tr')]
+        .map((r) => [r.dataset.info, r.querySelector('td').textContent.replace(/\s+/g, ' ').trim()])));
+      assert.match(info.device, /E2E Device/);
+      assert.ok(info.cwd.includes(path.basename(g.work)), `the working directory is wrong: ${info.cwd}`);
+      assert.match(info.repository, /octo\/widgets/);
+      assert.match(info.repository, /github\.com/);
+      assert.strictEqual(info.branch, 'feature/detail-tabs');
+      assert.match(info.toolCalls, /^\d+$/, 'the tool count is not a number');
+      assert.ok(info.started && !/not reported/.test(info.started), 'the start time is missing');
+      assert.ok(info.squadHealth, 'the Squad health row is empty');
+      assert.ok(!('links' in info), 'a device that is not on ACA showed an ACA row');
+      assert.ok(!/lease/i.test(Object.values(info).join(' ')), 'Info invented a lease, which no device reports');
+      await shoot182('detail-info');
+    });
+
+    await check('the Info tab, its history rows and the space above the composer stay aligned and inside the page at 1280, 900 and 390px (#182)', async () => {
+      assert.deepStrictEqual((await tabState182()).selected, ['info'], 'the Info tab is not the one open');
+      try {
+        for (const width of [1280, 900, 390]) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+          const m = await page.evaluate(() => {
+            const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height }; };
+            const row = document.querySelector('#dtInfoHistory .dt-hist-row');
+            const kids = [...row.children].map((c) => ({ cls: c.className, ...box(c) }));
+            return {
+              vw: document.documentElement.clientWidth,
+              scroll: document.documentElement.scrollWidth,
+              pane: box(document.getElementById('dtPane-info')),
+              composer: box(document.querySelector('.composer')),
+              row: box(row),
+              kids,
+              labels: [...document.querySelectorAll('#dtInfoRows th')].map((th) => box(th).left),
+              pairs: [...document.querySelectorAll('#dtInfoRows tr')].map((tr) => [box(tr.querySelector('th')).top, box(tr.querySelector('td')).top]),
+              cells: [...document.querySelectorAll('#dtInfoRows td, #dtInfoRows th')].map((c) => box(c)),
+              pill: box(row.querySelector('.dt-pill')).height,
+              chip: box(row.querySelector('.dt-chip')).height,
+            };
+          });
+          assert.ok(m.scroll <= m.vw, `at ${width}px the Info tab scrolls the page sideways (${m.scroll} > ${m.vw})`);
+          assert.ok(m.cells.every((c) => c.left >= -0.5 && c.right <= m.vw + 0.5), `at ${width}px a cell of the details table is outside the viewport`);
+          assert.ok(m.kids.length === 4 && m.kids.every((k) => k.left >= -0.5 && k.right <= m.vw + 0.5),
+            `at ${width}px a part of a history row is outside the viewport`);
+          assert.strictEqual(m.pill, 22, `at ${width}px the history pill is ${m.pill}px tall, not 22`);
+          assert.strictEqual(m.chip, 22, `at ${width}px the history chip is ${m.chip}px tall, not 22`);
+          // Whatever shares a line shares a center, so a pill, a chip and the who/when text never sit at different heights.
+          for (const a of m.kids) {
+            for (const b of m.kids) {
+              if (a === b || Math.abs(a.top - b.top) > 11) continue;
+              assert.ok(Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2) <= 1.5,
+                `at ${width}px ${a.cls || 'the pill'} and ${b.cls || 'the pill'} share a line but not a center`);
+            }
+          }
+          if (width >= 900) {
+            assert.ok(m.row.height <= 40, `at ${width}px a history row wrapped (${m.row.height}px tall) though there is room for one line`);
+            const when = m.kids.find((k) => k.cls === 'dt-hist-when');
+            assert.ok(Math.abs(when.right - m.row.right) <= 1, `at ${width}px the time is not at the right edge of the row`);
+          }
+          assert.ok(new Set(m.labels.map((l) => Math.round(l))).size === 1, `at ${width}px the details table's labels do not line up`);
+          assert.ok(m.pairs.every(([a, b]) => Math.abs(a - b) <= 1), `at ${width}px a label and its value do not start on the same line`);
+          assert.ok(m.composer.top - m.pane.bottom >= 12,
+            `at ${width}px the Info tab sits ${m.composer.top - m.pane.bottom}px above the composer, not at least 12`);
+        }
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('the Squad tab shows the existing Squad panel, with its members and documents, above the composer (#182)', async () => {
+      await page.click('#dtTab-squad');
+      await page.waitForSelector('#dtSquad:not([hidden])', { timeout: 20000 });
+      await page.waitForSelector('#dtSquadDocs .sq-doctab', { timeout: 20000 });
+      const sq = await page.evaluate(() => ({
+        inSquad: !!document.getElementById('dtSquad').closest('#dtPane-squad'),
+        inChat: !!document.querySelector('#dtPane-chat #dtSquad, #dtPane-chat .sq-members'),
+        none: document.getElementById('dtSquadNone').offsetParent !== null,
+        members: [...document.querySelectorAll('#dtSquad .sq-member')].map((b) => b.dataset.squaddoc),
+        docs: [...document.querySelectorAll('#dtSquadDocs .sq-doctab')].map((b) => b.textContent.trim()),
+        decisions: /Recent decisions|No decisions recorded yet/.test(document.getElementById('dtSquad').textContent),
+        gap: document.querySelector('.composer').getBoundingClientRect().top - document.getElementById('dtPane-squad').getBoundingClientRect().bottom,
+        scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      }));
+      assert.strictEqual(sq.inSquad && !sq.inChat, true, 'the Squad panel is not on the Squad tab alone');
+      assert.strictEqual(sq.none, false, 'a session with a Squad workspace showed the "no Squad" note');
+      assert.ok(sq.members.includes('charter:engineer'), `the Squad panel lost its roster: ${sq.members}`);
+      assert.deepStrictEqual(sq.docs, ['Team', 'Decisions'], 'the document bar offers something other than what this workspace has');
+      assert.ok(sq.decisions, 'the Squad panel lost its decisions section');
+      assert.ok(sq.gap >= 12, `the Squad tab sits ${sq.gap}px above the composer, not at least 12`);
+      assert.ok(sq.scroll <= 0, 'the Squad tab scrolls the page sideways');
+      // Opening a document still works from the tab, and nothing leaks into the other tabs.
+      await page.click('[data-squaddoc="decisions"]');
+      await page.waitForSelector('.sq-doctext', { timeout: 20000 });
+      assert.match(await page.textContent('.sq-doctext'), /Decisions/, 'the decisions document did not open from the Squad tab');
+      await page.click('#dtTab-chat');
+      assert.strictEqual(await page.isVisible('.sq-doctext'), false, 'the Squad document shows on the Chat tab');
+      await page.click('#dtTab-squad');
+      await shoot182('detail-squad');
+      await page.click('#dtTab-info');
+    });
+
+    await check('a very long working directory wraps in the session header and in Info instead of pushing the page sideways at 1280, 900 and 390px (#182)', async () => {
+      live182.wide = await gated182('wide', 'git status', { repo: true, longPath: true });
+      await openGated182(live182.wide);
+      try {
+        for (const tab of ['chat', 'info']) {
+          await page.click(`#dtTab-${tab}`);
+          for (const width of [1280, 900, 390]) {
+            await page.setViewportSize({ width, height: 900 });
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const m = await page.evaluate(() => {
+              const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right }; };
+              const run = (el) => (el.textContent.match(/[^\\/\s]+/g) || []).reduce((n, s) => Math.max(n, s.length), 0);
+              const meta = document.getElementById('dtMeta');
+              const cwd = document.querySelector('#dtInfoRows [data-info="cwd"] code');
+              return {
+                vw: document.documentElement.clientWidth,
+                scroll: document.documentElement.scrollWidth,
+                meta: box(meta),
+                metaRun: run(meta),
+                cwd: cwd && cwd.offsetParent !== null ? box(cwd) : null,
+                cells: [...document.querySelectorAll('#dtInfoRows td, #dtInfoRows th')]
+                  .filter((c) => c.offsetParent !== null).map(box),
+              };
+            });
+            // Without a long unbroken run in the fixture, nothing below proves anything.
+            assert.ok(m.metaRun >= 100, `the working directory has no long unbroken run (${m.metaRun})`);
+            assert.ok(m.scroll <= m.vw, `at ${width}px on ${tab} a long working directory scrolls the page sideways (${m.scroll} > ${m.vw})`);
+            assert.ok(m.meta.right <= m.vw + 0.5, `at ${width}px on ${tab} the header summary runs off the page (${Math.round(m.meta.right)} > ${m.vw})`);
+            if (tab === 'info') {
+              assert.ok(m.cwd, 'the Info tab shows no working directory');
+              assert.ok(m.cwd.right <= m.vw + 0.5, `at ${width}px a long working directory runs off the page in Info (${Math.round(m.cwd.right)} > ${m.vw})`);
+              assert.ok(m.cells.every((c) => c.left >= -0.5 && c.right <= m.vw + 0.5), `at ${width}px a cell of the details table is outside the viewport`);
+            }
+          }
+        }
+        // Leave nothing pending, or the pop-up would cover the next check.
+        await page.click('#dtTab-chat');
+        await page.click('#dtApprovals [data-answer="reject_once"]');
+        await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0, 'the denied card to go');
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('the session header still fits, with the tabs, while a permission request waits, at 1280, 900 and 390px, light and dark (#182)', async () => {
+      live182.header = await gated182('header', 'git status', { repo: true });
+      await openGated182(live182.header);
+      try {
+        await page.waitForSelector('#dtApprovals .dt-appr', { timeout: 20000 });
+        await headerFit182('a session waiting for permission', ['dtAca', 'dtStop', 'dtMoreBtn'], 'approval');
+        await page.click('#dtApprovals [data-answer="reject_once"]');
+        await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0, 'the denied card to go');
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('denying from the inline card runs nothing, and the history records the denial (#182)', async () => {
+      live182.deny = await gated182('deny', 'cat notes-182.md');
+      const g = live182.deny;
+      await openGated182(g);
+      await page.waitForSelector('#dtApprovals .dt-appr', { timeout: 20000 });
+      const badges = await page.evaluate(() => [...document.querySelectorAll('#dtApprovals .ap-badge')].map((b) => b.textContent));
+      assert.ok(badges.length >= 2 && badges.every((b) => b === 'read-only'),
+        `a plain cat of a file is not badged read-only: ${badges}`);
+
+      await page.click('#dtApprovals [data-answer="reject_once"]');
+      await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0, 'the denied card to go');
+      // The turn ends when the agent has been told no; only then is a missing file proof.
+      await until(async () => {
+        const st = await daemon.handle({ op: 'status' });
+        const s = (st.sessions || []).find((x) => x.id === g.sessionId);
+        return s && s.status !== 'waiting_approval' && s.status !== 'active';
+      }, 'the denied turn to end');
+      assert.strictEqual(fs.existsSync(path.join(g.work, g.marker)), false, 'a denied request ran the tool');
+
+      await page.click('#dtTab-info');
+      await until(async () => !!(await historyRow182('reject_once')), 'the denial to appear in the Info history');
+      const row = await historyRow182('reject_once');
+      assert.match(row.text, /Denied/);
+      assert.match(row.text, /by test person/);
+      assert.match(row.text, /from the hub/);
+    });
+
+    await check('a session opened from the sidebar starts on the Chat tab, not on the tab the previous session left open (#182)', async () => {
+      await page.click('#dtTab-info');
+      assert.deepStrictEqual((await tabState182()).selected, ['info']);
+      await page.click('#detailSidebar [data-session]:has-text("squad doc view")');
+      await until(async () => (await page.textContent('#dtTitle')).includes('squad doc view'), 'the other session to open');
+      const next = await tabState182();
+      assert.deepStrictEqual([next.selected, next.shown], [['chat'], ['chat']],
+        'a session opened from the sidebar did not start on the Chat tab');
+    });
+
+    await check('a request answered at the terminal, and one that expired, show in the history with who, what and where (#182)', async () => {
+      live182.terminal = await gated182('terminal', 'git status');
+      let g = live182.terminal;
+      await openGated182(g);
+      await page.waitForSelector('#dtApprovals .dt-appr', { timeout: 20000 });
+      // `squad-hub approve` on the device, which names no answerer.
+      await daemon.handle({ op: 'approve', sessionId: g.sessionId, approvalId: g.approvalId, optionId: 'allow_once' });
+      await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0,
+        'the card to go when the request was answered somewhere else');
+      assert.ok(fs.existsSync(path.join(g.work, g.marker)), 'the terminal answer did not run the tool');
+      await page.click('#dtTab-info');
+      await until(async () => !!(await historyRow182('allow_once')), 'the terminal answer to appear in the history');
+      let row = await historyRow182('allow_once');
+      assert.match(row.text, /by someone/, 'the answerer is invented, or missing, when the terminal named no one');
+      assert.match(row.text, /at the terminal on E2E Device/, 'the history does not say it was answered at the terminal');
+      assert.ok(!/test person/.test(row.text), 'a terminal answer was attributed to the signed-in person');
+
+      live182.expired = await gated182('expired', 'rm -rf build');
+      g = live182.expired;
+      await openGated182(g);
+      await page.waitForSelector('#dtApprovals .dt-appr', { timeout: 20000 });
+      // Watching Info when it lapses: the history has to update on its own.
+      await page.click('#dtTab-info');
+      assert.ok(daemon.sessions.get(g.sessionId).expire(g.approvalId), 'the request was not pending to expire');
+      await until(async () => !!(await historyRow182('expired')), 'the expiry to appear in the history while Info is open');
+      assert.strictEqual((await page.$$('#dtApprovals .dt-appr')).length, 0, 'the expired card is still there');
+      row = await historyRow182('expired');
+      assert.match(row.text, /Expired/);
+      assert.match(row.text, /not answered/, 'an expired request is not labelled as unanswered');
+      assert.ok(!/by /.test(row.text), 'an expired request was attributed to someone');
+      assert.match(row.text, /on E2E Device/);
+
+      for (const s of Object.values(live182)) {
+        await daemon.handle({ op: 'stop-session', sessionId: s.sessionId }).catch(() => {});
+      }
+    });
+
+    // Evidence capture for CI: a no-op unless SQUAD_HUB_SCREENSHOT_DIR is set.
+    await check('the session detail page renders and is captured at desktop and phone widths, dark and light', async () => {
+      const outDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
+      if (!outDir) { assert.ok(true); return; }
+      assert.ok(fs.statSync(outDir).isDirectory(), `SQUAD_HUB_SCREENSHOT_DIR is not a directory: ${outDir}`);
+      await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
+      await page.waitForSelector('#detailScrim:not([hidden])', { timeout: 20000 });
+      const shots = [
+        { width: 1280, height: 900, scheme: 'dark', file: 'detail-desktop-dark.png' },
+        { width: 1280, height: 900, scheme: 'light', file: 'detail-desktop-light.png' },
+        { width: 390, height: 844, scheme: 'dark', file: 'detail-phone-390-dark.png' },
+        { width: 390, height: 844, scheme: 'light', file: 'detail-phone-390-light.png' },
+      ];
+      try {
+        for (const shot of shots) {
+          await page.setViewportSize({ width: shot.width, height: shot.height });
+          await page.emulateMedia({ colorScheme: shot.scheme });
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+          const state = await page.evaluate(() => {
+            const shown = (id) => { const el = document.getElementById(id); return !!el && el.offsetParent !== null; };
+            return {
+              signin: !!document.querySelector('.signin'),
+              title: shown('dtTitle'),
+              rename: shown('dtRename'),
+              more: shown('dtMoreBtn'),
+              back: shown('dtBackPhone'),
+              titleText: (document.getElementById('dtTitle') || {}).textContent || '',
+            };
+          });
+          assert.strictEqual(state.signin, false, `${shot.file}: the sign-in page is showing, not the session detail`);
+          assert.ok(state.title && state.titleText.trim(), `${shot.file}: the detail title is not visible`);
+          assert.ok(state.rename, `${shot.file}: the rename pencil is not visible`);
+          assert.ok(state.more, `${shot.file}: the More actions button is not visible`);
+          if (shot.width <= 900) assert.ok(state.back, `${shot.file}: the phone back arrow is not visible`);
+          await page.screenshot({ path: path.join(outDir, shot.file) });
+          assert.ok(fs.statSync(path.join(outDir, shot.file)).size > 0, `${shot.file} was written empty`);
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
     });
 
     await check('under 900px, the sidebar is hidden and the phone back arrow takes its place', async () => {

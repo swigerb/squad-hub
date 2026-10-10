@@ -365,7 +365,15 @@ function api(port, p, token, opts = {}) {
     const ids = [...html.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
     assert.ok(ids.length >= 5, `only found ${ids.length} buttons; the scan is not working`);
 
-    const dead = ids.filter((id) => !new RegExp(`\\$\\('${id}'\\)\\s*\\.on|getElementById\\('${id}'\\)`).test(js));
+    // The one control that is meant to have no handler: the Files tab is a
+    // disabled placeholder for a design spike (#182). It is excused only while
+    // the markup keeps it disabled, so a live button can never hide here.
+    const INERT = ['dtTab-files'];
+    const inert = (id) => INERT.includes(id)
+      && new RegExp(`<button[^>]*\\bid="${id}"[^>]*\\bdisabled\\b`).test(html);
+
+    const dead = ids.filter((id) => !inert(id)
+      && !new RegExp(`\\$\\('${id}'\\)\\s*\\.on|getElementById\\('${id}'\\)`).test(js));
     assert.deepStrictEqual(dead, [], `these controls have no handler: ${dead.join(', ')}`);
   });
 

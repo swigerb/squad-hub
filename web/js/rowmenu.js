@@ -11,10 +11,9 @@ import {
 } from './util.js';
 import { acaSessionRepo } from './aca.js';
 import { state, api } from './api.js';
-import { toggleFavorite, renameSession } from './prefs-sync.js';
-import { openDetail } from './detail.js';
+import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
+import { openDetail, closeDetail } from './detail.js';
 import { openAca } from './aca.js';
-import { displayTitle } from './sessionrow.js';
 import { refresh } from './ws.js';
 // Circular import, same as `prefs-sync.js`'s own back-reference into `ws.js`:
 // `closeRowMenu` is a hoisted `export function` declaration in `wiring.js`,
@@ -114,17 +113,15 @@ export async function onRowMenuAction(key, action, href) {
   const found = findSessionByKey(key);
   if (!found) { closeRowMenu(); return; }
   const { device, session } = found;
-  if (action === 'open') { closeRowMenu(); openDetail(key); return; }
+  if (action === 'open') {
+    closeRowMenu();
+    if (!state.currentSession || (state.currentSession.session.key || state.currentSession.session.id) !== key) openDetail(key);
+    return;
+  }
   if (action === 'pin') { closeRowMenu(); toggleFavorite(key); return; }
   if (action === 'rename') {
     closeRowMenu();
-    const raw = session.prompt || session.id || '';
-    const current = displayTitle(session, state.names);
-    // Blank unless already renamed -- prompting with the raw prompt back at
-    // you would read as "this IS the name".
-    const name = window.prompt('Rename this session', current === raw ? '' : current);
-    if (name === null) return; // canceled
-    renameSession(key, name);
+    promptRenameSession(key, session);
     return;
   }
   if (action === 'copylink') {
@@ -183,6 +180,8 @@ export async function onRowMenuAction(key, action, href) {
       if (!sweep) return;
       try {
         await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, { method: 'POST', body: {} });
+        if (state.currentSession && state.currentSession.device.deviceId === device.deviceId
+          && !NON_TERMINAL_STATUSES.has(state.currentSession.session.status)) closeDetail({ nav: 'replace' });
         await refresh();
       } catch (e) { toast(`Could not remove: ${e.message}`); }
       return;
@@ -195,6 +194,7 @@ export async function onRowMenuAction(key, action, href) {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, {
         method: 'POST', body: { sessionId: session.id },
       });
+      if (state.currentSession && (state.currentSession.session.key || state.currentSession.session.id) === key) closeDetail({ nav: 'replace' });
       await refresh();
     } catch (e) { toast(`Could not remove: ${e.message}`); }
   }

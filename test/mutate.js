@@ -946,10 +946,197 @@ const MUTATIONS = [
     // proves the row and the panel read the same field rather than two
     // independent (and driftable) re-derivations.
     name: 'the session detail panel stops reading the same activeMember field as the row',
-    file: 'web/js/detail.js',
+    file: 'web/js/squad-panel.js',
     find: `class="sq-member \${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
     replace: `class="sq-member \${sq.lastKnownActor /* MUTATION */ && sq.lastKnownActor.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
     mustFail: 'the session detail panel reads activeMember from the same field the row does',
+  },
+  {
+    name: 'the detail header menu always offers Sync session again, even when the session is already synced (#181 part 2)',
+    file: 'web/js/detail-control.js',
+    find: `  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;`,
+    replace: `  if (!isDeviceUnreachable(current.device) && !process.env.MUTANT && !canSync(state.composer.control)) return null; // MUTATION`,
+    mustFail: 'the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)',
+  },
+  {
+    // The real-browser CI regression this whole fix addresses: comparing by
+    // OBJECT REFERENCE instead of session key discards a valid control-check
+    // answer any time `syncDetailHeader` reassigns `state.currentSession` to
+    // a freshly-`findSession`'d wrapper for the SAME device/session, which it
+    // does on every overview refresh/WebSocket push. Reverting the guard to
+    // reference equality must bring that hang straight back.
+    name: 'verifyControl compares by object reference again, discarding a result after any same-session refresh',
+    file: 'web/js/detail-control.js',
+    find: `  const stillSameSelection = state.currentSession && sessionKey(state.currentSession.session) === key;`,
+    replace: `  const stillSameSelection = process.env.MUTANT ? state.currentSession === current : (state.currentSession && sessionKey(state.currentSession.session) === key); // MUTATION`,
+    mustFail: 'a same-session live-snapshot refresh mid-verification does not drop the valid result (stable selection, not object identity)',
+  },
+  {
+    // The OTHER half of the same guard: `sessionKey` equality alone is not
+    // enough, because a second `verifyControl` call for the SAME session
+    // (a reopen, or `syncSession`'s own re-check) must still win over an
+    // earlier call's late reply. Dropping `controlToken` from the guard
+    // re-admits that stale, superseded answer.
+    name: 'verifyControl drops the controlToken check, so a superseded verification can still apply its late reply',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection || (!process.env.MUTANT && token !== controlToken) || generation !== selectionGeneration) return; // MUTATION`,
+    mustFail: 'a second verifyControl call for the same session supersedes the first; its late reply is rejected',
+  },
+  {
+    // Scout's actual-source review of 34256a0: `controlToken` only
+    // increments once a NEW `verifyControl` call actually starts, but
+    // `openDetail` sets `state.currentSession` and awaits the transcript
+    // fetch BEFORE calling `verifyControl` again -- a reply for an OLD
+    // verification can land in that gap and pass a same-key/same-token
+    // check. Dropping the `selectionGeneration` guard re-admits exactly
+    // that stale result once the session is closed and reopened.
+    name: 'verifyControl drops the selectionGeneration check, so a reply from before a close+reopen can still be applied',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection || token !== controlToken || (!process.env.MUTANT && generation !== selectionGeneration)) return; // MUTATION`,
+    mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
+  },
+  {
+    // `invalidateSelection` is useless if nothing ever calls it at the
+    // actual moment of navigation -- this proves `openDetail`/`closeDetail`
+    // really do call it, not merely that the function exists.
+    name: 'invalidateSelection is never actually bumped (a no-op stub), so close+reopen never invalidates a stale reply',
+    file: 'web/js/detail-control.js',
+    find: `export function invalidateSelection() {
+  selectionGeneration += 1;
+  return selectionGeneration;
+}`,
+    replace: `export function invalidateSelection() {
+  if (process.env.MUTANT) return selectionGeneration; // MUTATION
+  selectionGeneration += 1;
+  return selectionGeneration;
+}`,
+    mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
+  },
+  {
+    // The Sync regression: moving "Sync session" into the shared row menu
+    // (rebuilt fresh on every open) dropped the old dedicated button's
+    // self-disabling in-flight guard. Removing this early return re-admits a
+    // second resync for a target already being resynced.
+    name: 'syncSession drops its one-in-flight-per-target guard, allowing a reopened menu to restart the same resync',
+    file: 'web/js/detail-control.js',
+    find: `  if (syncInFlightKeys.has(key)) return;`,
+    replace: `  if (!process.env.MUTANT && syncInFlightKeys.has(key)) return; // MUTATION`,
+    mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
+  },
+  {
+    // Scout's actual-source review of 34256a0: a single scalar lock gets
+    // silently overwritten when a SECOND target starts its own Sync, so a
+    // target the lock no longer names is treated as free even though it is
+    // still pending. Replacing the `Set` with a scalar that only remembers
+    // the MOST RECENT target reproduces exactly that A-navigate-to-B-back-
+    // to-A regression.
+    name: 'syncInFlightKeys regresses to a single scalar, so starting Sync for a second target un-blocks the first target\u2019s own reopened click',
+    file: 'web/js/detail-control.js',
+    find: `const syncInFlightKeys = new Set();`,
+    replace: `const syncInFlightKeys = process.env.MUTANT ? (() => { let last = null; return { has: (k) => k === last, add: (k) => { last = k; }, delete: (k) => { if (last === k) last = null; } }; })() : new Set(); // MUTATION`,
+    mustFail: 'A-B-A interleaving: starting Sync for A, then B, then A again before either settles issues exactly one resync for A and one for B',
+  },
+  {
+    name: 'syncSession never clears its in-flight flag, so a target gets permanently stuck disabled after one resync',
+    file: 'web/js/detail-control.js',
+    find: `  } finally {
+    syncInFlightKeys.delete(key);
+  }`,
+    replace: `  } finally {
+    if (!process.env.MUTANT) syncInFlightKeys.delete(key); // MUTATION
+  }`,
+    mustFail: 'a resync failure for the STILL-open session reports the error on its own composer',
+  },
+  {
+    // The disabled flag is what stops the reopened menu from re-firing
+    // (wiring.js's click handler bails on `b.disabled`); if the item never
+    // reports pending, that protection is gone even though the in-flight
+    // flag itself is still tracked correctly.
+    name: 'detailSyncMenuItem never reports Sync session as pending/disabled while a resync is in flight',
+    file: 'web/js/detail-control.js',
+    find: `  const pending = syncInFlightKeys.has(sessionKey(current.session));`,
+    replace: `  const pending = !process.env.MUTANT && syncInFlightKeys.has(sessionKey(current.session)); // MUTATION`,
+    mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
+  },
+  {
+    // Scout's actual-source review of 34256a0: a late resync success/failure
+    // for an abandoned session must not re-verify or clobber a context the
+    // person has since closed and reopened, even of the SAME session key.
+    // Dropping the generation half of this guard (leaving only the sessionKey
+    // check) re-admits the stale-verify-after-reopen regression through the
+    // sync path specifically.
+    name: 'syncSession\u2019s late-success re-verify ignores selectionGeneration, re-verifying after a close+reopen of the same session',
+    file: 'web/js/detail-control.js',
+    find: `  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && generation === selectionGeneration
+  ) await verifyControl();`,
+    replace: `  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && (process.env.MUTANT || generation === selectionGeneration)
+  ) await verifyControl(); // MUTATION`,
+    mustFail: 'a syncSession success that arrives after close+reopen of the SAME session must not apply or re-verify the new context',
+  },
+  {
+    // Scout's source review of 046b708 (PR #243): the detail-control split
+    // moved `syncSession` out of `web/js/detail.js` into the new
+    // `web/js/detail-control.js`, and `web/js/wiring.js` was updated to
+    // match -- but `web/app.js` was not, and kept importing `syncSession`
+    // from `./js/detail.js`, which no longer exports it. That stops the
+    // browser's module linker before `main()` ever runs: a live boot
+    // failure, reproduced in CI as 11 failing browser-e2e assertions
+    // (run 37901451265) including the very first "the page loads" check.
+    // Restoring exactly that stale import must fail the native-linking
+    // regression test, not merely "some test or other".
+    name: 'app.js imports syncSession from detail.js again, where it no longer lives (PR #243 Scout source review)',
+    file: 'web/app.js',
+    find: `import {
+  openDetail, renderControl, openSquadDoc,
+} from './js/detail.js';
+import { syncSession } from './js/detail-control.js';`,
+    replace: `import {
+  openDetail, syncSession, renderControl, openSquadDoc,
+} from './js/detail.js'; // MUTATION: syncSession moved to detail-control.js`,
+    mustFail: "web/app.js and its entire real module graph link under native ES module resolution (no missing or renamed export)",
+  },
+  {
+    // Companion to the two mutations above, catching a regression in the
+    // REAL call sites rather than the guard they call: `openDetail`
+    // applying its transcript fetch's result unconditionally once the
+    // `await` settled, with no check that the person had not since closed,
+    // reopened, or opened something else while that fetch was in flight.
+    name: 'openDetail applies a transcript fetch result unconditionally again, ignoring whether the selection is still active',
+    file: 'web/js/detail.js',
+    find: `    if (selectionStillActive(key, generation)) renderTranscript(r.transcript || []);
+  } catch (e) {
+    if (selectionStillActive(key, generation)) {
+      $('dtTranscript').innerHTML = \`<div class="t-entry t-kind">could not load the transcript: \${esc(e.message)}</div>\`;
+    }
+  }`,
+    replace: `    if (process.env.MUTANT || selectionStillActive(key, generation)) renderTranscript(r.transcript || []); // MUTATION
+  } catch (e) {
+    if (process.env.MUTANT || selectionStillActive(key, generation)) { // MUTATION
+      $('dtTranscript').innerHTML = \`<div class="t-entry t-kind">could not load the transcript: \${esc(e.message)}</div>\`;
+    }
+  }`,
+    mustFail: '(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now',
+  },
+  {
+    // The other half of the same openDetail guard: even if the transcript
+    // render itself stayed correctly guarded, an abandoned open's late
+    // continuation must not ALSO start its own redundant `verifyControl`
+    // call for whatever session happens to be open by then.
+    name: 'openDetail starts a redundant verifyControl call from an abandoned open, ignoring whether the selection is still active',
+    file: 'web/js/detail.js',
+    find: `  if (selectionStillActive(key, generation)) verifyControl();
+  return true;`,
+    replace: `  if (process.env.MUTANT || selectionStillActive(key, generation)) verifyControl(); // MUTATION
+  return true;`,
+    mustFail: '(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now',
   },
   {
     // The OUTER catch in readSquad is unreachable while every inner reader is
@@ -1220,6 +1407,35 @@ const MUTATIONS = [
     find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
     replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
+  },
+  {
+    name: 'Escape falls through from the row menu and also closes detail',
+    file: 'web/js/wiring.js',
+    find: `  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return true;
+  }`,
+    replace: `  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return process.env.MUTANT ? false : true; // MUTATION
+  }`,
+    mustFail: 'Escape closes the detail header row menu first, returns focus, and only the next Escape closes detail',
+  },
+  {
+    name: 'the row menu Sync click reads rowMenuKey fresh instead of capturing it before closing the menu',
+    file: 'web/js/wiring.js',
+    find: `    const target = rowMenuKey;
+    closeRowMenu();
+    // Returned (not just fired) so tests can await the real request this
+    // click actually issues; a bare \`onclick\` return value is otherwise
+    // ignored by the browser, so this changes nothing in production.
+    return syncSession(target);`,
+    replace: `    const target = rowMenuKey;
+    closeRowMenu();
+    // MUTATION: re-reads rowMenuKey AFTER closeRowMenu() clears it, instead
+    // of the target captured beforehand -- the exact #243 stale-menu bug.
+    return syncSession(process.env.MUTANT ? rowMenuKey : target);`,
+    mustFail: 'the accepted-positive path is unaffected: Sync for the session actually open fires exactly once through the real row-menu click dispatch, and re-enables once it settles',
   },
   {
     name: 'a transient Windows file lock is not retried',
@@ -2074,6 +2290,13 @@ const MUTATIONS = [
     find: `  if (!s.startedAt) return true;`,
     replace: `  if (!s.startedAt) return !process.env.MUTANT; // MUTATION`,
     mustFail: 'a session with no start time is kept, not filtered out',
+  },
+  {
+    name: 'the detail sidebar ignores a custom session name again (#181 part 2)',
+    file: 'web/js/list.js',
+    find: `  const title = truncateWords(displayTitle(s, names), 60);`,
+    replace: `  const title = truncateWords(process.env.MUTANT ? (s.prompt || s.id) : displayTitle(s, names), 60); // MUTATION`,
+    mustFail: 'sidebarRow uses the same renamed displayTitle as the main row',
   },
   {
     name: 'an unknown window key empties the entire list',
@@ -3216,6 +3439,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/css/devices.css',
   '/css/modals.css',
   '/css/detail.css',
+  '/css/detail-tabs.css',
   '/css/squad.css',
   '/css/inbox.css',
   '/js/api.js',
@@ -3233,6 +3457,11 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/devices.js',
   '/js/device-detail.js',
   '/js/detail.js',
+  '/js/detail-control.js',
+  '/js/detail-tabs.js',
+  '/js/approval-card.js',
+  '/js/session-info.js',
+  '/js/squad-panel.js',
   '/js/transcript.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
@@ -3244,6 +3473,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/install.js',
   '/js/connect.js',
   '/js/filters.js',
+  '/js/forget.js',
   '/js/push.js',
   '/js/wiring.js',
   '/js/signin.js',
@@ -3285,7 +3515,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v22';`,
+    find: `const CACHE = 'squad-hub-shell-v23';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3784,6 +4014,20 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     find: `       github.event.workflow_run.event == 'push' &&`,
     replace: `       true && // MUTATION: dropped the push-only check`,
     mustFail: 'the job-level condition requires a push event',
+  },
+  {
+    name: 'the screenshot upload step no longer fails when no screenshots exist',
+    file: '.github/workflows/tests.yml',
+    find: `          if-no-files-found: error`,
+    replace: `          if-no-files-found: warn # MUTATION`,
+    mustFail: 'a missing screenshot fails the job instead of passing quietly',
+  },
+  {
+    name: 'the screenshot artifact name no longer varies per node version and commit',
+    file: '.github/workflows/tests.yml',
+    find: `          name: screenshots-node\${{ matrix.node }}-\${{ github.sha }}`,
+    replace: `          name: screenshots # MUTATION: hard-coded, legs collide`,
+    mustFail: 'the artifact name is unique per matrix leg and per commit',
   },
   {
     name: 'the sync-squad-labels workflow stops actually syncing retro-action',
@@ -7318,6 +7562,13 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name',
   },
   {
+    name: 'canceling the shared rename prompt still rewrites state.names again (#181 part 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (name === null) return; // canceled`,
+    replace: `  if (false) return; // MUTATION`,
+    mustFail: 'rename cancel leaves state.names unchanged',
+  },
+  {
     // An explicit NAME SET during the hydration gap must still reach the
     // merged state once the migrated-authoritative-baseline branch is the
     // one actually taken (NOT the legacy first-sync union branch, which the
@@ -7340,6 +7591,13 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `    await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`); // MUTATION
     toast('Link copied');`,
     mustFail: 'copylink toasts an honest failure, never "Link copied", when the clipboard write really fails (PR #236 finding 4)',
+  },
+  {
+    name: 'the row-menu rename path stops delegating to the shared prompt helper again (#181 part 2)',
+    file: 'web/js/rowmenu.js',
+    find: `    promptRenameSession(key, session);`,
+    replace: `    return; // MUTATION`,
+    mustFail: 'rename stores the trimmed new name through the shared promptRenameSession path',
   },
   {
     // PR #236 review, finding 5: a daemon that never claims
@@ -7372,6 +7630,26 @@ if ($health.accessStore -ne 'durable') {`,
     find: `capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,`,
     replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
     mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
+  },
+  {
+    name: 'run-tests stops registering the escape-focus child suite',
+    file: 'test/run-tests.js',
+    find: `  runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');`,
+    replace: `  if (process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',
+  },
+  {
+    name: 'run-tests stops invoking suiteEscapeFocus in sequence',
+    file: 'test/run-tests.js',
+    find: `  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
+  await suiteEscapeFocus();
+  await suiteApprovalDepth();`,
+    replace: `  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
+  if (process.env.MUTANT) await Promise.resolve(); // MUTATION
+  await suiteApprovalDepth();`,
+    mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',
   },
 
   // -------------------------------------------------------------------------
@@ -8311,8 +8589,11 @@ prompt: |
   {
     name: '#179 css: the detail header keeps every action on one line on a phone',
     file: 'web/css/detail.css',
-    find: `@media (max-width: 600px) {\n  .detail-head-line { height: auto;`,
-    replace: `@media (max-width: 6px) {\n  .detail-head-line { height: auto;`,
+    // #243's two-row column header (the `max-width: 900px` block) is what gives
+    // the actions their own line on a phone now; #179's own 600px rule it
+    // replaced is gone, so this puts the title and the actions back on one row.
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }`,
+    replace: `  .detail-head-line { flex-direction: row; align-items: center; height: 32px; } /* MUTATION: the actions share the title's line again */`,
     mustFail: 'a stale session shows every header action at once and still fits a phone, because the actions take their own line (#179)',
   },
   {
@@ -8417,6 +8698,512 @@ prompt: |
     find: `    groups,\n    filters: state.filters,\n    favorites: [...state.favorites],`,
     replace: `    groups,\n    filters: {}, // MUTATION: the page's filters are not handed to buildView\n    favorites: [...state.favorites],`,
     mustFail: 'devices.js draws the list through buildView with the overview and filters the page holds, which is what the held-GET checks stand in for (#179 with #237)',
+  },
+  {
+    // #243/#181: reverts the phone-width header fix to its pre-fix shape --
+    // the right-side actions get no line box of their own, and lose the
+    // `justify-content: flex-end` that right-aligns them -- reproducing the
+    // exact regression the real CI screenshots on this PR caught: at 390px,
+    // "Run on ACA…" wraps its label across lines inside a 32px button and
+    // Stop/⋯ are pushed past the right edge of the viewport.
+    name: 'at 390px, the detail header right-side actions wrap onto multiple lines and are pushed off the right edge of the viewport',
+    file: 'web/css/detail.css',
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }
+  .detail-head-line .spacer { display: none; }
+  .detail-head-titlerow { flex-wrap: nowrap; }
+  .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px; }
+}`,
+    replace: `  /* MUTATION: phone-width second-line-box fix removed */
+}`,
+    mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
+  {
+    name: 'a filtered-out detail session is mistaken for a removed session',
+    file: 'web/js/detail.js',
+    find: "  const found = findSession(key);\n  if (!found) return;\n  state.currentSession = found;",
+    replace: "  const found = findSession(key);\n  if (!found) { closeDetail({ nav: NAV.REPLACE }); return; } // MUTATION\n  state.currentSession = found;",
+    mustFail: 'an open detail session survives leaving the active list filter',
+  },
+  {
+    name: 'detail menu compares serialized DOM instead of its generated markup',
+    file: 'web/js/wiring.js',
+    find: '  if (rowMenuMarkup !== html) {',
+    replace: '  if (menu.innerHTML !== html) { // MUTATION',
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'unreachable detail cleanup buttons cannot wrap inside the phone viewport',
+    file: 'web/css/detail.css',
+    find: 'justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px;',
+    replace: 'justify-content: flex-end; flex-wrap: nowrap; height: 32px; row-gap: 6px;',
+    mustFail: 'at 390px, unreachable-session cleanup actions remain in bounds without overlapping metadata',
+  },
+  {
+    name: 'an overview refresh closes the persistent detail menu',
+    file: 'web/js/wiring.js',
+    find: "  const focused = document.activeElement;\n  const action = menu.contains(focused) ? focused.dataset.rowAction : null;",
+    replace: "  closeRowMenu(); return; // MUTATION\n  const focused = document.activeElement;\n  const action = menu.contains(focused) ? focused.dataset.rowAction : null;",
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'Open in the current detail menu pushes duplicate navigation',
+    file: 'web/js/rowmenu.js',
+    find: "    if (!state.currentSession || (state.currentSession.session.key || state.currentSession.session.id) !== key) openDetail(key);",
+    replace: "    openDetail(key); // MUTATION",
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'removing the selected session leaves stale detail controls',
+    file: 'web/js/rowmenu.js',
+    find: "      if (state.currentSession && (state.currentSession.session.key || state.currentSession.session.id) === key) closeDetail({ nav: 'replace' });",
+    replace: "      // MUTATION: leave the deleted session selected",
+    mustFail: 'removing the open ended session returns to the list without stale detail controls',
+  },
+  {
+    // Same regression, isolated to just the button-label guard: with the
+    // actions still forced onto their own line box, a long label can still
+    // wrap if nothing stops it shrinking below its content width -- this
+    // proves the nowrap/flex-shrink:0 half of the fix is independently
+    // load-bearing, not redundant with the line-box split above.
+    name: 'at 390px, "Run on ACA…" wraps its label across more than one line inside its 32px button',
+    file: 'web/css/detail.css',
+    find: `.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;
+}`,
+    replace: `.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; /* MUTATION: white-space/flex-shrink guard removed */
+}`,
+    mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
+  {
+    // #243 real regression (CI run 37998832767): the whole `.detail-head-line`
+    // wrapping (rather than just the actions getting their own row) let the
+    // title row's OWN items split across two lines at 390px -- this restores
+    // that exact shape by deleting the atomic, `nowrap` title-row grouping and
+    // letting the line wrap as a single flex row again, which must make the
+    // shared-line-box assertion (checked at 1280/900/390px) fail at 390px,
+    // the same width and the same way the real run did.
+    name: 'at 390px, the title row wraps internally instead of staying an atomic non-wrapping line box (#243 real regression)',
+    file: 'web/css/detail.css',
+    find: `.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }`,
+    replace: `.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; } @media (max-width: 900px) { .detail-head-line { flex-wrap: wrap !important; } .detail-head-titlerow { flex-wrap: wrap !important; } } /* MUTATION: title row allowed to wrap internally again */`,
+    mustFail: 'the header items share one vertical line box at 1280, 900 and 390px',
+  },
+  {
+    // The phone layout's `height: auto` override is what lets the actions'
+    // real second row take up real space instead of being clipped by (or
+    // overlapping) the metadata line underneath a header still pinned to the
+    // desktop 32px. Reverting to the fixed height must reproduce that
+    // overlap, which the new no-spatial-overlap assertion below exists to
+    // catch.
+    name: 'at 390px, the header stays clipped to a fixed 32px line box instead of growing for the actions\' second row, risking metadata overlap',
+    file: 'web/css/detail.css',
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }`,
+    replace: `  .detail-head-line { flex-direction: column; align-items: stretch; height: 32px; overflow: hidden; row-gap: 6px; } /* MUTATION: height pinned back to 32px */`,
+    mustFail: 'at 390px, the detail header controls do not spatially overlap the metadata line underneath them',
+  },
+
+  // ---- #182: detail tabs, the inline approval card, the Info tab ------------
+  // Unit-level mutations are caught by test/detail-tabs-unit.js; the ones that
+  // need a real page are caught by the browser suite.
+  {
+    name: '#182: the Files spike becomes a selectable tab',
+    file: 'web/js/detail-tabs.js',
+    find: `export const DETAIL_TABS = ['chat', 'squad', 'info'];`,
+    replace: `export const DETAIL_TABS = ['chat', 'squad', 'info', 'files']; // MUTATION`,
+    mustFail: 'Files is never a selectable tab',
+  },
+  {
+    name: '#182: the arrow keys stop wrapping at the last tab',
+    file: 'web/js/detail-tabs.js',
+    find: `if (key === 'ArrowRight') return DETAIL_TABS[at === last ? 0 : at + 1];`,
+    replace: `if (key === 'ArrowRight') return DETAIL_TABS[at === last ? last : at + 1]; // MUTATION`,
+    mustFail: 'the tab keys wrap around the three real tabs and never land on Files',
+  },
+  {
+    name: '#182: a compound command is chipped as one program, not every program in it',
+    file: 'web/js/approval-card.js',
+    find: `String(line).split(/&&|\\|\\||[;|]/)`,
+    replace: `String(line).split(/\\|\\||[;|]/)`,
+    mustFail: 'tool chips name every program in a compound command once, from reported data only',
+  },
+  {
+    name: '#182: the same program is chipped every time it appears',
+    file: 'web/js/approval-card.js',
+    find: `if (head && !out.includes(head)) out.push(head);`,
+    replace: `if (head) out.push(head); // MUTATION`,
+    mustFail: 'tool chips name every program in a compound command once, from reported data only',
+  },
+  {
+    name: '#182: the inline card drops the read-only badges and paths',
+    file: 'web/js/approval-card.js',
+    find: `    <div class="dt-appr-paths">\${approvalChipsHtml(approval)}</div>`,
+    replace: `    <div class="dt-appr-paths"></div> <!-- MUTATION -->`,
+    mustFail: 'the inline card shows the command, tool chips, read-only badges, paths and the offered buttons',
+  },
+  {
+    name: '#182: the inline card always offers Always allow, even when the agent did not',
+    file: 'web/js/approval-card.js',
+    find: `    <div class="dt-appr-actions">\${approvalButtonsHtml(approval)}</div>`,
+    replace: `    <div class="dt-appr-actions">\${approvalButtonsHtml(approval)}<button type="button" class="ghost" data-answer="allow_always">Always allow</button></div>`,
+    mustFail: 'the inline card offers Always allow only when the agent offered it',
+  },
+  {
+    name: '#182: the inline card shows the agent\'s command unescaped',
+    file: 'web/js/approval-card.js',
+    find: `<pre class="dt-appr-cmd">\${esc(approval.command || approval.title || '(no command reported)')}</pre>`,
+    replace: `<pre class="dt-appr-cmd">\${approval.command || approval.title || '(no command reported)'}</pre>`,
+    mustFail: 'the inline card escapes everything the agent sent',
+  },
+  {
+    name: '#182: the inline card\'s explainer loses its accessible name',
+    file: 'web/js/approval-card.js',
+    find: ` aria-label="About this permission request"`,
+    replace: ``,
+    mustFail: 'the inline card carries a labelled explainer hint button',
+  },
+  {
+    name: '#182: the inline card gains an inline style, which the page CSP forbids',
+    file: 'web/js/approval-card.js',
+    find: `<section class="dt-appr" data-approval="\${esc(approval.approvalId)}" aria-label="Permission needed">`,
+    replace: `<section class="dt-appr" style="margin:0" data-approval="\${esc(approval.approvalId)}" aria-label="Permission needed">`,
+    mustFail: 'the inline card never invents an expiry, a Teams control or an inline style',
+  },
+  {
+    name: '#182: the Info tab invents a default branch',
+    file: 'web/js/session-info.js',
+    find: `{ key: 'branch', label: 'Branch', html: orGap(git.branch) },`,
+    replace: `{ key: 'branch', label: 'Branch', html: orGap(git.branch || 'main') }, // MUTATION`,
+    mustFail: 'Info says not reported for every field the device did not send, and invents nothing',
+  },
+  {
+    name: '#182: the Info tab shows what was asked for over what the device applied',
+    file: 'web/js/session-info.js',
+    find: `  const got = session.applied && session.applied[field];`,
+    replace: `  const got = session.agentSelection && session.agentSelection[field] ? null : (session.applied && session.applied[field]); // MUTATION`,
+    mustFail: 'Info prefers what the device applied and labels a mere request as one',
+  },
+  {
+    name: '#182: the Info tab prints the working directory unescaped',
+    file: 'web/js/session-info.js',
+    find: `html: s.cwd ? \`<code>\${esc(s.cwd)}</code>\` : dim('not reported')`,
+    replace: `html: s.cwd ? \`<code>\${s.cwd}</code>\` : dim('not reported')`,
+    mustFail: 'Info escapes hostile device and session text',
+  },
+  {
+    name: '#182: the Info tab links any address the device sent, not only http and https',
+    file: 'web/js/session-info.js',
+    find: `    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null;`,
+    replace: `    return u.href; // MUTATION`,
+    mustFail: 'Info only links http and https addresses',
+  },
+  {
+    name: '#182: Squad health shows the overall verdict but not each check',
+    file: 'web/js/session-info.js',
+    find: `\${[pillHtml(tone, v.text), ...checks].join('')}`,
+    replace: `\${[pillHtml(tone, v.text)].join('')}`,
+    mustFail: 'Squad health shows each check with its own word, not only a color',
+  },
+  {
+    name: '#182: Squad health calls a device that did not report health passing',
+    file: 'web/js/session-info.js',
+    find: `    return { state: 'unreported', text: 'Not reported by this device', checks: [] };`,
+    replace: `    return { state: 'pass', text: 'All checks pass', checks: [] }; // MUTATION`,
+    mustFail: 'Squad health is honest when the device cannot or has not checked',
+  },
+  {
+    name: '#182: the ACA row invents an Aspire dashboard link the device never reported',
+    file: 'web/js/session-info.js',
+    find: `  const aspire = safeHttpUrl(session.aspireUrl);`,
+    replace: `  const aspire = safeHttpUrl(session.aspireUrl || 'http://localhost:18888'); // MUTATION`,
+    mustFail: 'the ACA row lists only links the device reported, and never a lease',
+  },
+  {
+    name: '#182: the approval history lists the oldest request first',
+    file: 'web/js/session-info.js',
+    find: `.sort((a, b) => b.at - a.at);`,
+    replace: `.sort((a, b) => a.at - b.at); // MUTATION`,
+    mustFail: 'approval history merges answered and expired requests, newest first, with who, what, when and where',
+  },
+  {
+    name: '#182: the approval history says an answer from the terminal came from the hub',
+    file: 'web/js/session-info.js',
+    find: `    from: a.answeredVia === 'terminal' ? \`at the terminal on \${where}\` : 'from the hub',`,
+    replace: `    from: 'from the hub', // MUTATION`,
+    mustFail: 'approval history merges answered and expired requests, newest first, with who, what, when and where',
+  },
+  {
+    name: '#182: the approval history attributes an expired request to someone',
+    file: 'web/js/session-info.js',
+    find: `    who: null,`,
+    replace: `    who: 'someone', // MUTATION`,
+    mustFail: 'an expired request is shown as not answered, never attributed to anyone',
+  },
+  {
+    name: '#182: the tab module makes a request of its own',
+    file: 'web/js/detail-tabs.js',
+    find: `export function initDetailTabs() {`,
+    replace: `export function initDetailTabs() {
+  fetch('/api/devices/x/transcript'); // MUTATION`,
+    mustFail: 'the tab, card and Info modules make no requests of their own',
+  },
+  {
+    name: '#182: the bell inbox posts its own approval answer instead of the shared one',
+    file: 'web/js/wiring.js',
+    find: `    await answerApproval({ deviceId: device }, { id: sessionId }, { approvalId: approval }, answer);`,
+    replace: `    await api(\`/api/devices/\${encodeURIComponent(device)}/approve\`, { method: 'POST', body: { sessionId, approvalId: approval, optionId: answer } }); // MUTATION`,
+    mustFail: 'only the shared helper posts an approval answer',
+  },
+  {
+    name: '#182: the Files tab becomes clickable',
+    file: 'web/index.html',
+    find: ` aria-disabled="true" disabled title="Spike only: appears when the device allows file access">Files</button>`,
+    replace: ` aria-disabled="true" title="Spike only: appears when the device allows file access">Files</button>`,
+    mustFail: 'the markup has Chat, Squad and Info tabs and a disabled Files tab with its tooltip',
+  },
+  {
+    name: '#182: the Info tab loses its click handler',
+    file: 'web/js/detail-tabs.js',
+    find: `  $('dtTab-info').onclick = () => selectDetailTab('info');`,
+    replace: `  // MUTATION`,
+    mustFail: 'every control in the markup is wired to a handler',
+  },
+  {
+    name: '#182: the inline card\'s buttons shrink away from the product\'s 32px',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-appr-actions button { height: 32px; padding: 0 14px;`,
+    replace: `.dt-appr-actions button { height: 28px; padding: 0 14px;`,
+    mustFail: 'the new styles keep the product sizes: 22px status pills and 32px buttons',
+  },
+  {
+    name: '#182: the tab bar loses its height',
+    file: 'web/css/detail-tabs.css',
+    find: `  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `  height: 36px; padding: 0 14px; margin: 0; /* MUTATION */`,
+    mustFail: 'the tabs, the card and its buttons keep their sizes and stay inside the page at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: the tool chips drift away from the 22px pill height',
+    file: 'web/css/detail-tabs.css',
+    find: `  padding: 0 8px; height: 22px; border-radius: 6px;`,
+    replace: `  padding: 0 8px; height: 26px; border-radius: 6px; /* MUTATION */`,
+    mustFail: 'the tabs, the card and its buttons keep their sizes and stay inside the page at 1280, 900 and 390px (#182)',
+  },
+  // The rest need a real page: a clicked button, a switched tab, a live update.
+  {
+    name: '#182: every inline card button answers allow once, whatever it says',
+    file: 'web/js/approval-card.js',
+    find: `    const optionId = btn.dataset.answer;`,
+    replace: `    const optionId = 'allow_once'; // MUTATION`,
+    mustFail: 'denying from the inline card runs nothing, and the history records the denial (#182)',
+  },
+  {
+    name: '#182: selecting a tab leaves the other panes showing',
+    file: 'web/js/detail-tabs.js',
+    find: `    $(\`dtPane-\${t}\`).hidden = !on;`,
+    replace: `    $(\`dtPane-\${t}\`).hidden = false; // MUTATION`,
+    mustFail: 'the session detail has Chat, Squad and Info tabs that each show only their own pane, and a disabled Files tab (#182)',
+  },
+  {
+    name: '#182: switching tabs clears the half-typed message',
+    file: 'web/js/detail-tabs.js',
+    find: `  activeDetailTab = id;`,
+    replace: `  activeDetailTab = id; $('dtInput').value = ''; // MUTATION`,
+    mustFail: 'moving between tabs keeps a half-typed message and the transcript, because the composer sits outside every pane (#182)',
+  },
+  {
+    name: '#182: every live refresh rebuilds the inline card',
+    file: 'web/js/approval-card.js',
+    find: `    if (live.has(card.dataset.approval)) have.set(card.dataset.approval, card);
+    else card.remove();`,
+    replace: `    card.remove(); // MUTATION`,
+    mustFail: 'the card survives tab switches and live refreshes without being rebuilt, and the Chat dot stays (#182)',
+  },
+  {
+    name: '#182: the Chat tab never signals a waiting request',
+    file: 'web/js/detail-tabs.js',
+    find: `  $('dtTabChatDot').hidden = !waiting;`,
+    replace: `  $('dtTabChatDot').hidden = true; // MUTATION`,
+    mustFail: 'a pending request shows as an inline card on the Chat tab, and the pop-up and the bell still raise it (#182)',
+  },
+  {
+    name: '#182: an open Info tab does not follow the live feed',
+    file: 'web/js/detail-tabs.js',
+    find: `  if (activeDetailTab === 'info') renderInfoPane(found);`,
+    replace: `  // MUTATION: Info is painted only when selected`,
+    mustFail: 'a request answered at the terminal, and one that expired, show in the history with who, what and where (#182)',
+  },
+  {
+    name: '#182: opening another session keeps the last session\'s tab',
+    file: 'web/js/detail.js',
+    find: `  resetDetailTabs(found);`,
+    replace: `  // MUTATION: the tab is not reset`,
+    mustFail: 'a session opened from the sidebar starts on the Chat tab, not on the tab the previous session left open (#182)',
+  },
+  {
+    name: '#182: the buttons stay live while an answer is in flight',
+    file: 'web/js/approvals.js',
+    find: `  for (const b of buttons) b.disabled = true;
+  try {
+    await answerApproval(`,
+    replace: `  try { // MUTATION
+    await answerApproval(`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: a refused answer leaves the card\'s buttons dead',
+    file: 'web/js/approvals.js',
+    find: `    onError(e);
+    for (const b of buttons) b.disabled = false;
+    return false;`,
+    replace: `    onError(e);
+    return false; // MUTATION`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: a refused answer is treated as an accepted one',
+    file: 'web/js/approvals.js',
+    find: `    onError(e);
+    for (const b of buttons) b.disabled = false;
+    return false;`,
+    replace: `    onError(e);
+    return true; // MUTATION`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: the card removes itself before the hub has answered',
+    file: 'web/js/approval-card.js',
+    find: `    note.textContent = '';
+    const optionId = btn.dataset.answer;`,
+    replace: `    note.textContent = ''; card.remove(); // MUTATION
+    const optionId = btn.dataset.answer;`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: history row parts sit at different heights on one line',
+    file: 'web/css/detail-tabs.css',
+    find: `  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 22px;`,
+    replace: `  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 1;`,
+    mustFail: 'the Info tab, its history rows and the space above the composer stay aligned and inside the page at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: a long path in the details table pushes the page sideways',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-kv td { overflow-wrap: anywhere; }`,
+    replace: `.dt-kv td { /* MUTATION */ }`,
+    mustFail: 'a very long working directory wraps in the session header and in Info instead of pushing the page sideways at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: a long working directory in the session header pushes the page sideways',
+    file: 'web/css/detail-tabs.css',
+    find: `#dtMeta { overflow-wrap: anywhere; }`,
+    replace: `#dtMeta { /* MUTATION */ }`,
+    mustFail: 'a very long working directory wraps in the session header and in Info instead of pushing the page sideways at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: the Info tab sits flush against the composer',
+    file: 'web/css/detail-tabs.css',
+    find: `#dtPane-info { margin-bottom: 12px; }`,
+    replace: `#dtPane-info { /* MUTATION */ }`,
+    mustFail: 'the Info tab, its history rows and the space above the composer stay aligned and inside the page at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: the Squad tab sits flush against the composer',
+    file: 'web/css/squad.css',
+    find: `  background: var(--panel-2); padding: 12px; margin-bottom: 12px;`,
+    replace: `  background: var(--panel-2); padding: 12px; /* MUTATION */`,
+    mustFail: 'the Squad tab shows the existing Squad panel, with its members and documents, above the composer (#182)',
+  },
+  {
+    name: '#182: the Squad panel loses its roster',
+    file: 'web/js/squad-panel.js',
+    find: `  const members = Array.isArray(sq.members) ? sq.members : [];`,
+    replace: `  const members = []; // MUTATION`,
+    mustFail: 'the Squad tab shows the existing Squad panel, with its members and documents, above the composer (#182)',
+  },
+  {
+    name: '#182: the system light theme leaves the near-black code surfaces',
+    file: 'web/css/tokens.css',
+    find: `    --code-bg: #f2f4f8;
+    --code-line: #dfe4ec;`,
+    replace: `    /* MUTATION */`,
+    mustFail: 'a system that prefers light, with no saved choice, still flips the code surfaces',
+  },
+  {
+    name: '#182: the status pill no longer gives way, so a long status leaves the title a sliver on a phone',
+    file: 'web/css/detail.css',
+    find: `    display: block; max-width: 150px; line-height: 22px;`,
+    replace: `    display: block; line-height: 22px; /* MUTATION */`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    name: '#182: the header actions are pushed off the page in the dark theme only',
+    file: 'web/css/detail-tabs.css',
+    find: `  .dt-appr { padding: 10px 12px; }`,
+    replace: `  .dt-appr { padding: 10px 12px; }
+  @media (prefers-color-scheme: dark) { .detail-actions button { position: relative; left: 300px; } } /* MUTATION */`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    name: '#182: the tab bar outgrows a phone while a permission request waits',
+    file: 'web/css/detail-tabs.css',
+    find: `  .dt-tab { padding: 0 10px; }`,
+    replace: `  .dt-tab { padding: 0 40px; } /* MUTATION */`,
+    mustFail: 'the session header still fits, with the tabs, while a permission request waits, at 1280, 900 and 390px, light and dark (#182)',
+  },
+  // The tab bar's own box: the tab used to overlap a real border of an
+  // overflow-x:auto bar, which is vertical overflow (a 15px scrollbar and a cut
+  // underline on classic-scrollbar browsers; invisible in the headless shell).
+  {
+    name: '#182: the tab bar overlaps its own border again and grows a vertical scrollbar',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `.dt-tabs {
+  display: flex; gap: 4px; height: 40px; margin-top: 12px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; /* MUTATION */
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
+    mustFail: 'the tab bar draws no scrollbar of its own and keeps its whole underline when the browser shows classic scrollbars, at 1280, 900, 390 and 200px, light and dark (#182)',
+  },
+  // Hiding the scrollbar is not the fix: the content is still taller than its box.
+  {
+    name: '#182: the vertical scrollbar of the overlapping tab bar is only hidden, not removed',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `.dt-tabs {
+  display: flex; gap: 4px; height: 40px; margin-top: 12px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; /* MUTATION */
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  // #179 with #182: both branches exported a `squadHealthView`. A browser
+  // keeps the two modules' names apart, but every DOM-free unit suite flattens
+  // the graph into one scope, so the later declaration answered for both.
+  {
+    name: '#179+#182 session-info.js declares squadHealthView again, shadowing the one in review.js in every flattened unit suite',
+    file: 'web/js/session-info.js',
+    find: `export function infoHealthView(session) {`,
+    replace: `export function squadHealthView(session) { // MUTATION: the same name review.js already declares`,
+    mustFail: 'no two modules in the graph declare the same top-level name, because the unit suites flatten the graph into one scope',
   },
 ];
 

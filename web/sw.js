@@ -30,12 +30,42 @@
 
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
-// strategy already keeps content fresh on its own. v22: the combined shell of
-// #179 (v16: /js/review.js joined SHELL) and #178 (v21: /js/aca-pending.js and
-// /js/aca-match.js joined SHELL and the pending row's attach logic was
-// reworked). Neither branch's value describes the merged shell, and 22 is
-// above both and unique among the open branches' bumps.
-const CACHE = 'squad-hub-shell-v22';
+// strategy already keeps content fresh on its own.
+//
+// v22 (#179 with #178): the combined shell of #179 (v16: /js/review.js joined
+// SHELL) and #178 (v21: /js/aca-pending.js and /js/aca-match.js joined SHELL and
+// the pending row's attach logic was reworked). Neither branch's value
+// described the merged shell, and 22 was above both.
+//
+// #181/#243: bumped again here even though no file was added or removed from
+// SHELL. The header-row fix below restructures `.detail-head-line` enough
+// (a new `.detail-head-titlerow` wrapper and a real two-row phone layout
+// instead of whole-line `flex-wrap`) that a stale offline install serving the
+// OLD `detail.css`/`index.html` pair out of its cache would keep showing the
+// exact 390px misalignment this PR fixes, with no way to tell from the
+// network-first path alone since that only helps while online. v16 is
+// already spent by #178's branch (`squad/hub-178-aca-job-dialog`), so this
+// uses v17 -- a value neither sibling branch has used -- to avoid a
+// cross-PR cache collision if both merge close together. v20: this PR's
+// completion slice changed cached code (web/js/wiring.js's row-menu click
+// dispatch was extracted into `handleRowMenuClick`), not just tests, so an
+// existing install's cache must actually refresh rather than keep serving
+// the old file forever.
+//
+// #182: v22. The detail page gained Chat | Squad | Info tabs, so index.html and
+// detail.js changed shape, `renderSquadPanel` moved into a new module, and
+// three more modules and a stylesheet joined the shell. An existing install
+// must not pair the old markup with the new scripts, or the reverse. v21 is
+// already spent by #181's branch, so this is v22.
+//
+// v23 (#182 and #243 over v22): the integrated shell. The detail tabs, the
+// inline approval card and the session-info panel added modules and a
+// stylesheet to SHELL on top of #179's and #178's, so a v22 install (which has
+// neither) must refresh rather than pair the old markup with the new scripts.
+// 23 is above every value any branch has used so far (v22 is the highest).
+// `/js/forget.js` (the "Remove ended sessions" action, moved out of wiring.js
+// so that file stays inside its size budget) joined the shell in the same bump.
+const CACHE = 'squad-hub-shell-v23';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -51,6 +81,7 @@ const SHELL = [
   '/css/devices.css',
   '/css/modals.css',
   '/css/detail.css',
+  '/css/detail-tabs.css',
   '/css/squad.css',
   '/css/inbox.css',
   '/js/api.js',
@@ -68,6 +99,11 @@ const SHELL = [
   '/js/devices.js',
   '/js/device-detail.js',
   '/js/detail.js',
+  '/js/detail-control.js',
+  '/js/detail-tabs.js',
+  '/js/approval-card.js',
+  '/js/session-info.js',
+  '/js/squad-panel.js',
   '/js/transcript.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
@@ -79,6 +115,7 @@ const SHELL = [
   '/js/install.js',
   '/js/connect.js',
   '/js/filters.js',
+  '/js/forget.js',
   '/js/push.js',
   '/js/wiring.js',
   '/js/signin.js',

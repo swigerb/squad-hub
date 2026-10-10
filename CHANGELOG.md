@@ -61,9 +61,32 @@ pull request; this entry documents what has landed on `main` so far.
   device connected, a copyable `npx squad-hub start` command — the same
   block an empty Local machines section shows. See
   [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
+- **Session page: Chat, Squad and Info tabs, an inline approval card and an
+  approval history** (issue #182). The Squad panel moved onto its own tab,
+  unchanged, and the session's context — device, working directory,
+  repository, branch, agent, model, mode, start and last activity, tool
+  count, each Squad health check and any ACA links — moved onto **Info**,
+  which also lists every permission request answered or expired in the
+  session: who, what, when and from where. A waiting request now also shows
+  as a card under the transcript with the command, tool chips and read-only
+  badges, **Allow once**, **Always allow** (only when the agent offered it)
+  and **Deny**; it goes only when the device confirms, and the pop-up and
+  the bell work as before. A disabled **Files** tab is a placeholder for a
+  [design spike](docs/design/files-tab-spike.md). Fixes unreadable code
+  surfaces for a system that prefers light with no saved theme. The session
+  header keeps **Run on ACA…**, **Stop** and the rest whole and inside the
+  page at 1280, 900 and 390px, light or dark; on a phone a long status such
+  as "Unreachable — device offline" ends in an ellipsis so the title stays
+  readable. The tab bar stays exactly its 40px: its underline is no longer
+  clipped to one pixel and it no longer grows a scrollbar of its own in
+  browsers that show classic scrollbars. See
+  [docs/commands.md#the-session-page-chat-squad-and-info](docs/commands.md#the-session-page-chat-squad-and-info).
 
 ### Documentation
 
+- `docs/design/files-tab-spike.md` is a design for the Files tab (issue
+  #182): what it would show and how it would stay inside the device's file
+  access rules. Nothing in it is implemented.
 - `docs/api.md` gained the three `/api/aca/*` endpoints above, which existed
   but were undocumented.
 - `docs/cloud.md` gained the `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY`

@@ -4,7 +4,8 @@ Read a Squad's team, charters and decisions from the hub.
 
 ## Using it
 
-Open a session running in a Squad workspace. The Squad panel lists the team and
+Open a session running in a Squad workspace, then its **Squad** tab. The Squad
+panel lists the team and
 a row of document tabs:
 
 - **click a member** to read their charter or history;
