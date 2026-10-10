@@ -66,7 +66,17 @@ body { margin: 0; background: var(--cp-bg); color: var(--cp-text);
 .sh .ib.install { color:var(--accent); background:var(--accent-dim); }
 .sh .ib .count { position:absolute; top:0; right:0; background:var(--warn); color:#000; font-size:10px; font-weight:700;
   border-radius:8px; padding:0 4px; line-height:14px; }
-.sh .avatar { width:28px; height:28px; border-radius:50%; background:linear-gradient(135deg,#f5c542,#e08a1e); display:inline-block; }
+.sh .avatar { width:28px; height:28px; border-radius:50%; background:var(--accent-dim); display:inline-flex;
+  align-items:center; justify-content:center; padding:0; border:0; cursor:pointer; flex:none; overflow:hidden; }
+.sh .avatar img { width:100%; height:100%; object-fit:cover; }
+.sh .avatar:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.sh .account-wrap { position:relative; display:flex; align-items:center; flex:none; }
+.sh .menu.account-menu { right:0; top:38px; width:300px; max-width:calc(100vw - 48px); z-index:80; }
+.sh .account-summary { padding:12px 14px 8px; color:var(--faint); line-height:24px; }
+.sh .account-menu .install-state { margin-left:auto; color:var(--ok); font-size:12px; }
+.sh .menu .menu-icon { width:18px; height:18px; flex:none; color:var(--dim); }
+.sh .menu .dz .menu-icon { color:inherit; }
+.sh .menu .cleanup-note { padding:8px 12px; color:var(--faint); font-size:12px; line-height:20px; }
 .sh .page { padding:24px 32px; }
 .sh .head { display:flex; align-items:flex-start; gap:12px; }
 .sh .head h2 { font-size:26px; margin:0; display:flex; align-items:center; gap:10px; }
@@ -435,13 +445,13 @@ body.notes [data-note].nl::after { right:auto; left:-6px; }
           <button>On a local device</button>
         </div>
       </div>
-      <div style="position:relative"><button class="btn ghost" onclick="openMenu('kebab',event)">⋮</button>
+      <div style="position:relative"><button class="btn ghost" title="Remove ended sessions" aria-label="Remove ended sessions" aria-haspopup="menu" aria-controls="kebab" aria-expanded="false" onclick="openMenu('kebab',event)">⋮</button>
         <div class="menu" id="kebab" style="right:0;top:38px">
-          <button>Refresh now</button><button>Connect a device…</button><button>Who has access…</button>
-          <button>Install as an app <span style="margin-left:auto;color:var(--ok)">✓ Installed</span></button>
-          <div class="sep"></div><div class="hd">Remove ended sessions</div>
-          <button>Older than 7 days</button><button>Older than 30 days</button><button class="dz">All ended sessions</button>
-          <div class="sep"></div><button class="dz">Sign out</button>
+          <div class="hd">Remove ended sessions</div>
+          <button onclick="toast('Preview only: remove sessions that ended more than 7 days ago.')"><svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 5v5h4"/></svg>Older than 7 days</button>
+          <button onclick="toast('Preview only: remove sessions that ended more than 30 days ago.')"><svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 5v5h4"/></svg>Older than 30 days</button>
+          <button class="dz" onclick="toast('Preview only: remove ended sessions. Running work is never touched.')"><svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 5h14M7 5V3h6v2M5 5l1 12h8l1-12M8 8v6M12 8v6"/></svg>All ended sessions</button>
+          <div class="sep"></div><div class="cleanup-note">Only sessions that have already ended.<br>Running work is never touched.</div>
         </div></div>
     </div>
 
@@ -765,11 +775,28 @@ body.notes [data-note].nl::after { right:auto; left:-6px; }
 </div></div>
 </div>
 
+<template id="accountMenuTemplate">
+  <div class="menu account-menu" role="menu" aria-label="GitHub account">
+    <div class="account-summary" role="presentation">
+      <div>Signed in as <strong>swigerb</strong></div>
+      <div data-account-devices>5 of 6 devices online</div>
+      <div data-account-sessions>8 sessions · 2 needing attention</div>
+    </div>
+    <div class="sep" role="separator"></div>
+    <button role="menuitem" data-account-action="refresh">Refresh now</button>
+    <button role="menuitem" data-account-action="connect">Connect a device…</button>
+    <button role="menuitem" data-account-action="access">Who has access…</button>
+    <button role="menuitem" data-account-action="install">Install as an app <span class="install-state" hidden>✓ Installed</span></button>
+    <div class="sep" role="separator"></div>
+    <button role="menuitem" class="dz" data-account-action="signout">Sign out</button>
+  </div>
+</template>
+
 <div class="legend" id="legend"></div>
 
 <script>
 const CAPTIONS = {
-  list: '<b>All sessions.</b> Click the tabs, type in the keyword box, open Status, View and Sort, the ⋯ on any row, the ⤓ install icon, the 🔔 bell, and ▸ BRSWIG-SURFACE in Devices. Nothing has been removed: Pinned, the action-needed float, CPU/RAM meters, the + New items and the ⋮ menu all stay.',
+  list: '<b>All sessions.</b> The GitHub avatar keeps your account menu: signed-in identity, device/session counts, Refresh now, Connect a device, Who has access, Install as an app, and Sign out. The separate ⋮ beside New only removes ended sessions. Try the per-session ⋯ menu, device details, and the animated Starting indicator. Counts and actions use demonstration data; this preview does not control live sessions.',
   aca: '<b>New ACA job (E4).</b> This replaces the "Start a new ACA job…" modal. The two old routes stay as links at the bottom left. Start job dispatches directly and adds a "Queued on ACA" row.',
   detail: '<b>Session detail (E5).</b> A full page that Teams "View live session" links open directly. Sidebar on the left, Chat / Squad / Info tabs, and the approval card shown inside the chat as well. The composer gets Mode and Model menus. The Squad tab is the existing panel, unchanged.',
   empty: '<b>Empty state (E3.7).</b> Three ways to start, plus the start command with a copy button. "Connect a device…" opens the existing modal unchanged.',
@@ -780,6 +807,7 @@ const LEGEND = {
   'E1.2':'One aligned filter bar: keyword on the left; Time, Status, Device, Repository, Organization on the right. Spelling moves to American English everywhere ("organisation" in today\'s UI becomes "organization").',
   'E1.3':'View and Sort moved up to the tab row. New: Status and Squad views; Updated and Name sorts.',
   'E1.5':'Per-session ⋯ menu: Open, Pin, Rename, Copy link, Run on ACA, PR and Aspire links, Stop, Remove.',
+  'Kept':'GitHub avatar: identity, online/device/session/attention counts, Refresh, Connect, Access, Install and Sign out. Separate ⋮: ended-session cleanup only.',
   'E2.1':'Header install icon, shown only when the app can be installed and is not yet. Shows the browser\'s card, or ours on iOS and Firefox.',
   'E3.1':'Devices header summary: N online · N sessions.',
   'E3.2':'"ACA jobs · On-demand" listed first, then Squad on ACA executions, cloud devices and local machines.',
@@ -848,12 +876,16 @@ function render(){
   if (!list.length) html='<div class="empty"><h3>No sessions match these filters</h3><p>Clear the keyword or change the tab.</p></div>';
   document.getElementById('list').innerHTML=html;
 }
-function closeAll(){ document.querySelectorAll('.sh .menu.open,.install-card.open').forEach(m=>m.classList.remove('open')); }
-function openMenu(id,e){ e.stopPropagation(); const m=document.getElementById(id); const was=m.classList.contains('open'); closeAll(); if(!was) m.classList.add('open'); }
+function closeAll(){ document.querySelectorAll('.sh .menu.open,.install-card.open').forEach(m=>m.classList.remove('open'));
+  document.querySelectorAll('[aria-controls][aria-expanded]').forEach(b=>b.setAttribute('aria-expanded','false')); }
+function openMenu(id,e){ e.stopPropagation(); const m=document.getElementById(id); const was=m.classList.contains('open'); closeAll();
+  if(!was){ m.classList.add('open'); e.currentTarget.setAttribute('aria-expanded','true'); } }
 function rowMenu(e){ e.stopPropagation(); closeAll(); const m=document.getElementById('rowMenu'); const host=document.getElementById('sh-list').getBoundingClientRect(); const r=e.target.getBoundingClientRect();
   m.style.left=(r.right-host.left-220)+'px'; m.style.top=(r.bottom-host.top+4)+'px'; m.classList.add('open'); }
 function toggleSec(el){ const b=el.nextElementSibling; b.style.display = b.style.display==='none'?'':'none'; el.firstChild.textContent = el.firstChild.textContent.replace(/^[▾▸]/, b.style.display==='none'?'▸':'▾'); }
-function toast(t){ const el=document.getElementById('toast'); el.textContent=t; el.classList.add('open'); closeAll(); setTimeout(()=>el.classList.remove('open'),3200); }
+function toast(t){ const canvas=document.querySelector('.screen.on .sh'); let el=canvas.querySelector('.toast');
+  if(!el){ el=document.createElement('div'); el.className='toast'; canvas.append(el); }
+  el.textContent=t; el.classList.add('open'); closeAll(); setTimeout(()=>el.classList.remove('open'),3200); }
 function go(s){ closeAll(); document.querySelectorAll('.screen').forEach(x=>x.classList.toggle('on',x.id==='s-'+s));
   document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
   document.getElementById('caption').innerHTML=CAPTIONS[s]; window.scrollTo(0,0); }
@@ -872,6 +904,33 @@ document.getElementById('installBtn').onclick=e=>{e.stopPropagation();const c=do
 document.getElementById('bellBtn').onclick=e=>openMenu('inbox',e);
 document.getElementById('installCard').onclick=e=>e.stopPropagation();
 document.getElementById('inbox').onclick=e=>e.stopPropagation();
+document.querySelectorAll('.avatar').forEach((avatar,i)=>{
+  const wrap=document.createElement('div'); wrap.className='account-wrap';
+  const button=document.createElement('button'); button.className='avatar'; button.style.cssText=avatar.style.cssText; button.type='button';
+  button.setAttribute('aria-label','Account: swigerb'); button.setAttribute('aria-haspopup','menu'); button.setAttribute('aria-expanded','false');
+  button.innerHTML='<img src="https://github.com/swigerb.png?size=64" alt="">';
+  const menu=document.getElementById('accountMenuTemplate').content.firstElementChild.cloneNode(true);
+  menu.id=`accountMenu-${i}`; button.setAttribute('aria-controls',menu.id);
+  const empty=avatar.closest('#s-empty');
+  menu.querySelector('[data-account-devices]').textContent=empty?'0 of 0 devices online':'5 of 6 devices online';
+  menu.querySelector('[data-account-sessions]').textContent=empty?'0 sessions · 0 needing attention':`${S.length} sessions · ${S.filter(attn).length} needing attention`;
+  avatar.replaceWith(wrap); wrap.append(button,menu); button.onclick=e=>openMenu(menu.id,e);
+  menu.onclick=e=>e.stopPropagation();
+  menu.querySelectorAll('[data-account-action]').forEach(item=>item.onclick=()=>{
+    const action=item.dataset.accountAction;
+    if(action==='install'){ go('list'); document.getElementById('installCard').classList.add('open'); return; }
+    if(action==='refresh'){ render(); toast('Preview refreshed. No live sessions were changed.'); return; }
+    const notes={connect:'Preview only: opens the existing Connect a device dialog.',
+      access:'Preview only: opens Who has access for the Hub owner.',
+      signout:'Preview only: Sign out remains in the GitHub-avatar menu. You are still signed in.'};
+    toast(notes[action]);
+  });
+});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  const opener=document.querySelector('.avatar[aria-expanded="true"]');
+  closeAll(); if(opener) opener.focus();
+});
 document.addEventListener('click',closeAll);
 const setLight=on=>document.querySelectorAll('.sh').forEach(x=>x.classList.toggle('light',on));
 document.getElementById('lightToggle').onchange=e=>setLight(e.target.checked);
