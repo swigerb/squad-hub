@@ -97,6 +97,13 @@ export function acaIssueLink(repo, issue) {
  * something that disagrees with the real retry window. */
 function isRateLimited(e) { return e && e.status === 429; }
 
+let acaDialogGeneration = 0;
+let acaSubmittingGeneration = null;
+
+function acaDialogIsCurrent(generation) {
+  return generation === acaDialogGeneration && !$('acaScrim').hidden;
+}
+
 /** Every field the dialog collects, read straight from the DOM. Kept as one
  * function so `acaBuildDispatchBody` -- the part worth proving in Node --
  * never touches `document` itself. */
@@ -298,6 +305,7 @@ function updateAcaCmdPreview() {
  * which can be opened for a row that is not the one currently open in detail).
  */
 export function openAca(sessionOverride) {
+  const generation = ++acaDialogGeneration;
   const cur = sessionOverride || state.currentSession;
   $('acaErr').hidden = true;
   $('acaRepo').value = (cur && acaSessionRepo(cur.session)) || '';
@@ -330,10 +338,12 @@ export function openAca(sessionOverride) {
   (async () => {
     try {
       const r = await api('/api/aca/repos');
+      if (!acaDialogIsCurrent(generation)) return;
       state.acaRepos = r.repos || [];
       fillAcaRepoList(state.acaRepos);
       updateAcaRepoHint(state.acaRepos);
     } catch (e) {
+      if (!acaDialogIsCurrent(generation)) return;
       if (e.status === 501) { acaSetMode('disabled', e.message); return; }
       if (isRateLimited(e)) {
         acaSetMode('disabled', `${e.message} Use one of the links below for now.`);
@@ -350,12 +360,15 @@ export function openAca(sessionOverride) {
 }
 
 async function submitAcaDispatch() {
+  const generation = acaDialogGeneration;
+  if (acaSubmittingGeneration === generation || !acaDialogIsCurrent(generation)) return;
   const built = acaBuildDispatchBody(acaFormValues());
   if (!built.ok) {
     $('acaErr').textContent = built.reason;
     $('acaErr').hidden = false;
     return;
   }
+  acaSubmittingGeneration = generation;
   $('acaErr').hidden = true;
   $('acaStart').disabled = true;
   $('acaStart').textContent = 'Starting\u2026';
@@ -364,15 +377,22 @@ async function submitAcaDispatch() {
     trackAcaDispatch({
       repo: built.value.repo, issue: r.issue && r.issue.number, runUrl: r.runUrl, trackerId: r.trackerId,
     });
-    $('acaScrim').hidden = true;
+    if (acaDialogIsCurrent(generation)) $('acaScrim').hidden = true;
     toast(`Dispatched: #${r.issue && r.issue.number} is queued on ACA. It appears under Cloud until its job attaches.`);
     render();
   } catch (e) {
-    $('acaErr').textContent = isRateLimited(e) ? e.message : `Could not start the job: ${e.message}`;
-    $('acaErr').hidden = false;
+    if (acaDialogIsCurrent(generation)) {
+      $('acaErr').textContent = isRateLimited(e) ? e.message : `Could not start the job: ${e.message}`;
+      $('acaErr').hidden = false;
+    } else {
+      toast(`Could not start the previous job: ${e.message}`);
+    }
   } finally {
-    $('acaStart').disabled = false;
-    $('acaStart').textContent = 'Start job';
+    if (acaSubmittingGeneration === generation) acaSubmittingGeneration = null;
+    if (generation === acaDialogGeneration) {
+      $('acaStart').disabled = false;
+      $('acaStart').textContent = 'Start job';
+    }
   }
 }
 

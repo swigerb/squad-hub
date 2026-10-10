@@ -12,7 +12,43 @@
  */
 
 const assert = require('assert');
-const { readWebSource } = require('./helpers/web-source');
+const { readWebSource, stripModuleSyntax } = require('./helpers/web-source');
+
+function deferred() {
+  let resolve; let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+function dialogFixture(repoReplies = []) {
+  const fs = require('fs');
+  const path = require('path');
+  const source = stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'aca.js'), 'utf8'));
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, style: {}, focus() {} });
+    return elements.get(id);
+  };
+  const requests = [];
+  const tracked = [];
+  const notifications = [];
+  const request = (url, options) => {
+    if (url === '/api/aca/repos') return repoReplies.length ? repoReplies.shift().promise : Promise.resolve({ repos: [] });
+    const reply = deferred();
+    requests.push({ ...reply, body: options.body });
+    return reply.promise;
+  };
+  const dialog = new Function('state', 'api', '$', 'esc', 'render', 'trackAcaDispatch', 'toast',
+    `${source}\nreturn { openAca, submitAcaDispatch };`)(
+    { currentSession: null }, request, element, String, () => {}, (entry) => tracked.push(entry), (message) => notifications.push(message),
+  );
+  const open = (prompt) => {
+    dialog.openAca();
+    element('acaRepo').value = 'acme/widgets';
+    element('acaPrompt').value = prompt;
+  };
+  return { ...dialog, open, element, requests, tracked, notifications };
+}
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -555,6 +591,136 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
   const realFetch = global.fetch;
 
   (async () => {
+    await checkAsync('a stale failed dispatch cannot unlock or overwrite a newer submission', async () => {
+      const f = dialogFixture();
+      f.open('First job');
+      const first = f.submitAcaDispatch();
+      f.element('acaScrim').hidden = true;
+      f.open('Second job');
+      const second = f.submitAcaDispatch();
+      let duplicate;
+      try {
+        f.requests[0].reject(new Error('first job failed'));
+        await first;
+        assert.strictEqual(f.element('acaStart').disabled, true, 'the older finally unlocked the newer POST');
+        assert.strictEqual(f.element('acaStart').textContent, 'Starting\u2026');
+        assert.strictEqual(f.element('acaErr').hidden, true, 'the older catch overwrote the newer form');
+        assert.match(f.notifications[0], /previous job: first job failed/, 'the older request failure was silently lost');
+        duplicate = f.submitAcaDispatch();
+        assert.strictEqual(f.requests.length, 2, 'the newer job was dispatched twice');
+      } finally {
+        for (const reply of f.requests.slice(1)) reply.resolve({ issue: { number: 43 }, trackerId: 'T-second' });
+        await Promise.all([second, duplicate]);
+      }
+    });
+
+    await checkAsync('a stale successful dispatch is tracked without closing a newer dialog', async () => {
+      const f = dialogFixture();
+      f.open('First job');
+      const first = f.submitAcaDispatch();
+      f.element('acaScrim').hidden = true;
+      f.open('Second job');
+      const second = f.submitAcaDispatch();
+      try {
+        f.requests[0].resolve({ issue: { number: 42 }, trackerId: 'T-first' });
+        await first;
+        assert.strictEqual(f.element('acaScrim').hidden, false, 'the older success closed the newer dialog');
+        assert.strictEqual(f.element('acaStart').disabled, true);
+        assert.strictEqual(f.tracked.length, 1, 'the completed older job was lost');
+        assert.strictEqual(f.tracked[0].trackerId, 'T-first');
+      } finally {
+        f.requests[1].resolve({ issue: { number: 43 }, trackerId: 'T-second' });
+        await second;
+      }
+      assert.strictEqual(f.element('acaScrim').hidden, true, 'the current success did not close its own dialog');
+      assert.deepStrictEqual(f.tracked.map((entry) => entry.trackerId), ['T-first', 'T-second']);
+    });
+
+    await checkAsync('an in-flight dispatch rejects a second submission from the same dialog', async () => {
+      const f = dialogFixture();
+      f.open('One job');
+      const first = f.submitAcaDispatch();
+      let duplicate;
+      try {
+        duplicate = f.submitAcaDispatch();
+        assert.strictEqual(f.requests.length, 1, 'two invocations sent the same job twice');
+      } finally {
+        for (const reply of f.requests) reply.resolve({ issue: { number: 42 }, trackerId: 'T-one' });
+        await Promise.all([first, duplicate]);
+      }
+    });
+
+    await checkAsync('a stale repository failure cannot disable a reopened ACA dialog', async () => {
+      const older = deferred();
+      const newer = deferred();
+      const f = dialogFixture([older, newer]);
+      f.open('First job');
+      f.element('acaScrim').hidden = true;
+      f.open('Second job');
+      older.reject(Object.assign(new Error('no App'), { status: 501 }));
+      await Promise.resolve();
+      assert.strictEqual(f.element('acaForm').hidden, false);
+      assert.strictEqual(f.element('acaStart').hidden, false);
+      newer.resolve({ repos: [] });
+      await Promise.resolve();
+    });
+
+    await checkAsync('a stale repository success cannot overwrite the reopened ACA repository list', async () => {
+      const older = deferred();
+      const newer = deferred();
+      const f = dialogFixture([older, newer]);
+      f.open('First job');
+      f.element('acaScrim').hidden = true;
+      f.open('Second job');
+      newer.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
+      await Promise.resolve();
+      older.resolve({ repos: [{ fullName: 'stale/old', hasDispatchWorkflow: false }] });
+      await Promise.resolve();
+      assert.match(f.element('acaRepoList').innerHTML, /acme\/widgets/);
+      assert.doesNotMatch(f.element('acaRepoList').innerHTML, /stale\/old/);
+    });
+
+    await checkAsync('a current dispatch failure remains visible and permits a deliberate retry', async () => {
+      const f = dialogFixture();
+      f.open('Retry job');
+      const first = f.submitAcaDispatch();
+      f.requests[0].reject(new Error('workflow refused'));
+      await first;
+      assert.strictEqual(f.element('acaScrim').hidden, false);
+      assert.strictEqual(f.element('acaErr').hidden, false);
+      assert.match(f.element('acaErr').textContent, /workflow refused/);
+      assert.strictEqual(f.element('acaStart').disabled, false);
+      const retry = f.submitAcaDispatch();
+      assert.strictEqual(f.requests.length, 2);
+      f.requests[1].resolve({ issue: { number: 42 }, trackerId: 'T-retry' });
+      await retry;
+      assert.strictEqual(f.element('acaScrim').hidden, true);
+    });
+
+    await checkAsync('a live overview invalidates an older GET without losing the pushed session', async () => {
+      const fs = require('fs');
+      const path = require('path');
+      const source = stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'ws.js'), 'utf8'));
+      const reply = deferred();
+      const clientState = { token: 'test', filters: {}, overview: { groups: [] } };
+      const conn = { dataset: {}, setAttribute() {} };
+      class FakeWebSocket { close() {} }
+      const client = new Function('state', 'api', '$', 'location', 'WebSocket', 'render', 'acaAttachFromOverview', 'syncAcaPending',
+        `${source}\nreturn { connect, refresh };`)(
+        clientState, () => reply.promise, () => conn, { protocol: 'http:', host: 'localhost' },
+        FakeWebSocket, () => {}, () => {}, async () => {},
+      );
+      client.connect();
+      const refresh = client.refresh();
+      const pushed = { type: 'overview', devices: [{ deviceId: `aca-${EXEC}` }], groups: [{ sessions: [{ id: 'pushed-session' }] }], counts: { sessions: 1 } };
+      clientState.ws.onmessage({ data: JSON.stringify(pushed) });
+      reply.resolve({ devices: [], groups: [], counts: { sessions: 0 } });
+      await refresh;
+      assert.strictEqual(clientState.overview.groups[0]?.sessions[0]?.id, 'pushed-session',
+        'the older GET erased the newer pushed session');
+      assert.strictEqual(clientState.overview.counts.sessions, 1);
+    });
+
     global.fetch = async () => ({
       ok: false,
       status: 501,

@@ -2684,6 +2684,50 @@ function realSessionRows(page) {
       }
     });
 
+    await check('a held overview GET cannot erase an ACA session attached through the live push (#178)', async () => {
+      const hub = await acaHub(browser, 'push-stale-get');
+      const { page } = hub;
+      const hold = { armed: false, held: false, release: null };
+      try {
+        await dispatchAcaJob(page, 'Keep the pushed session when an older GET lands');
+        hub.app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
+        await refreshNow(page);
+        await until(async () => {
+          const rows = await pendingRows(page);
+          return rows.length === 1 && rows[0].now.includes('Attached');
+        }, 'the pending row to know its execution');
+        await page.waitForFunction(() => document.getElementById('conn').dataset.state === 'live', null, { timeout: 5000 });
+        await page.route(`${hub.origin}/api/overview**`, async (route) => {
+          if (!hold.armed) return route.continue();
+          hold.armed = false;
+          const response = await route.fetch();
+          hold.held = true;
+          await new Promise((resolve) => { hold.release = resolve; });
+          return route.fulfill({ response });
+        });
+        hold.armed = true;
+        await page.evaluate(async () => {
+          const { refresh } = await import('/js/ws.js');
+          window.__heldAcaRefresh = refresh();
+        });
+        await until(() => hold.held, 'the pre-attach GET to be held');
+        attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-push-stale-get', {});
+        hub.svc._broadcast(hub.subject, { type: 'overview', ...hub.svc.store.overview(hub.subject) });
+        await until(async () => ((await realSessionRows(page)).length === 1
+          && (await pendingRows(page)).length === 0), 'the live push to attach the session', 5000);
+        hold.release();
+        await page.evaluate(async () => {
+          await window.__heldAcaRefresh;
+          delete window.__heldAcaRefresh;
+        });
+        assert.strictEqual((await realSessionRows(page)).length, 1, 'the older GET erased the pushed session');
+        assert.strictEqual((await pendingRows(page)).length, 0, 'the pushed attach reverted to pending');
+      } finally {
+        if (hold.release) hold.release();
+        await hub.close();
+      }
+    });
+
     await check('the job\'s session replaces the pending row from the live push alone, with no refresh or poll (#178)', async () => {
       // Once the hub has confirmed the execution, the job's device registering
       // is pushed over the WebSocket: the row must swap right then, not on the

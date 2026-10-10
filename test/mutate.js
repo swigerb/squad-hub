@@ -7046,6 +7046,96 @@ if ($health.accessStore -ne 'durable') {`,
   },
   // -- ws.js / devices.js: where the pending row meets the live list ---------
   {
+    name: 'a stale ACA dispatch finally unlocks the newer submission',
+    file: 'web/js/aca.js',
+    find: `    if (generation === acaDialogGeneration) {
+      $('acaStart').disabled = false;`,
+    replace: `    if (true) { // MUTATION
+      $('acaStart').disabled = false;`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch error overwrites the newer dialog',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) {
+      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
+    replace: `    if (true) { // MUTATION
+      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch success closes the newer dialog',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) $('acaScrim').hidden = true;`,
+    replace: `    $('acaScrim').hidden = true; // MUTATION`,
+    mustFail: 'a stale successful dispatch is tracked without closing a newer dialog',
+  },
+  {
+    name: 'a stale ACA dispatch failure is silently lost after the dialog reopens',
+    file: 'web/js/aca.js',
+    find: `      toast(\`Could not start the previous job: \${e.message}\`);`,
+    replace: `      // MUTATION: the previous job failure is not surfaced`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch success is discarded instead of tracked',
+    file: 'web/js/aca.js',
+    find: `    const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
+    trackAcaDispatch({`,
+    replace: `    const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
+    if (!acaDialogIsCurrent(generation)) return; // MUTATION
+    trackAcaDispatch({`,
+    mustFail: 'a stale successful dispatch is tracked without closing a newer dialog',
+  },
+  {
+    name: 'an ACA dialog permits duplicate submission while its POST is in flight',
+    file: 'web/js/aca.js',
+    find: `  if (acaSubmittingGeneration === generation || !acaDialogIsCurrent(generation)) return;`,
+    replace: `  if (!acaDialogIsCurrent(generation)) return; // MUTATION`,
+    mustFail: 'an in-flight dispatch rejects a second submission from the same dialog',
+  },
+  {
+    name: 'a stale ACA repository failure disables the reopened dialog',
+    file: 'web/js/aca.js',
+    find: `      if (!acaDialogIsCurrent(generation)) return;
+      if (e.status === 501)`,
+    replace: `      // MUTATION: stale repository errors may change the current form
+      if (e.status === 501)`,
+    mustFail: 'a stale repository failure cannot disable a reopened ACA dialog',
+  },
+  {
+    name: 'a stale ACA repository success overwrites the reopened list',
+    file: 'web/js/aca.js',
+    find: `      const r = await api('/api/aca/repos');
+      if (!acaDialogIsCurrent(generation)) return;`,
+    replace: `      const r = await api('/api/aca/repos');
+      // MUTATION: stale repository replies may overwrite the current list`,
+    mustFail: 'a stale repository success cannot overwrite the reopened ACA repository list',
+  },
+  {
+    name: 'a current ACA dispatch failure hides the deliberate retry error',
+    file: 'web/js/aca.js',
+    find: `      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;
+      $('acaErr').hidden = false;`,
+    replace: `      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;
+      $('acaErr').hidden = true; // MUTATION`,
+    mustFail: 'a current dispatch failure remains visible and permits a deliberate retry',
+  },
+  {
+    name: 'a live overview leaves an older GET free to erase the pushed session',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      // MUTATION: the live push does not invalidate older GET replies`,
+    mustFail: 'a live overview invalidates an older GET without losing the pushed session',
+  },
+  {
+    name: 'a held overview GET erases the ACA session attached through a live push',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      // MUTATION: the live push does not invalidate older GET replies`,
+    mustFail: 'a held overview GET cannot erase an ACA session attached through the live push (#178)',
+  },
+  {
     // The WS overview push is what makes the swap instant: the job's device
     // arrives, and the pending row is replaced without waiting for the poll.
     name: 'the WS overview push stops attaching a pending ACA row when its device arrives',

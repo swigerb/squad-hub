@@ -79,6 +79,7 @@ export function connect() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'overview') {
+      refreshSeq += 1;
       state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };
       // A pending ACA row is replaced the moment its job's device shows up.
       acaAttachFromOverview();
@@ -258,9 +259,8 @@ export function registerServiceWorker() {
   navigator.serviceWorker.register('/sw.js').catch(() => { /* insecure context, or blocked */ });
 }
 
-// Overlapping refreshes (a filter changed while the 15s poll was in flight)
-// can resolve out of order; only the newest one's overview may land, or an
-// older reply could drop a just-attached ACA device from the list again.
+// A newer refresh or live overview invalidates older in-flight GET replies.
+// Otherwise a reply taken before registration can erase a pushed ACA session.
 let refreshSeq = 0;
 
 export async function refresh() {
@@ -453,4 +453,3 @@ export function setRailCollapsed(collapsed) {
   }
   try { localStorage.setItem(RAIL_KEY, state.railCollapsed ? '1' : '0'); } catch { /* never fatal */ }
 }
-
