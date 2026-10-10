@@ -529,6 +529,15 @@ The session carries `requiredModel: { requested, chosen, confirmed, failure }` �
 see [api.md](api.md). `confirmed` is the only field that says the model is the
 one running. An optional model (the default) behaves exactly as described above.
 
+**Nothing is steered in ahead of the first prompt.** A steer is a second prompt,
+so until the model is confirmed — and until the session's own first prompt has
+gone out, which is after the mode is applied — a required-model session refuses
+it with `NOT_STEERABLE` and a reason, and nothing reaches the agent. This holds
+while Hub is still selecting the agent, while it waits for the model, and for a
+session `Sync` has just restarted, and it keeps holding for a session whose model
+was refused. Once the first prompt is on its way, steering works as it does for
+any session.
+
 ## What a session shows
 Each session carries the context needed to tell it apart from every other one
 at a glance, in both `squad-hub status` and the web UI.
