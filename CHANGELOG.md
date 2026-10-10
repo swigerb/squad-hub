@@ -23,6 +23,22 @@ publication — that workflow never touches npm.
   once you grant permission, asked for only on a click — a real desktop
   notification is raised for each approval, keyed so it is never raised
   twice. See [docs/commands.md](docs/commands.md#desktop-notifications).
+- **The bell inbox** (issue #174). The bell lists everything across every
+  session that needs you in one dropdown: a pending approval you can Allow or
+  Deny inline, and a session that finished a turn and is waiting on your reply
+  (nothing is blocked, so it can be left). A device that disconnects mid-approval
+  leaves a non-interactive "Expired" card for a short while, never a card that
+  still offers Allow or Deny for a question nobody can answer. See
+  [docs/commands.md](docs/commands.md#desktop-notifications).
+- **Web Push for "a session needs you"** (issue #175). An installed app can be
+  alerted while it is closed, over the Web Push protocol (VAPID, `aes128gcm`)
+  built on Node's own `crypto`, with no new dependency. It is off unless the hub
+  has `SQUAD_HUB_VAPID_PUBLIC_KEY` and `SQUAD_HUB_VAPID_PRIVATE_KEY`; the
+  `/api/push/subscriptions` routes belong to the signed-in caller, and a device
+  token gets `403`. The tests prove the encryption and signing by round trip;
+  delivery through a browser vendor's push service from a deployed hub is not
+  claimed here. See [docs/api.md](docs/api.md#web-push-subscriptions-175) and
+  [docs/security.md](docs/security.md#web-push-175).
 - **Teams: a follow-up when an approval is answered or expires.** The original
   Adaptive Card gets a short reply in the same channel —
   *"Answered: Allowed once by Brian from the hub."* or
@@ -36,6 +52,14 @@ publication — that workflow never touches npm.
   person a collaborator". See
   [docs/aca.md](docs/aca.md#the-third-direction-is-different-on-purpose) and
   [docs/security.md](docs/security.md#the-github-app-path-issue-177-a-new-trust-boundary).
+- **Queued on ACA: a row for a dispatch that has no device yet** (issue #178).
+  A successful dispatch from the Run on ACA… dialog shows a "Queued on ACA" row
+  at the top of the session list — Dispatched, Lease claimed, Starting job,
+  Attached — bound to that dispatch's own `trackerId` and run, never to the
+  newest dispatch for a repository. It is replaced by the real session only when
+  the job's own `aca-<execution>` device attaches. A failed dispatch says why;
+  one the hub cannot prove either way reads "Unknown outcome", and both offer
+  **Check again**. See [docs/aca.md](docs/aca.md#queued-on-aca-issue-178).
 - **`squad-hub mcp`.** A stdio [MCP](https://modelcontextprotocol.io) server
   so a coding agent can see and drive sessions across every device the same
   way the web app does — list sessions and devices, start one, answer an
@@ -54,15 +78,61 @@ publication — that workflow never touches npm.
 - **Device rail: grouped sections, a header summary and new empty states**
   (issue #172). The rail now groups devices into an always-visible "ACA
   jobs" on-demand row, a collapsible "Squad on ACA executions" section
-  (devices named from their `displayName`/execution metadata, with a
-  pulsing dot while dispatching), "Cloud devices" and "Local machines" —
-  each with its own count and collapse state, remembered independently in
-  `localStorage`. The header gained a one-line "N online · N sessions"
-  summary. With no sessions at all, the list offers three starting points
-  (ACA, an attached cloud device, a local session) and, with no local
-  device connected, a copyable `npx squad-hub start` command — the same
-  block an empty Local machines section shows. See
+  (devices named from their `displayName`/execution metadata, and a row for
+  each dispatch from this tab that has no device yet — next entry), "Cloud
+  devices" and "Local machines" — each with its own count and collapse state,
+  remembered independently in `localStorage`. The header gained a one-line
+  "N online · N sessions" summary. With no sessions at all, the list offers
+  three starting points (ACA, an attached cloud device, a local session) and,
+  with no local device connected, a copyable `npx squad-hub start` command — the
+  same block an empty Local machines section shows. See
   [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
+- **A pulsing Starting dot in the rail for a dispatch still waiting for its
+  device** (issues #172, #178). Each dispatch made from this tab that has not
+  attached is drawn in "Squad on ACA executions" as `#issue · repo` with a blue
+  dot that pulses only while its outcome is open (and holds still under reduced
+  motion). It reads "Queued" for a run not yet seen running, and "Starting" only
+  once the run is in progress or its receipt names the execution — never from a
+  bare queued workflow. There is one row per dispatch, so two on one repository
+  stay two, and each is replaced by its own job's device on the exact
+  `aca-<execution>` attach, never by an older job's. A failed or unknown
+  dispatch stops pulsing, says why and offers **Check again**. The rows come
+  from this tab's own dispatch state, not from any device presence, and are not
+  counted as devices in "Connected devices", the section or "N online". See
+  [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
+- **Device details and a Disk meter** (issue #173). A device that reports
+  telemetry shows a Disk meter — its fullest reported volume — beside CPU and
+  RAM, and a disclosure chevron opens its volumes, cores and RAM, installed
+  package version (flagged when it differs from the hub's), Copilot CLI version,
+  file access and the label and expiry of its device token, the last read from
+  the verified principal rather than anything the device claims. Disk telemetry
+  is off with the rest of telemetry and bounded by file access (`off`, `scoped`,
+  `all`). See
+  [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
+- **Install as an app, from the header** (issue #171). An install icon in the
+  header, shown only while the app can be installed and is not already running
+  as one; a richer card with steps for browsers that have no native install
+  prompt (iOS, Firefox, Safari); and a "Not now" that hides the icon for 30
+  days rather than for good. See
+  [docs/commands.md#installing-it-as-an-app](docs/commands.md#installing-it-as-an-app).
+- **Ready for review and Squad health** (issue #179). An ended session whose
+  device reported a valid pull request and that has no pending approval gets a
+  violet pill, a violet row edge and an "Open PR ↗" link, and is offered as a
+  Status filter; its Squad health shows as "● healthy" or "● health: N failing"
+  with the per-check list on the session page. See
+  [docs/architecture.md](docs/architecture.md#session-activity-and-pull-requests).
+- **A "Squad on ACA" status card** (issue #180). Under the device rail: whether
+  this hub's GitHub App is connected, whether the issue watcher and Ralph are
+  reachable, and the state of the last dispatch — the first UI to read
+  `GET /api/aca/repos` and `GET /api/aca/dispatches`, read-only and never
+  starting a job. See
+  [docs/aca.md](docs/aca.md#the-status-cards-issue-watcher-and-ralph-rows-180-233).
+- **The session detail is a page** (issue #181). A session opens at
+  `/?session=<key>` rather than in a modal, so a deep link, Back and Forward
+  work; its header carries the back arrow, star, title, rename pencil and
+  status pill, and the session's control check and **Sync session** sit on the
+  page. See
+  [docs/commands.md#the-session-page-chat-squad-and-info](docs/commands.md#the-session-page-chat-squad-and-info).
 - **Session page: Chat, Squad and Info tabs, an inline approval card and an
   approval history** (issue #182). The Squad panel moved onto its own tab,
   unchanged, and the session's context — device, working directory,

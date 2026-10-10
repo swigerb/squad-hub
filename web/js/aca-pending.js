@@ -41,10 +41,17 @@ export function acaWaitExpired(entry) {
   return !!(entry.dispatchedAt && now - entry.dispatchedAt > ACA_MAX_PENDING_MS);
 }
 
-/** The one view of an entry, shared by rendering and the poll-exclusion
- * logic -- never a second hand-maintained notion of "is this terminal". */
-function acaEntryView(entry) {
+/** The one view of an entry, shared by rendering (the list row here, the rail
+ * row in aca-rail.js) and the poll-exclusion logic -- never a second
+ * hand-maintained notion of "is this terminal". */
+export function acaEntryView(entry) {
   return acaStepsForStatus(entry.status, false, acaWaitExpired(entry), entry.executionName);
+}
+
+/** What a pending dispatch is called wherever it is drawn: its issue and
+ * repository, or the repository alone when the dispatch has no issue. */
+export function acaPendingTitle(entry) {
+  return entry.issue ? `#${entry.issue} \u00b7 ${entry.repo}` : entry.repo;
 }
 
 /** The pending row's own markup -- a `.row`, same shape a real session row
@@ -56,7 +63,7 @@ export function acaPendingRowHtml(entry) {
   const stepsHtml = view.steps.map((s) => (
     `<span class="aca-step${s.done ? ' done' : ''}${s.current ? ' now' : ''}">${esc(s.label)}</span>`
   )).join('');
-  const title = entry.issue ? `#${entry.issue} \u00b7 ${entry.repo}` : entry.repo;
+  const title = acaPendingTitle(entry);
   const failure = view.failureReason ? `<div class="row-meta aca-fail">${esc(view.failureReason)}</div>` : '';
   // A terminal outcome (`view.resolved`) still deserves a way back: the person
   // may know the run was retried, or want one more look. This button only ever

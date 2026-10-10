@@ -886,8 +886,10 @@ Below that, the rail groups devices into sections rather than one flat list
 2. **Squad on ACA executions (N)** — devices of kind `aca`, named from their
    `displayName` metadata when a cloud job supplies one (e.g.
    `#304 · AzureAIDriveThru`), with the raw execution id shown as secondary
-   text. A dispatching execution that has not reported in yet is drawn with a
-   pulsing dot rather than the plain offline one.
+   text. A dispatch you made from this tab whose job has not attached yet is
+   drawn here too, as `#issue · repo` with a pulsing dot (see
+   [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
+   Those rows are not devices and are not in the count.
 3. **Cloud devices (N)** — everything else `cloud`-flavored: on-demand and
    always available, the one place work can always be sent.
 4. **Local machines (N)** — everything else: your laptop, a dev box, a bare
@@ -943,6 +945,33 @@ device is actually online. With no local machine connected at all, it also
 offers a copyable `npx squad-hub start` command, the same "Connect a
 device…" dialog as the account menu, and a link to the README's "Try it"
 section; an empty **Local machines** section repeats exactly the same block.
+
+### Dispatches still waiting for a device
+
+A job started with **Run on ACA…** has no device until its own session attaches,
+and the hub reports no presence for a device that does not exist. So the rail
+does not read a presence for it: it draws one row per dispatch this tab is
+tracking, from the same dispatch state as the list's "Queued on ACA" row
+([aca.md](aca.md#queued-on-aca-issue-178)), inside **Squad on ACA executions**.
+
+- **Title and dot.** `#issue · repo`, with a blue dot that pulses only while the
+  outcome is open. The pulse stops under *reduce motion*, where the dot simply
+  stays blue.
+- **What it says.** *Queued* until the run is seen running, then *Starting* —
+  and *Starting* only because the run is in progress or the workflow's receipt
+  names the execution. A run that is merely queued is never called Starting, and
+  a run that finished without a receipt reads *Waiting* rather than started.
+- **One row per dispatch.** Two dispatches on one repository are two rows, and a
+  job's device removes only its own row, by the exact `aca-<execution>` id. An
+  older job's device for the same repository removes nothing.
+- **When it ends badly.** A dispatch that failed, or whose outcome the hub cannot
+  prove, stops pulsing, says why and offers **Check again**, which re-reads the
+  dispatch and starts nothing.
+- **Not a device.** These rows are not counted in "Connected devices", the
+  section's count or "N online".
+
+They come from this tab's own dispatch state: a dispatch made from another
+browser shows up only when its job's device attaches.
 
 ### Telemetry
 **Off by default**, like every other thing the daemon could report about the

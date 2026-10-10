@@ -298,6 +298,66 @@ check('docs describe the device rail\'s grouped sections, and the code matches',
     'commands.md does not describe the "N online · N sessions" summary line');
 });
 
+// #172/#178: a dispatch whose job has not attached has no device and no
+// presence, so the rail draws it from the tab's own dispatch state. The docs
+// once promised a pulsing dot for a "dispatching" presence that nothing
+// produces; they now describe the row that exists, and must not drift back.
+check('docs describe the rail pending ACA rows, and promise no presence that nothing produces', () => {
+  const client = read('web/app.js');
+  const log = read('CHANGELOG.md').replace(/\s+/g, ' ');
+  assert.ok(commands.includes('### Dispatches still waiting for a device'), 'commands.md has no section on the pending ACA rows in the rail');
+  assert.match(client, /class="device aca-rail"/, 'the rail no longer draws a row for a pending dispatch');
+  assert.match(client, /data-aca-retry/, 'the rail row no longer offers Check again');
+  for (const [where, text] of [['commands.md', commands.replace(/\s+/g, ' ')], ['CHANGELOG.md', log]]) {
+    assert.ok(!/pulsing dot (rather than the plain offline one|while dispatching)/.test(text),
+      `${where} again promises a pulsing dot for a "dispatching" device presence, which nothing reports`);
+  }
+  assert.ok(log.includes('only once the run is in progress or its receipt names the execution'),
+    'the changelog does not say when the rail may claim Starting');
+});
+
+// The 0.7.0 changelog is the feature list a reader trusts. These are the
+// issues that landed in it; each must be named, and every link it makes into
+// the docs must land on a file and heading that exist.
+function changelogSection(version) {
+  const log = read('CHANGELOG.md');
+  const start = log.indexOf(`## [${version}]`);
+  assert.ok(start !== -1, `CHANGELOG.md has no ${version} section`);
+  const next = log.indexOf('\n## [', start + 1);
+  return log.slice(start, next === -1 ? undefined : next);
+}
+
+check('the 0.7.0 changelog names every feature that landed in it', () => {
+  const section = changelogSection('0.7.0');
+  const landed = {
+    171: 'install', 172: 'device rail', 173: 'disk and device details', 174: 'bell inbox',
+    175: 'Web Push', 177: 'ACA dispatch', 178: 'queued ACA rows', 179: 'ready for review and health',
+    180: 'ACA status card', 181: 'session detail page', 182: 'session tabs', 183: 'mode and model',
+  };
+  for (const [n, what] of Object.entries(landed)) {
+    assert.ok(new RegExp(`#${n}\\b`).test(section), `the 0.7.0 changelog does not mention #${n} (${what})`);
+  }
+});
+
+check('every docs link in the 0.7.0 changelog lands on a file and heading that exist', () => {
+  const slug = (h) => h.trim().toLowerCase().replace(/[`*_]/g, '').replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s/g, '-');
+  const headings = (file) => {
+    let fenced = false;
+    const out = new Set();
+    for (const line of read(file).split('\n')) {
+      if (/^\s*```/.test(line)) fenced = !fenced;
+      else if (!fenced && /^#{1,6}\s/.test(line)) out.add(slug(line.replace(/^#+\s+/, '')));
+    }
+    return out;
+  };
+  const links = [...changelogSection('0.7.0').matchAll(/\]\(((?:docs\/)?[\w./-]+\.md)(?:#([\w-]+))?\)/g)];
+  assert.ok(links.length > 20, `expected the 0.7.0 changelog to link its docs, found ${links.length}`);
+  for (const [, file, anchor] of links) {
+    assert.ok(fs.existsSync(path.join(ROOT, file)), `the 0.7.0 changelog links ${file}, which does not exist`);
+    if (anchor) assert.ok(headings(file).has(anchor), `the 0.7.0 changelog links ${file}#${anchor}, which is not a heading there`);
+  }
+});
+
 check('docs describe the devices-panel empty states, and the code matches', () => {
   const client = read('web/app.js');
   assert.ok(commands.includes('No sessions yet'), 'commands.md does not mention the "No sessions yet" empty state');

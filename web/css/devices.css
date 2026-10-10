@@ -17,6 +17,7 @@
 .dot.online { background: var(--ok); }
 .dot.stale { background: var(--warn); }
 .dot.offline { background: var(--faint); }
+.dot.failed { background: var(--bad); }
 .group-meta { color: var(--faint); font-weight: 400; font-size: 12px; }
 
 .card {
@@ -414,9 +415,11 @@
    execution id both start their first line from the same baseline. */
 .device-main .device-name { min-height: 26px; display: flex; align-items: center; }
 
-/* A pending/dispatching device is still arriving -- no presence word from the
-   daemon fits it yet, so the dot pulses rather than sitting dark like an
-   offline one or steady like an online one. */
+/* A dispatch from this tab whose job has not attached yet is still arriving:
+   the rail's pending row (web/js/aca-rail.js) pulses its dot while the outcome
+   is open. It is drawn from the tab's own dispatch state, not from a presence
+   -- the hub reports none for a device that does not exist -- and a failed or
+   unknown outcome uses `.failed`/`.stale` and stands still. */
 .dot.dispatching { background: var(--accent); animation: dot-pulse 1.4s ease-in-out infinite; }
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }

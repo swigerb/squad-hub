@@ -834,8 +834,13 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // to the page it began on, and `wireComposer` moved out of `wiring.js` (over
   // its size budget once the fix landed) into the new `composer-wire.js`, which
   // joined the shell in the same bump.
+  //
+  // Bumped to v26 for the rail's pending ACA dispatches (over the v25 shell):
+  // `devices.js`, `connect.js`, `aca-pending.js` and `devices.css` changed, and
+  // the rail's ACA rendering moved out of `devices.js` (25514 of its 25600
+  // bytes) into the new `aca-rail.js`, which joined the shell in the same bump.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v25';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v26';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 

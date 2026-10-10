@@ -87,7 +87,15 @@
 // `/js/composer-wire.js` so that file stays inside its size budget, which adds
 // one module to SHELL. A v24 install has neither the changed scripts nor the
 // new module, so this is v25: above the v24 of the retained header shell.
-const CACHE = 'squad-hub-shell-v25';
+//
+// v26 (the rail's pending ACA dispatches over v25): the device rail now draws a
+// pulsing row for every dispatch this tab made whose job has not attached, and
+// a finished-but-unattached one stops pulsing and says why. devices.js,
+// connect.js, aca-pending.js and devices.css changed, and the rail's ACA
+// rendering moved out of devices.js (at its size budget) into the new
+// `/js/aca-rail.js`, which joins SHELL. A v25 install has neither the changed
+// scripts nor the new module, so this is v26.
+const CACHE = 'squad-hub-shell-v26';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -135,6 +143,7 @@ const SHELL = [
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-match.js',
+  '/js/aca-rail.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',

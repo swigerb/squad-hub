@@ -247,7 +247,9 @@ own Actions runner). Squad Hub shows it as a **"Queued on ACA"** row at the top
 of the session list, on the **All** and **Cloud** scopes (an ACA job cannot run
 on **Local**), through four steps: *Dispatched*, *Lease claimed*, *Starting
 job*, *Attached*. When the job's own session attaches, the row is replaced by
-the real session row.
+the real session row. The device rail draws the same dispatch as a pulsing
+*Starting* row in its "Squad on ACA executions" section until then; see
+[the device roster](commands.md#dispatches-still-waiting-for-a-device).
 
 **How a row finds its job.** Only by identity the hub itself proved, in three
 links, none of them a guess:

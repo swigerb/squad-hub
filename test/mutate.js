@@ -3634,6 +3634,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-match.js',
+  '/js/aca-rail.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
@@ -3660,6 +3661,17 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     mustFail: "the service worker's shell lists the split css, not the old single file",
   },
   {
+    // The rail's pending ACA rows live in their own module (the device
+    // rail's ACA rendering moved out of devices.js to stay in budget). A page
+    // loaded offline without it fails to link, so it must be in the shell.
+    name: 'SHELL drops the rail module that draws the pending ACA rows',
+    file: 'web/sw.js',
+    find: `  '/js/aca-rail.js',
+`,
+    replace: ``,
+    mustFail: "the service worker's shell lists the split css, not the old single file",
+  },
+  {
     // #171: the maskable icon and both install-prompt screenshots are read
     // from the manifest, not the page, so nothing else exercises them --
     // dropping them from SHELL only breaks the install/app-switcher path
@@ -3681,7 +3693,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v25';`,
+    find: `const CACHE = 'squad-hub-shell-v26';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -10842,6 +10854,149 @@ prompt: |
     replace: `        const r = normaliseControl(s.steer(req.text));
         if (false) { // MUTATION`,
     mustFail: 'required model: the daemon refuses a plain steer with NOT_STEERABLE while a session, started or resynced, is still confirming its model',
+  },
+
+  // --- the device rail's pending ACA rows (web/js/aca-rail.js) ---------------
+  // Unit-level: test/aca-rail-unit.js runs the real tracking flow and the real
+  // render(). Probe: node test/mutate-probe.js aca-rail-unit.js "[aca rail]"
+  {
+    name: '[aca rail] the rail draws no pending dispatch rows',
+    file: 'web/js/devices.js',
+    find: `acaRailRowsHtml(state.acaPending, devices))}`,
+    replace: `'' /* MUTATION: the rail draws no pending rows */)}`,
+    mustFail: 'rail flow: a dispatch from this tab appears in the ACA section the moment it is tracked',
+  },
+  {
+    name: '[aca rail] a finished or failed dispatch still pulses',
+    file: 'web/js/aca-rail.js',
+    find: `  if (view.resolved) {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'rail view: it pulses exactly when the shared entry view says the outcome is still open',
+  },
+  {
+    name: '[aca rail] an unknown outcome is painted as a failure',
+    file: 'web/js/aca-rail.js',
+    find: `dot: view.failed ? 'failed' : 'stale',`,
+    replace: `dot: 'failed' /* MUTATION */,`,
+    mustFail: 'rail view: an unknown outcome stops pulsing and is not painted as a failure',
+  },
+  {
+    name: '[aca rail] a bare queued run is called Starting with a lease claimed',
+    file: 'web/js/aca-rail.js',
+    find: `'Lease claimed': ['Queued', 'waiting to claim its lease'],`,
+    replace: `'Lease claimed': ['Starting', 'lease claimed'], // MUTATION`,
+    mustFail: 'rail view: a run that is only queued on Actions never says Starting or lease claimed',
+  },
+  {
+    name: '[aca rail] a run in progress with no receipt claims a lease',
+    file: 'web/js/aca-rail.js',
+    find: `'Starting job': ['Starting', 'the run is in progress'],`,
+    replace: `'Starting job': ['Starting', 'lease claimed'], // MUTATION`,
+    mustFail: 'rail view: a run in progress with no receipt says Starting, from the run, not from a lease',
+  },
+  {
+    name: '[aca rail] a finished run with no receipt is still described as queued',
+    file: 'web/js/aca-rail.js',
+    find: `  if (current && current.label === 'Lease claimed' && entry.status && entry.status.state === 'completed') {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'rail view: a finished run with no receipt keeps waiting, honestly, and does not say Starting',
+  },
+  {
+    name: '[aca rail] the matched device is drawn beside its own pending row',
+    file: 'web/js/aca-rail.js',
+    find: `  return all.filter((e) => e && !e.attached && !acaPendingAttached(e, devices, all));`,
+    replace: `  return all.filter((e) => e && !e.attached); // MUTATION`,
+    mustFail: 'rail entries: the exact aca- device for the confirmed execution replaces the row',
+  },
+  {
+    name: '[aca rail] any device of the same repository takes over a pending row',
+    file: 'web/js/aca-rail.js',
+    find: `!acaPendingAttached(e, devices, all));`,
+    replace: `!(devices || []).some((d) => d && d.meta && d.meta.repo === e.repo)); // MUTATION`,
+    mustFail: 'rail entries: an older job on the same repository never replaces a newer dispatch',
+  },
+  {
+    name: '[aca rail] pending rows are one per repository, not one per dispatch',
+    file: 'web/js/aca-rail.js',
+    find: `  return all.filter((e) => e && !e.attached && !acaPendingAttached(e, devices, all));`,
+    replace: `  return all.filter((e, i) => e && !e.attached && !acaPendingAttached(e, devices, all) && all.findIndex((x) => x.repo === e.repo) === i); // MUTATION`,
+    mustFail: 'rail rows: two dispatches to one repository are two rows, each its own localId',
+  },
+  {
+    name: '[aca rail] a failed dispatch loses its Check again',
+    file: 'web/js/aca-rail.js',
+    find: `  const retry = v.active ? '' : `,
+    replace: `  const retry = true /* MUTATION */ ? '' : `,
+    mustFail: 'rail rows: an open row has no retry, a resolved one has Check again and the reason',
+  },
+  {
+    name: '[aca rail] the ACA section header counts pending dispatches as devices',
+    file: 'web/js/devices.js',
+    find: `<span class="sec-label">\${esc(label)} (\${list.length})</span>`,
+    replace: `<span class="sec-label">\${esc(label)} (\${list.length + (pendingHtml.match(/aca-rail/g) || []).length})</span>`,
+    mustFail: 'rail section: pending rows follow the devices and are not counted as devices',
+  },
+  {
+    name: '[aca rail] the device count in the rail header includes pending dispatches',
+    file: 'web/js/devices.js',
+    find: `  $('deviceCount').textContent = counts.devices || 0;`,
+    replace: `  $('deviceCount').textContent = (counts.devices || 0) + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
+    mustFail: 'rail flow: counts, summary and the pending main list ignore the rail row',
+  },
+  // Real Chromium (test/browser-e2e-unit.js): the pulse is a computed style
+  // and a running animation, and Check again is a click on the rail itself.
+  {
+    name: '[aca rail browser] the Starting dot does not pulse',
+    file: 'web/css/devices.css',
+    find: `.dot.dispatching { background: var(--accent); animation: dot-pulse 1.4s ease-in-out infinite; }`,
+    replace: `.dot.dispatching { background: var(--accent); animation: none; } /* MUTATION */`,
+    mustFail: 'a dispatched ACA job pulses a Starting dot in the rail, uncounted, until its own device replaces the row (#172, #178)',
+  },
+  {
+    name: '[aca rail browser] the Starting dot pulses under prefers-reduced-motion',
+    file: 'web/css/devices.css',
+    find: `@media (prefers-reduced-motion: reduce) {
+  .dot.dispatching { animation: none; }
+}`,
+    replace: `@media (prefers-reduced-motion: reduce) {
+  .dot.dispatching { animation: dot-pulse 1.4s ease-in-out infinite; } /* MUTATION */
+}`,
+    mustFail: 'a dispatched ACA job pulses a Starting dot in the rail, uncounted, until its own device replaces the row (#172, #178)',
+  },
+  {
+    name: '[aca rail browser] Check again in the rail does nothing',
+    file: 'web/js/connect.js',
+    find: `    if (retry) { retryAcaPending(retry.dataset.acaRetry).then(render); return; }`,
+    replace: `    if (retry) return; // MUTATION: the rail's Check again is a dead button`,
+    mustFail: 'a failed or unknown ACA dispatch stops pulsing in the rail, says why, and Check again re-reads it (#172, #178)',
+  },
+
+  // The 0.7.0 changelog is the feature list a reader trusts, and the audit
+  // found it silent about landed features and wrong about the pulse.
+  {
+    name: '[0.7 changelog] the Web Push feature (#175) is dropped from the list',
+    file: 'CHANGELOG.md',
+    find: `- **Web Push for "a session needs you"** (issue #175).`,
+    replace: `- **Web Push for "a session needs you"**.`,
+    mustFail: 'the 0.7.0 changelog names every feature that landed in it',
+  },
+  {
+    name: '[0.7 changelog] a link lands on a heading that does not exist',
+    file: 'CHANGELOG.md',
+    find: `[docs/aca.md](docs/aca.md#queued-on-aca-issue-178).`,
+    replace: `[docs/aca.md](docs/aca.md#queued-on-aca).`,
+    mustFail: 'every docs link in the 0.7.0 changelog lands on a file and heading that exist',
+  },
+  {
+    name: '[0.7 changelog] the rail goes back to promising a pulse for a dispatching presence',
+    file: 'docs/commands.md',
+    find: `   text. A dispatch you made from this tab whose job has not attached yet is
+   drawn here too, as \`#issue · repo\` with a pulsing dot (see
+   [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
+   Those rows are not devices and are not in the count.`,
+    replace: `   text. A dispatching execution that has not reported in yet is drawn with a
+   pulsing dot rather than the plain offline one.`,
+    mustFail: 'docs describe the rail pending ACA rows, and promise no presence that nothing produces',
   },
 ];
 
