@@ -137,7 +137,48 @@ function needBash() {
   return bashPath;
 }
 
-function runShell(script, { files = {}, env = {}, fakeNpm = false } = {}) {
+/** A path as bash wants to read it: Git Bash takes `/c/dir/file`, not `C:\dir\file`. */
+function bashPathOf(p) {
+  if (process.platform !== 'win32') return p;
+  return p.replace(/^([A-Za-z]):[\\/]/, (_, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/');
+}
+const shQuote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+
+/**
+ * `npm test` puts every parent `node_modules/.bin` on PATH, and one of those
+ * can hold a `node` launcher that points at a Node which is not there (this is
+ * what a developer machine with a stray `~/node_modules` looks like). Bash picks
+ * that file up before the real `node`, so a step that calls `node` fails with a
+ * message that has nothing to do with the step. This builds the same trap in a
+ * directory of its own; the launcher is the shape npm generates, plus a marker.
+ */
+function makeHostileNpmBin() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sqrel-npmbin-'));
+  const dir = path.join(root, 'node_modules', '.bin');
+  fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, 'node');
+  fs.writeFileSync(f, [
+    '#!/bin/sh',
+    'echo "HOSTILE-NODE-SHIM-RAN" >&2',
+    'basedir=$(dirname "$(echo "$0" | sed -e \'s,\\\\,/,g\')")',
+    'case `uname` in',
+    '    *CYGWIN*|*MINGW*|*MSYS*) basedir=`cygpath -w "$basedir"`;;',
+    'esac',
+    'exec "$basedir/../node/bin/node"   "$@"',
+    '',
+  ].join('\n'));
+  fs.chmodSync(f, 0o755);
+  return { dir, cleanup: () => { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* temp dir, best effort */ } } };
+}
+
+/**
+ * Runs one step's shell in a scratch directory. The stand-ins are first on PATH:
+ * `npm` (when asked for) is a fake, and `node` is a wrapper that execs THIS
+ * process's own Node by absolute path, so what a step runs is real Node and not
+ * whatever `node` the surrounding PATH happens to resolve to. `inheritedBin` is
+ * a directory put on the inherited PATH, after the stand-ins, the way npm does.
+ */
+function runShell(script, { files = {}, env = {}, fakeNpm = false, inheritedBin = null, realNode = true } = {}) {
   const bash = needBash();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqrel-'));
   try {
@@ -150,15 +191,20 @@ function runShell(script, { files = {}, env = {}, fakeNpm = false } = {}) {
       fs.writeFileSync(f, '#!/bin/sh\necho "FAKE-NPM-ARGS: $*"\nprintf \'%s\\n\' "$FAKE_NPM_OUT"\nexit "${FAKE_NPM_EXIT:-0}"\n');
       fs.chmodSync(f, 0o755);
     }
+    if (realNode) {
+      const f = path.join(bin, 'node');
+      fs.writeFileSync(f, `#!/bin/sh\nexec ${shQuote(bashPathOf(process.execPath))} "$@"\n`);
+      fs.chmodSync(f, 0o755);
+    }
     for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
     fs.writeFileSync(path.join(dir, 'step.sh'), `${script}\n`);
-    const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') || 'PATH';
-    const r = spawnSync(bash, ['-e', 'step.sh'], {
-      cwd: dir,
-      encoding: 'utf8',
-      timeout: 60000,
-      env: { ...process.env, ...env, [pathKey]: `${bin}${path.delimiter}${process.env[pathKey]}` },
-    });
+    // Windows may name the variable Path or PATH; keep exactly one of them.
+    const childEnv = { ...process.env, ...env };
+    const pathKeys = Object.keys(childEnv).filter((k) => k.toLowerCase() === 'path');
+    const inherited = pathKeys.length ? childEnv[pathKeys[0]] : '';
+    for (const k of pathKeys) delete childEnv[k];
+    childEnv[pathKeys[0] || 'PATH'] = [bin, inheritedBin, inherited].filter(Boolean).join(path.delimiter);
+    const r = spawnSync(bash, ['-e', 'step.sh'], { cwd: dir, encoding: 'utf8', timeout: 60000, env: childEnv });
     return { code: r.status, out: `${r.stdout || ''}${r.stderr || ''}` };
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* temp dir, best effort */ }
@@ -353,6 +399,48 @@ check('the changelog guard refuses a version CHANGELOG.md does not mention and a
   const bad = runShell(script, { files: files('## [9.9.8] — before') });
   assert.notStrictEqual(bad.code, 0, `a version with no changelog section was accepted:\n${bad.out}`);
   assert.match(bad.out, /::error::/);
+});
+
+check('the shell steps run this process own Node even when npm puts a broken node launcher first on PATH', () => {
+  const hostile = makeHostileNpmBin();
+  try {
+    // Control: with the isolation off the launcher does win, so this fixture
+    // really reproduces the failure `npm test` produced and is not vacuous.
+    const trap = runShell('node -p 1', { inheritedBin: hostile.dir, realNode: false });
+    assert.notStrictEqual(trap.code, 0, `the broken launcher was never reached, so this fixture proves nothing:\n${trap.out}`);
+    assert.match(trap.out, /HOSTILE-NODE-SHIM-RAN/);
+    const r = runShell('node -p process.execPath', { inheritedBin: hostile.dir });
+    assert.strictEqual(r.code, 0, `a step that calls node failed under an inherited node launcher:\n${r.out}`);
+    assert.doesNotMatch(r.out, /HOSTILE-NODE-SHIM-RAN/, 'the inherited node launcher still wins over the fixture');
+    const same = (a, b) => path.resolve(a.trim()).toLowerCase() === path.resolve(b).toLowerCase();
+    assert.ok(same(r.out, process.execPath),
+      `the step ran a different node than this process.\n  step: ${r.out.trim()}\n  here: ${process.execPath}`);
+  } finally { hostile.cleanup(); }
+});
+
+check('the changelog guard reads the real version under a hostile inherited PATH: 9.9.9 passes, 9.9.8 and a stubbed version do not', () => {
+  const script = step('Validate version consistency').run;
+  const hostile = makeHostileNpmBin();
+  try {
+    const at = (version, heading) => runShell(script, {
+      inheritedBin: hostile.dir,
+      files: {
+        'package.json': JSON.stringify({ name: 'x', version }),
+        'CHANGELOG.md': `# Changelog\n\n${heading}\n\nsomething\n`,
+      },
+    });
+    const ok = at('9.9.9', '## [9.9.9] — now');
+    assert.strictEqual(ok.code, 0, ok.out);
+    assert.match(ok.out, /Version 9\.9\.9 validated/);
+    assert.doesNotMatch(ok.out, /HOSTILE-NODE-SHIM-RAN/);
+    const bad = at('9.9.9', '## [9.9.8] — before');
+    assert.notStrictEqual(bad.code, 0, `a version with no changelog section was accepted:\n${bad.out}`);
+    assert.match(bad.out, /::error::Version 9\.9\.9 not found/, 'the guard did not read the version from package.json');
+    // A node that returned one fixed version would get one of these two wrong.
+    const other = at('9.9.7', '## [9.9.7] — also');
+    assert.strictEqual(other.code, 0, other.out);
+    assert.match(other.out, /Version 9\.9\.7 validated/);
+  } finally { hostile.cleanup(); }
 });
 
 console.log(`\n${pass} passed, ${fail} failed${skip ? `, ${skip} skipped` : ''}`);
