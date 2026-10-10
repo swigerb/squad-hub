@@ -2506,13 +2506,14 @@ async function watchCsp(pg) {
       await gotoSettled(page, `${origin}/?session=${encodeURIComponent(key)}`);
       await page.waitForSelector('#detailScrim:not([hidden])');
       try {
+        await page.fill('#dtInput', 'Preserve this unsent follow-up');
         await page.evaluate(() => { window.__squadHubTest.state.filters.status = 'active'; });
         await daemon.handle({ op: 'stop-session', sessionId: started.id });
         await page.evaluate(() => window.__squadHubTest.refresh());
         assert.strictEqual(await page.evaluate((expected) => (
           !document.getElementById('detailScrim').hidden
           && window.__squadHubTest.state.currentSession.session.key === expected
-          && window.__squadHubTest.state.currentSession.session.status === 'stopped'
+          && document.getElementById('dtInput').value === 'Preserve this unsent follow-up'
         ), key), true, 'a stopped session was mistaken for a removed session when the active filter excluded it');
       } finally {
         await page.evaluate(() => { window.__squadHubTest.state.filters.status = ''; });

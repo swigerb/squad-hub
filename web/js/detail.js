@@ -266,7 +266,7 @@ export function syncDetailHeader() {
   if (!state.currentSession) return;
   const key = sessionKey(state.currentSession.session);
   const found = findSession(key);
-  if (!found) { closeDetail({ nav: NAV.REPLACE }); return; }
+  if (!found) return;
   state.currentSession = found;
   renderDetailTitle(found);
   $('dtMeta').textContent = [
@@ -375,7 +375,7 @@ export async function forgetStaleSession() {
     await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/forget`, {
       method: 'POST', body: { sessionId: current.session.id, force: true },
     });
-    $('detailScrim').hidden = true;
+    if (state.currentSession && sessionKey(state.currentSession.session) === sessionKey(current.session)) closeDetail({ nav: NAV.REPLACE });
     await refresh();
   } catch (e) {
     alert(`Could not forget: ${e.message}`);

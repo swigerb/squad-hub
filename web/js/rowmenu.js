@@ -12,7 +12,7 @@ import {
 import { acaSessionRepo } from './aca.js';
 import { state, api } from './api.js';
 import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
-import { openDetail } from './detail.js';
+import { openDetail, closeDetail } from './detail.js';
 import { openAca } from './aca.js';
 import { refresh } from './ws.js';
 // Circular import, same as `prefs-sync.js`'s own back-reference into `ws.js`:
@@ -180,6 +180,8 @@ export async function onRowMenuAction(key, action, href) {
       if (!sweep) return;
       try {
         await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, { method: 'POST', body: {} });
+        if (state.currentSession && state.currentSession.device.deviceId === device.deviceId
+          && !NON_TERMINAL_STATUSES.has(state.currentSession.session.status)) closeDetail({ nav: 'replace' });
         await refresh();
       } catch (e) { toast(`Could not remove: ${e.message}`); }
       return;
@@ -192,6 +194,7 @@ export async function onRowMenuAction(key, action, href) {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, {
         method: 'POST', body: { sessionId: session.id },
       });
+      if (state.currentSession && (state.currentSession.session.key || state.currentSession.session.id) === key) closeDetail({ nav: 'replace' });
       await refresh();
     } catch (e) { toast(`Could not remove: ${e.message}`); }
   }

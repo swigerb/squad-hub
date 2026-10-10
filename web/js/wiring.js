@@ -1,10 +1,4 @@
-// The main Wiring entry point, split out of app.js by #200 (part 4/4 of
-// #165). `wire()` attaches every control's event handler, delegating to the
-// feature modules (aca.js, access.js, connect.js, filters.js, install.js)
-// for the dialogs that moved there, and keeping the handlers that are
-// general chrome -- the account menu, the Create/Tidy split buttons, the
-// detail panel's composer -- here, next to the menu/popup machinery they
-// share. Behavior is unchanged byte-for-byte from the original.
+// Main UI event wiring; feature-specific dialog handlers live in their modules.
 
 import { state, api } from './api.js';
 import { $, esc, toast, undoToast } from './util.js';
@@ -142,8 +136,7 @@ let rowMenuKey = null;
 let rowMenuBtn = null;
 let rowMenuMarkup = null;
 
-/** Closed on every refresh, Esc, a click outside it, or any other popup
- * opening -- a popup like any other, it just has no one fixed trigger. */
+/** Navigation, Escape and outside clicks close either kind of menu anchor. */
 export function closeRowMenu({ restoreFocus = false } = {}) {
   if (rowMenuKey === null) return;
   const m = $('rowMenu');
