@@ -104,7 +104,10 @@ function listen(server) {
 
 
 let pass = 0; let fail = 0;
+let browserForChecks = null;
 async function check(name, fn) {
+  const pages = () => browserForChecks ? browserForChecks.contexts().flatMap((c) => c.pages()) : [];
+  const dialogs = new Map(pages().map((p) => [p, p.listeners('dialog')]));
   try {
     await fn(); pass += 1;
     console.log(`  ok   ${name}`);
@@ -113,6 +116,14 @@ async function check(name, fn) {
     fail += 1;
     console.log(`  FAIL ${name}\n         ${e.message}`);
     console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  } finally {
+    // A failed click must not leave a once-handler to accept a later test's dialog.
+    for (const p of pages()) {
+      const before = dialogs.get(p) || [];
+      for (const listener of p.listeners('dialog')) {
+        if (!before.includes(listener)) p.removeListener('dialog', listener);
+      }
+    }
   }
 }
 
@@ -504,6 +515,7 @@ function railFacts(page) {
   const userToken = auth.mintDevToken('t1', 'u1', 'test person');
 
   const browser = await chromium.launch();
+  browserForChecks = browser;
   const page = await browser.newPage();
   const consoleErrors = [];
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
@@ -1336,42 +1348,85 @@ function railFacts(page) {
       const start = await daemon.handle({ op: 'start-session', prompt: 'ended for undo test', cwd: process.cwd() });
       await daemon.handle({ op: 'stop-session', sessionId: start.id });
       await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(250));
-      await page.click('#tidyBtn');
-      await page.click('[data-forget="7"]');
-      const toastText = await until(async () => {
-        const t = await page.evaluate(() => document.getElementById('toast').textContent);
-        return /will be removed in a few seconds/.test(t) ? t : null;
-      }, 'the Undo toast to appear');
-      assert.match(toastText, /Undo$/, 'the Undo toast did not offer an Undo button');
-      assert.ok(await page.$('#toastUndo'), 'no #toastUndo button was rendered');
-      // Well inside the (shortened) window: nothing has reached the device yet.
-      await page.waitForTimeout(60);
-      assert.ok(daemon.sessions.has(start.id), 'the sweep reached the device before the Undo window expired');
-      // Past the window: the sweep has now actually run.
-      await until(async () => {
-        const t = await page.evaluate(() => document.getElementById('toast').textContent);
-        return /^Removed|^Nothing to remove/.test(t) || null;
-      }, 'the sweep to report what it did after the Undo window');
+      // Scope '7' cannot remove this fresh session. Observe the actual request
+      // and device call, and order the probe before the commit timer's deadline.
+      const told = [];
+      const forgetSessions = daemon.forgetSessions;
+      const ownForget = Object.prototype.hasOwnProperty.call(daemon, 'forgetSessions');
+      daemon.forgetSessions = function spy(opts) { told.push(opts); return forgetSessions.call(this, opts); };
+      try {
+        await page.evaluate((half) => {
+          const log = [];
+          const realFetch = window.fetch;
+          window.fetch = function watched(input, init) {
+            const url = typeof input === 'string' ? input : input.url;
+            if (init && init.method === 'POST' && /\/api\/devices\/[^/]+\/forget$/.test(url)) log.push('request sent');
+            return realFetch.apply(this, arguments);
+          };
+          const toastEl = document.getElementById('toast');
+          const seen = new MutationObserver(() => {
+            if (!document.getElementById('toastUndo')) return;
+            seen.disconnect();
+            log.push('Undo toast shown');
+            setTimeout(() => {
+              log.push(!toastEl.hidden && document.getElementById('toastUndo') ? 'half the window: toast up' : 'half the window: toast gone');
+            }, half);
+          });
+          seen.observe(toastEl, { childList: true, subtree: true });
+          window.__undoWatch = { log, stop: () => { seen.disconnect(); window.fetch = realFetch; } };
+        }, 125);
+        await page.click('#tidyBtn');
+        await page.click('[data-forget="7"]');
+        const toastText = await until(async () => {
+          const t = await page.evaluate(() => document.getElementById('toast').textContent);
+          return /will be removed in a few seconds/.test(t) ? t : null;
+        }, 'the Undo toast to appear');
+        assert.match(toastText, /Undo$/, 'the Undo toast did not offer an Undo button');
+        assert.ok(await page.$('#toastUndo'), 'no #toastUndo button was rendered');
+        const order = await until(async () => {
+          const log = await page.evaluate(() => window.__undoWatch.log);
+          return log.length >= 3 ? log : null;
+        }, 'the sweep to be sent once the Undo window passed');
+        assert.deepStrictEqual(order, ['Undo toast shown', 'half the window: toast up', 'request sent'],
+          `the sweep did not wait out the Undo window before telling the device anything: ${order.join(' > ')}`);
+        await until(async () => {
+          const t = await page.evaluate(() => document.getElementById('toast').textContent);
+          return /^Removed|^Nothing to remove/.test(t) || null;
+        }, 'the sweep to report what it did after the Undo window');
+        assert.strictEqual(told.length, 1, `the device was told ${told.length} times by one sweep, not once`);
+        assert.strictEqual(told[0].olderThanMs, 7 * 24 * 3600 * 1000, 'the sweep reached the device with the wrong window');
+        assert.ok(daemon.sessions.has(start.id), 'a sweep of sessions older than 7 days took one that had only just ended');
+      } finally {
+        if (ownForget) daemon.forgetSessions = forgetSessions; else delete daemon.forgetSessions;
+        await page.evaluate(() => { if (window.__undoWatch) { window.__undoWatch.stop(); delete window.__undoWatch; } });
+      }
     });
 
     await check('clicking Undo on a forget sweep cancels it -- the device is never told', async () => {
       const start = await daemon.handle({ op: 'start-session', prompt: 'ended for undo-cancel test', cwd: process.cwd() });
       await daemon.handle({ op: 'stop-session', sessionId: start.id });
       await page.evaluate(() => window.__squadHubTest.setUndoDelayForTest(300));
-      await page.click('#tidyBtn');
-      await page.click('[data-forget="7"]');
-      await until(async () => (await page.$('#toastUndo')) !== null, 'the Undo button to appear');
-      await page.click('#toastUndo');
-      // American English (#167): the toast says "canceled", one L.
-      const cancelText = await until(async () => {
-        const t = await page.evaluate(() => document.getElementById('toast').textContent);
-        return /canceled/i.test(t) ? t : null;
-      }, 'the cancellation to be reported');
-      assert.match(cancelText, /canceled/i);
-      // Wait past the window the sweep would have used, and confirm it never fired.
-      await page.waitForTimeout(400);
-      assert.ok(daemon.sessions.has(start.id),
-        'a forget sweep ran anyway after Undo was clicked -- the device was told despite being canceled');
+      const told = [];
+      const forgetSessions = daemon.forgetSessions;
+      const ownForget = Object.prototype.hasOwnProperty.call(daemon, 'forgetSessions');
+      daemon.forgetSessions = function spy(opts) { told.push(opts); return forgetSessions.call(this, opts); };
+      try {
+        await page.click('#tidyBtn');
+        await page.click('[data-forget="7"]');
+        await until(async () => (await page.$('#toastUndo')) !== null, 'the Undo button to appear');
+        await page.click('#toastUndo');
+        // American English (#167): the toast says "canceled", one L.
+        const cancelText = await until(async () => {
+          const t = await page.evaluate(() => document.getElementById('toast').textContent);
+          return /canceled/i.test(t) ? t : null;
+        }, 'the cancellation to be reported');
+        assert.match(cancelText, /canceled/i);
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 400)));
+        assert.deepStrictEqual(told, [], 'the device was told to forget sessions after Undo');
+        assert.ok(daemon.sessions.has(start.id), 'Undo removed the fresh session');
+      } finally {
+        if (ownForget) daemon.forgetSessions = forgetSessions; else delete daemon.forgetSessions;
+      }
     });
 
     // ---- removing a device also waits out an Undo window -----------------
@@ -2735,7 +2790,14 @@ function railFacts(page) {
           const el = document.getElementById(id);
           if (!el || el.offsetParent === null) return null;
           const r = el.getBoundingClientRect();
-          return { left: r.left, right: r.right, width: r.width, height: r.height };
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          return {
+            left: r.left, right: r.right, width: r.width, height: r.height,
+            lines: new Set([...range.getClientRects()].filter((q) => q.width > 0).map((q) => Math.round(q.top))).size,
+            cutX: el.scrollWidth - el.clientWidth,
+            cutY: el.scrollHeight - el.clientHeight,
+          };
         };
         return {
           vw,
@@ -2759,6 +2821,10 @@ function railFacts(page) {
           `${label} is clipped or sits outside the 390px viewport (left=${rect.left}, right=${rect.right}, viewport=${bounds.vw})`);
         assert.ok(rect.height <= 34,
           `${label}'s label wrapped onto more than one line at 390px (height=${rect.height}px, expected a single ~32px line)`);
+        assert.strictEqual(rect.lines, 1,
+          `${label}'s label wraps onto ${rect.lines} lines inside its ${Math.round(rect.height)}px button at 390px`);
+        assert.ok(rect.cutX <= 1 && rect.cutY <= 1,
+          `${label}'s label is cut off by its button at 390px (${rect.cutX}px sideways, ${rect.cutY}px down)`);
       }
       await page.setViewportSize({ width: 1280, height: 900 });
     });
@@ -3207,8 +3273,15 @@ function railFacts(page) {
             width: document.documentElement.clientWidth,
             metaTop: document.getElementById('dtMeta').getBoundingClientRect().top,
             controls: ids.map((id) => {
-              const rect = document.getElementById(id).getBoundingClientRect();
-              return { id, left: rect.left, right: rect.right, bottom: rect.bottom, height: rect.height };
+              const el = document.getElementById(id);
+              const rect = el.getBoundingClientRect();
+              const range = document.createRange();
+              range.selectNodeContents(el);
+              return {
+                id, left: rect.left, right: rect.right, bottom: rect.bottom, height: rect.height,
+                lines: new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size,
+                cutX: el.scrollWidth - el.clientWidth, cutY: el.scrollHeight - el.clientHeight,
+              };
             }),
           };
         });
@@ -3217,6 +3290,8 @@ function railFacts(page) {
             `${rect.id} is clipped on the unreachable session at 390px`);
           assert.ok(rect.height <= 34 && rect.bottom <= geometry.metaTop + 0.5,
             `${rect.id} wraps its label or overlaps metadata`);
+          assert.strictEqual(rect.lines, 1, `${rect.id} wraps its label inside its fixed-height button`);
+          assert.ok(rect.cutX <= 1 && rect.cutY <= 1, `${rect.id} clips its label`);
         }
       } finally {
         await page.setViewportSize({ width: 1280, height: 900 });
@@ -3237,7 +3312,7 @@ function railFacts(page) {
       try {
         for (const scheme of ['light', 'dark']) {
           await page.emulateMedia({ colorScheme: scheme });
-          for (const width of [1280, 900, 390]) {
+          for (const width of [1280, 1200, 1100, 1000, 901, 900, 390]) {
             const at = `${what} at ${width}px in the ${scheme} theme`;
             await page.setViewportSize({ width, height: 844 });
             await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
@@ -3324,7 +3399,7 @@ function railFacts(page) {
             const spread = (list) => Math.max(...list.map(center)) - Math.min(...list.map(center));
             const first = m.controls.filter((c) => titleRow.includes(c.id));
             const right = m.controls.filter((c) => !titleRow.includes(c.id));
-            if (width > 900) {
+            if (width > 1200) {
               assert.ok(spread(m.controls) <= 1, `${at}: the header is not one line (centres span ${spread(m.controls).toFixed(1)}px)`);
             } else {
               assert.ok(spread(first) <= 1, `${at}: the title row is not one line (centres span ${spread(first).toFixed(1)}px)`);
@@ -5639,6 +5714,64 @@ function railFacts(page) {
         }
       } finally {
         await rv.page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+        await rv.page.emulateMedia({ colorScheme: null });
+        await rv.page.setViewportSize({ width: 1280, height: 900 });
+      }
+    });
+
+    await check('the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)', async () => {
+      const longest = 'an-organization-with-a-name-longer-than-any-pill-allows/and-its-repository';
+      try {
+        await gotoSettled(rv.page, `${rv.origin}/?token=${rv.token}`);
+        await rv.page.waitForSelector('#groups .row', { timeout: 20000 });
+        for (const stress of [false, true]) {
+          for (const width of [390, 600, 601, 640, 700, 768, 800, 900, 901, 1000, 1100, 1220, 1280]) {
+            for (const scheme of ['dark', 'light']) {
+              await rv.page.setViewportSize({ width, height: 900 });
+              await rv.page.emulateMedia({ colorScheme: scheme });
+              const problems = await rv.page.evaluate((label) => {
+                const problems = [];
+                const restore = [];
+                if (label) {
+                  for (const v of document.querySelectorAll('.filterbar .sp-value')) { restore.push([v, v.textContent]); v.textContent = label; }
+                }
+                const px = (n) => `${Math.round(n)}px`;
+                const root = document.documentElement;
+                const vw = root.clientWidth;
+                const bar = document.querySelector('.filterbar').getBoundingClientRect();
+                const box = document.querySelector('.sessionbox').getBoundingClientRect();
+                const rail = document.getElementById('deviceRail').getBoundingClientRect();
+                if (root.scrollWidth > vw) problems.push(`the page is ${root.scrollWidth}px wide in a ${vw}px viewport`);
+                if (rail.right > vw + 0.5) problems.push(`the devices rail ends at ${px(rail.right)}, past the ${vw}px screen`);
+                if (Math.abs(bar.left - box.left) > 1 || Math.abs(bar.right - box.right) > 1) {
+                  problems.push(`the filter bar spans ${px(bar.left)}-${px(bar.right)} but the list under it spans ${px(box.left)}-${px(box.right)}`);
+                }
+                const within = (what, el) => {
+                  const r = el.getBoundingClientRect();
+                  if (r.left < bar.left - 0.5 || r.right > bar.right + 0.5) {
+                    problems.push(`${what} spans ${px(r.left)}-${px(r.right)}, outside the filter bar's ${px(bar.left)}-${px(bar.right)}`);
+                  }
+                  return r;
+                };
+                const q = within('the keyword box', document.getElementById('q'));
+                if (q.width < 159.5) problems.push(`the keyword box is squeezed to ${px(q.width)}`);
+                if (!matchMedia('(max-width: 600px)').matches) {
+                  for (const pill of document.querySelectorAll('.filterbar-end .selectpill')) {
+                    const what = `the ${pill.getAttribute('aria-label') || 'filter'} dropdown`;
+                    const r = within(what, pill);
+                    if (Math.round(r.height) !== 34) problems.push(`${what} is ${px(r.height)} tall; its label wrapped`);
+                  }
+                  if (label && bar.height < 60) problems.push(`the filter bar stayed ${px(bar.height)} tall with its longest labels, so it was not what made room`);
+                }
+                for (const [v, text] of restore) v.textContent = text;
+                return problems;
+              }, stress ? longest : null);
+              assert.deepStrictEqual(problems, [],
+                `at ${width}px in the ${scheme} theme${stress ? ' with the longest filter labels' : ''}: ${problems.join('; ')}`);
+            }
+          }
+        }
+      } finally {
         await rv.page.emulateMedia({ colorScheme: null });
         await rv.page.setViewportSize({ width: 1280, height: 900 });
       }
