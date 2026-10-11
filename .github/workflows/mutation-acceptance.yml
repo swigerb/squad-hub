@@ -26,9 +26,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -71,6 +68,9 @@ jobs:
 
       # Each runner owns one checkout and performs both real full baselines.
       - name: Run the complete partition and require named catches
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           set -o pipefail
           node test/mutate.js --shard "${{ matrix.shard }}/4" 2>&1 | tee mutation.log

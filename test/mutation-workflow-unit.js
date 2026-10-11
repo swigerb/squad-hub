@@ -14,8 +14,7 @@ function check(name, fn) {
 check('mutation CI partitions the complete catalogue on four separate runners', () => {
   assert.match(source, /runs-on: windows-latest/);
   assert.match(source, /shell: bash/);
-  assert.match(source, /TEMP: \$\{\{ runner\.temp \}\}/);
-  assert.match(source, /TMP: \$\{\{ runner\.temp \}\}/);
+  assert.match(source, /- name: Run the complete partition and require named catches\n        env:\n          TEMP: \$\{\{ runner\.temp \}\}\n          TMP: \$\{\{ runner\.temp \}\}/);
   assert.match(source, /fail-fast: false/);
   assert.match(source, /max-parallel: 4/);
   assert.match(source, /shard: \[1, 2, 3, 4\]/);
