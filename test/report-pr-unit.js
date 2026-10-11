@@ -102,7 +102,7 @@ async function startHub() {
     });
     r.on('error', reject);
   });
-  return { auth, svc, hub, subject: me.subject };
+  return { auth, svc, hub, subject: me.subject, tmpStore };
 }
 
 (async () => {
@@ -541,8 +541,12 @@ async function startHub() {
       assert.deepStrictEqual(second.svc.store.listSessions(second.subject).map((s) => s.id), [],
         'the fixture reloaded a session from the shared home');
     } finally {
-      if (second) await second.svc.close();
+      if (second) {
+        await second.svc.close();
+        fs.rmSync(second.tmpStore, { recursive: true, force: true });
+      }
       await first.svc.close();
+      fs.rmSync(first.tmpStore, { recursive: true, force: true });
     }
   });
 
