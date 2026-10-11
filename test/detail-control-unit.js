@@ -84,6 +84,15 @@ const assert = require('assert');
 const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
+// A check that awaits something that never settles empties the event loop, and
+// Node then exits 0 with the rest of the file never run. That is a failure,
+// and is said as one rather than being counted as a smaller pass.
+let finished = false;
+process.on('exit', () => {
+  if (finished) return;
+  console.log('RESULT\tfail\tthe run ended before every check had finished\tsomething awaited never settled');
+  process.exitCode = 1;
+});
 async function checkAsync(name, fn) {
   try {
     await fn(); pass += 1;
@@ -129,8 +138,12 @@ function fakeDocument() {
           closest: () => null,
           addEventListener() {},
           // What `dtInput`'s Enter key does to `dtSend`; the promise is kept so
-          // a test can wait for the send the key started.
-          click() { this.lastClick = this.onclick && this.onclick(); return this.lastClick; },
+          // a test can wait for the send the key started. A disabled button
+          // does not click, as in a browser.
+          click() {
+            this.lastClick = this.disabled ? undefined : this.onclick && this.onclick();
+            return this.lastClick;
+          },
         };
       }
       return byId[id];
@@ -158,6 +171,10 @@ function deferred() {
 async function tick(n = 4) {
   for (let i = 0; i < n; i += 1) await Promise.resolve();
 }
+// Everything that can happen without a timer or a reply has happened: used to
+// show that a press did NOT reach the device, where a few ticks only show that
+// it had not yet.
+const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 const src = readWebSource();
 const mod = { exports: {} };
@@ -169,9 +186,11 @@ new Function('module', 'exports', `${src}
 // (via \`applyNav\`) call directly.
 let __apiImpl = async () => { throw new Error('api not stubbed for this call'); };
 let __refreshCalls = 0;
+let __refreshImpl = async () => {};
 api = (...args) => __apiImpl(...args);
-refresh = async () => { __refreshCalls += 1; };
+refresh = async () => { __refreshCalls += 1; return __refreshImpl(); };
 function __setApiImpl(fn) { __apiImpl = fn; }
+function __setRefreshImpl(fn) { __refreshImpl = fn; }
 function __getRefreshCalls() { return __refreshCalls; }
 // The Mode and Model bar (#183) still runs for real; this only records when it
 // was painted and what the composer said at that moment.
@@ -185,13 +204,13 @@ function __takeNtPaints() { const out = __ntPaints; __ntPaints = []; return out;
 module.exports = {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
   openDetail, closeDetail, syncDetailHeader, wireComposer,
-  __setApiImpl, __getRefreshCalls, __takeNtPaints,
+  __setApiImpl, __setRefreshImpl, __getRefreshCalls, __takeNtPaints,
 };`)(mod, mod.exports);
 
 const {
   verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, state, renderControl, composerReduce,
   openDetail, closeDetail, syncDetailHeader, wireComposer,
-  __setApiImpl, __getRefreshCalls, __takeNtPaints,
+  __setApiImpl, __setRefreshImpl, __getRefreshCalls, __takeNtPaints,
 } = mod.exports;
 
 function session(key, overrides = {}) {
@@ -235,6 +254,7 @@ function apiRouter() {
 
 function resetComposer() {
   state.composer = composerReduce(undefined, { type: 'reset' });
+  __setRefreshImpl(async () => {});
 }
 
 // ---- the send ownership tests below drive the page's real handlers ---------
@@ -289,6 +309,17 @@ function steerApi() {
     throw new Error(`unexpected path: ${path}`);
   });
   return steers;
+}
+
+/** The list refresh that follows a send: every call is held for the test to settle, like `steerApi`'s steers. */
+function heldRefresh() {
+  const calls = [];
+  __setRefreshImpl(() => {
+    const held = deferred();
+    calls.push(held);
+    return held.promise;
+  });
+  return calls;
 }
 
 function captureAlerts() {
@@ -1074,6 +1105,256 @@ const pressSend = () => dom('dtSend').onclick();
     assert.strictEqual(dom('dtInput').value, '', 'a confirmed send did not clear its draft');
   });
 
+  // ---------------------------------------------------------------------------
+  // The message that landed, and the refresh behind it. The agent has the
+  // message the moment the reply says so; what follows is only the page
+  // catching up with the session list. Until then the session stays held (a
+  // live push repaints the bar and must not hand Send back), but the draft that
+  // was sent is gone, so a press can only ever be a new message.
+  // ---------------------------------------------------------------------------
+  const enter = () => { dom('dtInput').onkeydown({ key: 'Enter', preventDefault() {} }); return dom('dtSend').lastClick; };
+
+  await checkAsync('(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles', async () => {
+    resetComposer();
+    const world = sendWorld('held-ok');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('once only');
+    const sending = pressSend();
+    assert.strictEqual(steers.length, 1, 'pressing Send never reached the device');
+    steers[0].resolve({ sent: true });
+    await tick();
+
+    assert.strictEqual(refreshes.length, 1, 'a landed send did not ask for the session list');
+    assert.strictEqual(dom('dtInput').value, '', 'the draft was kept in the box while the page refreshed, for anything to send again');
+    assert.strictEqual(state.composer.draft, '', 'the composer kept the draft while the page refreshed');
+    assert.strictEqual(state.composer.outcome, 'sent', 'the composer did not say the message was sent');
+    assert.strictEqual(dom('dtSend').disabled, true, 'Send was offered while the landed message was still being folded into the list');
+
+    // A live push rebuilds the open record and repaints the bar. Send stays held.
+    world.publish(); syncDetailHeader();
+    assert.strictEqual(dom('dtSend').disabled, true, 'a live push gave Send back before the refresh had settled');
+    typeInBox('a second thought');
+    world.publish(); syncDetailHeader();
+    assert.strictEqual(dom('dtSend').disabled, true, 'typing a new message and a live push gave Send back before the refresh had settled');
+    assert.strictEqual(enter(), undefined, 'Enter pressed a disabled Send');
+    // Not awaited before it is looked at: a press that did send would wait for
+    // a reply nobody gives, and the check would never get to say so.
+    const pressed = pressSend();
+    await settle();
+    assert.strictEqual(steers.length, 1, 'a press while the refresh was pending sent a second message');
+    await pressed;
+    assert.deepStrictEqual(alerts, [], 'a press the session was holding raised a dialog');
+    assert.strictEqual(dom('dtInput').value, 'a second thought', 'a refused press threw away the new message');
+    // A press that gets past a disabled button is refused too, and refusing it
+    // does not let go of the message it refused to repeat.
+    const past = dom('dtSend').onclick();
+    await settle();
+    assert.strictEqual(steers.length, 1, 'a press that got past the disabled button sent a second message');
+    await past;
+    assert.deepStrictEqual(alerts, [], 'a refused repeat raised a dialog');
+    world.publish(); syncDetailHeader();
+    assert.strictEqual(dom('dtSend').disabled, true, 'refusing a repeat released the hold of the message it refused to repeat');
+    assert.strictEqual(dom('dtInput').value, 'a second thought', 'a refused repeat threw away the new message');
+
+    refreshes[0].resolve();
+    await sending;
+    assert.strictEqual(dom('dtSend').disabled, false, 'Send stayed held after the refresh had settled');
+    assert.strictEqual(dom('dtInput').value, 'a second thought', 'the first send settling erased the message typed after it');
+    assert.strictEqual(state.composer.draft, 'a second thought', 'the first send settling erased the composer draft typed after it');
+
+    const next = pressSend();
+    assert.strictEqual(steers.length, 2, 'the next message could not be sent once the refresh had settled');
+    assert.strictEqual(steers[1].body.text, 'a second thought', 'the next press did not send what was typed');
+    steers[1].resolve({ sent: true });
+    await tick();
+    refreshes[1].resolve();
+    await next;
+    assert.strictEqual(dom('dtInput').value, '', 'the next message was not cleared once it landed');
+    assert.deepStrictEqual(alerts, [], 'a send that succeeded raised a dialog');
+  });
+
+  await checkAsync('(send held) a landed send is not undone by a refresh that fails: the draft is gone, the failure is said under the bar, and the session is released', async () => {
+    resetComposer();
+    const world = sendWorld('held-fails');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+    const carried = pressSend();
+    steers[0].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-plan' }] });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'a landed send kept its draft while the refresh was pending');
+    refreshes[0].reject(new Error('hub unreachable'));
+    await carried;
+    assert.deepStrictEqual(alerts, [], 'a send that landed raised a dialog because the refresh failed');
+    assert.strictEqual(dom('dtInput').value, '', 'a failed refresh brought the sent draft back');
+    assert.strictEqual(state.composer.outcome, 'sent', 'a failed refresh made a send that landed look like one that did not');
+    assert.strictEqual(dom('dtNtNote').textContent,
+      'The agent confirmed: Mode is now Plan. The session list could not be refreshed (hub unreachable) and may be out of date until the next update.',
+      'the note did not say both that the agent confirmed and that the refresh failed');
+    assert.strictEqual(dom('dtNtNote').dataset.kind, 'error', 'a failed refresh was not marked as needing attention');
+    assert.strictEqual(dom('dtSend').disabled, false, 'a failed refresh left the session held');
+    assert.strictEqual(steers.length, 1, 'a failed refresh caused a second request');
+
+    typeInBox('and then this');
+    const plain = pressSend();
+    assert.strictEqual(steers.length, 2, 'the session stayed held after a refresh that failed');
+    assert.strictEqual(steers[1].body.mode, undefined, 'a spent pick came back after a refresh that failed');
+    steers[1].resolve({ queued: true });
+    await tick();
+    refreshes[1].reject(new Error('hub unreachable'));
+    await plain;
+    assert.strictEqual(dom('dtNtNote').textContent,
+      'Your message was queued. The session list could not be refreshed (hub unreachable) and may be out of date until the next update.',
+      'a queued message was reported as sent, or the failed refresh went unsaid');
+    assert.strictEqual(state.composer.outcome, 'queued', 'a failed refresh changed what the composer says happened to the message');
+    assert.strictEqual(dom('dtInput').value, '');
+    assert.deepStrictEqual(alerts, []);
+  });
+
+  await checkAsync('(send held) a refusal whose refresh also fails keeps the draft and the pick, says both, and releases the session', async () => {
+    resetComposer();
+    const world = sendWorld('held-refused');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    dom('dtNtMode').onchange({ target: { value: 'm-plan' } });
+    typeInBox('plan it');
+    const sending = pressSend();
+    steers[0].reject(new Error('mode refused'));
+    await tick();
+    assert.strictEqual(refreshes.length, 1, 'a refusal that carried a pick did not ask for the session list');
+    assert.strictEqual(dom('dtSend').disabled, true, 'the session was handed back before the refusal had been folded into the list');
+    refreshes[0].reject(new Error('hub unreachable'));
+    await sending;
+    assert.deepStrictEqual(alerts, [], 'a refusal already said under the bar was also a dialog');
+    assert.strictEqual(dom('dtNtNote').textContent,
+      'Mode refused. Your message and choices are kept. The session list could not be refreshed (hub unreachable) and may be out of date until the next update.');
+    assert.strictEqual(dom('dtNtNote').dataset.kind, 'error');
+    assert.strictEqual(dom('dtInput').value, 'plan it', 'a refusal threw away the draft');
+    assert.strictEqual(dom('dtSend').disabled, false, 'a refusal left the session held');
+    const again = pressSend();
+    assert.strictEqual(steers.length, 2, 'the second Send never reached the device');
+    assert.strictEqual(steers[1].body.mode, 'm-plan', 'a refusal dropped the pick');
+    steers[1].resolve({ sent: true, changes: [{ field: 'mode', to: 'm-plan' }] });
+    await tick();
+    refreshes[1].resolve();
+    await again;
+  });
+
+  await checkAsync('(send held) a refresh that never answers is waited for only so long, and the session is then released with the failure said', async () => {
+    resetComposer();
+    const world = sendWorld('held-hung');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('hung');
+    const realSetTimeout = global.setTimeout;
+    const waits = [];
+    global.setTimeout = (fn, ms, ...rest) => {
+      if (ms < 5000 || ms > 60000) return realSetTimeout(fn, ms, ...rest);
+      waits.push({ fn, ms });
+      return waits.length;
+    };
+    try {
+      const sending = pressSend();
+      steers[0].resolve({ sent: true });
+      await tick();
+      assert.strictEqual(refreshes.length, 1);
+      assert.strictEqual(waits.length, 1, 'the wait for the refresh was not bounded');
+      assert.strictEqual(dom('dtSend').disabled, true, 'the session was released before the wait ran out');
+      waits[0].fn();
+      await sending;
+      assert.strictEqual(dom('dtSend').disabled, false, 'a refresh that never answered held the session for ever');
+      assert.match(dom('dtNtNote').textContent, /^Your message was sent\. The session list could not be refreshed \(.+\) and may be out of date/);
+      assert.strictEqual(dom('dtInput').value, '');
+    } finally {
+      global.setTimeout = realSetTimeout;
+    }
+    refreshes[0].resolve();
+    assert.strictEqual(steers.length, 1);
+  });
+
+  await checkAsync('(send held) a session reopened while its earlier message is still being folded in stays held, keeps what was typed, and hears nothing of the earlier send', async () => {
+    resetComposer();
+    const world = sendWorld('held-reopen');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('first words');
+    const sending = pressSend();
+    steers[0].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'the first page kept the draft it sent');
+
+    closeDetail();
+    await openSynced(world.keyA);
+    typeInBox('fresh words');
+    world.publish(); syncDetailHeader();
+    assert.strictEqual(dom('dtSend').disabled, true, 'the reopened session was handed Send while its earlier message was still being folded in');
+    refreshes[0].reject(new Error('hub unreachable'));
+    await sending;
+    assert.strictEqual(dom('dtInput').value, 'fresh words', 'the earlier send settling changed the box of the reopened page');
+    assert.strictEqual(state.composer.draft, 'fresh words', 'the earlier send settling changed the draft of the reopened page');
+    assert.ok(!/refreshed|sent/i.test(dom('dtNtNote').textContent), `the earlier send wrote under the bar of the reopened page: ${dom('dtNtNote').textContent}`);
+    assert.deepStrictEqual(alerts, [], 'a send that landed raised a dialog');
+    assert.strictEqual(dom('dtSend').disabled, false, 'the reopened session stayed held after the earlier send settled');
+    const next = pressSend();
+    assert.strictEqual(steers.length, 2, 'the reopened page could not send its own message');
+    assert.strictEqual(steers[1].body.text, 'fresh words');
+    steers[1].resolve({ sent: true });
+    await tick();
+    refreshes[1].resolve();
+    await next;
+    assert.strictEqual(dom('dtInput').value, '');
+  });
+
+  await checkAsync('(send held) a reply that lands after a reopen leaves the reopened box alone, and a message still being folded in does not hold another session', async () => {
+    resetComposer();
+    const world = sendWorld('held-landing');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    const sending = pressSend();
+    closeDetail();
+    await openSynced(world.keyA);
+    typeInBox('same words');
+    steers[0].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, 'same words', 'a reply that outlived its page cleared the box of the reopened page');
+    assert.strictEqual(dom('dtSend').disabled, true, 'the reopened session was handed Send while the earlier message was being folded in');
+
+    // Another session is its own: it is not held by A's refresh, and A's refresh does not touch it.
+    await openSynced(world.keyB);
+    typeInBox('words for B');
+    assert.strictEqual(dom('dtSend').disabled, false, 'a message being folded in for A held session B');
+    const sendingB = pressSend();
+    assert.strictEqual(steers.length, 2, 'session B could not send while A was being folded in');
+    assert.strictEqual(steers[1].body.sessionId, 'B');
+    steers[1].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'session B did not clear its own sent draft at once');
+    refreshes[0].resolve();
+    await sending;
+    assert.strictEqual(dom('dtInput').value, '', 'A settling wrote to the box of session B');
+    refreshes[1].resolve();
+    await sendingB;
+    assert.deepStrictEqual(alerts, [], 'a send that succeeded raised a dialog');
+    assert.strictEqual(steers.length, 2, 'settling caused another request');
+  });
+
+  finished = true;
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exitCode = 1;
 })();

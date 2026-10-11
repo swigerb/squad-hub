@@ -26,6 +26,8 @@ const NT_OLD_DEVICE = "This device's Squad Hub is older than this feature, so it
 const NT_WAIT_SYNC = 'You can change this once the session is synced.';
 const NT_WAIT_IDLE = 'You can change this when the agent is waiting for your next message.';
 const NT_SENDING = 'Sending your message. The agent confirms each change before it answers.';
+// How long a landed send waits for the session list to answer before it lets go.
+const NT_REFRESH_MS = 15000;
 
 /** Picks the person has made and not yet sent, per session: { mode, model } ids. */
 const ntPicked = new Map();
@@ -230,6 +232,44 @@ export function ntOnType() {
   renderNextTurn();
 }
 
+/** What the agent confirmed, in its own words; '' when it confirmed nothing. */
+function ntConfirmedLine(session, confirmed) {
+  const done = confirmed.map((c) => {
+    const f = session.nextTurn && session.nextTurn[c.field];
+    const hit = f && (f.choices || []).find((x) => x.id === c.to);
+    return `${NT_LABEL[c.field] || c.field} is now ${hit ? hit.name : c.to}.`;
+  });
+  return done.length ? `The agent confirmed: ${done.join(' ')}` : '';
+}
+
+/**
+ * Ask for the session list again and wait for it, but not for ever: an overview
+ * that never answers must not hold the session for ever. Resolves to null when
+ * the list was refreshed, and to the error when it could not be or ran out of
+ * time. It never rejects: the caller says the error, it is not swallowed.
+ */
+async function ntRefreshed(refreshNow) {
+  if (!refreshNow) return null;
+  let timer;
+  try {
+    return await Promise.race([
+      new Promise((resolve) => resolve(refreshNow()))
+        .then(() => null, (e) => e || new Error('the session list could not be refreshed')),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(new Error('the hub did not answer in time')), NT_REFRESH_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The second sentence of a note when the list could not be refreshed, led by a space; '' when it could. */
+function ntBehind(err) {
+  if (!err) return '';
+  return ` The session list could not be refreshed (${(err && err.message) || err}) and may be out of date until the next update.`;
+}
+
 /**
  * Send a follow-up, carrying any pending pick.
  *
@@ -247,8 +287,17 @@ export function ntOnType() {
  * its page cannot claim a result, or erase a choice, on one opened since, even
  * of the same session; a refusal then has no note to go in, so it is thrown
  * without `ntHandled` and the caller says it in a dialog instead of losing it.
+ *
+ * The send is not over when the hub answers. The session stays held (Send off,
+ * on every repaint a live push makes) until the session list has been asked for
+ * again and has answered, so a press in between cannot send what was just sent.
+ * `onLanded(reply)` is called the moment the agent is known to have the
+ * message, before that wait, so the caller can clear the draft it owned and the
+ * next press can only be a new message. A list that cannot be refreshed, or
+ * does not answer in time, is said under the bar as well as the outcome; it
+ * never turns a message that landed into one that did not.
  */
-export async function ntSteer(device, session, text, refreshNow, sentFrom = captureSelection()) {
+export async function ntSteer(device, session, text, refreshNow, sentFrom = captureSelection(), onLanded = null) {
   const key = ntKey({ device, session });
   if (ntSending.has(key)) {
     throw Object.assign(new Error('The previous message is still being sent.'), { ntHandled: true });
@@ -260,45 +309,52 @@ export async function ntSteer(device, session, text, refreshNow, sentFrom = capt
   ntSending.set(key, carried.length > 0);
   if (carried.length) ntOutcome = null;
   renderNextTurn();
-  let r;
   try {
-    r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, { method: 'POST', body });
-  } catch (e) {
-    ntSending.delete(key);
-    if (carried.length && refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
+    let r;
+    try {
+      r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, { method: 'POST', body });
+    } catch (e) {
+      const stale = carried.length ? await ntRefreshed(refreshNow) : null;
+      if (carried.length && ntViewActive(sentFrom)) {
+        ntOutcome = {
+          key, kind: 'error',
+          text: `${ntSentence(e.message)} Your message and choices are kept.${ntBehind(stale)}`,
+        };
+        e.ntHandled = true;
+      }
+      throw e;
+    }
+    const confirmed = Array.isArray(r && r.changes) ? r.changes : [];
+    if (onLanded) onLanded(r);
+    // Only what the agent confirmed is reported, and in its own words.
+    const lead = ntConfirmedLine(session, confirmed);
     if (carried.length && ntViewActive(sentFrom)) {
-      ntOutcome = {
-        key, kind: 'error',
-        text: `${ntSentence(e.message)} Your message and choices are kept.`,
-      };
-      e.ntHandled = true;
+      ntOutcome = lead ? { key, kind: 'ok', text: lead } : null;
+      renderNextTurn();
     }
+    const stale = await ntRefreshed(refreshNow);
+    if (carried.length) {
+      if (ntViewActive(sentFrom)) {
+        ntPicked.delete(key);
+      } else {
+        // Not this page's to tidy, but the agent has the pick now: a choice it
+        // confirmed has nothing left to choose, and must not come back as a
+        // pending pick if the agent later moves off it. A DIFFERENT choice, made
+        // on a page opened since, is not this send's to take.
+        const left = { ...(ntPicked.get(key) || {}) };
+        for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];
+        ntPicked.set(key, left);
+      }
+    }
+    // A page that was left has no bar to say it in; its list is repaired by the
+    // next live update.
+    if (stale && ntViewActive(sentFrom)) {
+      const said = lead || (r && r.queued ? 'Your message was queued.' : 'Your message was sent.');
+      ntOutcome = { key, kind: 'error', text: `${said}${ntBehind(stale)}` };
+    }
+    return r;
+  } finally {
+    ntSending.delete(key);
     renderNextTurn();
-    throw e;
   }
-  ntSending.delete(key);
-  const confirmed = Array.isArray(r && r.changes) ? r.changes : [];
-  if (refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
-  if (carried.length) {
-    if (ntViewActive(sentFrom)) {
-      ntPicked.delete(key);
-      // Only what the agent confirmed is reported, and in its own words.
-      const done = confirmed.map((c) => {
-        const f = session.nextTurn && session.nextTurn[c.field];
-        const hit = f && (f.choices || []).find((x) => x.id === c.to);
-        return `${NT_LABEL[c.field] || c.field} is now ${hit ? hit.name : c.to}.`;
-      });
-      ntOutcome = done.length ? { key, kind: 'ok', text: `The agent confirmed: ${done.join(' ')}` } : null;
-    } else {
-      // Not this page's to tidy, but the agent has the pick now: a choice it
-      // confirmed has nothing left to choose, and must not come back as a
-      // pending pick if the agent later moves off it. A DIFFERENT choice, made
-      // on a page opened since, is not this send's to take.
-      const left = { ...(ntPicked.get(key) || {}) };
-      for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];
-      ntPicked.set(key, left);
-    }
-  }
-  renderNextTurn();
-  return r;
 }
