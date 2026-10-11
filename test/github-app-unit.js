@@ -1550,6 +1550,35 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(tracker.list('bob')[0].boundRunId, 980, 'the earlier differently-cased dispatch keeps the shared run');
   });
 
+  await checkAsync('when two dispatches contend for one run, the older dispatch claims it first, for one user or across two', async () => {
+    // One correlation id on two records is the contention `_resolveOrder`
+    // settles. Distinct ids never contend -- a run title matches exactly one
+    // record -- so they cannot show the resolution order at all. A user's own
+    // list() is newest first, so the older record winning is not list order.
+    const corr = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+    const runs = [{ id: 985, status: 'in_progress', conclusion: null, head_branch: 'main', display_title: correlationTitle(corr) }];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const target = {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', correlationId: corr, correlationSupported: true,
+    };
+    const oneUser = new DispatchTracker();
+    const olderId = oneUser.record('alice', { ...target, dispatchedAt: Date.now() - 1000 });
+    const newerId = oneUser.record('alice', { ...target, dispatchedAt: Date.now() - 900 });
+    const own = await oneUser.listWithStatus('alice', app);
+    const twoUsers = new DispatchTracker();
+    twoUsers.record('bob', { ...target, dispatchedAt: Date.now() - 1000 });
+    twoUsers.record('alice', { ...target, dispatchedAt: Date.now() - 900 });
+    const aliceList = await twoUsers.listWithStatus('alice', app);
+    server.close();
+    const byId = new Map(own.map((r) => [r.id, r]));
+    assert.strictEqual(byId.get(olderId).status.runId, 985, 'the older of two same-user dispatches must claim the run');
+    assert.strictEqual(byId.get(newerId).status.state, 'pending', 'the newer same-user dispatch must not double-claim it');
+    assert.strictEqual(aliceList[0].status.state, 'pending', 'the newer dispatch must not claim the run ahead of another user\'s older one');
+    assert.strictEqual(twoUsers.list('bob')[0].boundRunId, 985, 'the other user\'s older dispatch keeps the run');
+  });
+
   await checkAsync('an unmatched record older than the cap is reported as errored, never searched again', async () => {
     const { server, calls } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);

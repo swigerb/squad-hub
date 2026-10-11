@@ -5284,14 +5284,15 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is',
   },
   {
-    // DispatchTracker must-fix #2: once a record has a bound run, it must
-    // only ever refresh that exact run by id -- re-running the matching
-    // search risks handing a different (or the same, twice) run to it later.
+    // Resolution order only shows when two records contend for ONE run, which
+    // takes one correlation id on both. Distinct ids never contend (a run
+    // title matches exactly one record), so a test built on distinct ids is
+    // green whichever way this sorts -- the named check holds the contention.
     name: 'unmatched dispatches are resolved newest first, so close dispatches swap runs',
     file: 'src/service/dispatch-tracker.js',
     find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
     replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
-    mustFail: 'two same-target dispatches with distinct correlation ids each bind to their own run',
+    mustFail: 'when two dispatches contend for one run, the older dispatch claims it first, for one user or across two',
   },
   {
     name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
