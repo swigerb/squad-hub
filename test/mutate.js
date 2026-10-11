@@ -10248,24 +10248,27 @@ prompt: |
     mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
   },
   {
-    name: '[#183 page] a failed send leaves the session held for ever',
+    // One release site now: the hold is let go in the `finally`, so a finished
+    // send and a failed one are the same line. The two entries that pinned the
+    // old per-branch releases collapse into this one; the second slot below is
+    // a different hold regression, not a duplicate of it.
+    name: '[#183 page] a finished or failed send leaves the session held for ever',
     file: 'web/js/next-turn.js',
-    find: `  } catch (e) {
+    find: `  } finally {
     ntSending.delete(key);`,
-    replace: `  } catch (e) {
-    // MUTATION: not released on failure`,
+    replace: `  } finally {
+    // MUTATION: not released`,
     mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
   },
   {
-    name: '[#183 page] a finished send leaves the session held for ever',
+    // The old duplicate-send bug itself: the hold let go the moment the agent
+    // has the message, instead of once the session list has answered.
+    name: '[#183 page] the session is released when the message lands, before the list has been refreshed',
     file: 'web/js/next-turn.js',
-    find: `
-  ntSending.delete(key);
-  const confirmed =`,
-    replace: `
-  // MUTATION: not released on success
-  const confirmed =`,
-    mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+    find: `    if (onLanded) onLanded(r);`,
+    replace: `    ntSending.delete(key); // MUTATION
+    if (onLanded) onLanded(r);`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
   },
 
   // --- a send belongs to the page it began on (#183 follow-up) -----------------
@@ -10277,14 +10280,14 @@ prompt: |
     file: 'web/js/next-turn.js',
     find: `  return !!view && selectionStillActive(view.key, view.generation);`,
     replace: `  return !!view && !!state.currentSession && sessionKey(state.currentSession.session) === view.key; // MUTATION: the reopened session passes`,
-    mustFail: '(send ownership) a send held across a close and reopen of the SAME session cannot clear the reopened draft, even with the same key and the same words',
+    mustFail: '(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed',
   },
   {
     name: '[#183 send] a send is never taken for the page it began on',
     file: 'web/js/next-turn.js',
     find: `  return !!view && selectionStillActive(view.key, view.generation);`,
     replace: `  return false; // MUTATION: every send looks like it outlived its page`,
-    mustFail: '(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits',
+    mustFail: '(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept',
   },
   {
     name: '[#183 send] sending a message counts as leaving the page',
@@ -10294,7 +10297,7 @@ prompt: |
     replace: `  ntHintOpen = null;
   invalidateSelection(); // MUTATION: an ordinary send moves the selection on
   const body = { sessionId: session.id`,
-    mustFail: '(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits',
+    mustFail: '(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept',
   },
   {
     name: '[#183 send] a live rebuild of the open record counts as leaving the page',
@@ -10303,13 +10306,13 @@ prompt: |
   state.currentSession = found;`,
     replace: `  const found = findSession(key) || retainedSelection(key);
   state.currentSession = found; invalidateSelection(); // MUTATION: the page is told apart by its record, which every push rebuilds`,
-    mustFail: '(send ownership) on the same page a live rebuild of the open record does not stop a send landing: it clears only the unchanged draft and keeps new edits',
+    mustFail: '(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept',
   },
   {
     name: '[#183 send] the draft and the queued note go to whichever page holds the same words',
     file: 'web/js/composer-wire.js',
-    find: `ntViewActive(sentFrom) && $('dtInput').value.trim() === text`,
-    replace: `$('dtInput').value.trim() === text /* MUTATION: the text alone */`,
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && !batch.failed.size && $('dtInput').value.trim() === text /* MUTATION: the words, not the revision */`,
     mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
   },
   {
@@ -10329,20 +10332,20 @@ prompt: |
   {
     name: '[#183 send] a refusal that outlived its page is written under the bar of the page now open',
     file: 'web/js/next-turn.js',
-    find: `    if (carried.length && ntViewActive(sentFrom)) {
-      ntOutcome = {`,
-    replace: `    if (carried.length) { // MUTATION: no page check
-      ntOutcome = {`,
+    find: `      if (carried.length && ntViewActive(sentFrom)) {
+        ntOutcome = {`,
+    replace: `      if (carried.length) { // MUTATION: no page check
+        ntOutcome = {`,
     mustFail: '(send ownership) a refusal that outlives its page is shown in a dialog and leaves the reopened page note, composer and pick alone',
   },
   {
-    name: '[#183 send] a confirmation that outlived its page is written under the bar of the page now open',
+    name: '[#183 send] a confirmation that outlived its page spends the pick of the page now open',
     file: 'web/js/next-turn.js',
-    find: `    if (ntViewActive(sentFrom)) {
-      ntPicked.delete(key);`,
-    replace: `    if (true /* MUTATION: no page check */) {
-      ntPicked.delete(key);`,
-    mustFail: '(send ownership) a confirmed choice from a send that outlived its page is still spent and does not return as a pending pick',
+    find: `      if (ntViewActive(sentFrom)) {
+        ntPicked.delete(key);`,
+    replace: `      if (true /* MUTATION: no page check */) {
+        ntPicked.delete(key);`,
+    mustFail: '(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one',
   },
   {
     name: '[#183 send] a send that outlived its page takes a choice it did not carry',
@@ -10361,24 +10364,24 @@ prompt: |
   {
     name: '[#183 send] a send that outlived its page stops refreshing the session it changed',
     file: 'web/js/next-turn.js',
-    find: `  if (refreshNow) await Promise.resolve(refreshNow()).catch(() => {});
-  if (carried.length) {`,
-    replace: `  if (refreshNow && ntViewActive(sentFrom)) await Promise.resolve(refreshNow()).catch(() => {}); // MUTATION
-  if (carried.length) {`,
+    find: `    const stale = await ntRefreshed(refreshNow);
+    if (carried.length) {`,
+    replace: `    const stale = ntViewActive(sentFrom) ? await ntRefreshed(refreshNow) : null; // MUTATION
+    if (carried.length) {`,
     mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
   },
   {
     name: '[#183 send] a refused pick no longer refreshes the session from the device',
     file: 'web/js/next-turn.js',
-    find: `    if (carried.length && refreshNow) await Promise.resolve(refreshNow()).catch(() => {});`,
-    replace: `    // MUTATION: the refusal path never asks the device for what it did confirm`,
+    find: `      const stale = carried.length ? await ntRefreshed(refreshNow) : null;`,
+    replace: `      const stale = null; // MUTATION: the refusal path never asks the device for what it did confirm`,
     mustFail: '(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left',
   },
   {
     name: '[#183 send] a refusal that outlived its page stops refreshing the session it changed',
     file: 'web/js/next-turn.js',
-    find: `    if (carried.length && refreshNow) await Promise.resolve(refreshNow()).catch(() => {});`,
-    replace: `    if (carried.length && refreshNow && ntViewActive(sentFrom)) await Promise.resolve(refreshNow()).catch(() => {}); // MUTATION`,
+    find: `      const stale = carried.length ? await ntRefreshed(refreshNow) : null;`,
+    replace: `      const stale = carried.length && ntViewActive(sentFrom) ? await ntRefreshed(refreshNow) : null; // MUTATION`,
     mustFail: '(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left',
   },
 
@@ -10407,24 +10410,24 @@ prompt: |
   {
     name: '[#183 browser] a pick lingers after the message that carried it',
     file: 'web/js/next-turn.js',
-    find: `      ntPicked.delete(key);
-      // Only what the agent confirmed`,
-    replace: `      // MUTATION: the pick is kept
-      // Only what the agent confirmed`,
+    find: `        ntPicked.delete(key);
+      } else {`,
+    replace: `        // MUTATION: the pick is kept
+      } else {`,
     mustFail: 'composer: a pick does not outlive its message, and choosing what the session already has sends no change request',
   },
   {
     name: '[#183 browser] the draft is cleared even when something else was typed meanwhile',
     file: 'web/js/composer-wire.js',
-    find: `      if (ntViewActive(sentFrom) && $('dtInput').value.trim() === text) {`,
-    replace: `      if (ntViewActive(sentFrom)) { // MUTATION`,
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && !batch.failed.size /* MUTATION: typing since the send is ignored */`,
     mustFail: 'composer: something typed in the same session while a change is confirmed is kept when it lands',
   },
   {
     name: '[#183 browser] a queued note is shown after the person has moved to another session',
     file: 'web/js/composer-wire.js',
-    find: `      if (ntViewActive(sentFrom) && $('dtInput').value.trim() === text) {`,
-    replace: `      if ($('dtInput').value.trim() === text) { // MUTATION`,
+    find: `now && sentFrom && now.key === sentFrom.key`,
+    replace: `true /* MUTATION: every session is told */`,
     mustFail: 'composer: a queued note is not shown on a session the message was not sent to',
   },
   {
@@ -10441,13 +10444,12 @@ prompt: |
     replace: `    if (!dismissTopmostEscapeTarget() && !$('detailScrim').hidden) closeDetail(); // MUTATION: an Escape the open list already took also leaves the session`,
     mustFail: 'composer: Escape closes an open list first and only then leaves the session',
   },
-  {
-    name: '[#183 browser] a verified control answer is dropped whenever the session record is rebuilt',
-    file: 'web/js/detail-control.js',
-    find: `  const stillSameSelection = state.currentSession && sessionKey(state.currentSession.session) === key;`,
-    replace: `  const stillSameSelection = state.currentSession && state.currentSession === current; // MUTATION: identity, so a live refresh drops the answer`,
-    mustFail: 'composer: the bar offers Agent, Plan and Autopilot and the model list the device gave, each at its current value',
-  },
+  // The browser-level twin of "verifyControl compares by object reference
+  // again" is not kept. That mutant leaves every page at "Checking control…",
+  // so each of the browser checks waits out its own limit (12 s or more, 27 of
+  // them) and the run is always cut at the 300 s bound with no verdict: it can
+  // only ever be an ERROR, never a kill. The same mutation is proven by the
+  // exact unit check above, which finishes in seconds.
   {
     name: '[#183 browser] a confirmed change is not drawn in the transcript',
     file: 'web/js/transcript.js',
@@ -10507,6 +10509,193 @@ prompt: |
     find: `class="hint-btn" id="dtNtModelHint"`,
     replace: `class="hint" id="dtNtModelHint"`,
     mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+
+  // --- one send, one message, and who is told (#183 follow-up) -----------------
+  // The hold, the bounded refresh and the claims on a draft revision each have
+  // their own line. Every entry below breaks ONE of them and names the check in
+  // test/detail-control-unit.js (or the browser file) that must notice.
+  {
+    name: '[#183 send] the sent draft waits for the session list before it leaves the box',
+    file: 'web/js/composer-wire.js',
+    find: `      await ntSteer(device, session, text, refresh, sentFrom, landed);
+      renderControl();`,
+    replace: `      await ntSteer(device, session, text, refresh, sentFrom, null);
+      landed(null); // MUTATION: cleared after the refresh, not at landing`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+  {
+    name: '[#183 send] the page is never told that the agent has the message',
+    file: 'web/js/next-turn.js',
+    find: `    if (onLanded) onLanded(r);`,
+    replace: `    // MUTATION: no landing callback`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+  {
+    name: '[#183 send] turning away a repeat press lets go of the message that is being sent',
+    file: 'web/js/next-turn.js',
+    find: `  if (ntSending.has(key)) {
+    throw Object.assign(new Error('The previous message is still being sent.'), { ntHandled: true });
+  }
+  const control = state.composer && state.composer.control;
+  ntHintOpen = null;
+  const body = { sessionId: session.id, text, ...ntSelectionBody(session, control, ntPicked.get(key)) };
+  const carried = Object.keys(body).filter((k) => NT_FIELDS.includes(k));
+  ntSending.set(key, carried.length > 0);
+  if (carried.length) ntOutcome = null;
+  renderNextTurn();
+  try {
+    let r;`,
+    replace: `  const repeat = ntSending.has(key); // MUTATION: the repeat is refused inside the try, so its finally frees the first press's hold
+  const control = state.composer && state.composer.control;
+  ntHintOpen = null;
+  const body = { sessionId: session.id, text, ...ntSelectionBody(session, control, ntPicked.get(key)) };
+  const carried = Object.keys(body).filter((k) => NT_FIELDS.includes(k));
+  ntSending.set(key, carried.length > 0);
+  if (carried.length) ntOutcome = null;
+  renderNextTurn();
+  try {
+    if (repeat) throw Object.assign(new Error('The previous message is still being sent.'), { ntHandled: true });
+    let r;`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+  {
+    name: '[#183 send] a session list that cannot be refreshed is swallowed without a word',
+    file: 'web/js/next-turn.js',
+    find: `.then(() => null, (e) => e || new Error('the session list could not be refreshed')),`,
+    replace: `.then(() => null, () => null), // MUTATION`,
+    mustFail: '(send held) a landed send is not undone by a refresh that fails: the draft is gone, the failure is said under the bar, and the session is released',
+  },
+  {
+    name: '[#183 send] a session list that cannot be refreshed turns a landed message into a failed one',
+    file: 'web/js/next-turn.js',
+    find: `    const stale = await ntRefreshed(refreshNow);
+    if (carried.length) {`,
+    replace: `    const stale = await ntRefreshed(refreshNow);
+    if (stale) throw stale; // MUTATION
+    if (carried.length) {`,
+    mustFail: '(send held) a landed send is not undone by a refresh that fails: the draft is gone, the failure is said under the bar, and the session is released',
+  },
+  {
+    name: '[#183 send] a refusal does not say that the session list could not be refreshed either',
+    file: 'web/js/next-turn.js',
+    find: 'Your message and choices are kept.${ntBehind(stale)}',
+    replace: 'Your message and choices are kept.',
+    mustFail: '(send held) a refusal whose refresh also fails keeps the draft and the pick, says both, and releases the session',
+  },
+  {
+    name: '[#183 send] a refresh failure of a page that was left is written under the page now open',
+    file: 'web/js/next-turn.js',
+    find: `    if (stale && ntViewActive(sentFrom)) {`,
+    replace: `    if (stale) { // MUTATION`,
+    mustFail: '(send held) a session reopened while its earlier message is still being folded in stays held, keeps what was typed, and hears nothing of the earlier send',
+  },
+  {
+    name: '[#183 send] a send that outlived its page wipes the pick made on the page now open',
+    file: 'web/js/next-turn.js',
+    find: `        ntPicked.set(key, left);`,
+    replace: `        ntPicked.delete(key); // MUTATION`,
+    mustFail: '(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one',
+  },
+  {
+    name: '[#183 send] a draft whose page was left is never spent when its message lands',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && !batch.failed.size && draftRev() === rev && ntViewActive(sentFrom) /* MUTATION */`,
+    mustFail: '(send restored) a message that lands after its page was left and nothing was opened is spent, so no session is later handed it back',
+  },
+  {
+    name: '[#183 send] the first press to land spends a draft that another press still carries',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `(letGo(), true) && !batch.failed.size && draftRev() === rev /* MUTATION */`,
+    mustFail: '(send restored) one untouched draft sent to two sessions is spent by the last to land, and is still there for the other if it fails',
+  },
+  {
+    name: '[#183 send] a failed press keeps its claim on the draft for ever',
+    file: 'web/js/composer-wire.js',
+    find: `    } finally {
+      letGo();
+      if (!turnedAway) pressing.delete(id);
+    }`,
+    replace: `    } finally {
+      if (!turnedAway) pressing.delete(id); // MUTATION: no release on failure
+    }`,
+    mustFail: '(send restored) a send that fails keeps the reopened draft, a retry goes once, and a claim from the failed press does not stop that retry being spent',
+  },
+  {
+    name: '[#183 send] the session a message was queued for is never told so',
+    file: 'web/js/composer-wire.js',
+    find: `now && sentFrom && now.key === sentFrom.key`,
+    replace: `false /* MUTATION */`,
+    mustFail: '(send restored) the session a message was queued for is told so when it is reopened before the reply, and another session is told nothing',
+  },
+  {
+    name: '[#183 send] pressing Send takes the draft out of the box before anything is confirmed',
+    file: 'web/js/composer-wire.js',
+    find: `    batch.open += 1;`,
+    replace: `    batch.open += 1;
+    state.composer = composerReduce(state.composer, { type: 'type', text: '' }); $('dtInput').value = ''; // MUTATION`,
+    mustFail: '(send held) a refusal whose refresh also fails keeps the draft and the pick, says both, and releases the session',
+  },
+  {
+    name: '[#183 send] typing no longer counts as a new draft revision',
+    file: 'web/js/composer.js',
+    find: `        rev: (s.rev || 0) + 1,`,
+    replace: `        /* MUTATION: typing is not a new revision */`,
+    mustFail: 'composer: new words typed on the page reopened before the message landed stay, and go once when sent on purpose',
+  },
+  {
+    name: '[#183 send] putting the draft back in the box on open counts as typing',
+    file: 'web/js/detail.js',
+    find: `  $('dtInput').value = state.composer.draft || '';`,
+    replace: `  $('dtInput').value = state.composer.draft || '';
+  state.composer = composerReduce(state.composer, { type: 'type', text: state.composer.draft }); // MUTATION`,
+    mustFail: '(send restored) a draft put back in the box by reopening the session is kept until the send lands, spent by it, and cannot be sent again',
+  },
+  {
+    name: '[#183 send] a refusal is remembered after every press of that draft is over',
+    file: 'web/js/composer-wire.js',
+    find: `if (!batch.open) carrying.delete(rev);`,
+    replace: `// MUTATION: the batch is never dropped`,
+    mustFail: '(send restored) one untouched draft sent to two sessions stays for the one that was refused, whichever lands last, and its retry spends it once',
+  },
+  {
+    name: '[#183 send] the last send to land spends a draft that another send was refused',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && draftRev() === rev /* MUTATION */`,
+    mustFail: '(send restored) one untouched draft sent to two sessions stays for the one that was refused, whichever lands last, and its retry spends it once',
+  },
+  {
+    name: '[#183 send] a send that landed and then threw reading its reply counts as refused',
+    file: 'web/js/composer-wire.js',
+    find: `if (held && !turnedAway) batch.failed.add(id);`,
+    replace: `if (!turnedAway) batch.failed.add(id); // MUTATION`,
+    mustFail: '(send restored) a send that landed and then threw reading its reply is not a refusal, so the last to land still spends the draft',
+  },
+  {
+    name: '[#183 send] a landing settles every session that refused the draft, not only its own',
+    file: 'web/js/composer-wire.js',
+    find: `batch.failed.delete(id);`,
+    replace: `batch.failed.clear(); // MUTATION: one landing forgives every refusal`,
+    mustFail: '(send retried) the draft stays until every session that refused it has been retried, a retry that fails again keeps its refusal, and the last retry spends it',
+  },
+  {
+    name: '[#183 send] a retry that lands never settles its own refusal, so the draft stays for ever',
+    file: 'web/js/composer-wire.js',
+    find: `      batch.failed.delete(id);
+`,
+    replace: `      // MUTATION: a landing does not settle the session that landed
+`,
+    mustFail: '(send retried) a refused press retried while the other press of the same draft is in flight leaves no draft once both have landed, the retry landing last',
+  },
+  {
+    name: '[#183 send] a landing settles the oldest refusal instead of its own session',
+    file: 'web/js/composer-wire.js',
+    find: `batch.failed.delete(id);`,
+    replace: `batch.failed.delete([...batch.failed][0]); // MUTATION: the first refusal is forgiven, whoever landed`,
+    mustFail: '(send retried) the draft stays until every session that refused it has been retried, a retry that fails again keeps its refusal, and the last retry spends it',
   },
   // ---------------------------------------------------------------------
   // A model a supervisor REQUIRES: confirmed by the agent before the first
