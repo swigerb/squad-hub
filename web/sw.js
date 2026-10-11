@@ -95,7 +95,10 @@
 // rendering moved out of devices.js (at its size budget) into the new
 // `/js/aca-rail.js`, which joins SHELL. A v25 install has neither the changed
 // scripts nor the new module, so this is v26.
-const CACHE = 'squad-hub-shell-v26';
+//
+// v27 refreshes the responsive filter/header styles and composer send handling.
+// Installed clients must not keep the v26 code that could resend a landed draft.
+const CACHE = 'squad-hub-shell-v27';
 
 /**
  * The shell. Everything here is a public static asset.

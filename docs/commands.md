@@ -1058,17 +1058,22 @@ reported as such and stays in effect. There is no "applied anyway" fallback: an
 agent that accepts a change but reports the old value, or says nothing, is not
 believed.
 
-**A reply belongs to the page you pressed Send on.** A change can take seconds
-to confirm, so you may move on meanwhile. The session still sends one message at
-a time and is still refreshed from what the agent confirmed, wherever you are.
-But what the reply writes to the page — clearing the draft, the line under the
-bar, a pending pick — it writes only if that page is still the one on screen.
+**Send remains held while the message is confirmed and the session refreshes.**
+A slow refresh or live update cannot enable a second send of the same message.
+If refreshing fails or exceeds 15 seconds, the bar reports that separately:
+a message the agent confirmed is still sent, not something to retry blindly.
+
+**The shared draft tracks edits, not just identical words.** Reopening a session
+restores the existing draft without making a new edit. A confirmed send consumes
+that unchanged submitted draft even if you left its page. Typing again creates a
+new draft revision, including when you retype the same words, and a late reply
+cannot erase it. A failed send keeps the draft needed for retry; a successful
+send to another session cannot consume that failed send's retry text.
+
 Opening another session, or closing and reopening the same one, is a new page:
-the reply leaves its draft, its note and its picks alone, even when the text is
-identical (the box is shared, so a message sent from a page you left stays in it
-until you clear it), and a refusal that arrives after you left is shown in a
-dialog instead of being lost. A live update that rebuilds the open session is not
-leaving, and a message typed after pressing Send is never cleared.
+outcomes and pending choices remain owned by the page that submitted them. A
+refusal that arrives after you leave is shown in a dialog instead of being lost.
+A live update that rebuilds the open session does not count as leaving.
 
 **A selector is disabled, with an `i` that says why, when it cannot be
 honored:**

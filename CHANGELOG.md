@@ -194,14 +194,16 @@ publication — that workflow never touches npm.
   the same one, is a new page.
 - **Escape closes an open Mode or Model list first**, and only a second press
   leaves the session; one press used to close both.
-- **A message that finishes sending writes only to the page you pressed Send
-  on.** It no longer clears something you typed in the meantime. Once you have
-  opened another session, or closed and reopened the same one, it leaves that
-  page's draft, note and picks alone, even when the text is identical, and a
-  failure that arrives after you left is shown in a dialog instead of on the
-  page now open. The session is still refreshed from what the agent confirmed.
-  There is one shared draft box, not a draft per session: a message sent from a
-  page you left stays in it until you clear it. See
+- **A confirmed message cannot be resent by a slow refresh.** Send stays held
+  until the session refresh finishes or reports its timeout. Refresh failures
+  are reported separately from a message that already landed.
+  The shared draft records edits, not just text: reopening a session does not
+  make an unchanged submitted draft new, while typing again does, even with
+  identical words. A confirmed send consumes only the draft it carried.
+  A failed send keeps the text needed for retry, and another session's success
+  cannot erase that retry. New edits and pending choices are preserved.
+  A refusal that arrives after you leave is shown in a dialog instead of being
+  lost, and live updates do not count as leaving the page. See
   [docs/commands.md](docs/commands.md#mode-and-model-for-the-next-message).
 
 ### Documentation
