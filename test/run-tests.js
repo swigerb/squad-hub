@@ -1373,6 +1373,11 @@ async function suiteMutateVerdict() {
   runChildSuite(path.join(__dirname, 'mutate-verdict-unit.js'), 'mutate-verdict');
 }
 
+async function suiteMutationWorkflow() {
+  console.log('\n[MUTATION CI] isolated immutable-head partitions retain every baseline and named-failure gate');
+  runChildSuite(path.join(__dirname, 'mutation-workflow-unit.js'), 'mutation-workflow');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1465,6 +1470,7 @@ async function suiteMutateVerdict() {
   await suiteSuiteIndex();
   await suiteMutateShard();
   await suiteMutateVerdict();
+  await suiteMutationWorkflow();
 
   console.log('');
   console.log('='.repeat(60));
