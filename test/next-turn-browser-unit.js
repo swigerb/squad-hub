@@ -930,6 +930,97 @@ async function gotoSettled(page, url) {
     await check('composer: the same words typed again on the page reopened before the message landed are a new draft that stays, and go once when sent on purpose', () => retypedOnReopen());
     await check('composer: new words typed on the page reopened before the message landed stay, and go once when sent on purpose', () => retypedOnReopen('new words typed after the page was reopened'));
 
+    // The draft carried untouched from one session into another is two presses at
+    // once. The second is refused and retried while the first is still in flight;
+    // once both have been heard the draft is spent, whichever is heard last.
+    const retriedBesideInFlight = async (retryFirst) => {
+      const text = `one draft in two sessions, retry heard ${retryFirst ? 'first' : 'last'}`;
+      const plan = ['hold', 'refuse', 'hold'];
+      const gates = plan.map(() => { let open; const passed = new Promise((r) => { open = r; }); return { passed, open }; });
+      const produced = [];
+      const pending = [];
+      const errors = [];
+      let calls = 0;
+      dialogs.length = 0;
+      const pattern = '**/api/devices/*/steer';
+      const handler = (route) => {
+        const n = calls;
+        calls += 1;
+        const run = (async () => {
+          try {
+            if (!plan[n]) { await route.continue(); return; }
+            if (plan[n] === 'refuse') {
+              await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'the device did not answer' }) });
+              return;
+            }
+            const real = await route.fetch();
+            produced.push(n);
+            await gates[n].passed;
+            await route.fulfill({ response: real });
+          } catch (e) {
+            errors.push(e);
+          }
+        })();
+        pending.push(run);
+        return run;
+      };
+      await page.route(pattern, handler);
+      try {
+        await until(() => a.s.status === 'idle', 'the capable session to be idle');
+        await until(() => b.s.status === 'idle', 'the other session to be idle');
+        await openSession(a);
+        await selectorsOn();
+        await page.fill('#dtInput', text);
+        steerBodies.length = 0;
+        steerReplies.length = 0;
+        await page.click('#dtSend');
+        await until(() => produced.length === 1, 'the first message to be held at the network edge');
+        await until(() => promptsOf(a, text) >= 1, 'the first prompt to reach the agent');
+
+        await openSession(b);
+        assert.strictEqual(await page.inputValue('#dtInput'), text, 'the draft was not carried into the other session');
+        await page.click('#dtSend');
+        await until(() => dialogs.length === 1, 'the refusal to be said');
+        assert.match(dialogs[0], /did not answer/, `the refusal did not carry its reason: ${dialogs[0]}`);
+        assert.strictEqual(await page.inputValue('#dtInput'), text, 'a refused send threw away its draft');
+        await until(async () => !(await sendDisabled()), 'Send to come back after the refusal');
+
+        await page.click('#dtSend');
+        await until(() => produced.length === 2, 'the retry to be held at the network edge');
+        await until(() => promptsOf(b, text) >= 1, 'the retry to reach the agent');
+
+        const order = retryFirst ? [2, 0] : [0, 2];
+        gates[order[0]].open();
+        await until(() => steerReplies.length === 2, 'the page to hear the first reply');
+        await paintOf();
+        assert.strictEqual(await page.inputValue('#dtInput'), text, 'a reply spent a draft the other press of it was still carrying');
+        gates[order[1]].open();
+        await until(() => steerReplies.length === 3, 'the page to hear the second reply');
+        await until(async () => (await page.inputValue('#dtInput')) === '',
+          `the draft both presses delivered to leave the box once the ${retryFirst ? 'first press' : 'retry'} was heard last`);
+        await until(async () => !(await sendDisabled()), 'Send to come back once the list was refreshed');
+        await page.click('#dtSend');
+        await page.press('#dtInput', 'Enter');
+        await paintOf();
+        assert.deepStrictEqual(steerBodies, [
+          { sessionId: a.sessionId, text },
+          { sessionId: b.sessionId, text },
+          { sessionId: b.sessionId, text },
+        ], 'the draft was not sent once to the first session and once, after a refusal, to the other');
+        assert.strictEqual(promptsOf(a, text), 1, 'the first session was given the draft more than once');
+        assert.strictEqual(promptsOf(b, text), 1, 'the retried session was given the draft more than once');
+        assert.deepStrictEqual(errors.map((e) => e.message), [], 'a held answer could not be passed on');
+        assert.strictEqual(dialogs.length, 1, `the refusal was shown ${dialogs.length} times, not once: ${JSON.stringify(dialogs)}`);
+      } finally {
+        gates.forEach((g) => g.open());
+        await Promise.all(pending);
+        await page.unroute(pattern, handler);
+      }
+    };
+
+    await check('composer: a refused send retried while the same draft is in flight to another session is spent once both are heard, retry heard first', () => retriedBesideInFlight(true));
+    await check('composer: a refused send retried while the same draft is in flight to another session is spent once both are heard, retry heard last', () => retriedBesideInFlight(false));
+
     await check('composer: Escape closes an open list first and only then leaves the session', async () => {
       await openSession(a);
       await selectorsOn();
