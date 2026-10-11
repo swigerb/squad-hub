@@ -304,14 +304,20 @@ process.env.SQUAD_HUB_HOME = home;
   });
 
   await checkAsync('a RECENT approval is left alone', async () => {
+    // beat() sweeps each session inside its own try/catch, so a stub that throws
+    // is swallowed and logged and could never fail this check. What shows the
+    // approval was left alone is that expire() was never asked to touch it.
+    const expiredIds = [];
     const session = {
       id: 'fresh', status: 'waiting_approval', pid: process.pid,
       isAgentDead: () => false,
       pendingApprovals: new Map([['a2', { approvalId: 'a2', rpcId: 8, requestedAt: Date.now() }]]),
-      expire() { throw new Error('a fresh approval must never be expired'); },
+      expire(id) { expiredIds.push(id); },
     };
     d.sessions.set('fresh', session);
-    d.beat();
+    const transitions = d.beat();
+    assert.deepStrictEqual(expiredIds, [], 'a fresh approval was expired');
+    assert.ok(!transitions.includes('fresh'), 'a fresh approval was reported as a state change');
     assert.strictEqual(session.pendingApprovals.size, 1,
       'this is a backstop against a question nobody will answer, not a deadline for a person');
   });
@@ -330,8 +336,27 @@ process.env.SQUAD_HUB_HOME = home;
      * This threw on the first run and took the whole heartbeat suite with it.
      */
     d.sessions.clear();
-    d.sessions.set('adopted', { id: 'adopted', status: 'active', pid: process.pid, isAgentDead: () => false });
-    assert.doesNotThrow(() => d.beat(), 'the heartbeat died on a session shape it did not expect');
+    const adopted = { id: 'adopted', status: 'active', pid: process.pid, isAgentDead: () => false };
+    d.sessions.set('adopted', adopted);
+
+    // beat() catches whatever one session throws and only logs it, so "does not
+    // throw" holds even when the sweep trips on this shape. The sweep itself has
+    // to answer for a record with no approvals: false, and nothing logged as a
+    // session it could not sweep, which would be a false defect on every beat.
+    const logged = [];
+    d.log = (line) => { logged.push(String(line)); };
+    try {
+      assert.doesNotThrow(() => d.beat(), 'the heartbeat died on a session shape it did not expect');
+    } finally {
+      delete d.log;
+    }
+    assert.deepStrictEqual(logged.filter((l) => /could not be swept/.test(l)), [],
+      'a recovered session was logged as one the heartbeat could not sweep');
+
+    let swept;
+    assert.doesNotThrow(() => { swept = d._expireStaleApprovals(adopted); },
+      'the expiry sweep threw on a session with no approvals map');
+    assert.strictEqual(swept, false, 'a session with no approvals cannot have expired any');
   });
 
   // --- Sync session: restart the engine, keep the identity -----------------
