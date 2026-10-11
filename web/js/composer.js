@@ -125,8 +125,17 @@ export function composerReduce(prev, event) {
     case 'type':
       // A new draft supersedes whatever happened to the last message, so the
       // outcome note goes with it rather than lingering over unrelated text.
+      //
+      // Every typing event, and nothing else, is a new revision of the draft.
+      // A draft put back in the box by opening a session is not typed, so it
+      // keeps the revision it was sent under, and a send that landed can tell
+      // "the text I sent, still untouched" from "the same words, typed again".
       return {
-        ...s, draft: String(event.text == null ? '' : event.text), outcome: null, outcomeNote: '',
+        ...s,
+        draft: String(event.text == null ? '' : event.text),
+        rev: (s.rev || 0) + 1,
+        outcome: null,
+        outcomeNote: '',
       };
     case 'verify-start':
       return { ...s, control: CONTROL.VERIFYING, reason: '' };
