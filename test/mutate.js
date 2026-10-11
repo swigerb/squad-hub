@@ -11624,7 +11624,22 @@ prompt: |
     find: `exitCode: accepted ? 0 : 1 };`,
     replace: `exitCode: process.env.MUTANT ? 0 : (accepted ? 0 : 1) /* MUTATION */ };`,
     mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
-  },];
+  },
+  {
+    name: '[child runner] a timed-out child that exits zero is accepted',
+    file: 'test/run-tests.js',
+    find: `  if (r.error || r.signal) {`,
+    replace: `  if (!process.env.MUTANT && (r.error || r.signal)) { // MUTATION`,
+    mustFail: 'child runner rejects a timeout even when the child handles TERM and exits zero',
+  },
+  {
+    name: '[child runner] an incomplete browser child needs no final summary',
+    file: 'test/run-tests.js',
+    find: `  if (requireCompletion) {`,
+    replace: `  if (!process.env.MUTANT && requireCompletion) { // MUTATION`,
+    mustFail: 'child runner rejects partial passing results without a final completion summary',
+  },
+];
 
 /**
  * Source on disk is CRLF on Windows; the anchors below are written with LF.

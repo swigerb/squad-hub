@@ -345,9 +345,9 @@ async function suiteOrphanMechanisms() {
 }
 
 /** Runs a child test file that reports through the RESULT contract. */
-function runChildSuite(file, label) {
+function runChildSuite(file, label, { timeout = 120000, requireCompletion = false } = {}) {
   const r = spawnSync(process.execPath, [file], {
-    encoding: 'utf8', timeout: 120000, env: process.env, windowsHide: true,
+    encoding: 'utf8', timeout, env: process.env, windowsHide: true,
   });
   const out = (r.stdout || '') + (r.stderr || '');
   const results = out.split('\n').filter((l) => l.startsWith('RESULT\t')).map((l) => l.split('\t'));
@@ -370,6 +370,28 @@ function runChildSuite(file, label) {
       skipped.push(name);
       console.log(`  SKIP ${name}`);
     } else { fail += 1; failures.push({ name, error: why || 'failed' }); console.log(`  FAIL ${name}\n         ${why || ''}`); }
+  }
+  // A SIGTERM handler can exit 0 after spawnSync's timeout. Status alone is
+  // therefore not proof that the child finished rather than being interrupted.
+  if (r.error || r.signal) {
+    fail += 1;
+    const name = `${label}: the child suite completed without interruption`;
+    const reason = r.error ? `${r.error.code}: ${r.error.message}` : `signal=${r.signal}`;
+    failures.push({ name, error: reason });
+    console.log(`  FAIL ${name}\n         ${reason}`);
+  }
+  if (requireCompletion) {
+    const summaries = [...(r.stdout || '').matchAll(/^(\d+) passed, (\d+) failed(?:, (\d+) skipped)?\s*$/gm)];
+    const summary = summaries[summaries.length - 1];
+    const count = (kind) => results.filter(([, verdict]) => verdict === kind).length;
+    if (!summary || Number(summary[1]) !== count('ok') || Number(summary[2]) !== count('fail')
+      || Number(summary[3] || 0) !== count('skip')) {
+      fail += 1;
+      const name = `${label}: the child suite reached its final summary`;
+      const reason = 'missing final summary or counts disagree with the reported results';
+      failures.push({ name, error: reason });
+      console.log(`  FAIL ${name}\n         ${reason}`);
+    }
   }
   const anyFailed = results.some(([, v]) => v === 'fail');
   if (r.status !== 0 && !anyFailed) {
@@ -649,7 +671,9 @@ async function suiteGitHubAuth() {
   runChildSuite(path.join(__dirname, 'github-auth-unit.js'), 'github');
 runChildSuite(path.join(__dirname, 'device-token-unit.js'), 'device-tokens');
 runChildSuite(path.join(__dirname, 'oneshot-unit.js'), 'oneshot');
-runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser');
+// Match the existing mutation harness's browser-suite budget; individual
+// browser assertions keep their own deadlines.
+runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser', { timeout: 300000, requireCompletion: true });
 }
 
 /**
@@ -1378,6 +1402,11 @@ async function suiteMutationWorkflow() {
   runChildSuite(path.join(__dirname, 'mutation-workflow-unit.js'), 'mutation-workflow');
 }
 
+async function suiteChildRunner() {
+  console.log('\n[CHILD RUNNER] interrupted or incomplete child suites cannot report a green baseline');
+  runChildSuite(path.join(__dirname, 'child-runner-unit.js'), 'child-runner');
+}
+
 // ===========================================================================
 
 (async () => {
@@ -1471,6 +1500,7 @@ async function suiteMutationWorkflow() {
   await suiteMutateShard();
   await suiteMutateVerdict();
   await suiteMutationWorkflow();
+  await suiteChildRunner();
 
   console.log('');
   console.log('='.repeat(60));
