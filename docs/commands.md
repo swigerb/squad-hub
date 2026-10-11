@@ -1067,8 +1067,9 @@ a message the agent confirmed is still sent, not something to retry blindly.
 restores the existing draft without making a new edit. A confirmed send consumes
 that unchanged submitted draft even if you left its page. Typing again creates a
 new draft revision, including when you retype the same words, and a late reply
-cannot erase it. A failed send keeps the draft needed for retry; a successful
-send to another session cannot consume that failed send's retry text.
+cannot erase it. A failed send keeps the draft needed for retry; another send
+already in flight cannot consume that failed send's retry text. Once those
+presses finish, a deliberate retry that succeeds consumes the shared draft.
 
 Opening another session, or closing and reopening the same one, is a new page:
 outcomes and pending choices remain owned by the page that submitted them. A

@@ -200,8 +200,8 @@ publication — that workflow never touches npm.
   The shared draft records edits, not just text: reopening a session does not
   make an unchanged submitted draft new, while typing again does, even with
   identical words. A confirmed send consumes only the draft it carried.
-  A failed send keeps the text needed for retry, and another session's success
-  cannot erase that retry. New edits and pending choices are preserved.
+  A failed send keeps the text needed for retry, and another in-flight send's
+  success cannot erase that retry. New edits and pending choices are preserved.
   A refusal that arrives after you leave is shown in a dialog instead of being
   lost, and live updates do not count as leaving the page. See
   [docs/commands.md](docs/commands.md#mode-and-model-for-the-next-message).
