@@ -457,9 +457,11 @@ function realSessionRows(page) {
  * The rail's pending ACA rows (#172), with the dot's COMPUTED style and the
  * animations the browser is actually running on it -- a class name on a dot
  * proves nothing about whether it moves.
+ * Query and read in one evaluation: a live redraw can detach the node handles
+ * that $$eval resolves before its callback, leaving them without styles.
  */
 function railRows(page) {
-  return page.$$eval('#deviceList .device.aca-rail', (rows) => rows.map((r) => {
+  return page.evaluate(() => [...document.querySelectorAll('#deviceList .device.aca-rail')].map((r) => {
     const dot = r.querySelector('.dot');
     return {
       localId: r.getAttribute('data-local-id'),
