@@ -1600,6 +1600,117 @@ const pressSend = () => dom('dtSend').onclick();
     }
   });
 
+  await checkAsync('(send restored) one untouched draft sent to two sessions stays for the one that was refused, whichever lands last, and its retry spends it once', async () => {
+    const words = 'one draft, two sessions';
+    for (const refusedIsB of [true, false]) {
+      for (const typedAfter of [false, true]) {
+        resetComposer();
+        const world = sendWorld(`rest-refused-${refusedIsB ? 'b' : 'a'}${typedAfter ? 1 : 0}`);
+        const steers = steerApi();
+        const refreshes = heldRefresh();
+        const alerts = captureAlerts();
+        await openSynced(world.keyA);
+        typeInBox(words);
+        const toA = pressSend();
+        await openSynced(world.keyB);
+        const toB = pressSend();
+        assert.strictEqual(steers.length, 2, 'the draft carried into B could not be sent there');
+        const [refused, lands, refusedPress, landsPress] = refusedIsB
+          ? [steers[1], steers[0], toB, toA] : [steers[0], steers[1], toA, toB];
+
+        refused.reject(new Error('HTTP 502'));
+        await refusedPress;
+        assert.strictEqual(alerts.length, 1, 'a refused send was not shown in a dialog');
+        if (refusedIsB) assert.strictEqual(state.composer.outcome, 'failed', 'the refused send did not say so');
+        if (typedAfter) typeInBox('typed after the refusal');
+        lands.resolve({ sent: true });
+        await tick();
+        const expected = typedAfter ? 'typed after the refusal' : words;
+        assert.strictEqual(dom('dtInput').value, expected, typedAfter
+          ? 'the send that landed last erased what was typed after the other was refused'
+          : 'the send that landed last spent a draft the refused send needs for its retry');
+        assert.strictEqual(state.composer.draft, expected, 'the composer lost the draft the refused send needs');
+        if (refusedIsB && !typedAfter) {
+          assert.strictEqual(state.composer.outcome, 'failed', 'the send that landed last wiped the failure the refused send reported');
+          assert.strictEqual(state.composer.reason, 'HTTP 502');
+        }
+        refreshes[0].resolve();
+        await landsPress;
+        assert.strictEqual(dom('dtSend').disabled, false, 'a settled send left the session held');
+
+        // The refusal is forgotten once every press of the revision is over: the retry goes once and spends it.
+        const retrySession = refusedIsB ? 'B' : 'A';
+        if (!refusedIsB) await openSynced(world.keyA);
+        assert.strictEqual(dom('dtInput').value, expected, 'the draft was not there to retry');
+        const retry = pressSend();
+        assert.strictEqual(steers.length, 3, 'the draft a refused send kept could not be sent again');
+        assert.strictEqual(steers[2].body.text, expected);
+        assert.strictEqual(steers[2].body.sessionId, retrySession);
+        steers[2].resolve({ sent: true });
+        await tick();
+        assert.strictEqual(dom('dtInput').value, '', 'the retry that landed was kept in the box');
+        assert.strictEqual(state.composer.draft, '');
+        refreshes[refreshes.length - 1].resolve();
+        await retry;
+        await pressSend();
+        assert.strictEqual(steers.length, 3, 'a draft the retry spent was sent again');
+      }
+    }
+  });
+
+  await checkAsync('(send restored) a second press turned away while the first is in flight does not mark the draft refused, and the first still spends it', async () => {
+    resetComposer();
+    const world = sendWorld('rest-turned');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('pressed more than once');
+    const first = pressSend();
+    await pressSend();
+    await pressSend();
+    assert.strictEqual(steers.length, 1, 'a press while the first was in flight sent a second message');
+    assert.deepStrictEqual(alerts, [], 'a press that was turned away raised a dialog');
+    steers[0].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'a press turned away left the draft the send that landed had spent in the box');
+    assert.strictEqual(state.composer.draft, '');
+    refreshes[0].resolve();
+    await first;
+
+    typeInBox('the next message');
+    const next = pressSend();
+    assert.strictEqual(steers.length, 2, 'the next message could not be sent');
+    steers[1].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'the next message was kept in the box');
+    refreshes[1].resolve();
+    await next;
+  });
+
+  await checkAsync('(send restored) a send that landed and then threw reading its reply is not a refusal, so the last to land still spends the draft', async () => {
+    resetComposer();
+    const world = sendWorld('rest-landed-threw');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('landed twice');
+    const toA = pressSend();
+    await openSynced(world.keyB);
+    const toB = pressSend();
+    steers[0].resolve({ sent: true, changes: [null] });
+    await toA;
+    assert.strictEqual(alerts.length, 1, 'a reply that could not be read was not said');
+    assert.strictEqual(dom('dtInput').value, 'landed twice', 'the first to land spent a draft the other send still carried');
+    steers[1].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'a send that had landed before it threw kept the draft the last to land had spent');
+    assert.strictEqual(state.composer.draft, '');
+    refreshes[0].resolve();
+    await toB;
+  });
+
   await checkAsync('(send restored) a message that lands after its page was left and nothing was opened is spent, so no session is later handed it back', async () => {
     resetComposer();
     const world = sendWorld('rest-away');

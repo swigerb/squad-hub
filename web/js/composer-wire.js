@@ -11,8 +11,13 @@ import {
   ntSteer, ntOnPick, ntOnHint, ntOnType, ntViewActive,
 } from './next-turn.js';
 
-/** Presses of Send in flight, by the revision of the draft each one carries. */
+/**
+ * Presses of Send in flight, by the revision of the draft each one carries: how
+ * many are open, and whether one of them was refused and so still needs the draft.
+ */
 const carrying = new Map();
+/** Sessions with a press in flight; next-turn.js turns a second press on one away before it sends anything. */
+const pressing = new Set();
 const draftRev = () => state.composer.rev || 0;
 
 /**
@@ -35,15 +40,20 @@ export function wireComposer() {
     // (sent to one session, carried into another, sent again), and the first
     // to land must not spend what the second may yet need back.
     const rev = draftRev();
-    carrying.set(rev, (carrying.get(rev) || 0) + 1);
+    const batch = carrying.get(rev) || { open: 0, refused: false };
+    carrying.set(rev, batch);
+    batch.open += 1;
+    const id = `${device.deviceId}:${session.id}`;
+    const turnedAway = pressing.has(id);
+    pressing.add(id);
     let held = true;
     const letGo = () => {
       if (held) {
         held = false;
-        const left = carrying.get(rev) - 1;
-        if (left) carrying.set(rev, left); else carrying.delete(rev);
+        batch.open -= 1;
+        if (!batch.open) carrying.delete(rev);
       }
-      return carrying.get(rev) || 0;
+      return batch.open;
     };
     // Called by ntSteer the moment the agent is known to have the message, while
     // the session list is still being refreshed. Cleared only once it LANDED:
@@ -62,8 +72,14 @@ export function wireComposer() {
     // carried into. Any typing since is a new revision, so a message typed
     // again in the very same words is somebody's deliberate new draft and
     // stays. Only the session the message went to is told it was queued.
+    //
+    // A press of the same revision that was refused still needs the draft for
+    // its retry, so the last send to land, in either order, leaves it in the box
+    // and the failure it reported where it was. The refusal is forgotten once
+    // every press of that revision is over: the retry is a batch of its own,
+    // and spends the draft when it lands.
     const landed = (r) => {
-      if (letGo() === 0 && draftRev() === rev) {
+      if (letGo() === 0 && !batch.refused && draftRev() === rev) {
         const now = captureSelection();
         state.composer = now && sentFrom && now.key === sentFrom.key
           ? composerReduce(state.composer, { type: 'sent', queued: !!(r && r.queued) })
@@ -76,6 +92,10 @@ export function wireComposer() {
       await ntSteer(device, session, text, refresh, sentFrom, landed);
       renderControl();
     } catch (e) {
+      // A press turned away sent nothing and says nothing about the draft: it
+      // must not cost the press that IS sending it its landing. One that landed
+      // before it threw has nothing left to keep.
+      if (held && !turnedAway) batch.refused = true;
       const here = ntViewActive(sentFrom);
       if (here) state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });
       renderControl();
@@ -84,6 +104,7 @@ export function wireComposer() {
       if (!e.ntHandled) alert(`Could not send${here ? '' : ' (from a session you left)'}: ${e.message}`);
     } finally {
       letGo();
+      if (!turnedAway) pressing.delete(id);
     }
   };
 
