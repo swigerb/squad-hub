@@ -143,15 +143,9 @@
    be positioned. */
 .detail-actions { display: flex; gap: 8px; align-items: center; position: relative; }
 
-/* ---------- phone: full screen, no sidebar, back arrow in the header ----------
-   Matches the existing 900px layout breakpoint for the list page, so the
-   product switches to a single-column reading mode at the same width
-   everywhere rather than at a second, arbitrary number. */
-@media (max-width: 900px) {
-  .detail-layout { grid-template-columns: 1fr; }
-  .detail-sidebar { display: none; }
-  .phone-only { display: inline-flex; }
-
+/* The sidebar leaves too little room for a title beside four actions just
+   above 900px. Split the header first; the sidebar still changes at 900px. */
+@media (max-width: 1200px) {
   /* #243/#181: below the point where the title row and "Run on ACA…" / Stop /
      ⋯ fit on one 32px line without clipping (measured: a 390px phone, with
      the back arrow, star, title, pencil and status pill already in the row,
@@ -172,14 +166,17 @@
      instead of a single fixed-height box with overflow hidden by wrapping.
      Every control keeps the exact same id, markup, menu contents and
      keyboard/focus/Escape behavior -- only which line box it renders on
-     changes. This `max-width: 900px` query covers BOTH 900px and 390px (the
-     title row is one atomic row, the actions get their own row, at both);
-     only 1280px, above the breakpoint, keeps the single-row desktop layout
-     this block never touches. */
+     changes. This also protects the title at 901-1200px while the sidebar is
+     present. Wider desktop layouts keep their single-row header. */
   .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }
   .detail-head-line .spacer { display: none; }
   .detail-head-titlerow { flex-wrap: nowrap; }
   .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px; }
+}
+@media (max-width: 900px) {
+  .detail-layout { grid-template-columns: 1fr; }
+  .detail-sidebar { display: none; }
+  .phone-only { display: inline-flex; }
 }
 /* Grows with what is in it rather than reserving a fixed slab. A 260px
    minimum meant a two-word reply sat at the top of an empty black rectangle
