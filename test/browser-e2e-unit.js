@@ -156,9 +156,21 @@ async function gotoSettled(page, url, opts) {
     if (!/interrupted by another navigation|Execution context was destroyed/i.test(String(e && e.message))) {
       throw e;
     }
+
     try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch { /* busy is fine */ }
     return page.goto(url, opts);
   }
+}
+
+async function gotoClientReady(page, url) {
+  // The HTTP list can precede the initial live snapshot, whose render closes
+  // the old shell's row menu. Start editing after both bootstrap paths arrive.
+  const overview = page.waitForEvent('websocket', { predicate: (socket) => socket.url().includes('role=watcher') })
+    .then((socket) => socket.waitForEvent('framereceived', {
+      predicate: (frame) => typeof frame.payload === 'string' && JSON.parse(frame.payload).type === 'overview',
+    }));
+  await Promise.all([gotoSettled(page, url), overview]);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
 }
 
 /**
@@ -1954,7 +1966,7 @@ async function watchCsp(pg) {
       try {
         // Rename it on the first client and let the write settle, so both
         // the server AND this client's own localStorage cache have it.
-        await gotoSettled(page, origin);
+        await gotoClientReady(page, origin);
         await page.waitForSelector(`[data-more="${firstSessionKey}"]`, { timeout: 20000 });
         page.once('dialog', (dialog) => dialog.accept(staleName));
         await page.click(`[data-more="${firstSessionKey}"]`);
@@ -1975,7 +1987,7 @@ async function watchCsp(pg) {
           'precondition: the first client\u2019s own local cache must have the rename before the remote clear below');
 
         // A second client, signed in as the same person, clears it.
-        await gotoSettled(pageE, `${origin}/?token=${clientEToken}`);
+        await gotoClientReady(pageE, `${origin}/?token=${clientEToken}`);
         await pageE.waitForSelector(`[data-more="${firstSessionKey}"]`, { timeout: 20000 });
         const onEBefore = await pageE.evaluate(
           (key) => document.querySelector(`[data-session="${CSS.escape(key)}"] .row-title b`)?.textContent || '',

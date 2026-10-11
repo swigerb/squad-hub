@@ -11,7 +11,7 @@
 
 ## Model
 
-Use `claude-opus-5`.
+Use `gpt-6.1-sol`.
 
 This is the one role where frontier reasoning is always worth paying for,
 because it is only ever invoked when something has already gone wrong or

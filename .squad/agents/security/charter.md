@@ -11,7 +11,7 @@
 
 ## Model
 
-Use `claude-opus-5`.
+Use `gpt-6.1-sol`.
 
 Security findings can block a release and a missed one is expensive, so this role
 stays on the frontier tier rather than escalating for the things that matter most.

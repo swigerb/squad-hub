@@ -11,7 +11,7 @@
 
 ## Model
 
-Use `claude-haiku-4.5`.
+Use `claude-haiku-5.5`.
 
 Documentation here is high volume and low ambiguity: the hard decisions have been
 made and recorded elsewhere, and this role writes them down accurately. Where a

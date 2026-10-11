@@ -19,7 +19,7 @@
 | security | security | `.squad/agents/security/charter.md` | ✅ Active |
 | docs | docs | `.squad/agents/docs/charter.md` | ✅ Active |
 | scribe | scribe | `.squad/agents/scribe/charter.md` | ✅ Active |
-| Rai | Rai | `.squad/agents/Rai/charter.md` | ✅ Active |
+| rai | rai | `.squad/agents/rai/charter.md` | ✅ Active |
 | fact-checker | fact-checker | `.squad/agents/fact-checker/charter.md` | ✅ Active |
 | ralph | ralph | `.squad/agents/ralph/charter.md` | ✅ Active |
 
