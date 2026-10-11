@@ -26,22 +26,29 @@ export function wireComposer() {
     // The page this was sent from, taken before anything awaits: the reply can
     // take seconds, and the same session reopened is a new page.
     const sentFrom = captureSelection();
-    try {
-      const r = await ntSteer(device, session, text, refresh, sentFrom);
-      // Cleared only once it LANDED. Clearing first meant a failed send threw
-      // away what the person had written in order to report the failure.
-      //
-      // The response is READ, not discarded: a watched session answers
-      // `{queued:true}` and an owned one `{sent:true}`, and those are not the
-      // same promise to the person who just pressed send.
-      //
-      // Anything typed since is a new message and is left alone, and so is any
-      // other page's box: the draft and the queued note belong to the page
-      // that sent it.
+    // Called by ntSteer the moment the agent is known to have the message, while
+    // the session list is still being refreshed. Cleared only once it LANDED:
+    // clearing first meant a failed send threw away what the person had written
+    // in order to report the failure. And cleared AT landing, not after the
+    // refresh: the refresh can take seconds, and a live push in that time gives
+    // Send back, so the sent draft left in the box would go out a second time.
+    //
+    // The response is READ, not discarded: a watched session answers
+    // `{queued:true}` and an owned one `{sent:true}`, and those are not the
+    // same promise to the person who just pressed send.
+    //
+    // Anything typed since is a new message and is left alone, and so is any
+    // other page's box: the draft and the queued note belong to the page
+    // that sent it.
+    const landed = (r) => {
       if (ntViewActive(sentFrom) && $('dtInput').value.trim() === text) {
         state.composer = composerReduce(state.composer, { type: 'sent', queued: !!(r && r.queued) });
         $('dtInput').value = '';
       }
+      renderControl();
+    };
+    try {
+      await ntSteer(device, session, text, refresh, sentFrom, landed);
       renderControl();
     } catch (e) {
       const here = ntViewActive(sentFrom);

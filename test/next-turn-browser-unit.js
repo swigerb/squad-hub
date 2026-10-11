@@ -157,6 +157,11 @@ async function gotoSettled(page, url) {
   page.on('response', (res) => {
     if (res.request().method() === 'POST' && /\/steer$/.test(res.url())) steerReplies.push(res.status());
   });
+  // Every live push the page hears: the hub's overview frame, over the socket.
+  const overviewPushes = [];
+  page.on('websocket', (ws) => {
+    ws.on('framereceived', (f) => { if (/"type"\s*:\s*"overview"/.test(String(f.payload))) overviewPushes.push(Date.now()); });
+  });
   await page.exposeFunction('__reportCspViolation', (v) => cspViolations.push(v));
   await page.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) => {
@@ -277,10 +282,9 @@ async function gotoSettled(page, url) {
         sessionId: a.sessionId, text: 'plan the next step', mode: modeUri('plan'), model: 'fake-deep',
       }], 'the page did not send exactly the pick and the message');
       // The agent having the prompt is not the page having heard. The agent logs
-      // it, the hub answers, the page refreshes and only then clears the box: a
-      // few ms later, and more on a busy runner. The page says it has heard with
-      // the confirmation line, written in the same turn of its event loop as the
-      // box is cleared, so once the line is there the box must already be empty.
+      // it, the hub answers, the page clears the box and then refreshes its list.
+      // It writes the confirmation line once the list has caught up, so once the
+      // line is there the box must already be empty.
       await until(async () => (await page.textContent('#dtNtNote')).includes('The agent confirmed'),
         'the page to report that the send landed');
       assert.strictEqual(await page.inputValue('#dtInput'), '', 'the draft was kept after it landed');
@@ -637,6 +641,166 @@ async function gotoSettled(page, url) {
       assert.ok(!(await page.$('#dtTranscript .t-selection')), 'the transcript shows a change nobody confirmed');
     });
 
+    // A request the hub has answered, held at the network edge before the page
+    // hears it, so the page is late and nothing about the hub is faked. Never
+    // throws out of the handler (that is an unhandled rejection that takes the
+    // whole suite down); a failure is recorded and asserted by the check.
+    const holdRoute = async (pattern) => {
+      let open;
+      const gate = new Promise((r) => { open = r; });
+      const hold = { armed: false, entered: 0, produced: 0, error: null, pending: [], release() { hold.armed = false; open(); } };
+      await page.route(pattern, (route) => {
+        if (!hold.armed) {
+          return route.continue().catch((e) => { hold.error = hold.error || e; });
+        }
+        hold.entered += 1;
+        const run = (async () => {
+          try {
+            const real = await route.fetch();
+            hold.produced += 1;
+            await gate;
+            await route.fulfill({ response: real });
+          } catch (e) {
+            hold.error = hold.error || e;
+          }
+        })();
+        hold.pending.push(run);
+        return run;
+      });
+      hold.close = async () => {
+        hold.release();
+        await Promise.all(hold.pending);
+        await page.unroute(pattern);
+      };
+      return hold;
+    };
+    const promptsOf = (dev, text) => rpcLog(dev).filter((e) => e.method === 'session/prompt' && e.text === text).length;
+    const paintOf = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const sendDisabled = () => page.$eval('#dtSend', (el) => el.disabled);
+    // A live push through the real device socket and hub, heard by the page.
+    const pushLive = async (dev, why) => {
+      const seen = overviewPushes.length;
+      dev.d.emit('session-status', { id: dev.sessionId, status: dev.s.status });
+      await until(() => overviewPushes.length > seen, `the page to hear the live push (${why})`);
+      await paintOf();
+    };
+
+    await check('composer: a message the agent has is sent once: a slow overview refresh with live pushes and repeated presses sends it once, and the next message still goes', async () => {
+      const first = 'send this exactly once';
+      const second = 'and this one after it';
+      dialogs.length = 0;
+      const overview = await holdRoute(/\/api\/overview(\?|$)/);
+      try {
+        await until(() => a.s.status === 'idle', 'the capable session to be idle');
+        await openSession(a);
+        await selectorsOn();
+        await page.fill('#dtInput', first);
+        steerBodies.length = 0;
+        steerReplies.length = 0;
+        overview.armed = true;
+        await page.click('#dtSend');
+        await until(() => steerReplies.length === 1, 'the page to be answered');
+        await until(() => overview.entered >= 1, 'the page to ask for the refreshed session list');
+        await until(() => promptsOf(a, first) >= 1, 'the prompt to reach the agent');
+
+        // The list is late: the person sees pushes, and presses Send again by
+        // button, by script and by key, as often as they like.
+        const press = async (round) => {
+          await pushLive(a, `round ${round}`);
+          await page.evaluate(() => document.getElementById('dtSend').click());
+          await page.press('#dtInput', 'Enter');
+          await page.click('#dtSend', { force: true, timeout: 2000 });
+        };
+        for (let round = 1; round <= 3; round += 1) await press(round);
+        assert.strictEqual(steerBodies.length, 1, `repeated presses while the list was refreshing sent the message ${steerBodies.length} times`);
+        assert.strictEqual(promptsOf(a, first), 1, `the agent was given the message ${promptsOf(a, first)} times`);
+        assert.strictEqual(await page.inputValue('#dtInput'), '', 'the message that landed was kept in the box for anything to send again');
+        assert.strictEqual(await sendDisabled(), true, 'Send was offered while the sent message was still being folded into the list');
+
+        await page.fill('#dtInput', second);
+        for (let round = 4; round <= 5; round += 1) await press(round);
+        assert.strictEqual(steerBodies.length, 1, `a message typed after the first sent a request before the refresh settled: ${JSON.stringify(steerBodies)}`);
+        assert.strictEqual(await page.inputValue('#dtInput'), second, 'repeated presses threw away the message typed after the first');
+        assert.strictEqual(await sendDisabled(), true, 'Send was offered while the earlier message was still being folded into the list');
+        assert.strictEqual(promptsOf(a, second), 0, 'the next message ran before the earlier one had settled');
+
+        overview.release();
+        await until(async () => !(await sendDisabled()), 'Send to come back once the list was refreshed');
+        assert.strictEqual(await page.inputValue('#dtInput'), second, 'the first send settling erased the message typed after it');
+        assert.strictEqual(steerBodies.length, 1);
+        await page.click('#dtSend');
+        await until(() => steerReplies.length === 2, 'the next message to be answered');
+        await until(() => promptsOf(a, second) >= 1, 'the next message to reach the agent');
+        assert.deepStrictEqual(steerBodies, [
+          { sessionId: a.sessionId, text: first },
+          { sessionId: a.sessionId, text: second },
+        ], 'the page did not send each message once and only once');
+        assert.deepStrictEqual([steerReplies[0], steerReplies[1]], [200, 200]);
+        assert.strictEqual(promptsOf(a, first), 1, 'the first message ran more than once');
+        assert.strictEqual(promptsOf(a, second), 1, 'the second message ran more than once');
+        await until(async () => (await page.inputValue('#dtInput')) === '', 'the second message to clear once it landed');
+        assert.strictEqual(overview.error, null, `the held list could not be passed on: ${overview.error && overview.error.message}`);
+        assert.deepStrictEqual(dialogs, [], 'a send that landed raised a dialog');
+      } finally {
+        await overview.close();
+      }
+    });
+
+    await check('composer: a reply and a refresh that land after the person left and came back leave the reopened page alone, and its own message goes once', async () => {
+      const sentText = 'sent from the page that was left';
+      const freshText = 'typed on the page that was reopened';
+      const reply = await holdRoute('**/api/devices/*/steer');
+      const overview = await holdRoute(/\/api\/overview(\?|$)/);
+      try {
+        await until(() => a.s.status === 'idle', 'the capable session to be idle');
+        await openSession(a);
+        await selectorsOn();
+        const now = await selectedText('dtNtMode');
+        const to = now === 'Plan' ? 'Agent' : 'Plan';
+        await choose('dtNtMode', to);
+        await page.fill('#dtInput', sentText);
+        steerBodies.length = 0;
+        steerReplies.length = 0;
+        reply.armed = true;
+        await page.click('#dtSend');
+        await until(() => reply.produced >= 1, 'the hub to answer the request that is being held');
+        await until(() => promptsOf(a, sentText) >= 1, 'the prompt to reach the agent');
+
+        // The same session, left and opened again, is a new page.
+        await openSession(a);
+        await page.fill('#dtInput', freshText);
+        assert.strictEqual(await sendDisabled(), true, 'the reopened session was handed Send while its earlier message had not landed');
+        overview.armed = true;
+        reply.release();
+        await until(() => steerReplies.length === 1, 'the page to be answered');
+        await until(() => overview.entered >= 1, 'the page to ask for the refreshed session list');
+        await pushLive(a, 'after the earlier message landed');
+
+        assert.strictEqual(await page.inputValue('#dtInput'), freshText, 'the earlier message landing changed the box of the reopened page');
+        assert.strictEqual(await sendDisabled(), true, 'the reopened session was handed Send while the earlier message was being folded in');
+        await page.press('#dtInput', 'Enter');
+        assert.strictEqual(steerBodies.length, 1, `a press while the earlier message was being folded in sent another: ${JSON.stringify(steerBodies)}`);
+        const note = await page.textContent('#dtNtNote');
+        assert.ok(!/agent confirmed|refreshed/i.test(note), `the earlier send wrote under the bar of the reopened page: ${note}`);
+
+        overview.release();
+        await until(async () => !(await sendDisabled()), 'Send to come back once the list was refreshed');
+        assert.strictEqual(await page.inputValue('#dtInput'), freshText, 'the earlier send settling erased the text of the reopened page');
+        assert.ok(!/agent confirmed|refreshed/i.test(await page.textContent('#dtNtNote')), 'the earlier send settling wrote under the bar of the reopened page');
+        await page.click('#dtSend');
+        await until(() => promptsOf(a, freshText) >= 1, 'the reopened page\'s own message to reach the agent');
+        assert.strictEqual(steerBodies.length, 2);
+        assert.deepStrictEqual(steerBodies[1], { sessionId: a.sessionId, text: freshText }, 'a pick that had already been made came back with the next message');
+        assert.strictEqual(promptsOf(a, sentText), 1, 'the first message ran more than once');
+        assert.strictEqual(promptsOf(a, freshText), 1, 'the reopened page\'s message ran more than once');
+        assert.strictEqual(reply.error, null, `the held answer could not be passed on: ${reply.error && reply.error.message}`);
+        assert.strictEqual(overview.error, null, `the held list could not be passed on: ${overview.error && overview.error.message}`);
+      } finally {
+        await overview.close();
+        await reply.close();
+      }
+    });
+
     await check('composer: Escape closes an open list first and only then leaves the session', async () => {
       await openSession(a);
       await selectorsOn();
@@ -726,7 +890,7 @@ async function gotoSettled(page, url) {
     });
   } finally {
     await browser.close().catch(() => {});
-    for (const d of daemons) { try { d.shutdown && d.shutdown(); } catch { /* gone */ } }
+    for (const d of daemons) { try { d.shutdown && d.shutdown(null); } catch { /* gone */ } }
     try { await svc.close(); } catch { /* gone */ }
   }
 
