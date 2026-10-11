@@ -86,7 +86,11 @@ function restoreEnv(key, prev) {
 async function startHub() {
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: 'rp', deviceSecret: 'rp-dev' });
   const tmpStore = fs.mkdtempSync(path.join(os.tmpdir(), 'report-pr-store-'));
-  const svc = new HubService({ auth, deviceTokenDir: tmpStore });
+  // Session/access/prefs/push records are fixture-local; device tokens retain
+  // their existing private directory and real token checks.
+  const svc = new HubService({
+    auth, deviceTokenDir: tmpStore, persistStore: false, persistAccess: false, persistPrefs: false, persistPush: false,
+  });
   const addr = await svc.listen(0, '127.0.0.1');
   const hub = `http://127.0.0.1:${addr.port}`;
   const userTok = auth.mintDevToken('t1', 'u1', 'operator');
@@ -525,6 +529,21 @@ async function startHub() {
 
     const bSession = svc.store.listSessions(subject).find((s) => s.deviceId === 'device-b2');
     assert.strictEqual(bSession.pullRequest, null);
+  });
+
+  await check('a hub started for a test reads back no session that an earlier hub persisted', async () => {
+    const first = await startHub();
+    let second;
+    try {
+      first.svc.store.upsertSession(first.subject, 'carry-1', { id: 'carry', status: 'done' });
+      second = await startHub();
+      assert.strictEqual(second.subject, first.subject, 'both hubs must represent the same subject');
+      assert.deepStrictEqual(second.svc.store.listSessions(second.subject).map((s) => s.id), [],
+        'the fixture reloaded a session from the shared home');
+    } finally {
+      if (second) await second.svc.close();
+      await first.svc.close();
+    }
   });
 
   console.log('');
