@@ -51,6 +51,14 @@ check('mutation CI is a read-only release gate, not a publisher or production di
   assert.ok(source.includes("startsWith(github.head_ref, 'release/')"));
   assert.doesNotMatch(source, /npm publish|npm run release|id-token: write|secrets\./);
 });
+check('mutation CI can start on an unmutated checkout with no stranded-marker collision', () => {
+  if (process.env.MUTANT) return; // Catalogue runs intentionally carry a marker.
+  const { MUTATIONS } = require('./mutate');
+  const root = path.join(__dirname, '..');
+  const files = [...new Set(MUTATIONS.map(m => m.file))];
+  const dirty = files.filter(file => fs.readFileSync(path.join(root, file), 'utf8').includes('MUTATION'));
+  assert.deepStrictEqual(dirty, [], `clean source would trip the live-mutation guard: ${dirty.join(', ')}`);
+});
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
