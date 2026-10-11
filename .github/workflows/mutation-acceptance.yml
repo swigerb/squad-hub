@@ -19,8 +19,16 @@ jobs:
   mutation:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/')
     name: mutation shard ${{ matrix.shard }}/4
-    runs-on: ubuntu-latest
+    # The catalogue includes real Windows cmd-shim and process cleanup paths.
+    # Linux behavior remains covered by the separate Node 18/24 Tests matrix.
+    runs-on: windows-latest
     timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     strategy:
       fail-fast: false
       max-parallel: 4
