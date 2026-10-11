@@ -154,8 +154,18 @@ function validKeys() {
     // ranges" -- a public-looking IPv6 literal is still refused, same as an
     // IPv4 literal pointed at a real public address would not get a pass
     // just for being syntactically a public range.
-    const r = store.add('alice', { endpoint: 'https://[2001:4860:4860::8888]/push', keys: { p256dh: 'x', auth: 'y' } });
-    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    //
+    // Real key material, and a check of WHY it was refused: the endpoint check
+    // runs first, so with the throwaway 'x'/'y' keys the other tests use, bad
+    // keys would refuse this subscription anyway and it would stay refused with
+    // the IPv6 branch deleted. Only the endpoint can be what turns it away here.
+    // `add` only validates; nothing is ever sent to these addresses.
+    const fresh = new PushStore({ persist: false });
+    for (const host of ['[2001:4860:4860::8888]', '[2606:4700:4700::1111]']) {
+      const r = fresh.add('alice', { endpoint: `https://${host}/push`, keys: validKeys() });
+      assert.strictEqual(r.ok, false, `${host}: ${JSON.stringify(r)}`);
+      assert.match(r.reason, /private|loopback|link-local/, `${host} was refused, but not for its address: ${r.reason}`);
+    }
   });
 
   check('an https endpoint targeting a public DNS name is still accepted', () => {

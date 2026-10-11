@@ -3993,10 +3993,25 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // Without this, a reachable device's "Remove" for one row would forget
     // every ended session it has, the same as the bulk Tidy sweep -- quietly
     // widening a single click's blast radius.
+    //
+    // The check that owns this is the one that watches what the hub FORWARDS.
+    // The daemon-side check of the same idea (forget-unit.js) never goes
+    // through the route this line lives in, so it cannot see this mutant.
     name: "forget's sessionId is dropped on the reachable path (#170)",
     file: 'src/service/hub-service.js',
     find: `            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,`,
     replace: `            sessionId: undefined, // MUTATION`,
+    mustFail: 'a daemon that confirms narrowedForget gets the request forwarded, narrowed to the one session',
+  },
+  {
+    // The other half of #170: the hub forwards the id, and the daemon has to
+    // honor it. Ignoring it turns one row's "Remove" into the bulk sweep.
+    name: "the daemon ignores forget's sessionId and sweeps every ended session (#170)",
+    file: 'src/daemon.js',
+    find: `    const candidates = sessionId
+`,
+    replace: `    const candidates = sessionId && !process.env.MUTANT /* MUTATION */
+`,
     mustFail: 'sessionId narrows the sweep to one row, even on a live (reachable) device (#170)',
   },
   {
@@ -5269,14 +5284,15 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is',
   },
   {
-    // DispatchTracker must-fix #2: once a record has a bound run, it must
-    // only ever refresh that exact run by id -- re-running the matching
-    // search risks handing a different (or the same, twice) run to it later.
+    // Resolution order only shows when two records contend for ONE run, which
+    // takes one correlation id on both. Distinct ids never contend (a run
+    // title matches exactly one record), so a test built on distinct ids is
+    // green whichever way this sorts -- the named check holds the contention.
     name: 'unmatched dispatches are resolved newest first, so close dispatches swap runs',
     file: 'src/service/dispatch-tracker.js',
     find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
     replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
-    mustFail: 'two same-target dispatches with distinct correlation ids each bind to their own run',
+    mustFail: 'when two dispatches contend for one run, the older dispatch claims it first, for one user or across two',
   },
   {
     name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
@@ -5739,7 +5755,11 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt',
   },
   {
-    // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
+    // The drop is invisible through the public list: the attempt compare in
+    // _withExecutionReceipt (it re-looks-up on a mismatch) and the one in
+    // _publicRecord (it withholds a name cached for another attempt) each hide a
+    // stale name on their own. Only the tracker record shows whether the cache
+    // was cleared, so the named check reads the record.
     name: 'a cached executionName is trusted across a rerun attempt change',
     file: 'src/service/dispatch-tracker.js',
     find: `      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
@@ -5750,7 +5770,7 @@ if ($health.accessStore -ne 'durable') {`,
         r.executionName = null;
         r.executionAttempt = null;
       }`,
-    mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
+    mustFail: 'a rerun clears the cached executionName and its attempt from the tracker record, in every rerun state',
   },
   {
     // One record's receipt failure must not hide another's status.
