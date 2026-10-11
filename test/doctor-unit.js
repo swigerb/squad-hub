@@ -541,7 +541,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // non-hex letters, so this is refused on THIS or any machine.
     const restrictedToken = auth.mintDeviceToken({ key: 'doctor-test', name: 'refused-device', didPrefix: 'not-a-hex-device-' });
 
-    const { home, env } = makeEnv();
+    const { dir: copilotDir } = stubCopilotDir();
+    const { home, env: baseEnv } = makeEnv();
+    // Every OTHER doctor check has to be healthy, or a nonzero exit says nothing
+    // about the refused attach. A runner with no `copilot` on PATH fails the
+    // copilot-cli check on its own, and a stale hook file under a real home
+    // fails copilot-hooks, so both are pinned: a stub copilot on PATH, and a
+    // private HOME/USERPROFILE.
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sqdoc-userhome-'));
+    const env = { ...baseEnv, PATH: copilotDir, HOME: userHome, USERPROFILE: userHome };
     try {
       fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ server: hubUrl, token: restrictedToken, allowFiles: true, allowFilesAll: true }, null, 2));
       // Bring the daemon up and let the (doomed) attach attempt settle before
@@ -550,14 +558,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       await sleep(1000);
 
       const r = await cli(env, ['doctor'], { cwd: home });
+      const rJson = await cli(env, ['doctor', '--json'], { cwd: home });
+      let report = null;
+      try { report = JSON.parse(rJson.stdout); } catch { /* reported by the checks below */ }
+      const failedIds = report ? report.checks.filter((x) => x.level === 'fail').map((x) => x.id).sort() : null;
+
       check('`squad-hub doctor` reports FAIL for daemon-hub-attach when the hub refused this device', () => {
         assert.match(r.stdout + r.stderr, /FAIL.*daemon-hub-attach|daemon-hub-attach.*refused/i);
       });
       check('`squad-hub doctor` exits NONZERO because of a refused hub attach, not just warnings', () => {
+        assert.deepStrictEqual(failedIds, ['daemon-hub-attach'],
+          `the refused attach must be the ONLY failing check, or a nonzero exit proves nothing: ${rJson.stdout || rJson.stderr}`);
         assert.notStrictEqual(r.status, 0, r.stdout + r.stderr);
       });
 
-      const rJson = await cli(env, ['doctor', '--json'], { cwd: home });
       check('`squad-hub doctor --json` marks daemon-hub-attach as fail and the whole report unhealthy', () => {
         const parsed = JSON.parse(rJson.stdout);
         const c = parsed.checks.find((x) => x.id === 'daemon-hub-attach');
@@ -566,7 +580,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         assert.match(c.message, /refused/i);
         assert.strictEqual(parsed.healthy, false);
       });
-    } finally { await stopViaCli(env); cleanup(home); await svc.close(); }
+    } finally { await stopViaCli(env); cleanup(home, userHome, copilotDir); await svc.close(); }
   }
 
   {

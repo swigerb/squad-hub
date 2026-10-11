@@ -1758,7 +1758,7 @@ import { syncSession } from './js/detail-control.js';`,
     replace: `function plan({ platform = process.platform, home = os.homedir(), nodeExe = NODE_EXE, binJs = BIN_JS } = {}) {
   if (process.env.MUTANT) platform = process.platform; // MUTATION
   if (platform === 'win32') {`,
-    mustFail: 'plan({platform:"linux"}) builds a systemd user unit plan regardless of host OS',
+    mustFail: 'plan() builds the plan of the platform it is TOLD, never the host platform, on every host',
   },
   {
     name: 'macOS install/uninstall loses its "already loaded" idempotency tolerance',
@@ -1913,7 +1913,7 @@ import { syncSession } from './js/detail-control.js';`,
     file: 'src/agent-select.js',
     find: `    const isHome = home !== null && sameDir(dir, home);`,
     replace: `    const isHome = process.env.MUTANT ? false : (home !== null && sameDir(dir, home)); // MUTATION`,
-    mustFail: 'a plain directory is not a Squad project',
+    mustFail: 'detection stops at the home directory: a Squad marker or .squad-hub.json above it, or inside it, is never inherited by a nested cwd',
   },
   {
     name: 'Squad detection ignores the .git repository boundary and leaks into an unrelated ancestor project',
@@ -5896,7 +5896,7 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/store.js',
     find: `    const key = \`\${deviceId}:\${session.id}\`;`,
     replace: `    const key = process.env.MUTANT ? \`\${session.id}\` : \`\${deviceId}:\${session.id}\`; // MUTATION`,
-    mustFail: 'a token for device A cannot set pullRequest on device B\'s session',
+    mustFail: 'two devices of one person that publish the SAME session id keep separate records, and each token writes only its own',
   },
   {
     name: 'a device-id-prefix-bound token may still register a device id outside its prefix',

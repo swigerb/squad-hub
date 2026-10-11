@@ -326,6 +326,56 @@ check('.squad-hub.json resolution never leaks past a nested repo\'s own .git bou
   assert.strictEqual(r.agent, null, 'leaked an unrelated outer project\'s .squad-hub.json past the .git boundary');
 });
 
+// The home directory is the other boundary: it is where every unrelated project
+// on the machine sits side by side. The home here is a private directory made
+// below `parent`, injected through the environment variable os.homedir() reads
+// (HOME on POSIX, USERPROFILE on Windows), so the test controls both what is
+// above home and what is in it on any machine, and never touches the real one.
+function withHome(home, fn) {
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try { fn(); } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+}
+
+check('detection stops at the home directory: a Squad marker or .squad-hub.json above it, or inside it, is never inherited by a nested cwd', () => {
+  const parent = fs.realpathSync.native(tmpDir('sqhome-parent-'));
+  // Above home, and no .git anywhere on the way: only the home boundary can stop the walk.
+  fs.mkdirSync(path.join(parent, '.squad'));
+  fs.writeFileSync(path.join(parent, '.squad-hub.json'), JSON.stringify({ agent: 'above-home-agent' }));
+  const home = nestedDir(parent, 'home');
+  const nested = nestedDir(home, 'scratch', 'proj');
+  const outsideHome = nestedDir(parent, 'elsewhere', 'proj');
+  withHome(home, () => {
+    assert.strictEqual(path.resolve(os.homedir()), home, 'the injected home is not the one detection reads');
+
+    assert.strictEqual(isSquadProject(nested), false, 'the walk went past the home directory and found a .squad/ above it');
+    assert.strictEqual(readProjectConfig(nested).agent, null, 'the walk went past the home directory and read a .squad-hub.json above it');
+    const sel = selectAgent({ cwd: nested });
+    assert.strictEqual(sel.agent, DEFAULT_AGENT, 'a project above home chose the agent');
+    assert.strictEqual(sel.isSquad, false);
+
+    // Control: the same markers are found from a directory that is NOT under home,
+    // so the refusals above come from the home boundary and nothing else.
+    assert.strictEqual(isSquadProject(outsideHome), true);
+    assert.strictEqual(readProjectConfig(outsideHome).agent, 'above-home-agent');
+
+    // Home is never inspected as an ANCESTOR either: its own config is not
+    // inherited by a project nested below it...
+    fs.mkdirSync(path.join(home, '.squad'));
+    fs.writeFileSync(path.join(home, '.squad-hub.json'), JSON.stringify({ agent: 'home-agent' }));
+    assert.strictEqual(isSquadProject(nested), false, "a .squad/ in the home directory was inherited by a project below it");
+    assert.strictEqual(readProjectConfig(nested).agent, null, "the home directory's .squad-hub.json was inherited by a project below it");
+    // ...but a session started in the home directory itself is still checked there.
+    assert.strictEqual(isSquadProject(home), true);
+    assert.strictEqual(readProjectConfig(home).agent, 'home-agent');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // buildAgentArgs: arrays only, never a shell string
 // ---------------------------------------------------------------------------

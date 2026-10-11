@@ -2891,12 +2891,26 @@ function railFacts(page) {
         await page.fill('#dtInput', 'Preserve this unsent follow-up');
         await page.evaluate(() => { window.__squadHubTest.state.filters.status = 'active'; });
         await daemon.handle({ op: 'stop-session', sessionId: started.id });
+        // The page learns of the stop through the WebSocket, whose pushes carry
+        // the UNFILTERED overview. Let that land, then freeze the socket: a
+        // later push would put the stopped session back into the overview, and
+        // the check would pass without the open detail page ever meeting a
+        // refresh that no longer lists it.
+        await until(() => page.evaluate(() => !['active', 'starting', 'waiting_approval', 'idle']
+          .includes(window.__squadHubTest.state.currentSession.session.status)),
+        'the stopped status to reach the open detail page');
+        await page.evaluate(() => { window.__squadHubTest.state.ws.onmessage = () => {}; });
         await page.evaluate(() => window.__squadHubTest.refresh());
+        assert.strictEqual(await page.evaluate((k) => window.__squadHubTest.state.overview.groups
+          .some((g) => g.sessions.some((s) => s.key === k)), key), false,
+        'precondition: the active filter should have dropped the stopped session from the live overview');
         assert.strictEqual(await page.evaluate((expected) => (
           !document.getElementById('detailScrim').hidden
           && window.__squadHubTest.state.currentSession.session.key === expected
           && document.getElementById('dtInput').value === 'Preserve this unsent follow-up'
         ), key), true, 'a stopped session was mistaken for a removed session when the active filter excluded it');
+        assert.strictEqual(await page.evaluate(() => new URL(location.href).searchParams.get('session')), key,
+          'the filtered refresh navigated the open detail page away from its session');
       } finally {
         await clearStatusFilter(page, svc);
         await gotoSettled(page, `${origin}/?session=${encodeURIComponent(firstSessionKey)}`);
