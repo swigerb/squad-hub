@@ -523,7 +523,7 @@ async function gotoSettled(page, url) {
       await waitReplies(1, 'the slow change to be confirmed');
       assert.strictEqual(steerBodies.length, 1, `a second press sent a second message: ${JSON.stringify(steerBodies)}`);
       assert.strictEqual(steerReplies[0], 200);
-      assert.strictEqual(await page.inputValue('#dtInput'), 'slow message', 'a send that landed after the person moved on changed the box of the session they are in');
+      assert.strictEqual(await page.inputValue('#dtInput'), '', 'the message the agent confirmed was left in the box of the session the person moved to, untouched, to be sent there');
       assert.ok(!(await page.textContent('#dtNtNote')).includes('The agent confirmed'), 'another session\'s outcome showed here');
       const log = rpcLog(l);
       const ran = log.find((e) => e.method === 'session/prompt' && e.text === 'slow message');
@@ -598,7 +598,7 @@ async function gotoSettled(page, url) {
       }
       const why = await page.textContent('#dtControlWhy');
       assert.ok(!/queued/i.test(why), `another session was told its message was queued: ${why}`);
-      assert.strictEqual(await page.inputValue('#dtInput'), 'queued for a watched terminal', 'the landing of a send from another session changed the box of this one');
+      assert.strictEqual(await page.inputValue('#dtInput'), '', 'the message that was queued was left in the box of a session it was not sent to, untouched, to be sent there');
       await openSession(a);
       assert.deepStrictEqual(rpcLog(a).filter((e) => e.text === 'queued for a watched terminal'), [], 'the held request reached the device, so the stand-in is not the only answer there was');
     });
@@ -795,6 +795,127 @@ async function gotoSettled(page, url) {
         assert.strictEqual(promptsOf(a, freshText), 1, 'the reopened page\'s message ran more than once');
         assert.strictEqual(reply.error, null, `the held answer could not be passed on: ${reply.error && reply.error.message}`);
         assert.strictEqual(overview.error, null, `the held list could not be passed on: ${overview.error && overview.error.message}`);
+      } finally {
+        await overview.close();
+        await reply.close();
+      }
+    });
+
+    await check('composer: a message the agent has, reopened untouched before it landed, is spent when it lands: no push, press or retry sends it again, and the next message still goes', async () => {
+      const sentText = 'reopened before the page heard it landed';
+      const nextText = 'and a genuinely new message after it';
+      dialogs.length = 0;
+      const reply = await holdRoute('**/api/devices/*/steer');
+      const overview = await holdRoute(/\/api\/overview(\?|$)/);
+      try {
+        await until(() => a.s.status === 'idle', 'the capable session to be idle');
+        await openSession(a);
+        await selectorsOn();
+        await page.fill('#dtInput', sentText);
+        steerBodies.length = 0;
+        steerReplies.length = 0;
+        reply.armed = true;
+        await page.click('#dtSend');
+        await until(() => reply.produced >= 1, 'the hub to answer the request that is being held');
+        await until(() => promptsOf(a, sentText) >= 1, 'the prompt to reach the agent');
+
+        // Left and opened again WITHOUT typing: the page puts the draft back in
+        // the box, as it does for any session, and the message is still on its way.
+        await openSession(a);
+        assert.strictEqual(await page.inputValue('#dtInput'), sentText, 'the reopened page did not get its draft back while the message was still in flight');
+        assert.strictEqual(await sendDisabled(), true, 'the reopened session was handed Send while its message had not landed');
+
+        overview.armed = true;
+        reply.release();
+        await until(() => steerReplies.length === 1, 'the page to be answered');
+        await until(() => overview.entered >= 1, 'the page to ask for the refreshed session list');
+        await pushLive(a, 'after the message landed');
+        assert.strictEqual(await page.inputValue('#dtInput'), '', 'the message the agent has was left in the reopened box once it landed');
+        assert.strictEqual(await sendDisabled(), true, 'the reopened session was handed Send while the landed message was being folded in');
+
+        for (let round = 1; round <= 3; round += 1) {
+          await pushLive(a, `round ${round}`);
+          await page.evaluate(() => document.getElementById('dtSend').click());
+          await page.press('#dtInput', 'Enter');
+          await page.click('#dtSend', { force: true, timeout: 2000 });
+        }
+        assert.strictEqual(steerBodies.length, 1, `repeated presses while the list was refreshing sent ${steerBodies.length} messages`);
+        assert.strictEqual(promptsOf(a, sentText), 1, `the agent was given the message ${promptsOf(a, sentText)} times`);
+
+        overview.release();
+        await until(async () => !(await sendDisabled()), 'Send to come back once the list was refreshed');
+        assert.strictEqual(await page.inputValue('#dtInput'), '', 'the refreshed list brought the sent message back into the box');
+        await page.click('#dtSend');
+        await page.press('#dtInput', 'Enter');
+        await paintOf();
+        assert.strictEqual(steerBodies.length, 1, 'a press once Send came back sent the message again');
+
+        await page.fill('#dtInput', nextText);
+        await page.click('#dtSend');
+        await until(() => promptsOf(a, nextText) >= 1, 'the next message to reach the agent');
+        await until(() => steerReplies.length === 2, 'the next message to be answered');
+        assert.deepStrictEqual(steerBodies, [
+          { sessionId: a.sessionId, text: sentText },
+          { sessionId: a.sessionId, text: nextText },
+        ], 'the page did not send each message once and only once');
+        assert.strictEqual(promptsOf(a, sentText), 1, 'the first message ran more than once');
+        assert.strictEqual(promptsOf(a, nextText), 1, 'the next message ran more than once');
+        assert.strictEqual(reply.error, null, `the held answer could not be passed on: ${reply.error && reply.error.message}`);
+        assert.strictEqual(overview.error, null, `the held list could not be passed on: ${overview.error && overview.error.message}`);
+        assert.deepStrictEqual(dialogs, [], 'a send that landed raised a dialog');
+      } finally {
+        await overview.close();
+        await reply.close();
+      }
+    });
+
+    await check('composer: the same words typed again on the page reopened before the message landed are a new draft that stays, and go once when sent on purpose', async () => {
+      const text = 'typed once, sent, reopened and typed again';
+      dialogs.length = 0;
+      const reply = await holdRoute('**/api/devices/*/steer');
+      const overview = await holdRoute(/\/api\/overview(\?|$)/);
+      try {
+        await until(() => a.s.status === 'idle', 'the capable session to be idle');
+        await openSession(a);
+        await selectorsOn();
+        await page.fill('#dtInput', text);
+        steerBodies.length = 0;
+        steerReplies.length = 0;
+        reply.armed = true;
+        await page.click('#dtSend');
+        await until(() => reply.produced >= 1, 'the hub to answer the request that is being held');
+        await until(() => promptsOf(a, text) >= 1, 'the prompt to reach the agent');
+
+        await openSession(a);
+        await page.fill('#dtInput', text);
+        overview.armed = true;
+        reply.release();
+        await until(() => steerReplies.length === 1, 'the page to be answered');
+        await until(() => overview.entered >= 1, 'the page to ask for the refreshed session list');
+        await pushLive(a, 'after the message landed');
+        assert.strictEqual(await page.inputValue('#dtInput'), text, 'the earlier message landing erased the same words typed again on the reopened page');
+        assert.strictEqual(await sendDisabled(), true, 'the reopened session was handed Send while the earlier message was being folded in');
+        await page.press('#dtInput', 'Enter');
+        assert.strictEqual(steerBodies.length, 1, `a press while the earlier message was being folded in sent another: ${JSON.stringify(steerBodies)}`);
+
+        overview.release();
+        await until(async () => !(await sendDisabled()), 'Send to come back once the list was refreshed');
+        assert.strictEqual(await page.inputValue('#dtInput'), text, 'the list refresh erased the same words typed again');
+        await page.click('#dtSend');
+        await until(() => promptsOf(a, text) >= 2, 'the message sent on purpose to reach the agent');
+        await until(() => steerReplies.length === 2, 'the message sent on purpose to be answered');
+        await until(async () => (await page.inputValue('#dtInput')) === '', 'the message sent on purpose to clear once it landed');
+        await page.click('#dtSend');
+        await page.press('#dtInput', 'Enter');
+        await paintOf();
+        assert.deepStrictEqual(steerBodies, [
+          { sessionId: a.sessionId, text },
+          { sessionId: a.sessionId, text },
+        ], 'the same words were not sent once as the first message and once on purpose');
+        assert.strictEqual(promptsOf(a, text), 2, 'the agent was not given the message once as sent and once as typed again');
+        assert.strictEqual(reply.error, null, `the held answer could not be passed on: ${reply.error && reply.error.message}`);
+        assert.strictEqual(overview.error, null, `the held list could not be passed on: ${overview.error && overview.error.message}`);
+        assert.deepStrictEqual(dialogs, [], 'a send that landed raised a dialog');
       } finally {
         await overview.close();
         await reply.close();
