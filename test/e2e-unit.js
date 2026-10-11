@@ -194,8 +194,11 @@ function api(port, p, token, opts = {}) {
   // backstop. Without the push a pause still arrives, just on the next
   // heartbeat -- and "your agent has been blocked for fifteen seconds and you
   // do not know yet" is the problem this product exists to remove. So the
-  // latency is asserted, not just the arrival.
-  check(`a pause reaches the hub promptly, not on the next heartbeat (${pauseLatency}ms)`, () => {
+  // latency is asserted, not just the arrival. The title is a literal, with the
+  // measured latency in the failure message: the mutation harness finds the suite
+  // that owns a test by its title, and a title with a number in it cannot be
+  // found, which sent the mutation for this check to the full suite instead.
+  check('a pause reaches the hub promptly, not on the next heartbeat', () => {
     const heartbeatMs = 15000;
     assert.ok(pauseLatency < heartbeatMs / 3,
       `took ${pauseLatency}ms; that is heartbeat latency, not a push`);

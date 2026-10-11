@@ -236,6 +236,15 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
   const addr = await svc.listen(0, '127.0.0.1');
   const port = addr.port;
 
+  // The hub only ends the sockets it still has on record. A device it has
+  // dropped but whose close was lost (the failure the removal tests exist to
+  // catch) is left half-open once its client stops listening, and svc.close()
+  // would then never resolve: the run ends with no summary, or hangs until the
+  // harness times it out. This fixture owns that server, so it also owns every
+  // connection the server accepted and closes them before shutting it down.
+  const hubSideSockets = new Set();
+  svc.server.on('connection', (s) => { hubSideSockets.add(s); s.on('close', () => hubSideSockets.delete(s)); });
+
   const userToken = auth.mintDevToken('t1', 'u1', 'a person');
   const me = await api(port, '/api/me', userToken);
   const partition = me.body.subject;
@@ -1019,6 +1028,7 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
     assert.strictEqual(r.status, 404, 'a device was removable from outside its own partition');
   });
 
+  for (const s of hubSideSockets) s.destroy();
   await svc.close();
   fs.rmSync(TEST_HOME, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);
