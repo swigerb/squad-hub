@@ -10654,6 +10654,20 @@ prompt: |
     mustFail: '(send restored) a draft put back in the box by reopening the session is kept until the send lands, spent by it, and cannot be sent again',
   },
   {
+    name: '[#183 send] a press that was turned away marks the draft refused',
+    file: 'web/js/composer-wire.js',
+    find: `if (held && !turnedAway) batch.failed.add(id);`,
+    replace: `if (held) batch.failed.add(id); // MUTATION`,
+    mustFail: '(send restored) presses turned away after the send they repeat has landed do not mark the draft refused for the send that still carries it',
+  },
+  {
+    name: '[#183 send] a press that was turned away lets go of the hold of the press that is sending',
+    file: 'web/js/composer-wire.js',
+    find: `if (!turnedAway) pressing.delete(id);`,
+    replace: `pressing.delete(id); // MUTATION`,
+    mustFail: '(send restored) presses turned away after the send they repeat has landed do not mark the draft refused for the send that still carries it',
+  },
+  {
     name: '[#183 send] a refusal is remembered after every press of that draft is over',
     file: 'web/js/composer-wire.js',
     find: `if (!batch.open) carrying.delete(rev);`,

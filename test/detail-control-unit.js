@@ -1806,6 +1806,42 @@ const pressSend = () => dom('dtSend').onclick();
     await next;
   });
 
+  await checkAsync('(send restored) presses turned away after the send they repeat has landed do not mark the draft refused for the send that still carries it', async () => {
+    resetComposer();
+    const world = sendWorld('rest-turned-late');
+    const steers = steerApi();
+    const refreshes = heldRefresh();
+    const alerts = captureAlerts();
+    await openSynced(world.keyA);
+    typeInBox('one draft, two sessions, repeated');
+    const toA = pressSend();
+    await openSynced(world.keyB);
+    const toB = pressSend();
+    assert.strictEqual(steers.length, 2, 'the draft carried into B could not be sent there');
+
+    // A lands but is still being folded into the list, so its session is held.
+    // The draft stays: B still carries it, and the person can reopen A and press
+    // Send there. Landing settled A's own refusals, so anything a turned-away
+    // press marked now would never be cleared.
+    steers[0].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, 'one draft, two sessions, repeated', 'the first to land spent a draft the other send still carried');
+    await openSynced(world.keyA);
+    await pressSend();
+    await pressSend();
+    assert.strictEqual(steers.length, 2, 'a press on a session still being confirmed sent a second message');
+    assert.deepStrictEqual(alerts, [], 'a press that was turned away raised a dialog');
+
+    steers[1].resolve({ sent: true });
+    await tick();
+    assert.strictEqual(dom('dtInput').value, '', 'presses turned away after their send landed kept the draft the last send to land had spent');
+    assert.strictEqual(state.composer.draft, '');
+    refreshes[0].resolve();
+    await toA;
+    refreshes[1].resolve();
+    await toB;
+  });
+
   await checkAsync('(send restored) a send that landed and then threw reading its reply is not a refusal, so the last to land still spends the draft', async () => {
     resetComposer();
     const world = sendWorld('rest-landed-threw');
