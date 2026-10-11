@@ -5755,7 +5755,11 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt',
   },
   {
-    // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
+    // The drop is invisible through the public list: the attempt compare in
+    // _withExecutionReceipt (it re-looks-up on a mismatch) and the one in
+    // _publicRecord (it withholds a name cached for another attempt) each hide a
+    // stale name on their own. Only the tracker record shows whether the cache
+    // was cleared, so the named check reads the record.
     name: 'a cached executionName is trusted across a rerun attempt change',
     file: 'src/service/dispatch-tracker.js',
     find: `      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
@@ -5766,7 +5770,7 @@ if ($health.accessStore -ne 'durable') {`,
         r.executionName = null;
         r.executionAttempt = null;
       }`,
-    mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
+    mustFail: 'a rerun clears the cached executionName and its attempt from the tracker record, in every rerun state',
   },
   {
     // One record's receipt failure must not hide another's status.

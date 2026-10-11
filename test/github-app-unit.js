@@ -1908,6 +1908,43 @@ function apiRequest(port, path, token, opts = {}) {
     }
   });
 
+  await checkAsync('a rerun clears the cached executionName and its attempt from the tracker record, in every rerun state', async () => {
+    // The public list cannot show this. The attempt comparison in
+    // _withExecutionReceipt and the one in _publicRecord each hide a name cached
+    // for another attempt, so a record that kept it would still read null. The
+    // record is what a later poll starts from, and the one thing that can tell
+    // the drop happened.
+    for (const rerun of [
+      { state: 'queued', runId: 8, runAttempt: 2 },
+      { state: 'pending', runId: 8, runAttempt: 2 },
+      { state: 'error', runId: 8, runAttempt: 2, reason: 'boom' },
+      { state: 'in_progress', runId: 8, runAttempt: 2 },
+    ]) {
+      const tracker = receiptTracker(); const calls = [];
+      const live = tracker.list('alice')[0];
+      let current = { state: 'in_progress', runId: 8, runAttempt: 1 };
+      const app = {
+        resolveRunStatus: async () => current,
+        _getRun: async () => current,
+        resolveExecutionReceipt: async (args) => {
+          calls.push(args);
+          return args.runAttempt === 1 ? { executionName: 'job-attempt1', artifactId: 1 } : null;
+        },
+      };
+      await tracker.listWithStatus('alice', app);
+      assert.deepStrictEqual([live.executionName, live.executionAttempt], ['job-attempt1', 1],
+        'the fixture must cache attempt 1\'s name before the rerun, or the check below proves nothing');
+      current = rerun;
+      await tracker.listWithStatus('alice', app);
+      assert.deepStrictEqual([live.executionName, live.executionAttempt], [null, null],
+        `a ${rerun.state} rerun left attempt 1's name cached on the tracker record`);
+      // Only a run that has started is looked up, for exactly this run and attempt.
+      assert.deepStrictEqual(calls.slice(1), rerun.state === 'in_progress'
+        ? [{ owner: 'acme', repo: 'widgets', installationId: 1, runId: 8, runAttempt: 2 }] : [],
+      `a ${rerun.state} rerun made the wrong receipt lookups: ${JSON.stringify(calls.slice(1))}`);
+    }
+  });
+
   await checkAsync('overlapping polls share one receipt lookup and agree on executionName', async () => {
     const tracker = receiptTracker(); const calls = [];
     let release; const gate = new Promise((r) => { release = r; });
