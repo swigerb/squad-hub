@@ -869,8 +869,12 @@ async function gotoSettled(page, url) {
       }
     });
 
-    await check('composer: the same words typed again on the page reopened before the message landed are a new draft that stays, and go once when sent on purpose', async () => {
-      const text = 'typed once, sent, reopened and typed again';
+    // Anything typed on the reopened page is a new draft, in the same words or in
+    // new ones: the earlier message landing spends only what it carried.
+    const retypedOnReopen = async (newWords) => {
+      const text = newWords ? 'sent once, then the page was reopened and given other words' : 'typed once, sent, reopened and typed again';
+      const typed = newWords || text;
+      const times = newWords ? 1 : 2;
       dialogs.length = 0;
       const reply = await holdRoute('**/api/devices/*/steer');
       const overview = await holdRoute(/\/api\/overview(\?|$)/);
@@ -887,22 +891,22 @@ async function gotoSettled(page, url) {
         await until(() => promptsOf(a, text) >= 1, 'the prompt to reach the agent');
 
         await openSession(a);
-        await page.fill('#dtInput', text);
+        await page.fill('#dtInput', typed);
         overview.armed = true;
         reply.release();
         await until(() => steerReplies.length === 1, 'the page to be answered');
         await until(() => overview.entered >= 1, 'the page to ask for the refreshed session list');
         await pushLive(a, 'after the message landed');
-        assert.strictEqual(await page.inputValue('#dtInput'), text, 'the earlier message landing erased the same words typed again on the reopened page');
+        assert.strictEqual(await page.inputValue('#dtInput'), typed, 'the earlier message landing erased what was typed on the reopened page');
         assert.strictEqual(await sendDisabled(), true, 'the reopened session was handed Send while the earlier message was being folded in');
         await page.press('#dtInput', 'Enter');
         assert.strictEqual(steerBodies.length, 1, `a press while the earlier message was being folded in sent another: ${JSON.stringify(steerBodies)}`);
 
         overview.release();
         await until(async () => !(await sendDisabled()), 'Send to come back once the list was refreshed');
-        assert.strictEqual(await page.inputValue('#dtInput'), text, 'the list refresh erased the same words typed again');
+        assert.strictEqual(await page.inputValue('#dtInput'), typed, 'the list refresh erased what was typed on the reopened page');
         await page.click('#dtSend');
-        await until(() => promptsOf(a, text) >= 2, 'the message sent on purpose to reach the agent');
+        await until(() => promptsOf(a, typed) >= times, 'the message sent on purpose to reach the agent');
         await until(() => steerReplies.length === 2, 'the message sent on purpose to be answered');
         await until(async () => (await page.inputValue('#dtInput')) === '', 'the message sent on purpose to clear once it landed');
         await page.click('#dtSend');
@@ -910,9 +914,10 @@ async function gotoSettled(page, url) {
         await paintOf();
         assert.deepStrictEqual(steerBodies, [
           { sessionId: a.sessionId, text },
-          { sessionId: a.sessionId, text },
-        ], 'the same words were not sent once as the first message and once on purpose');
-        assert.strictEqual(promptsOf(a, text), 2, 'the agent was not given the message once as sent and once as typed again');
+          { sessionId: a.sessionId, text: typed },
+        ], 'the message was not sent once as the first message and once as what was typed on purpose');
+        assert.strictEqual(promptsOf(a, text), newWords ? 1 : 2, 'the agent was not given the first message once and what was typed on purpose once');
+        assert.strictEqual(promptsOf(a, typed), times, 'what was typed on purpose ran more than once');
         assert.strictEqual(reply.error, null, `the held answer could not be passed on: ${reply.error && reply.error.message}`);
         assert.strictEqual(overview.error, null, `the held list could not be passed on: ${overview.error && overview.error.message}`);
         assert.deepStrictEqual(dialogs, [], 'a send that landed raised a dialog');
@@ -920,7 +925,10 @@ async function gotoSettled(page, url) {
         await overview.close();
         await reply.close();
       }
-    });
+    };
+
+    await check('composer: the same words typed again on the page reopened before the message landed are a new draft that stays, and go once when sent on purpose', () => retypedOnReopen());
+    await check('composer: new words typed on the page reopened before the message landed stay, and go once when sent on purpose', () => retypedOnReopen('new words typed after the page was reopened'));
 
     await check('composer: Escape closes an open list first and only then leaves the session', async () => {
       await openSession(a);
