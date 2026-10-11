@@ -466,6 +466,15 @@ function launch(env, cwd, args = []) {
       const started2 = await waitFor(() => /\[session .* started/.test(outText), 8000);
       assert.ok(started2, 'in-process session never started:\n' + outText);
 
+      // Registration precedes the initial prompt's updates. If the first steer
+      // overlaps those updates, five entries can evict it from this four-entry
+      // window before polling, even though no later round has been sent.
+      const initialApproval = await waitFor(async () => {
+        const snap = await client.call('status');
+        return (snap.sessions || []).some((s) => s.status === 'waiting_approval' && s.pendingApprovals.length);
+      }, 8000);
+      assert.ok(initialApproval, 'the initial prompt never reached its approval:\n' + outText);
+
       // Drive well past the cap of 4 -- each steer() round adds a
       // user_message entry plus at least one more from the fake agent's next
       // notify, so 8 rounds slides the 4-entry window at least twice over.
