@@ -114,9 +114,33 @@ function start(variant, {
   return s;
 }
 
+/**
+ * How the session ended, or a failure if it did not end at all.
+ *
+ * A build that stops refusing leaves `run()` waiting on an agent that will
+ * never answer (the one just killed, or one that stays silent), and a bare
+ * `await s.outcome` then waits for ever. The harness reads that as a suite with
+ * no verdict, not a failed check, and it ran out its whole time budget doing
+ * so. Bounded, the check fails by name and the agent is stopped, so the suite
+ * goes on to report everything else.
+ */
+const SETTLE_MS = 15000;
+const NEVER = Symbol('never ended');
+async function settled(s, what) {
+  let timer;
+  const bound = new Promise((resolve) => { timer = setTimeout(() => resolve(NEVER), SETTLE_MS); });
+  const ended = await Promise.race([s.outcome, bound]);
+  clearTimeout(timer);
+  if (ended === NEVER) {
+    try { s.proc.kill(); } catch { /* gone */ }
+    throw new Error(`${what}: the session neither ran nor refused within ${SETTLE_MS} ms`);
+  }
+  return ended;
+}
+
 /** The turn finished and the session is waiting for a person: it ran. */
 async function ran(s) {
-  const err = await s.outcome;
+  const err = await settled(s, 'the session was expected to run');
   assert.strictEqual(err, null, `the session failed: ${err && err.message}`);
   await until(() => s.status === STATUS.IDLE, 'the first turn to end');
   return s;
@@ -128,7 +152,7 @@ async function ran(s) {
  * confirmed or applied, no prompt reached the agent, and the agent is dead.
  */
 async function refused(s, code) {
-  const err = await s.outcome;
+  const err = await settled(s, `the session was expected to be refused with ${code}`);
   assert.ok(err, 'run() did not throw: the session carried on');
   assert.ok(err instanceof RequiredModelError, `not a RequiredModelError: ${err && err.stack}`);
   assert.strictEqual(err.code, code, err.message);
@@ -531,7 +555,7 @@ async function refused(s, code) {
     const s = start('copilot', { model: 'fake-deep', env: { FAKE_AGENT_MODE: 'approve-gate' } });
     await until(() => s.status === STATUS.WAITING_APPROVAL || s.pendingApprovals.size > 0, 'the first turn to ask');
     s.proc.kill();
-    const err = await s.outcome;
+    const err = await settled(s, 'the session whose agent was killed after the model was confirmed');
     if (err) assert.ok(!(err instanceof RequiredModelError), `a later failure was reported as a model refusal: ${err.message}`);
     const rm = s.toJSON().requiredModel;
     assert.strictEqual(rm.confirmed, true);
