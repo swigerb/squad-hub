@@ -109,14 +109,103 @@ function api(port, p, token, opts = {}) {
   });
 }
 
-(async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sqe2e-'));
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqe2ew-'));
+// A request that failed outright resolves with no body. A poller that retries
+// must read that as "not yet" rather than throw out of the whole run, which
+// would end it with no summary and everything it started still running.
+const sessionsOf = (r) => (r.body && Array.isArray(r.body.sessions) ? r.body.sessions : []);
+
+/**
+ * The CLI is run with async spawn, NOT spawnSync.
+ *
+ * spawnSync blocks this process's event loop, and the hub service runs in
+ * this process. An earlier version used spawnSync and so froze the service
+ * for the whole of `squad-hub start`, which made the daemon's connection look
+ * like it took ten seconds. The daemon was never at fault; the test was
+ * holding the door shut and timing how long the door took to open.
+ *
+ * Every CLI started here is tracked and bounded, so a run that ends badly can
+ * still end them, and one that cannot even start is a result, not an
+ * unhandled 'error' event.
+ */
+const liveClis = new Set();
+function runCli(env, args, { cwd, timeoutMs = 60000 } = {}) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [BIN, ...args], {
+      env, cwd: cwd || ROOT, windowsHide: true,
+    });
+    liveClis.add(p);
+    let stdout = ''; let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { p.kill(); } catch { /* gone */ } }, timeoutMs);
+    const done = (code, extra) => {
+      clearTimeout(timer);
+      liveClis.delete(p);
+      resolve({ code, stdout, stderr: stderr + extra });
+    };
+    p.stdout.on('data', (d) => { stdout += d; });
+    p.stderr.on('data', (d) => { stderr += d; });
+    p.on('error', (e) => done(null, `\n[could not run: ${e.message}]`));
+    p.on('close', (code) => (timedOut ? done(null, `\n[killed after ${timeoutMs} ms]`) : done(code, '')));
+  });
+}
+
+const alive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+};
+
+/**
+ * The daemon and the agents it supervises, exactly as the daemon recorded
+ * them in the home THIS run created. Nothing here can name a process this run
+ * did not start.
+ */
+function ownedPids(home) {
+  const pids = [];
+  try { pids.push(JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8')).pid); } catch { /* never started */ }
+  try { for (const c of JSON.parse(fs.readFileSync(path.join(home, 'children.json'), 'utf8'))) pids.push(c.pid); } catch { /* none */ }
+  return pids.filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid);
+}
+
+/**
+ * Runs on EVERY way out of the scenario, the failing ones above all: the
+ * daemon and its agent are detached, so a run that stopped without reaching
+ * `stop` left both running with nothing to ever end them.
+ *
+ * It is also a check. `stop` is supposed to take the agents down with the
+ * daemon, and a pass that only succeeded because this function killed what was
+ * left would hide a product defect behind its own cleanup.
+ */
+async function teardown(run) {
+  const env = { ...process.env, SQUAD_HUB_HOME: run.home };
+  const pids = ownedPids(run.home);
+  const stopped = await runCli(env, ['stop'], { timeoutMs: 30000 });
+  if (stopped.code !== 0) {
+    console.log(`  teardown: \`squad-hub stop\` did not finish cleanly (exit ${stopped.code}): ${(stopped.stdout + stopped.stderr).trim()}`);
+  }
+  const gone = async () => (await waitFor(async () => (pids.some(alive) ? null : true), 10000, 100)) !== null;
+  const settled = await gone();
+  const leftBehind = pids.filter(alive);
+  for (const pid of leftBehind) { try { process.kill(pid); } catch { /* raced */ } }
+  check('the run leaves no daemon or agent process behind', () => {
+    assert.strictEqual(settled, true, `still running after \`squad-hub stop\` (killed by this test): ${leftBehind.join(', ')}`);
+  });
+
+  for (const p of [...liveClis]) { try { p.kill(); } catch { /* gone */ } }
+  if (run.svc) {
+    await Promise.race([run.svc.close().catch(() => {}), sleep(5000)]);
+  }
+  for (const d of run.dirs) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* locked */ }
+  }
+}
+
+async function scenario(run) {
+  const { home, work } = run;
   const marker = path.join(work, 'fake-agent-marker.txt');
 
   const secret = crypto.randomBytes(16).toString('hex');
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: secret });
   const svc = new HubService({ auth });
+  run.svc = svc;
   const addr = await svc.listen(0, '127.0.0.1');
   const port = addr.port;
   const token = auth.mintDevToken('local', 'e2e-user', 'E2E');
@@ -128,24 +217,7 @@ function api(port, p, token, opts = {}) {
     SQUAD_HUB_AGENT_ARGS: FAKE,
     FAKE_AGENT_MODE: 'approve-gate',
   };
-  /**
-   * The CLI is run with async spawn, NOT spawnSync.
-   *
-   * spawnSync blocks this process's event loop, and the hub service runs in
-   * this process. An earlier version used spawnSync and so froze the service
-   * for the whole of `squad-hub start`, which made the daemon's connection look
-   * like it took ten seconds. The daemon was never at fault; the test was
-   * holding the door shut and timing how long the door took to open.
-   */
-  const cli = (args, opts = {}) => new Promise((resolve) => {
-    const p = spawn(process.execPath, [BIN, ...args], {
-      env, cwd: opts.cwd || ROOT, windowsHide: true,
-    });
-    let stdout = ''; let stderr = '';
-    p.stdout.on('data', (d) => { stdout += d; });
-    p.stderr.on('data', (d) => { stderr += d; });
-    p.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
+  const cli = (args, opts = {}) => runCli(env, args, opts);
 
   console.log(`service on 127.0.0.1:${port}`);
 
@@ -159,7 +231,7 @@ function api(port, p, token, opts = {}) {
 
   const appeared = await waitFor(async () => {
     const r = await api(port, '/api/overview', token);
-    return r.body && r.body.devices.length ? r.body : null;
+    return r.body && Array.isArray(r.body.devices) && r.body.devices.length ? r.body : null;
   });
   check('the device appears in the hub', () => {
     assert.ok(appeared, 'the device never registered');
@@ -181,7 +253,7 @@ function api(port, p, token, opts = {}) {
   const pauseT0 = Date.now();
   const waiting = await waitFor(async () => {
     const r = await api(port, '/api/sessions', token);
-    const s = r.body && r.body.sessions.find((x) => (x.pendingApprovals || []).length);
+    const s = sessionsOf(r).find((x) => (x.pendingApprovals || []).length);
     return s || null;
   });
   const pauseLatency = Date.now() - pauseT0;
@@ -249,7 +321,7 @@ function api(port, p, token, opts = {}) {
 
   const finished = await waitFor(async () => {
     const r = await api(port, '/api/sessions', token);
-    const s = r.body.sessions.find((x) => x.id === waiting.id);
+    const s = sessionsOf(r).find((x) => x.id === waiting.id);
     return s && ['idle', 'done'].includes(s.status) ? s : null;
   }, 20000);
   check('the session completes and the hub sees it', () => {
@@ -259,13 +331,14 @@ function api(port, p, token, opts = {}) {
 
   // -- deny, from the same surface ------------------------------------------
   const work2 = fs.mkdtempSync(path.join(os.tmpdir(), 'sqe2ed-'));
+  run.dirs.push(work2);
   const marker2 = path.join(work2, 'fake-agent-marker.txt');
   await api(port, `/api/devices/${deviceId}/spawn`, token, {
     method: 'POST', body: { prompt: 'do the thing', cwd: work2 },
   });
   const waiting2 = await waitFor(async () => {
     const r = await api(port, '/api/sessions', token);
-    return r.body.sessions.find((x) => x.cwd === work2 && (x.pendingApprovals || []).length) || null;
+    return sessionsOf(r).find((x) => x.cwd === work2 && (x.pendingApprovals || []).length) || null;
   });
   check('a second session pauses too', () => assert.ok(waiting2, 'no second approval'));
 
@@ -283,12 +356,13 @@ function api(port, p, token, opts = {}) {
 
   // -- transcript and stop --------------------------------------------------
   const work3 = fs.mkdtempSync(path.join(os.tmpdir(), 'sqe2es-'));
+  run.dirs.push(work3);
   const spawned3 = await api(port, `/api/devices/${deviceId}/spawn`, token, {
     method: 'POST', body: { prompt: 'do the thing', cwd: work3 },
   });
   await waitFor(async () => {
     const r = await api(port, '/api/sessions', token);
-    return r.body.sessions.find((x) => x.id === spawned3.body.id && (x.pendingApprovals || []).length);
+    return sessionsOf(r).find((x) => x.id === spawned3.body.id && (x.pendingApprovals || []).length);
   });
 
   await checkAsync('the transcript can be fetched remotely', async () => {
@@ -413,12 +487,34 @@ function api(port, p, token, opts = {}) {
       assert.ok(!String(r.raw).includes('"squad-hub"'), `package.json leaked via ${a}`);
     }
   });
+}
 
-  // -- teardown -------------------------------------------------------------
-  await cli(['stop']);
-  await svc.close();
-  for (const d of [home, work, work2, work3]) {
-    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* locked */ }
+(async () => {
+  const run = {
+    home: fs.mkdtempSync(path.join(os.tmpdir(), 'sqe2e-')),
+    work: fs.mkdtempSync(path.join(os.tmpdir(), 'sqe2ew-')),
+    dirs: [],
+    svc: null,
+  };
+  run.dirs.push(run.home, run.work);
+  try {
+    await scenario(run);
+  } catch (e) {
+    // The scenario broke, so whatever it had not reached was never checked.
+    // That is a failure, stated with its cause -- never a silent exit.
+    fail += 1;
+    const name = 'the end-to-end run reached its last check';
+    console.log(`  FAIL ${name}\n         ${e && e.message}`);
+    console.log(`RESULT\tfail\t${name}\t${String((e && e.message) || e).split('\n')[0]}`);
+    console.log(e && e.stack ? e.stack : String(e));
+  } finally {
+    try {
+      await teardown(run);
+    } catch (e) {
+      fail += 1;
+      console.log(`  FAIL teardown broke: ${e && e.stack ? e.stack : e}`);
+      console.log(`RESULT\tfail\tthe teardown finished\t${String((e && e.message) || e).split('\n')[0]}`);
+    }
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
