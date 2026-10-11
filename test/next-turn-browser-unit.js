@@ -276,7 +276,16 @@ async function gotoSettled(page, url) {
       assert.deepStrictEqual(steerBodies, [{
         sessionId: a.sessionId, text: 'plan the next step', mode: modeUri('plan'), model: 'fake-deep',
       }], 'the page did not send exactly the pick and the message');
+      // The agent having the prompt is not the page having heard. The agent logs
+      // it, the hub answers, the page refreshes and only then clears the box: a
+      // few ms later, and more on a busy runner. The page says it has heard with
+      // the confirmation line, written in the same turn of its event loop as the
+      // box is cleared, so once the line is there the box must already be empty.
+      await until(async () => (await page.textContent('#dtNtNote')).includes('The agent confirmed'),
+        'the page to report that the send landed');
       assert.strictEqual(await page.inputValue('#dtInput'), '', 'the draft was kept after it landed');
+      await until(() => steerReplies.length === 1, 'the page to have been answered');
+      assert.deepStrictEqual(steerReplies, [200], 'the send did not land with a 200');
     });
 
     await check('composer: the transcript shows each confirmed change, and the bar reports only what the agent confirmed', async () => {
@@ -425,6 +434,69 @@ async function gotoSettled(page, url) {
     // ---- races -------------------------------------------------------------
     const waitReplies = async (n, what) => { await until(() => steerReplies.length >= n, what, 20000); await new Promise((r) => setTimeout(r, 400)); };
     const selectorsOn = (id = 'dtNtMode') => until(async () => !(await page.$eval(`#${id}`, (el) => el.disabled)), `${id} to enable`);
+
+    await check('composer: a message the agent already has stays in the box until the page hears it landed, and only then goes', async () => {
+      // The window the first send above once sampled by luck: the agent has the
+      // prompt, the page has not heard. The hub's answer is held at the network
+      // edge AFTER it was produced, so the agent really has run the prompt
+      // while the page has not been told: nothing is faked, only late.
+      const text = 'the agent has this before the page does';
+      let release;
+      const held = new Promise((r) => { release = r; });
+      let produced = null;
+      let entered = false;
+      let handlerError = null;
+      let passedOn;
+      const settled = new Promise((r) => { passedOn = r; });
+      const url = '**/api/devices/*/steer';
+      // The handler settles itself, whatever the page does, and never throws: a
+      // throw out of a route handler is an unhandled rejection that takes the
+      // whole suite down, and a handler cut off by `unroute` would throw.
+      await page.route(url, async (route) => {
+        entered = true;
+        try {
+          const real = await route.fetch();
+          produced = real.status();
+          await held;
+          await route.fulfill({ response: real });
+        } catch (e) {
+          handlerError = e;
+        } finally {
+          passedOn();
+        }
+      });
+      try {
+        await openSession(a);
+        await selectorsOn();
+        await choose('dtNtMode', 'Autopilot');
+        await page.fill('#dtInput', text);
+        steerBodies.length = 0;
+        steerReplies.length = 0;
+        await page.click('#dtSend');
+        await until(() => produced !== null, 'the hub to answer the request that is being held');
+        await until(() => rpcLog(a).some((e) => e.method === 'session/prompt' && e.text === text), 'the prompt to reach the agent');
+        assert.strictEqual(produced, 200, `the hub answered ${produced}`);
+        assert.strictEqual(await page.inputValue('#dtInput'), text, 'the box was cleared before the page was told the message landed');
+        assert.ok(!(await page.textContent('#dtNtNote')).includes('The agent confirmed'), 'the page claimed a change nobody had told it of');
+        assert.deepStrictEqual(steerReplies, [], 'the page had been answered although the answer was held');
+        release();
+        await until(async () => (await page.textContent('#dtNtNote')).includes('The agent confirmed'),
+          'the page to report that the send landed');
+        assert.strictEqual(await page.inputValue('#dtInput'), '', 'the draft was kept after it landed');
+        assert.match(await page.textContent('#dtNtNote'), /Mode is now Autopilot\./);
+        await until(() => steerReplies.length === 1, 'the page to have been answered');
+        assert.deepStrictEqual(steerReplies, [200]);
+        assert.strictEqual(handlerError, null, `the held answer could not be passed on: ${handlerError && handlerError.message}`);
+        assert.deepStrictEqual(steerBodies, [{ sessionId: a.sessionId, text, mode: modeUri('autopilot') }],
+          'the page did not send exactly the pick and the message');
+        assert.strictEqual(rpcLog(a).find((e) => e.method === 'session/prompt' && e.text === text).mode, 'autopilot',
+          'the message did not run in the mode it was sent with');
+      } finally {
+        release();
+        if (entered) await settled;
+        await page.unroute(url);
+      }
+    });
 
     await check('composer: while a change is confirmed Send and the selectors are held, and a send that lands after the person moved on leaves the box of the session they are in alone', async () => {
       await openSession(l);
