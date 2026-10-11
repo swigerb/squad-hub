@@ -3566,10 +3566,28 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // invisible; a stale /api/overview is a page saying "nothing needs you"
     // while an agent sits blocked, and on a shared hub it is one user's data
     // outliving another's sign-out.
-    name: 'the service worker caches API responses too',
+    //
+    // Deleting the whole `/api/` line is the obvious mutant and cannot be
+    // used: with every API route cached the browser suite's later checks wait
+    // on fetches the worker has swallowed, the suite never finishes and the
+    // harness can only report a timeout, which is not a kill. So the guard is
+    // narrowed by ONE route instead, which the named check still finds through
+    // the Cache API and the rest of the suite is unaffected by. /api/me is the
+    // signed-in user's identity, the response that must not outlive a sign-out.
+    name: 'the service worker also caches the signed-in user\'s /api/me response, which would outlive a sign-out',
     file: 'web/sw.js',
     find: `  if (url.pathname.startsWith('/api/')) return false;`,
-    replace: `  // MUTATION: /api/ is no longer excluded`,
+    replace: `  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/me') return false; // MUTATION`,
+    mustFail: 'an API response is NEVER served from the cache',
+  },
+  {
+    // The same guard, narrowed by a different route: /api/prefs is one
+    // person's pins and names, which on a shared hub must not be left on disk
+    // for the next person at the browser.
+    name: 'the service worker also caches the /api/prefs response, which is one user\'s settings',
+    file: 'web/sw.js',
+    find: `  if (url.pathname.startsWith('/api/')) return false;`,
+    replace: `  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/prefs') return false; // MUTATION`,
     mustFail: 'an API response is NEVER served from the cache',
   },
   {
@@ -9006,6 +9024,34 @@ prompt: |
     replace: `@media (max-width: 6px) {\n  .scopetabs { flex-wrap: wrap;`,
     mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
   },
+  // The filter bar, measured at thirteen widths from 390 to 1280px with and
+  // without the longest labels the dropdowns can show. The three below are the
+  // single CSS defects that check finds on its own. Not added, because the
+  // check stays green with them: the bar's own `flex-wrap` removed while the
+  // dropdown group still wraps, `1fr` in place of `minmax(0, 1fr)` in either
+  // grid, and the pill's `white-space: nowrap` removed. Each is held up by a
+  // neighbouring rule, so a mutant for it would only be an ESCAPED one.
+  {
+    name: '#179 css: the dropdown group no longer wraps inside the filter bar, so its pills run past the bar\'s edge',
+    file: 'web/css/list.css',
+    find: `.filterbar-end {\n  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;`,
+    replace: `.filterbar-end {\n  display: flex; align-items: center; justify-content: flex-end;`,
+    mustFail: 'the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)',
+  },
+  {
+    name: '#179 css: the filter bar is a fixed 48px tall, so its wrapped second row spills out of it',
+    file: 'web/css/list.css',
+    find: `  min-height: 48px; margin: 0;\n  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;`,
+    replace: `  height: 48px; margin: 0;\n  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;`,
+    mustFail: 'the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)',
+  },
+  {
+    name: '#179 css: the keyword box may squeeze to nothing, so a wide filter bar leaves it unusable',
+    file: 'web/css/list.css',
+    find: `  flex: 1; min-width: 160px;\n}\n.filterbar input:focus-visible`,
+    replace: `  flex: 1; min-width: 0;\n}\n.filterbar input:focus-visible`,
+    mustFail: 'the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)',
+  },
   {
     name: '#179 css: the detail header keeps every action on one line on a phone',
     file: 'web/css/detail.css',
@@ -9180,12 +9226,15 @@ prompt: |
     mustFail: 'removing the open ended session returns to the list without stale detail controls',
   },
   {
-    // Same regression, isolated to just the button-label guard: with the
-    // actions still forced onto their own line box, a long label can still
-    // wrap if nothing stops it shrinking below its content width -- this
-    // proves the nowrap/flex-shrink:0 half of the fix is independently
-    // load-bearing, not redundant with the line-box split above.
-    name: 'at 390px, "Run on ACA…" wraps its label across more than one line inside its 32px button',
+    // The button-label guard on its own. At 1200px and below the actions take
+    // their own wrapping line, so a label has all the room it needs and the
+    // guard is not what holds it on one line there -- removing it at 390px
+    // changes nothing. Above 1200px the title row and the actions share ONE
+    // 32px line, and the label then wraps unless `white-space: nowrap` and
+    // `flex-shrink: 0` stop the button shrinking below its content: that is the
+    // width this guard is load-bearing at, and the width the #182 check measures
+    // it at (1280px, an unreachable session, light theme).
+    name: 'at 1280px, "Run on ACA…" wraps its label across two lines when the actions share the title\'s single row',
     file: 'web/css/detail.css',
     find: `.detail-head-line .detail-actions button {
   height: 32px; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;
@@ -9193,7 +9242,7 @@ prompt: |
     replace: `.detail-head-line .detail-actions button {
   height: 32px; box-sizing: border-box; /* MUTATION: white-space/flex-shrink guard removed */
 }`,
-    mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
   },
   {
     // #243 real regression (CI run 37998832767): the whole `.detail-head-line`

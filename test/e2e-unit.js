@@ -238,6 +238,7 @@ async function scenario(run) {
     assert.strictEqual(appeared.devices.length, 1);
     assert.strictEqual(appeared.devices[0].presence, 'online');
   });
+  if (!appeared) throw new Error('the device never registered in the hub, so no session could be started on it');
   const deviceId = appeared.devices[0].deviceId;
 
   // -- spawn a session REMOTELY --------------------------------------------
@@ -246,7 +247,7 @@ async function scenario(run) {
   });
   check('a session can be started remotely', () => {
     assert.strictEqual(spawned.status, 200, JSON.stringify(spawned));
-    assert.ok(spawned.body.id, 'no session id came back');
+    assert.ok(spawned.body && spawned.body.id, `no session id came back: ${JSON.stringify(spawned)}`);
   });
 
   // -- the pause reaches the hub -------------------------------------------
@@ -275,6 +276,11 @@ async function scenario(run) {
     assert.ok(pauseLatency < heartbeatMs / 3,
       `took ${pauseLatency}ms; that is heartbeat latency, not a push`);
   });
+
+  // Nothing below can be checked without the paused session. Say so, rather than
+  // letting a null (a request that failed outright resolves with no body)
+  // surface as a TypeError out of the line that happened to read it first.
+  if (!waiting) throw new Error('no session ever paused for an approval in the hub, so no later check could run');
 
   const approval = waiting.pendingApprovals[0];
 
@@ -341,6 +347,7 @@ async function scenario(run) {
     return sessionsOf(r).find((x) => x.cwd === work2 && (x.pendingApprovals || []).length) || null;
   });
   check('a second session pauses too', () => assert.ok(waiting2, 'no second approval'));
+  if (!waiting2) throw new Error('the second session never paused for an approval in the hub, so its deny could not be sent');
 
   await api(port, `/api/devices/${deviceId}/approve`, token, {
     method: 'POST',
@@ -360,6 +367,9 @@ async function scenario(run) {
   const spawned3 = await api(port, `/api/devices/${deviceId}/spawn`, token, {
     method: 'POST', body: { prompt: 'do the thing', cwd: work3 },
   });
+  if (!spawned3.body || !spawned3.body.id) {
+    throw new Error(`the third session was not started (status ${spawned3.status}${spawned3.error ? `, ${spawned3.error}` : ''}), so it could not be fetched or stopped`);
+  }
   await waitFor(async () => {
     const r = await api(port, '/api/sessions', token);
     return sessionsOf(r).find((x) => x.id === spawned3.body.id && (x.pendingApprovals || []).length);
@@ -375,8 +385,9 @@ async function scenario(run) {
   });
 
   await checkAsync('a session can be stopped remotely, and its agent dies', async () => {
-    const before = (await api(port, '/api/sessions', token)).body.sessions
+    const before = sessionsOf(await api(port, '/api/sessions', token))
       .find((x) => x.id === spawned3.body.id);
+    assert.ok(before, 'the session was not in the hub\'s list (or the list could not be read)');
     const agentPid = before.pid;
     assert.ok(agentPid, 'no agent pid reported');
 
