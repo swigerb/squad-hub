@@ -3993,10 +3993,25 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // Without this, a reachable device's "Remove" for one row would forget
     // every ended session it has, the same as the bulk Tidy sweep -- quietly
     // widening a single click's blast radius.
+    //
+    // The check that owns this is the one that watches what the hub FORWARDS.
+    // The daemon-side check of the same idea (forget-unit.js) never goes
+    // through the route this line lives in, so it cannot see this mutant.
     name: "forget's sessionId is dropped on the reachable path (#170)",
     file: 'src/service/hub-service.js',
     find: `            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,`,
     replace: `            sessionId: undefined, // MUTATION`,
+    mustFail: 'a daemon that confirms narrowedForget gets the request forwarded, narrowed to the one session',
+  },
+  {
+    // The other half of #170: the hub forwards the id, and the daemon has to
+    // honor it. Ignoring it turns one row's "Remove" into the bulk sweep.
+    name: "the daemon ignores forget's sessionId and sweeps every ended session (#170)",
+    file: 'src/daemon.js',
+    find: `    const candidates = sessionId
+`,
+    replace: `    const candidates = sessionId && !process.env.MUTANT /* MUTATION */
+`,
     mustFail: 'sessionId narrows the sweep to one row, even on a live (reachable) device (#170)',
   },
   {
