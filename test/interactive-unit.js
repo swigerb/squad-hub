@@ -492,6 +492,13 @@ function launch(env, cwd, args = []) {
           5000,
         );
         assert.ok(seen, `round ${i} was not consumed before the transcript window moved:\n${outText}`);
+        // Reading the user message does not mean its agent updates have arrived.
+        // Finish this round's producer before another round can slide the cap.
+        const settled = await waitFor(async () => {
+          const snap = await client.call('status');
+          return (snap.sessions || []).some((s) => s.pendingApprovals.length === i + 1);
+        }, 5000);
+        assert.ok(settled, `round ${i} never reached its approval:\n${outText}`);
       }
 
       await checkAsync('every steer round survives the transcript cap sliding underneath the terminal\'s cursor -- none of them go silent', async () => {
