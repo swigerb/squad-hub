@@ -119,6 +119,7 @@ function fakeOpts(mode, extra = {}) {
     maxOutputBytes: extra.maxOutputBytes || 32 * 1024,
     ttlMs: extra.ttlMs,
     maxCacheEntries: extra.maxCacheEntries,
+    now: extra.now,
     env: {
       PATH: process.env.PATH || '',
       SystemRoot: process.env.SystemRoot || '',
@@ -626,6 +627,8 @@ sweepScratchArtifacts();
           maxCacheEntries: 3,
         })).status === 'fail');
         check('squad health cache prunes expired entries and enforces max size', () => {
+          assert.strictEqual(fakeOpts('pass', { now: 12345 }).now, 12345,
+            'the fixture must preserve the explicit cache clock');
           assert.ok(cappedSize <= 3, `cache grew to ${cappedSize}`);
           assert.deepStrictEqual(expired, { status: 'unknown' });
           assert.strictEqual(refreshed, true);
