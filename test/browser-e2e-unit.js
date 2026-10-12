@@ -423,6 +423,52 @@ async function refreshNow(page) {
 }
 
 /**
+ * Stop the page's clock (installed with `controlClock`) so neither periodic
+ * poll can fire.
+ *
+ * The installed clock keeps ADVANCING in real time, and `pauseAt` rejects any
+ * time that is already behind the page's clock ("Cannot fast-forward to the
+ * past"). A host `new Date()` is stale by the time it crosses to the page, so
+ * the target is read from the page's own clock and put a margin ahead of it.
+ * The one error that margin can still lose to (the host stalled for longer
+ * than the margin between the two calls) is re-read and retried a fixed few
+ * times; any other failure, or running out of attempts, is thrown unchanged.
+ * A frozen clock is then proven rather than assumed.
+ */
+async function freezeBrowserClock(page, { marginMs = 1000, attempts = 3 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    const target = await page.evaluate((ms) => Date.now() + ms, marginMs);
+    try {
+      await page.clock.pauseAt(target);
+      break;
+    } catch (e) {
+      if (attempt >= attempts || !/Cannot fast-forward to the past/.test(e.message)) throw e;
+    }
+  }
+  const frozen = await page.evaluate(() => Date.now());
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(await page.evaluate(() => Date.now()), frozen, 'the page clock was not frozen');
+}
+
+/**
+ * Count the requests that could attach a pending ACA row WITHOUT the live push
+ * -- the overview refresh and the dispatch status check -- so a test can drain
+ * the ones in flight and then prove none started afterwards.
+ */
+function trackAttachTraffic(page) {
+  const open = new Set();
+  let started = 0;
+  const relevant = (request) => {
+    const { pathname } = new URL(request.url());
+    return pathname === '/api/overview' || pathname === '/api/aca/dispatches';
+  };
+  page.on('request', (request) => { if (relevant(request)) { open.add(request); started += 1; } });
+  page.on('requestfinished', (request) => { open.delete(request); });
+  page.on('requestfailed', (request) => { open.delete(request); });
+  return { started: () => started, idle: () => open.size === 0 };
+}
+
+/**
  * Take the status filter off the way a person does, and wait until the hub's
  * saved view has lost it too.
  *
@@ -4897,6 +4943,7 @@ function railFacts(page) {
       // next 15 second poll or the next filter change.
       const hub = await acaHub(browser, 'push', undefined, { controlClock: true });
       const { page } = hub;
+      const traffic = trackAttachTraffic(page);
       try {
         await dispatchAcaJob(page, 'Swap on the live push');
         hub.app.setRun(1, { state: 'in_progress', executionName: ACA_EXEC });
@@ -4908,16 +4955,20 @@ function railFacts(page) {
 
         await page.waitForFunction(() => document.getElementById('conn').dataset.state === 'live', null, { timeout: 5000 });
         // Freeze both periodic polls, then finish any refresh already in flight.
-        await page.clock.pauseAt(new Date());
+        await freezeBrowserClock(page);
         await page.evaluate(async () => {
           const { refresh } = await import('/js/ws.js');
           await refresh();
         });
+        await until(() => traffic.idle(), 'the in-flight overview and dispatch requests to finish');
+        const startedBeforeDevice = traffic.started();
         attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-push-1', {}); // the store write alone pushes nothing,
         // so send what a registering device's own message makes the hub send
         hub.svc._broadcast(hub.subject, { type: 'overview', ...hub.svc.store.overview(hub.subject) });
         await until(async () => ((await realSessionRows(page)).length === 1
           && (await pendingRows(page)).length === 0), 'the pushed device to replace the pending row', 5000);
+        assert.strictEqual(traffic.started(), startedBeforeDevice,
+          'an overview refresh or dispatch check ran after the device registered, so the push was not the only thing that could attach it');
       } finally {
         await hub.close();
       }
