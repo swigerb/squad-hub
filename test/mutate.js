@@ -11255,9 +11255,9 @@ prompt: |
   },
   {
     name: '[aca rail] the device count in the rail header includes pending dispatches',
-    file: 'web/js/devices.js',
-    find: `  $('deviceCount').textContent = counts.devices || 0;`,
-    replace: `  $('deviceCount').textContent = (counts.devices || 0) + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
+    file: 'web/js/aca-status.js',
+    find: `    badge.textContent = counts.devices;`,
+    replace: `    badge.textContent = counts.devices + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
     mustFail: 'rail flow: counts, summary and the pending main list ignore the rail row',
   },
   // Real Chromium (test/browser-e2e-unit.js): the pulse is a computed style

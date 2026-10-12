@@ -374,7 +374,7 @@ const ACA_EXEC_2 = 'squad-hub-job-m4r8t1w';
  * cannot disturb the no-App assertions the main hub makes. `calls` records
  * every `/api/aca/*` request the page makes.
  */
-async function acaHub(browser, tag, appOptions) {
+async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: `aca-${tag}`, deviceSecret: `aca-${tag}-dev` });
   const app = fakeInlineGithubApp(appOptions);
   const svc = new HubService({ auth, serveWeb: true, githubApp: app, persistStore: false });
@@ -382,6 +382,7 @@ async function acaHub(browser, tag, appOptions) {
   const origin = `http://127.0.0.1:${addr.port}`;
   const subject = subjectKey(`t-${tag}`, `u-${tag}`);
   const page = await browser.newPage();
+  if (controlClock) await page.clock.install();
   const errors = [];
   const calls = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -4894,7 +4895,7 @@ function railFacts(page) {
       // Once the hub has confirmed the execution, the job's device registering
       // is pushed over the WebSocket: the row must swap right then, not on the
       // next 15 second poll or the next filter change.
-      const hub = await acaHub(browser, 'push');
+      const hub = await acaHub(browser, 'push', undefined, { controlClock: true });
       const { page } = hub;
       try {
         await dispatchAcaJob(page, 'Swap on the live push');
@@ -4906,6 +4907,12 @@ function railFacts(page) {
         }, 'the confirmed execution to be reflected on the row');
 
         await page.waitForFunction(() => document.getElementById('conn').dataset.state === 'live', null, { timeout: 5000 });
+        // Freeze both periodic polls, then finish any refresh already in flight.
+        await page.clock.pauseAt(new Date());
+        await page.evaluate(async () => {
+          const { refresh } = await import('/js/ws.js');
+          await refresh();
+        });
         attachAcaDevice(hub, `aca-${ACA_EXEC}`, 'sess-push-1', {}); // the store write alone pushes nothing,
         // so send what a registering device's own message makes the hub send
         hub.svc._broadcast(hub.subject, { type: 'overview', ...hub.svc.store.overview(hub.subject) });
