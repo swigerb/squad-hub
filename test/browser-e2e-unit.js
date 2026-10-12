@@ -4861,7 +4861,9 @@ function railFacts(page) {
       const untouched = await acaHub(browser, 'f3-legacy', { declaredInputs: legacy });
       try {
         await open(untouched);
-        assert.match(await untouched.page.textContent('#acaOptionsHint'), /does not declare publish_pr or watch_only/);
+        const note = await untouched.page.textContent('#acaOptionsHint');
+        assert.match(note, /does not declare publish_pr or watch_only/);
+        assert.doesNotMatch(note, /pull request|opens|approval|asks|built-in/i, 'the note promises behavior the workflow never declared');
         await untouched.page.click('#acaStart');
         await untouched.page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
         await untouched.page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
@@ -4886,6 +4888,31 @@ function railFacts(page) {
         assert.strictEqual(refused.app.dispatchRequests.length, 0, 'a refused dispatch was still accepted');
       } finally {
         await refused.close();
+      }
+    });
+
+    await check('a workflow declaring only publish_pr honors the Publish PR checkbox and the note speaks only of watch_only (#251 F3)', async () => {
+      const hub = await acaHub(browser, 'f3-mixed', { declaredInputs: ['issue', 'prompt', 'publish_pr'] });
+      try {
+        const { page } = hub;
+        await page.click('#newMoreBtn');
+        await page.click('[data-new="aca"]');
+        await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await page.fill('#acaRepo', 'acme/widgets');
+        await page.fill('#acaPrompt', 'Update the docs');
+        await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
+          null, { timeout: 10000 });
+        const note = await page.textContent('#acaOptionsHint');
+        assert.match(note, /does not declare watch_only/);
+        assert.doesNotMatch(note, /publish|pull request|approval|asks|opens/i, 'the note contradicts the Publish PR checkbox the workflow honors');
+        await page.uncheck('#acaPublishPr');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests.length, 1);
+        assert.strictEqual(hub.app.dispatchRequests[0].publishPr, false);
+        assert.strictEqual(hub.app.dispatchRequests[0].watchOnly, null);
+      } finally {
+        await hub.close();
       }
     });
 

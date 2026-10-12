@@ -101,6 +101,11 @@ function squadDispatchYaml(inputNames, inputDefaults = {}) {
   return `${lines.join('\n')}\n`;
 }
 
+/** A workflow file around `blockLines` (the lines under `workflow_dispatch:`), for the parser tests. */
+function wfYamlLines(blockLines, onLine = 'on:', dispatchLine = '  workflow_dispatch:') {
+  return `${['name: Squad dispatch', onLine, dispatchLine, ...blockLines, 'jobs:', '  dispatch:', '    runs-on: ubuntu-latest'].join('\n')}\n`;
+}
+
 const LEGACY_DECLARED_INPUTS = ['issue', 'prompt'];
 const MODERN_DECLARED_INPUTS = ['issue', 'prompt', 'model', 'base_branch', 'publish_pr', 'reviewer', 'watch_only', HUB_CORRELATION_INPUT];
 
@@ -121,6 +126,7 @@ function fakeGitHubApp({
   hasWorkflow = true,
   declaredInputs = MODERN_DECLARED_INPUTS,
   inputDefaults = {},
+  workflowYaml = null,
   defaultBranch = 'main',
   dispatchStatus = 204,
   installationsStatus = 200,
@@ -195,7 +201,9 @@ function fakeGitHubApp({
       if (req.url.includes('/contents/.github/workflows/squad-dispatch.yml')) {
         if (hasWorkflow === 'error') return json(500, { message: 'internal error' });
         if (!hasWorkflow) return json(404, { message: 'Not Found' });
-        const yaml = squadDispatchYaml(declaredInputs, inputDefaults);
+        // `workflowYaml` is the file as written (comments, odd layouts); `declaredInputs` is then
+        // what GitHub itself would accept, which is the truth the hub's own reading is tested against.
+        const yaml = workflowYaml || squadDispatchYaml(declaredInputs, inputDefaults);
         return json(200, { sha: 'deadbeef', content: Buffer.from(yaml, 'utf8').toString('base64'), encoding: 'base64' });
       }
 
@@ -866,6 +874,130 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(fake.state.createdIssues.length, 0);
   });
 
+
+  // --- #251 (F3 revision): a comment-aware reading, and uncertainty that is never a "not declared" ---
+
+  const wfYaml = (inputsBlock, { onLine = 'on:', dispatchLine = '  workflow_dispatch:' } = {}) => [
+    'name: Squad dispatch', onLine, dispatchLine, ...inputsBlock,
+    'jobs:', '  dispatch:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo hi', '',
+  ].join('\n');
+
+  // A custom workflow whose watch_only DEFAULTS TO TRUE, declared after a column-0 comment, with the
+  // mandatory issue/prompt before it -- the layout the first F3 parser cut off after `issue`.
+  const COMMENTED_YAML = wfYaml([
+    '    inputs:',
+    '      issue:',
+    '        description: Issue number',
+    '        required: false',
+    '      prompt:',
+    '        description: Prompt',
+    '        required: true',
+    '# supervised by default; uncheck to run unattended',
+    '      watch_only:',
+    '        description: Watch only',
+    '        type: boolean',
+    '        default: true',
+  ]);
+  const COMMENTED_TRUTH = ['issue', 'prompt', 'watch_only'];
+
+  const HEADER_COMMENT_YAML = wfYaml([
+    '    inputs:   # options',
+    '      issue:        # the issue',
+    '        required: false',
+    '      prompt:',
+    '        required: true',
+    '      publish_pr:',
+    '        type: boolean',
+    '        default: false',
+    '      watch_only:',
+    '        type: boolean',
+    '        default: true',
+  ], { onLine: 'on:  # triggers', dispatchLine: '  workflow_dispatch:   # manual' });
+  const HEADER_COMMENT_TRUTH = ['issue', 'prompt', 'publish_pr', 'watch_only'];
+
+  await checkAsync('a column-0 comment inside the inputs block does not hide a later watch_only: the unchecked box is sent as false, not left to the workflow default of true', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: COMMENTED_YAML, declaredInputs: COMMENTED_TRUTH });
+    const { repos, body, response } = await dialogDispatch(fake);
+    assert.deepStrictEqual(repos[0].declaredInputs, COMMENTED_TRUTH);
+    assert.strictEqual(body.watchOnly, false, 'the unchecked Watch-only choice was dropped');
+    assert.strictEqual(body.publishPr, null, 'a default Publish PR was sent to a workflow that does not declare it');
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.createdIssues.length, 1);
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'false', 'the workflow default (true) would have run with the box unchecked');
+    assert.ok(!('publish_pr' in fake.state.dispatches[0].inputs));
+  });
+
+  await checkAsync('a supported custom default is still overridden only by the choice: Watch-only checked reaches a commented workflow as true', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: COMMENTED_YAML, declaredInputs: COMMENTED_TRUTH });
+    const { response } = await dialogDispatch(fake, { watchOnly: true });
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'true');
+  });
+
+  await checkAsync('an unsupported non-default choice on a commented workflow is still refused with 422 naming only that input, before any issue is created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: COMMENTED_YAML, declaredInputs: COMMENTED_TRUTH });
+    const { response } = await dialogDispatch(fake, { publishPr: false });
+    assert.strictEqual(response.status, 422, JSON.stringify(response));
+    assert.match(response.body.error, /publish_pr/);
+    assert.doesNotMatch(response.body.error, /watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  await checkAsync('trailing comments on on:, workflow_dispatch: and inputs: do not make a declaring workflow read as declaring nothing', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: HEADER_COMMENT_YAML, declaredInputs: HEADER_COMMENT_TRUTH });
+    const { repos, body, response } = await dialogDispatch(fake);
+    assert.deepStrictEqual(repos[0].declaredInputs, HEADER_COMMENT_TRUTH);
+    assert.strictEqual(body.publishPr, true);
+    assert.strictEqual(body.watchOnly, false);
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.dispatches[0].inputs.publish_pr, 'true', 'the workflow default (false) would have decided Publish PR');
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'false', 'the workflow default (true) would have decided Watch-only');
+  });
+
+  const AMBIGUOUS_LAYOUTS = {
+    'a quoted input name': wfYaml(['    inputs:', '      issue:', '      prompt:', '      "watch_only":', '        default: true']),
+    'a flow-style inputs block': wfYaml(['    inputs: {issue: {}, prompt: {}, watch_only: {default: true}}']),
+    'tab indentation': wfYaml(['    inputs:', '      issue:', '      prompt:', '\twatch_only:', '        default: true']),
+  };
+  for (const [layout, yaml] of Object.entries(AMBIGUOUS_LAYOUTS)) {
+    await checkAsync(`${layout}: the inputs are unknown, the dialog sends its explicit choices, and the hub refuses before any issue exists, without claiming an input is undeclared`, async () => {
+      const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: yaml, declaredInputs: COMMENTED_TRUTH });
+      const { repos, body, response } = await dialogDispatch(fake);
+      assert.strictEqual(repos[0].declaredInputs, null);
+      assert.strictEqual(body.publishPr, true);
+      assert.strictEqual(body.watchOnly, false);
+      assert.strictEqual(response.status, 422, JSON.stringify(response));
+      assert.match(response.body.error, /could not determine which workflow_dispatch inputs/);
+      assert.doesNotMatch(response.body.error, /does not declare/);
+      assert.strictEqual(fake.state.createdIssues.length, 0, 'an issue was created for a workflow the hub could not read');
+      assert.strictEqual(fake.state.dispatches.length, 0);
+    });
+  }
+
+  await checkAsync('a direct API dispatch against a workflow whose inputs are unknown is a clean 422 with nothing created, never a 500 or a success', async () => {
+    const fake = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: AMBIGUOUS_LAYOUTS['a flow-style inputs block'], declaredInputs: COMMENTED_TRUTH,
+    });
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'T' }, prompt: 'go' },
+    });
+    await svc.close();
+    fake.server.close();
+    assert.strictEqual(r.status, 422, JSON.stringify(r));
+    assert.match(r.body.error, /could not determine/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
   // =========================================================================
   // Must-fix #1 (re-dispatch review): send only inputs the workflow declares
   // =========================================================================
@@ -984,6 +1116,53 @@ function apiRequest(port, path, token, opts = {}) {
   check('parseDeclaredWorkflowInputs returns null when the workflow has no workflow_dispatch trigger at all', () => {
     const yaml = 'name: CI\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n';
     assert.strictEqual(parseDeclaredWorkflowInputs(yaml), null);
+  });
+
+  check('parseDeclaredWorkflowInputs ignores a column-0 comment inside the inputs block and keeps every name after it', () => {
+    const yaml = wfYamlLines([
+      '    inputs:', '      issue:', '        required: false', '      prompt:', '        required: true',
+      '# a comment at column 0', '      watch_only:', '        default: true',
+    ]);
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt', 'watch_only']);
+  });
+
+  check('parseDeclaredWorkflowInputs reads past trailing comments on the on/workflow_dispatch/inputs lines and input names', () => {
+    const yaml = wfYamlLines([
+      '    inputs:   # options', '      issue:  # the issue', '        required: false', '      prompt:', '        required: true',
+    ], 'on:  # triggers', '  workflow_dispatch:   # manual');
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt']);
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(wfYamlLines([], 'on:', '  workflow_dispatch:  # nothing to ask')), []);
+  });
+
+  check('parseDeclaredWorkflowInputs does not mistake comment or block-scalar text for an input name', () => {
+    const yaml = wfYamlLines([
+      '    inputs:', '      issue:', '        description: |', '          # watch_only: true',
+      '          publish_pr: not an input', '          ', '        required: false',
+      '      prompt:', '        description: "# model: also not one"',
+    ]);
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt']);
+  });
+
+  check('parseDeclaredWorkflowInputs answers null, never a shorter list, whenever it cannot read the block with certainty', () => {
+    const layouts = {
+      'quoted key': wfYamlLines(['    inputs:', '      issue:', '      "watch_only":']),
+      'single-quoted key': wfYamlLines(['    inputs:', "      'issue':", '      prompt:']),
+      'flow-style inputs': wfYamlLines(['    inputs: {issue: {}, prompt: {}}']),
+      'inputs with a trailing value': wfYamlLines(['    inputs: &shared', '      issue:']),
+      'inputs as a list': wfYamlLines(['    inputs:', '      - issue', '      - prompt']),
+      'tab indentation': wfYamlLines(['    inputs:', '      issue:', '\tprompt:']),
+      'a dedent below the block indentation': wfYamlLines(['    inputs:', '        issue:', '      prompt:']),
+      'a name with a space before the colon': wfYamlLines(['    inputs:', '      issue :', '      prompt:']),
+      'a non-inputs child of workflow_dispatch': wfYamlLines(['    branches: [main]', '    inputs:', '      issue:']),
+      'flow-style on': 'name: x\non: [push, workflow_dispatch]\njobs: {}\n',
+      'scalar on': 'name: x\non: workflow_dispatch\njobs: {}\n',
+      'workflow_dispatch not under on': 'name: x\nenv:\n  workflow_dispatch:\n    inputs:\n      issue:\n',
+      'two workflow_dispatch headers': `${wfYamlLines(['    inputs:', '      issue:'])}  other:\n    workflow_dispatch:\n`,
+      'empty file': '',
+    };
+    for (const [name, yaml] of Object.entries(layouts)) {
+      assert.strictEqual(parseDeclaredWorkflowInputs(yaml), null, name);
+    }
   });
 
   check('upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is', () => {

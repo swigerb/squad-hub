@@ -576,8 +576,11 @@ has a `squad-dispatch.yml` the hub can dispatch:
 
 `declaredInputs` is the list of `workflow_dispatch` inputs that repository's
 `squad-dispatch.yml` declares, or `null` when that is not known (no workflow, no
-`workflow_dispatch` trigger, or a body the hub could not read). `null` means
-"do not know", never "none". The New ACA job dialog uses it to decide whether
+`workflow_dispatch` trigger, or an inputs layout the hub cannot read with
+certainty, such as a quoted or flow-style key). `null` means "do not know",
+never "none" and never a partial list; `POST /api/aca/dispatch` against such a
+workflow answers `422` that the inputs could not be determined, before any issue
+is created. The New ACA job dialog uses it to decide whether
 to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 
 **`GET /api/aca/dispatches`** — this signed-in user's own recent dispatches

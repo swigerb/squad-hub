@@ -142,18 +142,35 @@ export function acaRepoDeclaredInputs(repos, name) {
   return match && Array.isArray(match.declaredInputs) ? match.declaredInputs : null;
 }
 
-/** The two options a workflow can lack, as the inputs they travel as. */
-const ACA_OPTION_INPUTS = [['publish_pr', 'Publish PR'], ['watch_only', 'Watch-only']];
+/** The two options a workflow can lack: the input they travel as, their label,
+ * the dialog default (what leaving it sends -- nothing) and the one change from
+ * that default, which cannot be honored and is refused. */
+const ACA_OPTION_INPUTS = [
+  { input: 'publish_pr', label: 'Publish PR', keep: 'checked', change: 'unchecking' },
+  { input: 'watch_only', label: 'Watch-only', keep: 'unchecked', change: 'checking' },
+];
 
-/** Text for under the Publish PR / Watch-only checkboxes: empty unless the
- * target workflow is KNOWN to lack one of them. */
+/**
+ * Text for under the Publish PR / Watch-only checkboxes: empty unless the
+ * target workflow is KNOWN to lack one of them. It says only what is true of
+ * each missing input -- that it is not declared, that the workflow's own file
+ * (not this dialog) owns what that option does, and what the checkbox can and
+ * cannot do. It never says what the workflow does instead (open a pull
+ * request, ask for approval): which input is missing varies per repository, and
+ * the file that lacks one says nothing about it.
+ */
 export function acaOptionsNote(declaredInputs) {
   if (!Array.isArray(declaredInputs)) return '';
-  const missing = ACA_OPTION_INPUTS.filter(([input]) => !declaredInputs.includes(input));
+  const missing = ACA_OPTION_INPUTS.filter(({ input }) => !declaredInputs.includes(input));
   if (!missing.length) return '';
-  return `This repository's squad-dispatch.yml does not declare ${missing.map(([input]) => input).join(' or ')}, `
-    + 'so the job runs with its built-in behavior (opens a pull request, asks for approval here). '
-    + `Changing ${missing.map(([, label]) => label).join(' or ')} will be refused rather than ignored.`;
+  const many = missing.length > 1;
+  const names = missing.map((m) => m.input).join(' or ');
+  const labels = missing.map((m) => m.label).join(' and ');
+  const kept = missing.map((m) => `${m.label} ${m.keep}`).join(' and ');
+  const changed = missing.map((m) => `${m.change} ${m.label}`).join(' or ');
+  return `This repository's squad-dispatch.yml does not declare ${names}, so this dialog cannot send ${many ? 'them' : 'it'}. `
+    + `Its workflow decides what ${labels} ${many ? 'do' : 'does'}: leaving ${kept} sends nothing, `
+    + `and ${changed} will be refused rather than ignored.`;
 }
 
 /**
@@ -192,12 +209,13 @@ export function acaBuildDispatchBody(form = {}) {
 
   // `GitHubApp.dispatch` refuses any option the workflow does not declare, so
   // an option is sent unless the workflow is KNOWN to lack it AND the choice is
-  // the dialog's default -- the behavior a workflow without the input has
-  // always had. A declared input is always sent (the workflow's own default may
-  // differ from the checkbox, and the choice must win); an unknown capability is
-  // sent too, so the hub's refusal names the field instead of the intent being
-  // dropped. A non-default choice on a known-undeclared input is sent so the
-  // hub can refuse it before any issue exists.
+  // the dialog's default (the choice then has nowhere to go and nothing to
+  // change). A declared input is always sent: the workflow's own default may
+  // differ from the checkbox, and the choice must win. An unknown capability
+  // is sent too -- the hub, which cannot verify it either, refuses the request
+  // before any issue exists rather than the intent being dropped here. A
+  // non-default choice on a known-undeclared input is sent so the hub can
+  // refuse it, naming the input, before any issue exists.
   const declared = Array.isArray(form.declaredInputs) ? form.declaredInputs : null;
   const publishPr = form.publishPr !== false;
   const watchOnly = !!form.watchOnly;

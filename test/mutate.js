@@ -7309,6 +7309,62 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'a capability read on an earlier open is not reused once the dialog is reopened',
   },
   {
+    // #251 (F3 revision): the note used to assert the workflow's built-in
+    // behavior (a pull request, an approval prompt) for every option it lacked.
+    // That is unknowable: the historical workflow has no such setting, and
+    // whether a job is supervised depends on the worker's deployment.
+    name: 'the options note promises a pull request and an approval prompt for any undeclared option again',
+    file: 'web/js/aca.js',
+    find: "    + `Its workflow decides what ${labels} ${many ? 'do' : 'does'}: leaving ${kept} sends nothing, `",
+    replace: "    + (process.env.MUTANT ? 'so the job runs with its built-in behavior (opens a pull request, asks for approval here); ' : `Its workflow decides what ${labels} ${many ? 'do' : 'does'}: leaving ${kept} sends nothing, `) // MUTATION",
+    mustFail: 'the note for a workflow lacking both options names both inputs, says the workflow owns them, and promises no behavior',
+  },
+  {
+    // The same note, but for a workflow with MIXED capabilities: it must speak
+    // only of the option that is undeclared, never contradict the one it honors.
+    name: 'the options note speaks about an option the workflow does declare',
+    file: 'web/js/aca.js',
+    find: `  const missing = ACA_OPTION_INPUTS.filter(({ input }) => !declaredInputs.includes(input));
+  if (!missing.length) return '';
+  const many`,
+    replace: `  const absent = ACA_OPTION_INPUTS.filter(({ input }) => !declaredInputs.includes(input));
+  if (!absent.length) return '';
+  const missing = process.env.MUTANT ? ACA_OPTION_INPUTS : absent; // MUTATION: names every option, declared or not
+  const many`,
+    mustFail: 'a workflow that declares publish_pr but not watch_only gets a note about watch_only alone, and no claim about the Publish PR it honors',
+  },
+  {
+    // A column-0 comment inside the inputs block ended the block early, so the
+    // inputs after it (a watch_only defaulting to true) read as undeclared and
+    // the dialog omitted the unchecked box.
+    name: 'parseDeclaredWorkflowInputs treats a comment line as the end of the inputs block',
+    file: 'src/service/github-app.js',
+    find: `    if (!text || text.startsWith('#')) continue;`,
+    replace: `    if (!text || (!process.env.MUTANT && text.startsWith('#'))) continue; // MUTATION: a comment is a row, and column 0 ends the block`,
+    mustFail: 'a column-0 comment inside the inputs block does not hide a later watch_only: the unchecked box is sent as false, not left to the workflow default of true',
+  },
+  {
+    // Skipping a line it cannot read, instead of declining to answer, returns a
+    // list that is short by exactly the inputs it could not read.
+    name: 'parseDeclaredWorkflowInputs returns a partial list instead of unknown for a key it cannot read',
+    file: 'src/service/github-app.js',
+    find: `    if (!m) return null; // a quoted, flow or otherwise non-plain key: cannot be sure of the name`,
+    replace: `    if (!m) { if (process.env.MUTANT) continue; return null; } // MUTATION: skips the unreadable key`,
+    mustFail: 'parseDeclaredWorkflowInputs answers null, never a shorter list, whenever it cannot read the block with certainty',
+  },
+  {
+    // Unknown inputs must be refused explicitly, before any issue exists. Without
+    // the guard they reach the declared-input check as null (a TypeError, or --
+    // coerced to "declares none" -- a refusal claiming inputs are undeclared).
+    name: 'GitHubApp.dispatch reads unknown workflow inputs as declaring none',
+    file: 'src/service/github-app.js',
+    find: `    if (!Array.isArray(declaredInputs)) {
+      throw this._err(`,
+    replace: `    if (!process.env.MUTANT && !Array.isArray(declaredInputs)) { // MUTATION: unknown inputs reach the declared-input check unguarded
+      throw this._err(`,
+    mustFail: 'a direct API dispatch against a workflow whose inputs are unknown is a clean 422 with nothing created, never a 500 or a success',
+  },
+  {
     // A dispatch the hub reports as errored is a failure, with the hub's own
     // reason shown verbatim -- never softened into "Queued on ACA".
     name: 'acaStepsForStatus stops reporting an errored dispatch as failed',

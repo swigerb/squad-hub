@@ -232,16 +232,55 @@ check('acaRepoDeclaredInputs reads the chosen repository case-insensitively and 
   assert.strictEqual(acaRepoDeclaredInputs(null, 'acme/widgets'), null);
 });
 
-check('the options note names exactly what the workflow lacks, and is silent when it is complete or unknown', () => {
+check('the options note is silent when the workflow declares both options or its inputs are unknown', () => {
   assert.strictEqual(acaOptionsNote(MODERN_INPUTS), '');
   assert.strictEqual(acaOptionsNote(null), '');
   assert.strictEqual(acaOptionsNote(undefined), '');
+  assert.strictEqual(acaOptionsNote('issue,prompt'), '');
+});
+
+// What a note may and may not say. The historical squad-on-aca workflow declared
+// only issue/prompt, opened a pull request only when there were changes, and had
+// no Hub or supervision setting at all -- supervision depended on how the worker
+// was deployed -- so a note that promises a pull request or an approval prompt is
+// a false claim about a workflow the dialog cannot read behavior from.
+const FALSE_BEHAVIOR_CLAIM = /pull request|opens|approval|approve|asks|built-in|supervis|always|default behavior/i;
+
+check('the note for a workflow lacking both options names both inputs, says the workflow owns them, and promises no behavior', () => {
   const both = acaOptionsNote(LEGACY_INPUTS);
+  assert.doesNotMatch(both, FALSE_BEHAVIOR_CLAIM, 'the note claims behavior the workflow never declared');
   assert.match(both, /does not declare publish_pr or watch_only/);
-  assert.match(both, /Changing Publish PR or Watch-only will be refused/);
-  const one = acaOptionsNote(['issue', 'prompt', 'publish_pr']);
-  assert.match(one, /does not declare watch_only,/);
-  assert.doesNotMatch(one, /publish_pr/);
+  assert.match(both, /this dialog cannot send them/);
+  assert.match(both, /Its workflow decides what Publish PR and Watch-only do/);
+  assert.match(both, /leaving Publish PR checked and Watch-only unchecked sends nothing/);
+  assert.match(both, /unchecking Publish PR or checking Watch-only will be refused rather than ignored/);
+});
+
+check('a workflow that declares publish_pr but not watch_only gets a note about watch_only alone, and no claim about the Publish PR it honors', () => {
+  const note = acaOptionsNote(['issue', 'prompt', 'publish_pr']);
+  assert.doesNotMatch(note, FALSE_BEHAVIOR_CLAIM, 'the note claims behavior the workflow never declared');
+  assert.match(note, /does not declare watch_only,/);
+  assert.match(note, /Its workflow decides what Watch-only does/);
+  assert.match(note, /checking Watch-only will be refused/);
+  assert.doesNotMatch(note, /publish|Publish|PR/, 'the note speaks about an option the workflow does declare');
+});
+
+check('a workflow that declares watch_only but not publish_pr gets a note about publish_pr alone, and no claim about the Watch-only it honors', () => {
+  const note = acaOptionsNote(['issue', 'prompt', 'watch_only']);
+  assert.doesNotMatch(note, FALSE_BEHAVIOR_CLAIM, 'the note claims behavior the workflow never declared');
+  assert.match(note, /does not declare publish_pr,/);
+  assert.match(note, /Its workflow decides what Publish PR does/);
+  assert.match(note, /unchecking Publish PR will be refused/);
+  assert.doesNotMatch(note, /watch|Watch/, 'the note speaks about an option the workflow does declare');
+});
+
+check('each option the workflow declares is still sent as chosen next to one it does not, so the note never contradicts the request', () => {
+  const pr = acaBuildDispatchBody({ ...baseForm(), declaredInputs: ['issue', 'prompt', 'publish_pr'], publishPr: false });
+  assert.strictEqual(pr.value.publishPr, false);
+  assert.strictEqual(pr.value.watchOnly, null);
+  const watch = acaBuildDispatchBody({ ...baseForm(), declaredInputs: ['issue', 'prompt', 'watch_only'], watchOnly: true });
+  assert.strictEqual(watch.value.watchOnly, true);
+  assert.strictEqual(watch.value.publishPr, null);
 });
 
 // --- acaStepsForStatus --------------------------------------------------------
