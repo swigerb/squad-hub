@@ -3696,6 +3696,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/prefs-sync.js',
   '/js/aca.js',
   '/js/aca-pending.js',
+  '/js/aca-created-issue.js',
   '/js/aca-match.js',
   '/js/aca-rail.js',
   '/js/aca-status.js',
@@ -7925,7 +7926,88 @@ if ($health.accessStore -ne 'durable') {`,
       $('acaErr').hidden = true; // MUTATION`,
     mustFail: 'a current dispatch failure remains visible and permits a deliberate retry',
   },
+  // -- #253 (F4): a dispatch that failed after creating its issue -------------
   {
+    name: 'a failed ACA dispatch never recovers the issue it already created',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return null;`,
+    replace: `  return null; // MUTATION
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return null;`,
+    mustFail: 'a failed dispatch that created an issue is retried on that issue, with the same options and no second issue (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch leaves the form in New-issue mode so retry creates another issue',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (untouched) {
+    $('acaIssueModeExisting').checked = true;`,
+    replace: `  if (untouched && false) { // MUTATION
+    $('acaIssueModeExisting').checked = true;`,
+    mustFail: 'a dispatch that failed after creating issue N selects Existing issue N, says the dispatch failed, and retries on N (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch fills the issue number but leaves the New-issue fields showing',
+    file: 'web/js/aca-created-issue.js',
+    find: `    $('acaIssueModeExisting').checked = true;
+    setAcaIssueMode('existing');
+    $('acaIssueNumber').value = String(created.number);`,
+    replace: `    $('acaIssueModeExisting').checked = true;
+    // MUTATION: the visible fields are not switched
+    $('acaIssueNumber').value = String(created.number);`,
+    mustFail: 'a dispatch that fails after creating an issue switches to Existing issue and retries on it without a second issue (#253 F4)',
+  },
+  {
+    name: 'an Existing-issue ACA dispatch failure claims it created an issue',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (!submitted || submitted.issue != null || !submitted.newIssue) return null;`,
+    replace: `  if (!submitted) return null; // MUTATION`,
+    mustFail: 'metadata from a failed Existing-issue request never claims a creation or changes the form (#253 F4)',
+  },
+  {
+    name: 'an ACA dispatch failure accepts created-issue metadata of any type',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return null;`,
+    replace: `  if (!number) return null; // MUTATION`,
+    mustFail: 'only a positive integer number from a New-issue request is a created issue',
+  },
+  {
+    name: 'a failed ACA dispatch describes the unconfirmed dispatch as started',
+    file: 'web/js/aca-created-issue.js',
+    find: `was already created, but its workflow dispatch failed or was not confirmed, `,
+    replace: `was already created and its workflow dispatch started, `, // MUTATION
+    mustFail: 'a dispatch that failed after creating issue N selects Existing issue N, says the dispatch failed, and retries on N (#253 F4)',
+  },
+  {
+    name: 'a stale ACA created-issue failure rewrites the reopened form',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (!acaDialogIsCurrent(generation)) {
+    toast(`,
+    replace: `  if (false) { // MUTATION
+    toast(`,
+    mustFail: 'an error arriving after the dialog was reopened reports the issue without touching the new form (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch binds its issue number to a repository the person changed to',
+    file: 'web/js/aca-created-issue.js',
+    find: `  const untouched = acaRepoName(form.repo) === created.repo && form.issueMode === 'new';`,
+    replace: `  const untouched = form.issueMode === 'new'; // MUTATION`,
+    mustFail: 'changing the repository while the request is in flight keeps issue N out of the new repository (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch overwrites the Existing issue number the person chose meanwhile',
+    file: 'web/js/aca-created-issue.js',
+    find: `  const untouched = acaRepoName(form.repo) === created.repo && form.issueMode === 'new';`,
+    replace: `  const untouched = acaRepoName(form.repo) === created.repo; // MUTATION`,
+    mustFail: 'an Existing issue the person chose while the request was in flight is not overwritten (#253 F4)',
+  },  {
+    // The recovery is client code in its own module: dropped from the shell it
+    // is cached nowhere, and a page loaded offline fails to link.
+    name: 'SHELL drops the module that recovers an issue a failed dispatch created',
+    file: 'web/sw.js',
+    find: `  '/js/aca-created-issue.js',
+`,
+    replace: ``,
+    mustFail: "the service worker's shell lists the split css, not the old single file",
+  },  {
     name: 'a live overview leaves an older GET free to erase the pushed session',
     file: 'web/js/ws.js',
     find: `      refreshSeq += 1;`,

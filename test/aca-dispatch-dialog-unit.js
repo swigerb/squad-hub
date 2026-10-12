@@ -23,7 +23,9 @@ function deferred() {
 function dialogFixture(repoReplies = []) {
   const fs = require('fs');
   const path = require('path');
-  const source = stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'aca.js'), 'utf8'));
+  const source = ['aca.js', 'aca-created-issue.js']
+    .map((file) => stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', file), 'utf8')))
+    .join('\n');
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { value: '', hidden: false, style: {}, focus() {} });
@@ -68,13 +70,13 @@ const browser = { exports: {} };
 new Function('module', `${src}\nmodule.exports = {
   acaBuildDispatchBody, acaRepoDeclaredInputs, acaOptionsNote, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
   acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, ACA_MAX_PENDING_MS,
-  acaDeviceIdFor, acaDispatchEvidence, acaAttachFromOverview,
+  acaDeviceIdFor, acaDispatchEvidence, acaAttachFromOverview, acaCreatedIssueOf,
   trackAcaDispatch, syncAcaPending, retryAcaPending, state, api,
 };`)(browser);
 const {
   acaBuildDispatchBody, acaRepoDeclaredInputs, acaOptionsNote, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
   acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, ACA_MAX_PENDING_MS,
-  acaDeviceIdFor, acaDispatchEvidence, acaAttachFromOverview,
+  acaDeviceIdFor, acaDispatchEvidence, acaAttachFromOverview, acaCreatedIssueOf,
   trackAcaDispatch, syncAcaPending, retryAcaPending, state, api,
 } = browser.exports;
 
@@ -905,6 +907,184 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       assert.strictEqual(f.element('acaScrim').hidden, true);
     });
 
+    // --- #253 (F4): a dispatch that failed after creating its issue ----------
+    // The hub creates the issue first, so a failed dispatch leaves one behind and
+    // answers `{error, issue: {number, url}}`. The dialog must move to that issue
+    // rather than leave New-issue mode, where Start would create a second one.
+    const failedAfterIssue = (number = 42, message = 'workflow_dispatch refused') => Object.assign(new Error(message), {
+      status: 502, body: { error: message, issue: { number, url: `https://github.com/acme/widgets/issues/${number}` } },
+    });
+    const fillOptions = (f) => {
+      f.element('acaBranch').value = 'release';
+      f.element('acaModel').value = 'a-model';
+      f.element('acaReviewer').value = 'someone';
+      f.element('acaPublishPr').checked = false;
+      f.element('acaWatchOnly').checked = true;
+    };
+
+    check('only a positive integer number from a New-issue request is a created issue', () => {
+      const asked = { repo: 'acme/widgets', issue: null, newIssue: { title: 'T' } };
+      const failure = (issue) => ({ body: { issue } });
+      const ok = acaCreatedIssueOf(failure({ number: 42, url: 'https://evil.example/x' }), asked);
+      assert.deepStrictEqual(ok, { repo: 'acme/widgets', number: 42, link: 'https://github.com/acme/widgets/issues/42' });
+      for (const number of ['42', 0, -1, 1.5, NaN, Infinity, 2 ** 60, null, undefined, true, {}, [42]]) {
+        assert.strictEqual(acaCreatedIssueOf(failure({ number }), asked), null, `accepted ${String(number)}`);
+      }
+      for (const issue of [undefined, null, 42, 'x', [], {}]) {
+        assert.strictEqual(acaCreatedIssueOf(failure(issue), asked), null, `accepted issue ${JSON.stringify(issue)}`);
+      }
+      for (const e of [null, undefined, new Error('plain'), { body: null }, { body: 'text' }]) {
+        assert.strictEqual(acaCreatedIssueOf(e, asked), null);
+      }
+      assert.strictEqual(acaCreatedIssueOf(failure({ number: 42 }), { repo: 'acme/widgets', issue: 7, newIssue: null }), null,
+        'an Existing-issue request was described as having created an issue');
+      assert.strictEqual(acaCreatedIssueOf(failure({ number: 42 }), { repo: 'acme/widgets', issue: null, newIssue: null }), null);
+      assert.strictEqual(acaCreatedIssueOf(failure({ number: 42 }), null), null);
+    });
+
+    await checkAsync('a dispatch that failed after creating issue N selects Existing issue N, says the dispatch failed, and retries on N (#253 F4)', async () => {
+      const f = dialogFixture();
+      f.open('Retry on the created issue');
+      fillOptions(f);
+      f.element('acaNewIssueTitle').value = 'A custom title';
+      const first = f.submitAcaDispatch();
+      assert.deepStrictEqual([f.requests[0].body.issue, f.requests[0].body.newIssue], [null, { title: 'A custom title' }]);
+      f.requests[0].reject(failedAfterIssue(42));
+      await first;
+
+      assert.strictEqual(f.element('acaScrim').hidden, false, 'the dialog closed on a failed dispatch');
+      assert.strictEqual(f.element('acaIssueModeExisting').checked, true, 'the form stayed in New-issue mode');
+      assert.strictEqual(f.element('acaIssueNumber').value, '42');
+      assert.strictEqual(f.element('acaNewIssueFields').hidden, true);
+      assert.strictEqual(f.element('acaExistingIssueFields').hidden, false);
+      const shown = f.element('acaErr').innerHTML;
+      assert.strictEqual(f.element('acaErr').hidden, false);
+      assert.match(shown, /Could not start the job: workflow_dispatch refused/);
+      assert.match(shown, /acme\/widgets#42 was already created/);
+      assert.match(shown, /dispatch failed or was not confirmed/);
+      assert.match(shown, /Existing issue #42 is selected/);
+      assert.match(shown, /href="https:\/\/github\.com\/acme\/widgets\/issues\/42" target="_blank" rel="noopener noreferrer"/);
+      assert.doesNotMatch(shown, /Dispatched|is queued|has started|running on ACA/, 'a failed dispatch was described as started');
+      assert.deepStrictEqual(f.notifications, [], 'a failure was announced as a success');
+      assert.strictEqual(f.tracked.length, 0, 'a pending row was tracked for a dispatch that never started');
+      assert.strictEqual(f.element('acaStart').disabled, false);
+      assert.strictEqual(f.element('acaStart').textContent, 'Start job');
+
+      const retry = f.submitAcaDispatch();
+      assert.strictEqual(f.requests.length, 2);
+      const { body } = f.requests[1];
+      assert.strictEqual(body.issue, 42, 'the retry was not sent against the created issue');
+      assert.strictEqual(body.newIssue, null, 'the retry asked for another new issue');
+      assert.deepStrictEqual(
+        { ...body, issue: null, newIssue: null },
+        { ...f.requests[0].body, issue: null, newIssue: null },
+        'the retry changed the repository, options or instructions the person had entered',
+      );
+      f.requests[1].resolve({ issue: { number: 42 }, trackerId: 'T-retry' });
+      await retry;
+      assert.strictEqual(f.element('acaScrim').hidden, true);
+      assert.strictEqual(f.tracked.length, 1);
+    });
+
+    await checkAsync('metadata from a failed Existing-issue request never claims a creation or changes the form (#253 F4)', async () => {
+      const f = dialogFixture();
+      f.open('Existing issue job');
+      f.element('acaIssueModeExisting').checked = true;
+      f.element('acaIssueNumber').value = '7';
+      const sent = f.submitAcaDispatch();
+      f.requests[0].reject(failedAfterIssue(99));
+      await sent;
+      assert.strictEqual(f.element('acaIssueNumber').value, '7');
+      assert.strictEqual(f.element('acaErr').hidden, false);
+      assert.strictEqual(f.element('acaErr').textContent, 'Could not start the job: workflow_dispatch refused');
+      assert.strictEqual(f.element('acaErr').innerHTML, undefined, 'the failure was rendered as a creation');
+    });
+
+    await checkAsync('a failure without usable created-issue metadata keeps the ordinary failure and New-issue mode (#253 F4)', async () => {
+      for (const issue of [undefined, null, { number: '42' }, { number: 0 }, { number: 1.5 }, 42]) {
+        const f = dialogFixture();
+        f.open('No metadata job');
+        const sent = f.submitAcaDispatch();
+        f.requests[0].reject(Object.assign(new Error('GitHub refused'), { status: 502, body: { error: 'GitHub refused', issue } }));
+        await sent;
+        const label = JSON.stringify(issue);
+        assert.strictEqual(f.element('acaErr').hidden, false, label);
+        assert.strictEqual(f.element('acaErr').textContent, 'Could not start the job: GitHub refused', label);
+        assert.strictEqual(f.element('acaIssueModeExisting').checked, undefined, `mode changed for ${label}`);
+        assert.strictEqual(f.element('acaIssueNumber').value, '', `number bound for ${label}`);
+      }
+      const plain = dialogFixture();
+      plain.open('Plain failure');
+      const sent = plain.submitAcaDispatch();
+      plain.requests[0].reject(new Error('offline'));
+      await sent;
+      assert.strictEqual(plain.element('acaErr').textContent, 'Could not start the job: offline');
+      assert.strictEqual(plain.element('acaIssueNumber').value, '');
+    });
+
+    await checkAsync('an error arriving after the dialog was reopened reports the issue without touching the new form (#253 F4)', async () => {
+      const f = dialogFixture();
+      f.open('First job');
+      const first = f.submitAcaDispatch();
+      f.element('acaScrim').hidden = true;
+      f.open('Second job');
+      f.element('acaRepo').value = 'other/repo';
+      f.requests[0].reject(failedAfterIssue(42));
+      await first;
+      assert.strictEqual(f.element('acaIssueModeExisting').checked, undefined, 'the older error switched the newer form to Existing issue');
+      assert.strictEqual(f.element('acaIssueNumber').value, '', 'issue 42 of acme/widgets was bound into the newer form');
+      assert.strictEqual(f.element('acaErr').hidden, true, 'the older error overwrote the newer form');
+      assert.strictEqual(f.element('acaRepo').value, 'other/repo');
+      assert.strictEqual(f.element('acaPrompt').value, 'Second job');
+      assert.strictEqual(f.notifications.length, 1, 'the older failure was silently lost');
+      assert.match(f.notifications[0], /previous job: workflow_dispatch refused/);
+      assert.match(f.notifications[0], /acme\/widgets#42 was already created/);
+      assert.match(f.notifications[0], /Retry on that issue, not as a new one/);
+      assert.strictEqual(f.element('acaStart').disabled, false);
+    });
+
+    await checkAsync('an error arriving after the dialog was closed reports the issue and leaves the next open alone (#253 F4)', async () => {
+      const f = dialogFixture();
+      f.open('Closed job');
+      const sent = f.submitAcaDispatch();
+      f.element('acaScrim').hidden = true;
+      f.requests[0].reject(failedAfterIssue(42));
+      await sent;
+      assert.strictEqual(f.element('acaIssueNumber').value, '');
+      assert.strictEqual(f.element('acaIssueModeExisting').checked, undefined);
+      assert.match(f.notifications[0], /acme\/widgets#42 was already created/);
+    });
+
+    await checkAsync('changing the repository while the request is in flight keeps issue N out of the new repository (#253 F4)', async () => {
+      const f = dialogFixture();
+      f.open('Repository changed job');
+      const sent = f.submitAcaDispatch();
+      f.element('acaRepo').value = 'other/repo';
+      f.requests[0].reject(failedAfterIssue(42));
+      await sent;
+      assert.strictEqual(f.element('acaIssueModeExisting').checked, undefined, 'issue 42 of acme/widgets was selected for other/repo');
+      assert.strictEqual(f.element('acaIssueNumber').value, '');
+      assert.strictEqual(f.element('acaRepo').value, 'other/repo');
+      const shown = f.element('acaErr').innerHTML;
+      assert.match(shown, /acme\/widgets#42 was already created/);
+      assert.match(shown, /left as you set it/);
+      assert.match(shown, /Existing issue 42 with acme\/widgets/);
+      assert.match(shown, /href="https:\/\/github\.com\/acme\/widgets\/issues\/42"/);
+      assert.doesNotMatch(shown, /other\/repo/);
+    });
+
+    await checkAsync('an Existing issue the person chose while the request was in flight is not overwritten (#253 F4)', async () => {
+      const f = dialogFixture();
+      f.open('Changed mode job');
+      const sent = f.submitAcaDispatch();
+      f.element('acaIssueModeExisting').checked = true;
+      f.element('acaIssueNumber').value = '77';
+      f.requests[0].reject(failedAfterIssue(42));
+      await sent;
+      assert.strictEqual(f.element('acaIssueNumber').value, '77', 'the person\'s own issue number was overwritten');
+      assert.match(f.element('acaErr').innerHTML, /acme\/widgets#42 was already created/);
+      assert.match(f.element('acaErr').innerHTML, /left as you set it/);
+    });
     await checkAsync('a live overview invalidates an older GET without losing the pushed session', async () => {
       const fs = require('fs');
       const path = require('path');

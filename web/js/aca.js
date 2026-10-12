@@ -14,6 +14,8 @@ import { $, esc, toast, copyToClipboard } from './util.js';
 // into each other do.
 import { render } from './devices.js';
 import { trackAcaDispatch, startAcaPolling } from './aca-pending.js';
+// Split out for the size budget; circular the same way aca-pending.js is.
+import { acaCreatedIssueOf, reportAcaCreatedIssueFailure } from './aca-created-issue.js';
 
 /**
  * Links that start a Squad on ACA run.
@@ -100,14 +102,14 @@ function isRateLimited(e) { return e && e.status === 429; }
 let acaDialogGeneration = 0;
 let acaSubmittingGeneration = null;
 
-function acaDialogIsCurrent(generation) {
+export function acaDialogIsCurrent(generation) {
   return generation === acaDialogGeneration && !$('acaScrim').hidden;
 }
 
 /** Every field the dialog collects, read straight from the DOM. Kept as one
  * function so `acaBuildDispatchBody` -- the part worth proving in Node --
  * never touches `document` itself. */
-function acaFormValues() {
+export function acaFormValues() {
   return {
     repo: $('acaRepo').value,
     baseBranch: $('acaBranch').value,
@@ -343,7 +345,7 @@ function updateAcaRepoHint(repos) {
   }
 }
 
-function setAcaIssueMode(mode) {
+export function setAcaIssueMode(mode) {
   $('acaNewIssueFields').hidden = mode !== 'new';
   $('acaExistingIssueFields').hidden = mode !== 'existing';
 }
@@ -451,6 +453,11 @@ async function submitAcaDispatch() {
     toast(`Dispatched: #${r.issue && r.issue.number} is queued on ACA. It appears under Cloud until its job attaches.`);
     render();
   } catch (e) {
+    const created = acaCreatedIssueOf(e, built.value);
+    if (created) {
+      reportAcaCreatedIssueFailure(e, created, generation);
+      return;
+    }
     if (acaDialogIsCurrent(generation)) {
       $('acaErr').textContent = isRateLimited(e) ? e.message : `Could not start the job: ${e.message}`;
       $('acaErr').hidden = false;

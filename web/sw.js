@@ -104,6 +104,8 @@
 // workflow that lacks them, and index.html gained the note under those options.
 // A v29 install still sends both on every dispatch, so a repository on an older
 // squad-dispatch.yml is refused with a 422 until its cache refreshes.
+// It also recovers the issue a failed dispatch had already created and retries on it
+// (Existing issue N), where a v29 install stays in New-issue mode and creates a second one.
 const CACHE = 'squad-hub-shell-v30';
 
 /**
@@ -152,6 +154,7 @@ const SHELL = [
   '/js/prefs-sync.js',
   '/js/aca.js',
   '/js/aca-pending.js',
+  '/js/aca-created-issue.js',
   '/js/aca-match.js',
   '/js/aca-rail.js',
   '/js/aca-status.js',

@@ -543,7 +543,12 @@ reads the workflow file off the repository's default branch before dispatching
 and refuses, with a clear `422` naming the field, if a requested option is not
 one the workflow declares. That check runs before `newIssue` ever creates
 anything; if the dispatch call itself still fails afterward, the error response
-carries the issue the hub already created so it is never silently stranded.
+carries the issue the hub already created so it is never silently stranded. The
+dialog reads that issue from the failed response, names it as a dispatch that
+failed or could not be confirmed, and switches to **Existing issue** with its
+number filled in, so pressing Start job again retries on it instead of creating
+a second issue. It does that only when the request asked for a new issue and the
+dialog is still the one that was submitted.
 `workflow_dispatch` itself replies `204` with no run id, so the hub hands back
 the workflow's own Actions page as `runUrl` — the best any caller can do until
 a run appears, which `/api/aca/dispatches` then surfaces by proving it

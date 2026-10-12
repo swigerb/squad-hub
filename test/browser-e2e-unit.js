@@ -305,11 +305,19 @@ async function watchCsp(pg) {
  * this fixture needs to exercise `#acaErr` on a genuine 502-shaped failure
  * rather than a 501 (no App) or 400 (bad input), both already covered
  * elsewhere.
+ *
+ * `failAfterIssue` is the number of leading dispatches that fail the way the real
+ * `GitHubApp.dispatch` does once it has created the issue for `newIssue`: the
+ * thrown error carries `.issue` (`{number, url}`), which `HubService` returns to
+ * the browser. `issues` records every issue this fake created, so a test can
+ * prove how many a retry left behind. Neither changes `dispatchShouldFail`,
+ * which fails without creating anything.
  */
 function fakeInlineGithubApp({
-  dispatchShouldFail = false, runState = 'queued', correlationSupported = true, declaredInputs = null,
+  dispatchShouldFail = false, runState = 'queued', correlationSupported = true, declaredInputs = null, failAfterIssue = 0,
 } = {}) {
   const runs = [];
+  const issues = [];
   const dispatchRequests = [];
   const byCorrelation = new Map();
   const status = (run) => ({
@@ -326,6 +334,7 @@ function fakeInlineGithubApp({
     setRun(n, patch) { Object.assign(runs[n - 1], patch); },
     /** Every request `dispatch()` accepted, as `HubService` handed it over. */
     dispatchRequests,
+    issues,
     async listReposWithDispatchStatus() {
       return [{
         fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true, declaredInputs,
@@ -347,6 +356,16 @@ function fakeInlineGithubApp({
         }
       }
       dispatchRequests.push(request);
+      if (dispatchRequests.length <= failAfterIssue) {
+        const err = new Error('workflow_dispatch refused: upstream unavailable');
+        err.status = 502;
+        if (request.newIssue) {
+          const number = 100 + issues.length + 1;
+          issues.push({ number, title: request.newIssue.title });
+          err.issue = { number, url: `https://github.com/${owner}/${repo}/issues/${number}` };
+        }
+        throw err;
+      }
       if (dispatchShouldFail) {
         const err = new Error('workflow_dispatch refused: no matching workflow file');
         err.status = 502;
@@ -355,13 +374,14 @@ function fakeInlineGithubApp({
       const runId = runs.length + 1;
       const run = { runId, runAttempt: 1, state: runState, conclusion: null, executionName: null };
       runs.push(run);
+      if (request.newIssue) issues.push({ number: 41 + runId, title: request.newIssue.title });
       const correlationId = correlationSupported ? `corr-${runId}` : null;
       if (correlationId) byCorrelation.set(correlationId, run);
       return {
         // Issue number tracks the dispatch sequence (41 + the run id) rather
         // than a fixed 42, so a test dispatching more than once can tell its
         // pending rows apart in the rendered markup.
-        issue: { number: 41 + runId },
+        issue: { number: request.issue != null ? request.issue : 41 + runId },
         runUrl: `https://github.com/${owner}/${repo}/actions/runs/${runId}`,
         workflowFile: 'squad-dispatch.yml',
         ref: 'main',
@@ -408,7 +428,7 @@ async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   await page.route(`${origin}/api/aca/**`, (route) => {
-    calls.push({ method: route.request().method(), url: route.request().url() });
+    calls.push({ method: route.request().method(), url: route.request().url(), body: route.request().postData() });
     route.continue();
   });
   await gotoSettled(page, `${origin}/?token=${auth.mintDevToken(`t-${tag}`, `u-${tag}`, `${tag} tester`)}`);
@@ -4843,6 +4863,93 @@ function railFacts(page) {
       }
     });
 
+    // A capability list the workflow declares in full, so every request below is
+    // one the real hub would also accept (an unknown list is refused before any
+    // issue exists, and so could never reach the failure under test).
+    const F4_INPUTS = ['issue', 'prompt', 'model', 'base_branch', 'publish_pr', 'reviewer', 'watch_only', 'hub_correlation_id'];
+    const openF4Dialog = async (hub, mode) => {
+      const { page } = hub;
+      await page.click('#newMoreBtn');
+      await page.click('[data-new="aca"]');
+      await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+      await page.fill('#acaRepo', 'acme/widgets');
+      await page.fill('#acaPrompt', 'Update the docs');
+      await page.fill('#acaBranch', 'release');
+      await page.fill('#acaModel', 'a-model');
+      await page.fill('#acaReviewer', 'someone');
+      await page.uncheck('#acaPublishPr');
+      await page.check('#acaWatchOnly');
+      if (mode === 'existing') {
+        await page.check('#acaIssueModeExisting');
+        await page.fill('#acaIssueNumber', '7');
+      }
+      await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
+        null, { timeout: 10000 });
+    };
+    const dispatchPosts = (hub) => hub.calls
+      .filter((c) => c.method === 'POST' && /\/api\/aca\/dispatch$/.test(c.url))
+      .map((c) => JSON.parse(c.body));
+
+    await check('a dispatch that fails after creating an issue switches to Existing issue and retries on it without a second issue (#253 F4)', async () => {
+      const hub = await acaHub(browser, 'f4-retry', { declaredInputs: F4_INPUTS, failAfterIssue: 1 });
+      try {
+        const { page } = hub;
+        await openF4Dialog(hub);
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
+
+        assert.strictEqual(hub.app.issues.length, 1, 'the first request did not create exactly one issue');
+        const issueN = hub.app.issues[0].number;
+        const err = await page.textContent('#acaErr');
+        assert.match(err, new RegExp(`acme/widgets#${issueN} was already created`), `the failure does not identify the created issue: ${err}`);
+        assert.match(err, /dispatch failed or was not confirmed/);
+        assert.doesNotMatch(err, /queued|is running|Dispatched:/i, 'a failed dispatch was described as started');
+        assert.strictEqual(await page.getAttribute('#acaErr a', 'href'), `https://github.com/acme/widgets/issues/${issueN}`);
+        assert.ok(!(await page.evaluate(() => document.getElementById('acaScrim').hidden)), 'the dialog closed on a failed dispatch');
+        assert.strictEqual(await page.isChecked('#acaIssueModeExisting'), true, 'the form stayed in New-issue mode');
+        assert.strictEqual(await page.inputValue('#acaIssueNumber'), String(issueN));
+        assert.ok(await page.isVisible('#acaExistingIssueFields'), 'the Existing-issue fields are hidden');
+        assert.ok(await page.isHidden('#acaNewIssueFields'), 'the New-issue fields are still shown');
+        assert.strictEqual(await page.inputValue('#acaPrompt'), 'Update the docs');
+        assert.doesNotMatch(await page.evaluate(() => document.getElementById('groups').textContent), /Queued on ACA/,
+          'a pending row was added for a dispatch that never started');
+
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        const [first, second] = dispatchPosts(hub);
+        assert.deepStrictEqual([first.issue, typeof first.newIssue.title], [null, 'string']);
+        assert.strictEqual(second.issue, issueN, 'the retry was not sent against the created issue');
+        assert.strictEqual(second.newIssue, null, 'the retry asked for another new issue');
+        assert.deepStrictEqual({ ...second, issue: null, newIssue: null }, { ...first, issue: null, newIssue: null },
+          'the retry changed the repository, options or instructions');
+        assert.strictEqual(second.repo, 'acme/widgets');
+        assert.strictEqual(hub.app.issues.length, 1, 'the retry created a second issue');
+        assert.strictEqual(hub.app.dispatchRequests.length, 2);
+        assert.strictEqual(hub.app.dispatchRequests[1].issue, issueN);
+        await page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('a dispatch that fails on an Existing issue creates nothing and does not claim a creation (#253 F4)', async () => {
+      const hub = await acaHub(browser, 'f4-existing', { declaredInputs: F4_INPUTS, failAfterIssue: 1 });
+      try {
+        const { page } = hub;
+        await openF4Dialog(hub, 'existing');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
+        const err = await page.textContent('#acaErr');
+        assert.match(err, /Could not start the job/);
+        assert.doesNotMatch(err, /already created/, `an Existing-issue failure claimed a creation: ${err}`);
+        assert.strictEqual(await page.locator('#acaErr a').count(), 0);
+        assert.strictEqual(hub.app.issues.length, 0);
+        assert.strictEqual(await page.inputValue('#acaIssueNumber'), '7');
+        assert.strictEqual(dispatchPosts(hub)[0].issue, 7);
+      } finally {
+        await hub.close();
+      }
+    });
     await check('a legacy workflow that declares neither option is dispatched from the untouched dialog, and an explicit unsupported choice is refused (#251 F3)', async () => {
       const legacy = ['issue', 'prompt'];
       const open = async (hub) => {

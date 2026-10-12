@@ -35,8 +35,8 @@ const { readWebSource } = require('./helpers/web-source');
 // The New ACA job dialog's own request builder, loaded from the shipped
 // `web/js/aca.js` so the browser-side half of a dispatch is the real code.
 const dialog = { exports: {} };
-new Function('module', `${readWebSource()}\nmodule.exports = { acaBuildDispatchBody, acaRepoDeclaredInputs };`)(dialog);
-const { acaBuildDispatchBody, acaRepoDeclaredInputs } = dialog.exports;
+new Function('module', `${readWebSource()}\nmodule.exports = { acaBuildDispatchBody, acaRepoDeclaredInputs, acaCreatedIssueOf };`)(dialog);
+const { acaBuildDispatchBody, acaRepoDeclaredInputs, acaCreatedIssueOf } = dialog.exports;
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -129,6 +129,7 @@ function fakeGitHubApp({
   workflowYaml = null,
   defaultBranch = 'main',
   dispatchStatus = 204,
+  issueStatus = 201,
   installationsStatus = 200,
   runsStatus = 200,
   runs = null,
@@ -241,6 +242,7 @@ function fakeGitHubApp({
       if (issuesMatch && req.method === 'POST') {
         let parsed = {};
         try { parsed = JSON.parse(body); } catch { /* ignore */ }
+        if (issueStatus !== 201) return json(issueStatus, { message: 'issue creation refused in fake' });
         state.createdIssues.push(parsed);
         const number = 100 + state.createdIssues.length;
         return json(201, { number, html_url: `https://github.com/${issuesMatch[1]}/${issuesMatch[2]}/issues/${number}` });
@@ -255,8 +257,10 @@ function fakeGitHubApp({
         const undeclared = Object.keys(parsed.inputs || {}).filter((k) => !declaredInputs.includes(k));
         if (undeclared.length) return json(422, { message: `Unexpected inputs provided: ${JSON.stringify(undeclared)}` });
         state.dispatches.push({ owner: dispatchMatch[1], repo: dispatchMatch[2], ...parsed });
-        if (dispatchStatus !== 204) {
-          return json(dispatchStatus, { message: 'dispatch refused in fake' });
+        // A function answers per attempt (1-based), so a test can fail one dispatch and accept the next.
+        const status = typeof dispatchStatus === 'function' ? dispatchStatus(state.dispatches.length) : dispatchStatus;
+        if (status !== 204) {
+          return json(status, { message: 'dispatch refused in fake' });
         }
         res.writeHead(204);
         return res.end();
@@ -1070,6 +1074,108 @@ function apiRequest(port, path, token, opts = {}) {
     assert.match(r.body.issue.url, /\/issues\/101$/);
   });
 
+  // =========================================================================
+  // #253 (F4): a dispatch that failed after creating an issue is retried on it
+  // =========================================================================
+
+  /** The real `GitHubApp` and `HubService` over `fake`, and a `post(body)` to `/api/aca/dispatch`. */
+  async function dispatchHarness(fake) {
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    return {
+      post: (body) => apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body }),
+      async close() { await svc.close(); fake.server.close(); },
+    };
+  }
+
+  const retryForm = () => ({
+    repo: 'acme/widgets',
+    baseBranch: 'release',
+    prompt: 'Update the docs',
+    model: 'a-model',
+    reviewer: 'someone',
+    publishPr: false,
+    watchOnly: true,
+    issueMode: 'new',
+    declaredInputs: MODERN_DECLARED_INPUTS,
+  });
+  const asClientError = (response) => ({ status: response.status, body: response.body });
+
+  await checkAsync('a failed dispatch that created an issue is retried on that issue, with the same options and no second issue (#253 F4)', async () => {
+    const fake = fakeGitHubApp({ dispatchStatus: (attempt) => (attempt === 1 ? 500 : 204) });
+    const hub = await dispatchHarness(fake);
+    try {
+      const first = acaBuildDispatchBody(retryForm());
+      assert.strictEqual(first.ok, true, JSON.stringify(first));
+      assert.ok(first.value.newIssue && first.value.issue === null, 'the first request was not a New-issue request');
+      const failed = await hub.post(first.value);
+      assert.strictEqual(failed.status, 500, JSON.stringify(failed));
+      assert.strictEqual(fake.state.createdIssues.length, 1, 'the first request did not create exactly one issue');
+
+      const created = acaCreatedIssueOf(asClientError(failed), first.value);
+      assert.ok(created, 'the client did not recover the issue the failed dispatch created');
+      assert.strictEqual(created.number, 101);
+      assert.strictEqual(created.repo, 'acme/widgets');
+      assert.strictEqual(created.link, 'https://github.com/acme/widgets/issues/101');
+
+      const retry = acaBuildDispatchBody({ ...retryForm(), issueMode: 'existing', issueNumber: String(created.number) });
+      assert.strictEqual(retry.ok, true, JSON.stringify(retry));
+      assert.strictEqual(retry.value.issue, 101);
+      assert.strictEqual(retry.value.newIssue, null);
+      const second = await hub.post(retry.value);
+      assert.strictEqual(second.status, 200, JSON.stringify(second));
+      assert.strictEqual(second.body.issue.number, 101);
+      assert.strictEqual(fake.state.createdIssues.length, 1, 'the retry created a second issue');
+      assert.strictEqual(fake.state.dispatches.length, 2);
+      assert.deepStrictEqual(fake.state.dispatches.map((d) => d.repo), ['widgets', 'widgets']);
+      assert.strictEqual(fake.state.dispatches[1].inputs.issue, '101', 'the retry was not dispatched against the created issue');
+      const { hub_correlation_id: c1, ...firstInputs } = fake.state.dispatches[0].inputs;
+      const { hub_correlation_id: c2, ...secondInputs } = fake.state.dispatches[1].inputs;
+      assert.ok(c1 && c2 && c1 !== c2, 'each dispatch carries its own correlation id');
+      assert.deepStrictEqual(secondInputs, firstInputs, 'the retry changed the options the person chose');
+    } finally {
+      await hub.close();
+    }
+  });
+
+  await checkAsync('a failure with no created issue (issue creation refused) carries no metadata and claims nothing (#253 F4)', async () => {
+    const fake = fakeGitHubApp({ issueStatus: 500 });
+    const hub = await dispatchHarness(fake);
+    try {
+      const built = acaBuildDispatchBody(retryForm());
+      const failed = await hub.post(built.value);
+      assert.ok(failed.status >= 400, JSON.stringify(failed));
+      assert.strictEqual(fake.state.createdIssues.length, 0);
+      assert.strictEqual(fake.state.dispatches.length, 0);
+      assert.ok(!('issue' in failed.body), `an issue was reported though none was created: ${JSON.stringify(failed.body)}`);
+      assert.strictEqual(acaCreatedIssueOf(asClientError(failed), built.value), null);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  await checkAsync('a failed dispatch on an Existing issue creates nothing and is never described as a creation (#253 F4)', async () => {
+    const fake = fakeGitHubApp({ dispatchStatus: 500 });
+    const hub = await dispatchHarness(fake);
+    try {
+      const built = acaBuildDispatchBody({ ...retryForm(), issueMode: 'existing', issueNumber: '7' });
+      const failed = await hub.post(built.value);
+      assert.strictEqual(failed.status, 500, JSON.stringify(failed));
+      assert.strictEqual(fake.state.createdIssues.length, 0, 'an Existing-issue request created an issue');
+      assert.strictEqual(fake.state.dispatches.length, 1, 'the dispatch was not attempted');
+      assert.strictEqual(acaCreatedIssueOf(asClientError(failed), built.value), null);
+      // Even a response that did name an issue is not a creation by this request.
+      assert.strictEqual(acaCreatedIssueOf({ body: { issue: { number: 9 } } }, built.value), null);
+    } finally {
+      await hub.close();
+    }
+  });
   // =========================================================================
   // Must-fix #3 (re-dispatch review): never dispatch on baseBranch as ref
   // =========================================================================
