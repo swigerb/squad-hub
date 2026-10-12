@@ -17,15 +17,15 @@ import { acaPendingAttached } from './aca-match.js';
  * devices, so it has no count and nothing to collapse -- only the + that
  * opens the ACA dialog (#172).
  */
-export function acaJobsRowHtml() {
+export function acaJobsRowHtml(connected = false) {
   return `
     <div class="device ondemand">
-      <span class="dot online"></span>
+      <span class="dot ${connected ? 'online' : 'offline'}"></span>
       <div class="device-main">
-        <div class="device-name">ACA jobs</div>
-        <div class="device-meta">On-demand &middot; Always available</div>
+        <div class="device-name">Squad on ACA</div>
+        <div class="device-meta">${connected ? 'Connected service &middot; Ready to start runs' : 'Set up to start runs'}</div>
       </div>
-      <button class="add" data-action="aca" title="Start an ACA job">+</button>
+      <button class="add" data-action="aca" title="Start an ACA run">+</button>
     </div>`;
 }
 

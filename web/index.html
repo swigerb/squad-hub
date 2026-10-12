@@ -90,7 +90,7 @@
   -->
   <button class="account" id="menuBtn" aria-haspopup="true" aria-expanded="false" title="Account">
     <span class="avatar" id="avatar" aria-hidden="true">?</span>
-    <span class="visually-hidden" id="who">—</span>
+    <span class="visually-hidden" id="who">Not signed in</span>
   </button>
 </header>
 
@@ -210,15 +210,15 @@
         </button>
         <nav class="menu anchored" id="newMenu" hidden>
           <div class="menu-head">Create</div>
-          <button data-new="local" title="A machine running `squad-hub connect` — your laptop or desktop. The session runs there.">
+          <button data-new="local" title="A machine running `squad-hub connect`, such as your laptop or desktop. The session runs there.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2C8.27614 2 8.5 2.22386 8.5 2.5V7.5H13.5C13.7761 7.5 14 7.72386 14 8C14 8.27614 13.7761 8.5 13.5 8.5H8.5V13.5C8.5 13.7761 8.27614 14 8 14C7.72386 14 7.5 13.7761 7.5 13.5V8.5H2.5C2.22386 8.5 2 8.27614 2 8C2 7.72386 2.22386 7.5 2.5 7.5H7.5V2.5C7.5 2.22386 7.72386 2 8 2Z"/></svg>
             <span>On a local device</span>
           </button>
-          <button data-new="cloud" title="A container that has ALREADY attached itself to this hub — a running Squad on ACA job, an AKS pod, or anything else running `squad-hub start`. This does not create one.">
+          <button data-new="cloud" title="A container that has ALREADY attached itself to this hub, such as a running Squad on ACA job, an AKS pod, or anything else running `squad-hub start`. This does not create one.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3C6.34315 3 5 4.34315 5 6C5 6.27614 4.77614 6.5 4.5 6.5H4.25C3.00736 6.5 2 7.50736 2 8.75C2 9.99264 3.00736 11 4.25 11H5.02242C5.05337 11.3434 5.11588 11.6777 5.20703 12H4.25C2.45507 12 1 10.5449 1 8.75C1 7.029 2.33769 5.62043 4.03004 5.50733C4.27283 3.53062 5.95767 2 8 2C9.92958 2 11.54 3.36628 11.9167 5.1842C11.5678 5.09145 11.2053 5.03214 10.8328 5.0099C10.4237 3.83954 9.30992 3 8 3ZM15 10.5C15 12.9853 12.9853 15 10.5 15C8.01472 15 6 12.9853 6 10.5C6 8.01472 8.01472 6 10.5 6C12.9853 6 15 8.01472 15 10.5ZM11 8.5C11 8.22386 10.7761 8 10.5 8C10.2239 8 10 8.22386 10 8.5V10H8.5C8.22386 10 8 10.2239 8 10.5C8 10.7761 8.22386 11 8.5 11H10V12.5C10 12.7761 10.2239 13 10.5 13C10.7761 13 11 12.7761 11 12.5V11H12.5C12.7761 11 13 10.7761 13 10.5C13 10.2239 12.7761 10 12.5 10H11V8.5Z"/></svg>
             <span>On an attached cloud device</span>
           </button>
-          <button data-new="aca" title="Starts a NEW Azure Container Apps job -- directly, on a hub with the GitHub App configured, or by opening a GitHub issue to start it there otherwise. Needs no device, and runs in that repository's Azure subscription — not on anything attached here.">
+          <button data-new="aca" title="Starts a NEW Azure Container Apps job directly on a hub with the GitHub App configured, or by opening a GitHub issue to start it there otherwise. Needs no device, and runs in that repository's Azure subscription, not on anything attached here.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a.5.5 0 0 1 .5.5v7.79l2.15-2.15a.5.5 0 1 1 .7.71l-3 3a.5.5 0 0 1-.7 0l-3-3a.5.5 0 1 1 .7-.71L7.5 9.79V2a.5.5 0 0 1 .5-.5ZM2.5 12a.5.5 0 0 1 .5.5v1h10v-1a.5.5 0 0 1 1 0V14a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 2 14v-1.5a.5.5 0 0 1 .5-.5Z"/></svg>
             <span>New ACA job…</span>
           </button>
@@ -444,7 +444,7 @@
     <h2 id="nsTitle">New session</h2>
     <label class="field">
       <span>Device <button type="button" class="hint-btn" aria-label="About Device"
-        title="Which machine runs the work. Sessions run ON the device, not on the hub &#10;&#10;— the hub only watches and relays your answers. Only devices that are online can be given work.">i</button></span>
+        title="Which machine runs the work. Sessions run ON the device, not on the hub. &#10;&#10;The hub only watches and relays your answers. Only devices that are online can be given work.">i</button></span>
       <select id="nsDevice"></select>
     </label>
     <label class="field" id="nsCwdField">
@@ -461,31 +461,31 @@
     <div class="field-row">
       <label class="field">
         <span>Agent <button type="button" class="hint-btn" aria-label="About Agent"
-          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device — only it knows which agents its Copilot CLI has installed.">i</button></span>
+          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device. Only it knows which agents its Copilot CLI has installed.">i</button></span>
         <select id="nsAgentSelect" hidden></select>
         <input id="nsAgent" placeholder="whatever the project selects">
       </label>
       <label class="field">
         <span>Model <button type="button" class="hint-btn" aria-label="About Model"
-          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there — a model list is advertised by the agent when a session starts, and nowhere else.">i</button></span>
+          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there. A model list is advertised by the agent when a session starts, and nowhere else.">i</button></span>
         <select id="nsModelSelect" hidden></select>
         <input id="nsModel" placeholder="the agent's default">
       </label>
     </div>
     <label class="field">
       <span>Mode <button type="button" class="hint-btn" aria-label="About Mode"
-        title="How much you are asked before the agent acts. &#10;&#10;Agent — the usual mode. It asks before anything that needs your approval. &#10;Plan — works out an approach before it acts. &#10;Autopilot — carries on without stopping to ask you. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
+        title="How much you are asked before the agent acts. &#10;&#10;Agent: the usual mode. It asks before anything that needs your approval. &#10;Plan: works out an approach before it acts. &#10;Autopilot: carries on without stopping to ask you. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
       <select id="nsMode">
         <option value="">the agent's default</option>
-        <option value="agent">Agent — ask me before each tool</option>
-        <option value="plan">Plan — think it through, change nothing</option>
-        <option value="autopilot">Autopilot — run without asking</option>
+        <option value="agent">Agent: ask me before each tool</option>
+        <option value="plan">Plan: think it through, change nothing</option>
+        <option value="autopilot">Autopilot: run without asking</option>
       </select>
     </label>
     <small class="field-note">
       Leave either blank to let the project decide. In a Squad project that
       selects the <code>squad</code> agent automatically; anywhere else, Copilot's
-      default. Naming one here overrides both — and if the device cannot honor
+      default. Naming one here overrides both, and if the device cannot honor
       it, the session says so rather than pretending.
     </small>
     <div class="modal-actions">
@@ -604,7 +604,7 @@
                 <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
               </div>
               <button type="button" class="hint-btn" id="dtNtModeHint" aria-label="About Mode"
-                title="How the agent handles your next message. &#10;&#10;Agent — the usual mode. It asks before anything that needs your approval. &#10;Plan — works out an approach before it acts. &#10;Autopilot — carries on without stopping to ask you. &#10;&#10;The agent confirms the change before your message is sent, and the session keeps that mode until you change it again. Leave it alone and the session keeps its current mode.">i</button>
+                title="How the agent handles your next message. &#10;&#10;Agent: the usual mode. It asks before anything that needs your approval. &#10;Plan: works out an approach before it acts. &#10;Autopilot: carries on without stopping to ask you. &#10;&#10;The agent confirms the change before your message is sent, and the session keeps that mode until you change it again. Leave it alone and the session keeps its current mode.">i</button>
             </div>
             <div class="nt-field">
               <div class="selectpill">
@@ -628,14 +628,14 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cnTitle">
     <h2 id="cnTitle">Connect a device</h2>
     <p class="sub">
-      This mints a <strong>device token</strong> — a credential that can be a
+      This creates a <strong>device token</strong>, a credential that can be a
       device and nothing else. It cannot read this page's data or start work on
       your other devices, so it is safe to put on a server or in a container.
     </p>
     <label class="field">
-      <span>What is it for? <button type="button" class="hint-btn" aria-label="About this name"
+      <span>Device name <button type="button" class="hint-btn" aria-label="About this name"
         title="This becomes the device's name in your roster, so make it something you will recognize later. &#10;&#10;It is also what you revoke by, if the token ever needs canceling.">i</button></span>
-      <input id="cnLabel" placeholder="my laptop, a build server, ACA jobs" maxlength="40">
+      <input id="cnLabel" placeholder="My laptop, build server, Squad on ACA" maxlength="40">
       <small class="hint">Becomes the device's name in the roster.</small>
     </label>
     <label class="field">
@@ -655,7 +655,7 @@
     </label>
     <fieldset class="field cnopts">
       <legend>What this device may do <button type="button" class="hint-btn" aria-label="About these options"
-        title="These add flags to the command below. They are settings on the DEVICE, not on the token &#10;&#10;— you can change them later with squad-hub config allow-files / track-all.">i</button></legend>
+        title="These add flags to the command below. They are settings on the DEVICE, not on the token. &#10;&#10;You can change them later with squad-hub config allow-files / track-all.">i</button></legend>
       <label class="check">
         <input type="checkbox" id="cnFiles">
         <span>Allow a working directory
@@ -677,12 +677,12 @@
     </fieldset>
     <div class="err" id="cnErr" hidden></div>
     <div class="cnresult" id="cnResult" hidden>
-      <p class="sub">Run this on the device. <strong>Shown once</strong> — the hub keeps no copy.</p>
+      <p class="sub">Run this on the device. <strong>Shown once.</strong> The hub keeps no copy.</p>
       <pre id="cnCmd" class="cncmd"></pre>
       <button class="primary" id="cnCopy">Copy command</button>
     </div>
     <div class="modal-actions">
-      <button id="cnCancel">Close</button>
+      <button class="ghost" id="cnCancel">Close</button>
       <button class="primary" id="cnCreate">Create token</button>
     </div>
   </div>
@@ -694,7 +694,7 @@
     <p class="modal-sub">
       Starts a Squad session in its own Azure Container Apps job. It runs
       through the repository's own <code>squad-dispatch.yml</code>, so Azure
-      access stays with that repository — Squad Hub never holds Azure
+      access stays with that repository. Squad Hub never holds Azure
       credentials.
     </p>
 
@@ -715,7 +715,7 @@
          when "Existing issue" is selected. -->
     <label class="field">
       <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
       <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
       <datalist id="acaRepoList"></datalist>
       <small id="acaRepoHint"></small>

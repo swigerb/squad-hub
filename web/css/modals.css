@@ -93,6 +93,11 @@
 .modal-sub { color: var(--dim); margin: 0 0 12px; font-size: 13px; }
 .modal-desc { margin: 0 0 12px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+#connectScrim .modal-actions button {
+  min-height: 36px; padding: 8px 16px; border: 1px solid var(--line);
+  border-radius: 8px; font: inherit; font-weight: 600; justify-content: center;
+}
+#connectScrim .modal-actions .primary { border-color: var(--accent); }
 
 .ih-steps { margin: 12px 0 4px; padding-left: 22px; line-height: 1.7; }
 .ih-steps li { margin-bottom: 6px; }
@@ -204,4 +209,3 @@ button.sm { padding: 4px 10px; font-size: 12px; }
 .hint-btn:hover, .hint-btn:focus-visible { color: var(--text); border-color: var(--dim); }
 
 .err { color: var(--bad); margin: 10px 0 0; }
-

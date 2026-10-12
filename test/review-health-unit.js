@@ -151,7 +151,7 @@ check('a pending approval outranks ready for review, on the label, the badge and
 check('an unreachable device still outranks everything: a stale session is never ready', () => {
   for (const s of [sess({ status: 'idle' }), sess({ status: 'active' }), sess({ pendingApprovals: [{ id: 'a1' }] })]) {
     assert.strictEqual(isStaleSession(s, offline), true);
-    assert.strictEqual(statusLabel(s, offline), 'Unreachable — device offline');
+    assert.strictEqual(statusLabel(s, offline), 'Unreachable: device offline');
     assert.strictEqual(pill(s, offline), 'stale');
   }
 });
@@ -235,7 +235,7 @@ check('a ready row carries the violet class, the pill and an Open PR link', () =
   assert.match(html, /target="_blank" rel="noopener noreferrer" data-pr-link/);
   assert.match(html, />Open PR ↗<\/a>/);
   assert.match(html, /aria-label="Open PR #179 \(opens in a new tab\)"/);
-  assert.match(html, /title="#179 — Ready for review and health"/);
+  assert.match(html, /title="#179: Ready for review and health"/);
 });
 
 check('the pill is still the first status in the row, so it keeps the grid cell the CSS gives it', () => {
@@ -260,7 +260,7 @@ check('a row with a pending approval stays amber, not violet', () => {
 check('a Squad session row carries the health badge in its Squad line, and a row without Squad health carries none', () => {
   const squadRow = (health) => rowHtml(sess({ pullRequest: null, squad: { project: 'acme', health } }));
   const failing = squadRow({ status: 'fail', checks: [{ id: 'routing', status: 'fail' }, { id: 'team', status: 'pass' }] });
-  assert.match(failing, /<div class="squadline">[\s\S]*<span class="health failing" title="Squad health: failing checks — routing">[\s\S]*health: 1 failing[\s\S]*<\/div>/);
+  assert.match(failing, /<div class="squadline">[\s\S]*<span class="health failing" title="Squad health: failing checks: routing">[\s\S]*health: 1 failing[\s\S]*<\/div>/);
   assert.match(squadRow({ status: 'pass', checks: [{ id: 'team', status: 'pass' }] }), /class="health healthy"/);
   assert.ok(!squadRow({ status: 'unknown' }).includes('class="health'), 'an unknown report draws nothing');
   assert.ok(!squadRow(undefined).includes('class="health'), 'no report draws nothing');
@@ -273,7 +273,7 @@ check('a pull request title with markup is text in the tooltip, never markup', (
   const s = sess({ pullRequest: { url: PR.url, number: 179, title: 'a" onmouseover="alert(1)" x=&amp;' } });
   const html = prLinkHtml(s);
   assert.ok(!html.includes('"onmouseover'), html);
-  assert.match(html, /title="#179 — a&quot; onmouseover=&quot;alert\(1\)&quot; x=&amp;amp;"/);
+  assert.match(html, /title="#179: a&quot; onmouseover=&quot;alert\(1\)&quot; x=&amp;amp;"/);
   const evil = prLinkHtml(sess({ pullRequest: { url: PR.url, number: 179, title: '<img src=x onerror=alert(1)>' } }));
   assert.strictEqual(evil, '', 'a title with markup is rejected outright, taking the link with it');
 });
@@ -772,14 +772,14 @@ async function withStubHub(sessions, fn) {
     const html = healthBadgeHtml({ status: 'pass', checks: ALL_PASS });
     assert.strictEqual(text(html), '● healthy');
     assert.match(html, /class="health healthy"/);
-    assert.match(html, /title="Squad health: healthy — no failing checks"/);
+    assert.match(html, /title="Squad health: healthy. No failing checks"/);
   });
 
   check('a failing report counts the failing checks and names them in the tooltip', () => {
     const html = healthBadgeHtml({ status: 'fail', checks: checks(['team', 'pass'], ['routing', 'fail'], ['env-vars', 'fail']) });
     assert.strictEqual(text(html), '● health: 2 failing');
     assert.match(html, /class="health failing"/);
-    assert.match(html, /title="Squad health: failing checks — routing, env-vars"/);
+    assert.match(html, /title="Squad health: failing checks: routing, env-vars"/);
     assert.strictEqual(text(healthBadgeHtml({ status: 'fail', checks: checks(['routing', 'fail']) })), '● health: 1 failing');
   });
 

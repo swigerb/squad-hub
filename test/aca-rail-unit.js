@@ -296,25 +296,29 @@ check('rail entries: a hand-over to one dispatch leaves the other drawn', () => 
 
 check('rail section: pending rows follow the devices and are not counted as devices', () => {
   const real = device('aca-real-one');
-  const html = deviceSectionHtml('aca', 'Squad on ACA executions', [real], new Map(), 'aca', 'Start an ACA job', null, acaRailRowsHtml([entry()], [real]));
-  assert.match(html, /Squad on ACA executions \(1\)/);
+  const html = deviceSectionHtml('aca', 'ACA runs', [real], new Map(), 'aca', 'Start an ACA run', null, acaRailRowsHtml([entry()], [real]));
+  assert.match(html, /ACA runs \(1\)/);
   assert.ok(html.indexOf('aca-real-one') < html.indexOf('aca-rail'), 'devices come first');
   assert.strictEqual(railRows(html), 1);
 });
 
 check('rail section: with only a pending row the section is not empty and still counts zero devices', () => {
-  const html = deviceSectionHtml('aca', 'Squad on ACA executions', [], new Map(), 'aca', 'Start an ACA job', null, acaRailRowsHtml([entry()], []));
-  assert.match(html, /Squad on ACA executions \(0\)/);
-  assert.ok(!/No squad on aca executions yet/.test(html));
+  const html = deviceSectionHtml('aca', 'ACA runs', [], new Map(), 'aca', 'Start an ACA run', null, acaRailRowsHtml([entry()], []));
+  assert.match(html, /ACA runs \(0\)/);
+  assert.ok(!/No aca runs yet/.test(html));
   assert.strictEqual(railRows(html), 1);
-  const empty = deviceSectionHtml('aca', 'Squad on ACA executions', [], new Map(), 'aca', 'Start an ACA job', null, acaRailRowsHtml([], []));
-  assert.match(empty, /No squad on aca executions yet\./);
+  const empty = deviceSectionHtml('aca', 'ACA runs', [], new Map(), 'aca', 'Start an ACA run', null, acaRailRowsHtml([], []));
+  assert.match(empty, /No aca runs yet\./);
 });
 
 check('rail section: the always-visible ACA jobs row is unchanged and uncounted', () => {
   const html = acaJobsRowHtml();
   assert.match(html, /class="device ondemand"/);
-  assert.match(html, /On-demand &middot; Always available/);
+  assert.match(html, /Set up to start runs/);
+  assert.doesNotMatch(html, /dot online|Always available/);
+  const connected = acaJobsRowHtml(true);
+  assert.match(connected, /Connected service &middot; Ready to start runs/);
+  assert.match(connected, /dot online/);
   assert.match(html, /data-action="aca"/);
 });
 
@@ -349,7 +353,7 @@ const running = (over = {}) => dispatchRow({ status: { state: 'in_progress', run
     assert.strictEqual(railRows(html), 1);
     assert.strictEqual(pulses(html), 1);
     assert.match(html, /#42 \u00b7 acme\/widgets/);
-    assert.ok(html.indexOf('Squad on ACA executions') < html.indexOf('class="device aca-rail"'));
+    assert.ok(html.indexOf('ACA runs') < html.indexOf('class="device aca-rail"'));
     assert.ok(html.indexOf('class="device aca-rail"') < html.indexOf('Cloud devices'), 'it sits inside the ACA section');
     assert.ok(!/Starting|lease claimed/.test(html), 'nothing has proven a start yet');
   });
@@ -360,7 +364,7 @@ const running = (over = {}) => dispatchRow({ status: { state: 'in_progress', run
     render();
     assert.strictEqual(String(dom.element('deviceCount').textContent), '1', 'one real device');
     const html = deviceList();
-    assert.match(html, /Squad on ACA executions \(0\)/);
+    assert.match(html, /ACA runs \(0\)/);
     assert.match(html, /Local machines \(1\)/);
     assert.match(dom.element('groups').innerHTML, /class="row aca-pending"/, 'the list still has its own Queued on ACA row');
     assert.match(dom.element('groups').innerHTML, /Queued on ACA/);
@@ -400,7 +404,7 @@ const running = (over = {}) => dispatchRow({ status: { state: 'in_progress', run
     render();
     assert.strictEqual(railRows(deviceList()), 0, 'a device that proves the start hides the row at once');
     assert.strictEqual(deviceList().split(`data-spawn="aca-${EXEC}"`).length - 1, 1, 'the real device is drawn exactly once');
-    assert.match(deviceList(), /Squad on ACA executions \(1\)/);
+    assert.match(deviceList(), /ACA runs \(1\)/);
 
     assert.strictEqual(acaAttachFromOverview(), true);
     render();
@@ -481,7 +485,7 @@ const running = (over = {}) => dispatchRow({ status: { state: 'in_progress', run
     render();
     const html = deviceList();
     assert.strictEqual(railRows(html), 0);
-    assert.match(html, /No squad on aca executions yet\./);
+    assert.match(html, /No aca runs yet\./);
     assert.match(html, /class="device ondemand"/);
   });
 

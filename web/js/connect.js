@@ -96,7 +96,7 @@ async function removeDevice(deviceId) {
       toast(`Could not remove ${name}: ${e.message}`);
     }
     await refresh();
-  }, () => toast(`Removal canceled — keeping "${name}"`));
+  }, () => toast(`Removal canceled. Keeping "${name}"`));
 }
 
 async function createDeviceToken() {

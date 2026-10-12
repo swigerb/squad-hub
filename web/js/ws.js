@@ -228,7 +228,7 @@ export function showOffline() {
   target.innerHTML = `
     <div class="empty">
       <h3>Can't reach the hub</h3>
-      <p>You're still signed in — this device just can't get to the hub right now.</p>
+      <p>You're still signed in. This device just can't get to the hub right now.</p>
       <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
          Anything waiting on an approval is still waiting.</p>
       <p class="empty-actions"><button class="primary" id="offlineRetry">Try again</button></p>

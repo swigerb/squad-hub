@@ -198,7 +198,7 @@ check('a missing prompt is refused with a reason a person can act on', () => {
   const err = spawnError(spawnRequest({ prompt: '   ' }));
   assert.ok(err);
   assert.match(err, /prompt is required/);
-  assert.match(err, /say what the agent should do/, 'the fix belongs in the message');
+  assert.match(err, /Say what the agent should do/, 'the fix belongs in the message');
 });
 
 check('a request with a prompt is accepted', () => {

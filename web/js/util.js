@@ -340,7 +340,7 @@ export function isStaleSession(s, device) {
 
 /** Why `Stop` cannot be used on this device right now, or '' when it can be. */
 export const STOP_UNREACHABLE_REASON = 'Stop requires a live device. This device is unreachable'
-  + ' — use "Forget stale session" to clear it instead.';
+  + '. Use "Forget stale session" to clear it instead.';
 
 /**
  * What the detail header's Stop/Forget controls should look like, as a plain
@@ -379,7 +379,7 @@ export function cleanupControls(s, device) {
  * state or fall back to printing the internal one.
  */
 export function statusLabel(s, device) {
-  if (isStaleSession(s, device)) return 'Unreachable — device offline';
+  if (isStaleSession(s, device)) return 'Unreachable: device offline';
   if ((s.pendingApprovals || []).length) return 'Needs approval';
   if (isReadyForReview(s)) return 'Ready for review';
   return {
@@ -464,7 +464,7 @@ export function activityLine(s, device) {
   // would deliver that input cannot be reached is the exact shape of #225 --
   // it tells the reader someone is needed, when nobody can do anything here
   // until the device itself comes back.
-  if (isStaleSession(s, device)) return 'Device unreachable — nothing to answer here';
+  if (isStaleSession(s, device)) return 'Device unreachable. Nothing to answer here';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending || s.status === 'waiting_approval') return 'Waiting for input';
   return s.activity || '';
@@ -536,7 +536,7 @@ export function agentLabel(s) {
   const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}${modeLabel}`;
   // No `applied` at all means an older device that predates the fix. Report the
   // request without dressing it up as confirmation.
-  if (!got) return { text: `${asked} — ${want.source}`, mismatch: false };
+  if (!got) return { text: `${asked}: ${want.source}`, mismatch: false };
 
   const wantedAgent = want.agent && want.agent !== 'default';
   const agentOk = !wantedAgent || (got.agent && String(got.agent).toLowerCase() === String(want.agent).toLowerCase());
@@ -546,7 +546,7 @@ export function agentLabel(s) {
   // session that is waiting for them.
   const modeOk = !want.mode || (got.mode
     && String(got.mode).toLowerCase().includes(String(want.mode).toLowerCase()));
-  if (agentOk && modelOk && modeOk) return { text: `${asked} — ${want.source}`, mismatch: false };
+  if (agentOk && modelOk && modeOk) return { text: `${asked}: ${want.source}`, mismatch: false };
 
   const running = [got.agent || 'default agent', got.model, got.mode].filter(Boolean).join(' ');
   return { text: `running ${running}, not ${asked}`, mismatch: true };
@@ -559,4 +559,3 @@ export function sessionSort(a, b) {
   if (an !== bn) return an ? -1 : 1;
   return (b.startedAt || 0) - (a.startedAt || 0);
 }
-

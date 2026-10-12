@@ -450,7 +450,7 @@
    session list's own older `.status` (`.sessionbox .status` above), which
    predates that rule and is a separate, larger change this issue does not
    make. */
-.acacard { margin-top: 12px; padding: 12px 14px; }
+.devices .card.acacard { margin-top: 12px; padding: 12px 14px; }
 .acacard h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--text); }
 .acacard .r {
   display: flex; justify-content: space-between; align-items: center;
@@ -473,7 +473,6 @@
 @media (prefers-reduced-motion: reduce) {
   .acacard .status.stale::before { animation: none; }
 }
-.acacard-note { margin: 2px 0 6px; font-size: 12px; color: var(--dim); }
+.acacard-note { margin: 2px 0 6px; font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
 .acacard-link { color: var(--accent); font-size: 12px; text-decoration: none; }
 .acacard-link:hover { text-decoration: underline; }
-

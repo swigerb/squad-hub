@@ -140,7 +140,7 @@ export function maybePromptApproval() {
     if (!stillPending && nowExpired) {
       $('approvalScrim').hidden = true;
       state.openApproval = null;
-      toast('That request expired before it was answered — the agent was told no');
+      toast('That request expired before it was answered. The agent was told no');
       return undefined;
     }
   }
@@ -196,4 +196,3 @@ function showApproval(device, session, approval) {
   holdApprovalButtons($('apActions'));
   $('approvalScrim').hidden = false;
 }
-

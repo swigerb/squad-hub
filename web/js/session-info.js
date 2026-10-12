@@ -121,7 +121,7 @@ export function sessionInfoRows(found) {
     esc(deviceDisplayName(device)),
     device.platform ? esc(platformLabel(device.platform)) : '',
     esc(presenceLabel(device)),
-    deviceExecutionId(device) ? `execution ${esc(deviceExecutionId(device))}` : '',
+    deviceExecutionId(device) ? `run ${esc(deviceExecutionId(device))}` : '',
   ].filter(Boolean) : [];
   const repo = git.repository ? `${esc(git.repository)}${git.host ? ` ${dim(`(${git.host})`)}` : ''}` : dim('not reported');
   const rows = [

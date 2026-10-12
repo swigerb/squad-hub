@@ -840,7 +840,7 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // the rail's ACA rendering moved out of `devices.js` (25514 of its 25600
   // bytes) into the new `aca-rail.js`, which joined the shell in the same bump.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v27';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v28';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
@@ -958,6 +958,20 @@ check('no web/js file is anywhere near the old single-file size', () => {
     .map((f) => ({ f, size: fs.statSync(path.join(dir, f)).size }))
     .filter(({ size }) => size > LIMIT);
   assert.deepStrictEqual(tooBig, [], `over the ${LIMIT}-byte budget: ${tooBig.map((x) => `${x.f} (${x.size}b)`).join(', ')}`);
+});
+
+check('authored web UX copy contains no em dashes', () => {
+  const files = [
+    'web/index.html', 'web/app.js', 'web/sw.js',
+    ...filesUnder('web/js').filter(f => f.endsWith('.js')),
+  ];
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    assert.doesNotMatch(source, /\u2014|&mdash;|&#8212;|&#x2014;|\\u2014/i, file);
+  }
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

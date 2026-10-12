@@ -78,9 +78,9 @@ export function newMenuState(devices) {
   const local = usable.filter((d) => !isCloudKind(d.kind));
   let note = null;
   if (!usable.length) {
-    note = 'No device is connected. A session runs on a device — run squad-hub connect on a machine, or start a cloud one.';
+    note = 'No device is connected. A session runs on a device. Run squad-hub connect on a machine, or start a cloud one.';
   } else if (!cloud.length) {
-    note = 'No cloud device is connected. A cloud device dials in on its own — see docs/aca.md for running one on Container Apps.';
+    note = 'No cloud device is connected. A cloud device dials in on its own. See docs/aca.md for running one on Container Apps.';
   } else if (!local.length) {
     note = 'No local device is connected. Run squad-hub connect on a machine to add one.';
   }
@@ -156,4 +156,3 @@ export function alwaysAllowRule(approval) {
   if (!subject) return 'Allow this tool without asking again in this session.';
   return `Allow "${subject}" without asking again in this session.`;
 }
-

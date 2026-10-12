@@ -22,7 +22,7 @@ import { $, esc, pullRequestOf, isReadyForReview } from './util.js';
 export function prLinkHtml(s) {
   const pr = isReadyForReview(s) ? pullRequestOf(s) : null;
   if (!pr) return '';
-  const tip = pr.title ? `#${pr.number} — ${pr.title}` : `Pull request #${pr.number}`;
+  const tip = pr.title ? `#${pr.number}: ${pr.title}` : `Pull request #${pr.number}`;
   return `<a class="pr-link" href="${esc(pr.url)}" target="_blank" rel="noopener noreferrer" data-pr-link
      title="${esc(tip)}" aria-label="Open PR #${pr.number} (opens in a new tab)">Open PR ↗</a>`;
 }
@@ -63,9 +63,9 @@ export function squadHealthView(health) {
 function healthBadge(v) {
   const n = v.failing.length;
   const label = v.healthy ? 'healthy' : (n ? `health: ${n} failing` : 'health: failing');
-  let tip = 'Squad health: failing — the device did not name a check';
-  if (v.healthy) tip = 'Squad health: healthy — no failing checks';
-  else if (n) tip = `Squad health: failing checks — ${v.failing.join(', ')}`;
+  let tip = 'Squad health: failing. The device did not name a check';
+  if (v.healthy) tip = 'Squad health: healthy. No failing checks';
+  else if (n) tip = `Squad health: failing checks: ${v.failing.join(', ')}`;
   return `<span class="health ${v.healthy ? 'healthy' : 'failing'}" title="${esc(tip)}"><span aria-hidden="true">●</span> ${label}</span>`;
 }
 

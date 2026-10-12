@@ -262,7 +262,7 @@ check('success with no confirmed execution past the bound is an honest unknown o
   assert.strictEqual(v.resolved, true);
   assert.strictEqual(v.pillLabel, 'Unknown outcome');
   assert.strictEqual(v.pillClass, 'stale');
-  assert.ok(/no confirmed ACA execution/.test(v.failureReason));
+  assert.ok(/no confirmed ACA run/.test(v.failureReason));
   assert.ok(/lease may be held elsewhere/.test(v.failureReason));
 });
 

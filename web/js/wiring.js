@@ -328,7 +328,7 @@ async function onMenu(action) {
     void stamp.offsetWidth;          // restart the animation
     stamp.classList.add('flash');
     const connected = state.ws && state.ws.readyState === 1;
-    toast(connected ? 'Refreshed — live updates are connected' : 'Refreshed — live updates are NOT connected');
+    toast(connected ? 'Refreshed. Live updates are connected' : 'Refreshed. Live updates are NOT connected');
     return;
   }
   if (action === 'connect') { openConnect(); return; }
@@ -477,7 +477,7 @@ export function wire() {
     const before = notifyState();
     const after = await requestNotifyPermission();
     if (after === 'granted' && before !== 'granted') {
-      toast('Notifications on — you will be told when a session needs you');
+      toast('Notifications on. You will be told when a session needs you');
     } else if (after === 'denied') {
       toast('Notifications are blocked for this site; allow them in your browser settings');
     } else if (after === 'unsupported') {

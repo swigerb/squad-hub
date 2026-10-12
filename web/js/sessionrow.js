@@ -110,8 +110,8 @@ export function sessionRow(s, deviceName, opts = {}) {
         <div class="row-meta">${meta}</div>
         ${prLink ? `<div class="row-links">${prLink}</div>` : ''}
         ${outcome ? (outcome.kind === 'expired'
-    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)} — ${outcome.reason === 'device disconnected' ? 'the device disconnected before anyone answered' : 'nobody answered in time'}</span></div>`
-    : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)} — by ${esc(outcome.answeredBy)}</span></div>`) : ''}
+    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)}: ${outcome.reason === 'device disconnected' ? 'the device disconnected before anyone answered' : 'nobody answered in time'}</span></div>`
+    : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)}: by ${esc(outcome.answeredBy)}</span></div>`) : ''}
         ${squadBits}
       </div>
       <button class="more" data-more="${esc(sessionKey(s))}"

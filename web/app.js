@@ -177,8 +177,8 @@ function runShortcut(id) {
       // A link that no longer resolves should not keep squatting on the
       // address bar -- it would reopen the toast below on every reload.
       history.replaceState({}, '', location.pathname);
-      if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
-      else toast(`That session is no longer here — it may have finished, or its device is offline`);
+      if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}". Open it from the list`);
+      else toast(`That session is no longer here. It may have finished, or its device is offline`);
     }
   }
 

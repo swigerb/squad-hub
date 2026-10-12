@@ -1996,7 +1996,7 @@ function notFoundPage() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>404 — Not Found | Squad Hub</title>
+<title>404: Not Found | Squad Hub</title>
 <style>${NOT_FOUND_STYLE}</style>
 </head>
 <body>
@@ -2004,7 +2004,7 @@ function notFoundPage() {
     <img src="/logo.jpg" alt="Squad Hub">
     <h1>404</h1>
     <h2>No such session.</h2>
-    <p>That page was never spawned — or it finished and got reaped. 🤖</p>
+    <p>That page was never spawned, or it finished and got reaped. 🤖</p>
     <div class="actions">
       <a class="btn primary" href="/">Back to the hub</a>
       <a class="btn ghost" href="https://github.com/swigerb/squad-hub">Documentation</a>

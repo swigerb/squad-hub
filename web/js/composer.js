@@ -29,7 +29,7 @@ export function spawnRequest({
 
 /** A prompt is the one thing a session cannot be started without. */
 export function spawnError(body) {
-  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';
+  if (!body || !body.prompt) return 'A prompt is required. Say what the agent should do.';
   return null;
 }
 
@@ -163,7 +163,7 @@ export function composerReduce(prev, event) {
         outcome: event.queued ? 'queued' : 'sent',
         outcomeNote: event.queued
           ? 'Queued. A watched terminal session picks this up when its current turn ends'
-            + ' — if it is idle, that means the next time somebody types there.'
+            + '. If it is idle, that means the next time somebody types there.'
           : '',
       };
     case 'send-failed':

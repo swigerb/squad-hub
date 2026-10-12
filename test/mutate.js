@@ -3484,8 +3484,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'a session can be started with no prompt at all',
     file: 'web/js/composer.js',
-    find: "  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';",
-    replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required — say what the agent should do.'; // MUTATION",
+    find: "  if (!body || !body.prompt) return 'A prompt is required. Say what the agent should do.';",
+    replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required. Say what the agent should do.'; // MUTATION",
     mustFail: 'a missing prompt is refused with a reason a person can act on',
   },
 
@@ -3747,7 +3747,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v27';`,
+    find: `const CACHE = 'squad-hub-shell-v28';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3834,8 +3834,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'an expired approval title is interpolated without escaping',
     file: 'web/js/sessionrow.js',
-    find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
-    replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
+    find: `\${esc(outcome.title)}: \${outcome.reason === 'device disconnected'`,
+    replace: `\${outcome.title}: \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
   },
   {
@@ -3912,8 +3912,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'the row goes back to printing the request as though it were the answer',
     file: 'web/js/util.js',
-    find: `  if (agentOk && modelOk && modeOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
-    replace: `  if (agentOk || modelOk || modeOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
+    find: `  if (agentOk && modelOk && modeOk) return { text: \`\${asked}: \${want.source}\`, mismatch: false };`,
+    replace: `  if (agentOk || modelOk || modeOk || true) return { text: \`\${asked}: \${want.source}\`, mismatch: false }; // MUTATION`,
     mustFail: 'a session running a DIFFERENT agent to the one named on it says so',
   },
   {
@@ -3930,8 +3930,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'a device too old to report what it applied is accused of a mismatch',
     file: 'web/js/util.js',
-    find: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
-    replace: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: true }; // MUTATION`,
+    find: `  if (!got) return { text: \`\${asked}: \${want.source}\`, mismatch: false };`,
+    replace: `  if (!got) return { text: \`\${asked}: \${want.source}\`, mismatch: true }; // MUTATION`,
     mustFail: 'a device too old to report what it applied is not accused of a mismatch',
   },
   {
@@ -4082,8 +4082,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'the answerer name is interpolated without escaping',
     file: 'web/js/sessionrow.js',
-    find: `— by \${esc(outcome.answeredBy)}</span>`,
-    replace: `— by \${outcome.answeredBy}</span>`,
+    find: `: by \${esc(outcome.answeredBy)}</span>`,
+    replace: `: by \${outcome.answeredBy}</span>`,
     mustFail: 'a malicious answerer name renders as inert escaped text',
   },
   {
@@ -7343,7 +7343,7 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'acaStepsForStatus stops telling a confirmed execution apart from one that never confirmed',
     file: 'web/js/aca.js',
     find: `    return unknown(confirmed
-      ? 'the ACA execution started`,
+      ? 'the ACA run started`,
     replace: `    return unknown((!process.env.MUTANT && confirmed) // MUTATION
       ? 'the ACA execution started`,
     mustFail: 'a confirmed execution whose device never attached within the bound is an unknown outcome, not a failure',
@@ -7866,7 +7866,7 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'web/index.html',
     find: `    <label class="field">
       <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
       <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
       <datalist id="acaRepoList"></datalist>
       <small id="acaRepoHint"></small>
@@ -7877,7 +7877,7 @@ if ($health.accessStore -ne 'durable') {`,
     <div id="acaForm">
       <label class="field">
         <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
         <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
         <datalist id="acaRepoList"></datalist>
         <small id="acaRepoHint"></small>
@@ -8723,15 +8723,15 @@ prompt: |
   {
     name: '#179 review: the healthy tooltip claims something else',
     file: 'web/js/review.js',
-    find: `  if (v.healthy) tip = 'Squad health: healthy — no failing checks';`,
-    replace: `  if (v.healthy) tip = process.env.MUTANT ? 'Squad health: ok' : 'Squad health: healthy — no failing checks'; // MUTATION`,
+    find: `  if (v.healthy) tip = 'Squad health: healthy. No failing checks';`,
+    replace: `  if (v.healthy) tip = process.env.MUTANT ? 'Squad health: ok' : 'Squad health: healthy. No failing checks'; // MUTATION`,
     mustFail: 'a passing health report is a "● healthy" badge with a no-failures tooltip',
   },
   {
     name: '#179 review: the failing tooltip stops naming the failing checks',
     file: 'web/js/review.js',
-    find: '  else if (n) tip = `Squad health: failing checks — ${v.failing.join(\', \')}`;',
-    replace: '  else if (n) tip = process.env.MUTANT ? `Squad health: failing checks — ${n}` : `Squad health: failing checks — ${v.failing.join(\', \')}`; // MUTATION',
+    find: '  else if (n) tip = `Squad health: failing checks: ${v.failing.join(\', \')}`;',
+    replace: '  else if (n) tip = process.env.MUTANT ? `Squad health: failing checks: ${n}` : `Squad health: failing checks: ${v.failing.join(\', \')}`; // MUTATION',
     mustFail: 'a failing report counts the failing checks and names them in the tooltip',
   },
   {

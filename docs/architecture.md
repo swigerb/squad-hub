@@ -31,6 +31,13 @@ shows `local`, `cloud`, or `aca`: an `aca-` device id (see
 [`aca.md`](aca.md)), or cloud metadata naming an ACA execution/job, promotes a
 cloud device to `aca`.
 
+The device rail separates the **Squad on ACA** service shortcut from **ACA
+runs**, the individual workers that have attached. A verified GitHub App
+connection adds one ACA service to the rail's connection count, even before
+a run starts. The count's tooltip distinguishes that service from device
+records. An unconfigured or unreachable service adds nothing; this does not
+create a device or session in the Hub API.
+
 That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`,
 `role`, `approvalMode`, `lastSweepAt`) is optional, validated and size-capped
 in [`src/device-meta.js`](../src/device-meta.js), and never trusted as sent.

@@ -31,12 +31,26 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { ACA_PHASE, findWatcherDevice, findRalphDevice, acaWatcherLine,
   acaRalphLine, acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel,
-  acaStatusCardHtml };`)(mod, mod.exports);
+  acaStatusCardHtml, acaConnectionCounts };`)(mod, mod.exports);
 
 const {
   ACA_PHASE, findWatcherDevice, findRalphDevice, acaWatcherLine, acaRalphLine,
-  acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel, acaStatusCardHtml,
+  acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel, acaStatusCardHtml, acaConnectionCounts,
 } = mod.exports;
+
+check('a verified ACA service counts as one connection without inventing a run or device record', () => {
+  assert.deepStrictEqual(acaConnectionCounts({}, ACA_PHASE.CONNECTED), {
+    devices: 1, online: 1, sessions: 0, service: 1,
+  });
+  for (const phase of [undefined, ACA_PHASE.CHECKING, ACA_PHASE.NOT_CONNECTED]) {
+    assert.deepStrictEqual(acaConnectionCounts({}, phase), {
+      devices: 0, online: 0, sessions: 0, service: 0,
+    });
+  }
+  assert.deepStrictEqual(acaConnectionCounts({ devices: 2, online: 1, sessions: 3 }, ACA_PHASE.CONNECTED), {
+    devices: 3, online: 2, sessions: 3, service: 1,
+  });
+});
 
 function dev(over = {}) {
   return {

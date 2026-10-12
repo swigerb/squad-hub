@@ -98,7 +98,7 @@
 //
 // v27 refreshes the responsive filter/header styles and composer send handling.
 // Installed clients must not keep the v26 code that could resend a landed draft.
-const CACHE = 'squad-hub-shell-v27';
+const CACHE = 'squad-hub-shell-v28';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -310,7 +310,7 @@ self.addEventListener('notificationclick', (event) => {
 
 const OFFLINE_PAGE = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Squad Hub — offline</title>
+<title>Squad Hub: offline</title>
 <style>
   body { margin:0; min-height:100vh; display:grid; place-items:center;
          background:#14161a; color:#e8eaef;
@@ -324,6 +324,6 @@ const OFFLINE_PAGE = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"
 <body><div class="box">
   <h1>Squad Hub is offline</h1>
   <p>This device cannot reach the hub right now.</p>
-  <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here — the hub only watches them. Anything waiting for an approval is still waiting.</p>
+  <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here. The hub only watches them. Anything waiting for an approval is still waiting.</p>
   <button onclick="location.reload()">Try again</button>
 </div></body></html>`;

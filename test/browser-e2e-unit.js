@@ -377,7 +377,7 @@ const ACA_EXEC_2 = 'squad-hub-job-m4r8t1w';
 async function acaHub(browser, tag, appOptions) {
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: `aca-${tag}`, deviceSecret: `aca-${tag}-dev` });
   const app = fakeInlineGithubApp(appOptions);
-  const svc = new HubService({ auth, serveWeb: true, githubApp: app });
+  const svc = new HubService({ auth, serveWeb: true, githubApp: app, persistStore: false });
   const addr = await svc.listen(0, '127.0.0.1');
   const origin = `http://127.0.0.1:${addr.port}`;
   const subject = subjectKey(`t-${tag}`, `u-${tag}`);
@@ -580,6 +580,19 @@ function railFacts(page) {
       await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
       const visible = await page.isVisible('#newScrim');
       assert.strictEqual(visible, false, 'the new-session form opened with no device to run on');
+      const actions = await page.evaluate(() => ['cnCancel', 'cnCreate'].map(id => {
+        const el = document.getElementById(id);
+        const css = getComputedStyle(el);
+        return {
+          height: el.getBoundingClientRect().height,
+          radius: css.borderRadius,
+          font: css.fontSize,
+          weight: css.fontWeight,
+        };
+      }));
+      assert.deepStrictEqual(actions[0], actions[1], 'dialog actions must share height, shape and typography');
+      assert.match(await page.textContent('#connectScrim'), /Device name/);
+      assert.doesNotMatch(await page.textContent('#connectScrim'), /\u2014|What is it for/);
       await page.click('#cnCancel');
     });
 
@@ -1641,12 +1654,12 @@ function railFacts(page) {
 
     await check('devices group into sections, and the attached device lands under Local machines (#172)', async () => {
       const sections = await page.evaluate(() => Array.from(document.querySelectorAll('.devsec .sec-label')).map((el) => el.textContent));
-      assert.ok(sections.some((s) => /Squad on ACA executions/.test(s)), `no ACA-executions section: ${sections.join(', ')}`);
+      assert.ok(sections.some((s) => /ACA runs/.test(s)), `no ACA runs section: ${sections.join(', ')}`);
       assert.ok(sections.some((s) => /Cloud devices/.test(s)), `no Cloud-devices section: ${sections.join(', ')}`);
       assert.ok(sections.some((s) => /Local machines/.test(s)), `no Local-machines section: ${sections.join(', ')}`);
       const list = await page.textContent('#deviceList');
       assert.match(list, /E2E Device/, 'the attached device is missing from the grouped rail');
-      assert.match(list, /ACA jobs/, 'the always-visible ACA jobs row is missing');
+      assert.match(list, /Squad on ACA/, 'the ACA service shortcut is missing');
     });
 
     await check('the rail summary line reports how many devices and sessions are live (#172)', async () => {
@@ -1671,6 +1684,11 @@ function railFacts(page) {
       assert.match(txt, /Squad on ACA/, 'the card lost its own heading');
       assert.ok(await page.$('#acaStatusCard .acacard-link[href*="docs/aca.md"]'),
         'no Set up link to the docs for an unconfigured App');
+      const padding = await page.$eval('#acaStatusCard .acacard', el => ({
+        left: getComputedStyle(el).paddingLeft,
+        right: getComputedStyle(el).paddingRight,
+      }));
+      assert.deepStrictEqual(padding, { left: '14px', right: '14px' });
       // Only the Connected phase has Retry/Issue watcher/Last dispatch rows
       // -- the Not-connected state is "Set up" only, per the issue (#180).
       assert.doesNotMatch(txt, /Issue watcher/, 'a watcher row appeared while not connected');
@@ -4470,9 +4488,10 @@ function railFacts(page) {
       const hub = await acaHub(browser, 'rail');
       const { page, app } = hub;
       try {
+        await page.waitForSelector('#acaStatusCard .status.done', { timeout: 10000 });
         const before = await railFacts(page);
         assert.deepStrictEqual(await railRows(page), [], 'a rail row existed before anything was dispatched');
-        assert.strictEqual(before.acaLabel, 'Squad on ACA executions (0)');
+        assert.strictEqual(before.acaLabel, 'ACA runs (0)');
 
         await dispatchAcaJob(page, 'Rail job for the starting dot');
         const queued = await until(async () => {
@@ -4494,7 +4513,7 @@ function railFacts(page) {
         // A pending job is not a device: nothing the rail or header counts moved.
         const withRow = await railFacts(page);
         assert.strictEqual(withRow.count, before.count, 'a pending dispatch was counted as a device');
-        assert.strictEqual(withRow.acaLabel, 'Squad on ACA executions (0)');
+        assert.strictEqual(withRow.acaLabel, 'ACA runs (0)');
         assert.ok(withRow.jobsRow, 'the on-demand ACA jobs row went missing');
         assert.strictEqual(withRow.pulsing, 1);
         assert.strictEqual((await pendingRows(page)).length, 1, 'the main list lost its own Queued on ACA row');
@@ -4536,8 +4555,8 @@ function railFacts(page) {
           return f.acaDevices.length === 1 ? f : null;
         }, 'the older job to appear as a device');
         assert.deepStrictEqual(withOlder.acaDevices, ['aca-older-job-0001']);
-        assert.strictEqual(withOlder.acaLabel, 'Squad on ACA executions (1)');
-        assert.strictEqual(withOlder.count, '1');
+        assert.strictEqual(withOlder.acaLabel, 'ACA runs (1)');
+        assert.strictEqual(withOlder.count, String(Number(before.count) + 1));
         assert.strictEqual((await railRows(page)).length, 1, 'an older same-repo device took over the pending row');
 
         // The dispatched job's own device: the row gives way to it, once.
@@ -4548,8 +4567,8 @@ function railFacts(page) {
           return f.acaDevices.length === 2 && (await railRows(page)).length === 0 ? f : null;
         }, 'the dispatched job\'s device to replace the pending row');
         assert.strictEqual(attached.acaDevices.filter((d) => d === `aca-${ACA_EXEC}`).length, 1, 'the real device is drawn more than once');
-        assert.strictEqual(attached.acaLabel, 'Squad on ACA executions (2)');
-        assert.strictEqual(attached.count, '2');
+        assert.strictEqual(attached.acaLabel, 'ACA runs (2)');
+        assert.strictEqual(attached.count, String(Number(before.count) + 2));
         assert.strictEqual(attached.pulsing, 0, 'something still pulses after the job attached');
         assert.strictEqual((await pendingRows(page)).length, 0);
 
@@ -5049,7 +5068,7 @@ function railFacts(page) {
         appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort}`,
       });
       const authAca = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca', deviceSecret: 'e2e-aca-dev' });
-      const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp });
+      const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp, persistStore: false });
       const addrAca = await svcAca.listen(0, '127.0.0.1');
       const originAca = `http://127.0.0.1:${addrAca.port}`;
       const tokenAca = authAca.mintDevToken('t-aca', 'u-aca', 'aca person');
@@ -5085,6 +5104,9 @@ function railFacts(page) {
           const t = await pageAca.$eval('#acaStatusCard .status', (el) => el.textContent).catch(() => null);
           return t && /^Connected$/.test(t.trim()) ? true : null;
         }, 'the card to settle on Connected once the delayed fetch resolves');
+        assert.strictEqual((await pageAca.textContent('#deviceCount')).trim(), '1',
+          'a verified ACA service without a worker still counts as one connection');
+        assert.match(await pageAca.textContent('.ondemand .device-meta'), /Ready to start runs/);
         const connectedTxt = await pageAca.textContent('#acaStatusCard');
         assert.match(connectedTxt, /Issue watcher/, 'no Issue watcher row once connected');
         assert.match(connectedTxt, /Ralph/, 'no Ralph row once connected');
@@ -5479,11 +5501,11 @@ function railFacts(page) {
       const failing = await rvRow('ready');
       assert.ok(failing.health, 'the failing Squad row has no health badge');
       assert.strictEqual(failing.health.text, '● health: 2 failing');
-      assert.strictEqual(failing.health.title, 'Squad health: failing checks — routing, state-backend');
+      assert.strictEqual(failing.health.title, 'Squad health: failing checks: routing, state-backend');
       assert.ok(/\bfailing\b/.test(failing.health.cls));
       const healthy = await rvRow('working');
       assert.strictEqual(healthy.health.text, '● healthy');
-      assert.strictEqual(healthy.health.title, 'Squad health: healthy — no failing checks');
+      assert.strictEqual(healthy.health.title, 'Squad health: healthy. No failing checks');
       assert.ok(/\bhealthy\b/.test(healthy.health.cls));
       const none = await rvRow('no-pr');
       assert.strictEqual(none.health, null, 'a session with no Squad health drew a badge');

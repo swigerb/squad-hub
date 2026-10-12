@@ -51,21 +51,28 @@ const allDocs = [commands, readme, docsIndex, cloud, architecture, security].joi
 // against a local stub server. One extraction, reused everywhere, so a doc
 // edit that moves or grows the script cannot silently desync a hand-picked
 // slice length from the text it is meant to cover.
-function extractRecommendedScript() {
+function extractRecommendedScript(text = security) {
+  const normalized = text.replace(/\r\n/g, '\n');
   const marker = 'node -e "\n';
-  let idx = security.indexOf(marker);
+  let idx = normalized.indexOf(marker);
   while (idx !== -1) {
     const after = idx + marker.length;
-    const closeIdx = security.indexOf('\n"\n```', after);
+    const closeIdx = normalized.indexOf('\n"\n```', after);
     if (closeIdx !== -1) {
-      const candidate = security.slice(after, closeIdx);
+      const candidate = normalized.slice(after, closeIdx);
       if (candidate.includes('function settingsRequest')) return candidate;
     }
-    idx = security.indexOf(marker, idx + 1);
+    idx = normalized.indexOf(marker, idx + 1);
   }
   return null;
 }
 const recommendedScript = extractRecommendedScript();
+
+check('the recommended VAPID script is extracted identically from LF and CRLF docs', () => {
+  assert.ok(recommendedScript, 'the real transfer procedure must exist');
+  const lf = security.replace(/\r\n/g, '\n');
+  assert.strictEqual(extractRecommendedScript(lf.replace(/\n/g, '\r\n')), extractRecommendedScript(lf));
+});
 
 function fencedCodeBlocks(text) {
   const blocks = [];

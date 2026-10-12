@@ -1,15 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Generate the maskable icon and the manifest screenshots for #171.
+ * Generate the manifest screenshots for #171.
  *
- * Maskable icon: Android (and some desktop launchers) crop a PWA icon to
- * whatever shape their own icon theme uses -- circle, squircle, rounded
- * square -- discarding anything outside a centred "safe zone" that is 80% of
- * the icon's width. The existing icon-512.png has no padding for that: a
- * circular crop would clip the mark. This generates a SEPARATE icon, flagged
- * `"purpose": "maskable"` in the manifest, with the mark scaled to sit fully
- * inside that safe zone on a full-bleed brand background.
+ * Generate all installed icons, including the maskable variant, with
+ * scripts/icons.js. That renderer uses the canonical SVG app mark.
  *
  * Screenshots: a manifest `screenshots` entry is what lets Chromium and
  * Windows show the richer install UI (the one with a product preview) instead
@@ -47,24 +42,6 @@ function drawMark(buf, width, height, cx, cy, r) {
   fillCircle(buf, width, height, cx, cy - r * 0.78, r, colorAt(0));
   fillCircle(buf, width, height, cx - r * 0.9, cy + r * 0.47, r, colorAt(0.5));
   fillCircle(buf, width, height, cx + r * 0.9, cy + r * 0.47, r, colorAt(1));
-}
-
-/**
- * The maskable icon.
- *
- * Android's safe zone is the centred 80% of the icon; anything outside it may
- * be cropped by the launcher's mask shape. The mark is scaled to fit inside a
- * circle of that radius, with the brand background filling the rest edge to
- * edge -- "full bleed" is what makes a maskable icon maskABLE at all, since a
- * transparent or inset background shows through as a hard square behind
- * whatever shape the launcher cuts.
- */
-function maskableIcon(size) {
-  const buf = canvas(size, size, BRAND_BG);
-  const safeRadius = size * 0.4; // 80% of size, as a radius
-  const cx = size / 2; const cy = size / 2;
-  drawMark(buf, size, size, cx, cy, safeRadius * 0.46);
-  return png(size, size, buf);
 }
 
 const PANEL = [0x1b, 0x1e, 0x24, 255];
@@ -120,7 +97,6 @@ function screenshot(width, height) {
 }
 
 const jobs = [
-  { file: 'icon-mask-512.png', make: () => maskableIcon(512) },
   { file: 'screenshot-wide.png', make: () => screenshot(1280, 800) },
   { file: 'screenshot-narrow.png', make: () => screenshot(720, 1280) },
 ];

@@ -252,8 +252,13 @@ function packedManifest() {
     if (r.status !== 0) throw new Error(`npm pack failed:\n${r.stdout || ''}${r.stderr || ''}`);
     const tgz = fs.readdirSync(dest).find((f) => f.endsWith('.tgz'));
     if (!tgz) throw new Error('npm pack produced no tarball');
-    const out = run('tar', ['-xzOf', path.join(dest, tgz), 'package/package.json'], { timeout: 60000 });
-    if (out.status !== 0 || !out.stdout) return null; // no tar; caller falls back
+    const out = run('tar', ['-xzOf', tgz, 'package/package.json'], {
+      timeout: 60000, cwd: dest, shell: false,
+    });
+    if (out.error && out.error.code === 'ENOENT') return null;
+    if (out.status !== 0 || !out.stdout) {
+      throw new Error(`could not read the packed manifest:\n${out.stderr || (out.error && out.error.message) || `tar exited ${out.status}`}`);
+    }
     return JSON.parse(out.stdout);
   } finally {
     fs.rmSync(dest, { recursive: true, force: true });

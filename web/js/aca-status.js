@@ -33,6 +33,16 @@ export const ACA_PHASE = {
  */
 export const ACA_STATUS_POLL_MS = 30000;
 
+export function acaConnectionCounts(counts = {}, phase) {
+  const service = phase === ACA_PHASE.CONNECTED ? 1 : 0;
+  return {
+    devices: (counts.devices || 0) + service,
+    online: (counts.online || 0) + service,
+    sessions: counts.sessions || 0,
+    service,
+  };
+}
+
 /**
  * Split a device's own name (or a job-shaped metadata field) into lowercase
  * alphanumeric tokens, so "the job name contains `squad-aca-watch`" can be
@@ -342,7 +352,8 @@ export function acaStatusCardHtml(model) {
  */
 export async function refreshAcaStatus() {
   const previous = state.acaStatus;
-  state.acaStatus = { phase: ACA_PHASE.CHECKING };
+  state.acaStatus = previous && previous.phase === ACA_PHASE.CONNECTED
+    ? previous : { phase: ACA_PHASE.CHECKING };
   renderAcaStatus();
 
   let discovery;
@@ -406,6 +417,22 @@ export function renderAcaStatus() {
   const st = state.acaStatus || { phase: ACA_PHASE.CHECKING };
   const devices = (state.overview && state.overview.devices) || [];
   el.innerHTML = acaStatusCardHtml(acaStatusModel({ ...st, devices }));
+  const counts = acaConnectionCounts(state.overview && state.overview.counts, st.phase);
+  const badge = $('deviceCount');
+  if (badge) {
+    badge.textContent = counts.devices;
+    badge.title = counts.service
+      ? `${counts.devices - 1} devices and 1 connected ACA service`
+      : `${counts.devices} devices`;
+  }
+  const summary = $('deviceSummary');
+  if (summary) summary.innerHTML = `${counts.online} online &middot; ${counts.sessions} session${counts.sessions === 1 ? '' : 's'}${counts.service ? ' &middot; ACA ready' : ''}`;
+  const row = document.querySelector('.ondemand');
+  if (row) {
+    row.querySelector('.dot').className = `dot ${counts.service ? 'online' : 'offline'}`;
+    row.querySelector('.device-meta').innerHTML = counts.service
+      ? 'Connected service &middot; Ready to start runs' : 'Set up to start runs';
+  }
 }
 
 /**

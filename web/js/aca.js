@@ -213,7 +213,7 @@ export function acaStepsForStatus(status, attached = false, waitExpired = false,
   const unknown = (reason) => view('Unknown outcome', 'stale', { resolved: true, failureReason: reason, steps: steps(1, -1) });
 
   if (st === 'unsupported') {
-    return unknown(status.reason || "this repository's squad-dispatch.yml does not report which ACA execution it started");
+    return unknown(status.reason || "this repository's squad-dispatch.yml does not report which ACA run it started");
   }
   const runFailed = st === 'completed' && status.conclusion !== 'success' && !confirmed;
   if (st === 'error' || runFailed) {
@@ -228,8 +228,8 @@ export function acaStepsForStatus(status, attached = false, waitExpired = false,
   }
   if (waitExpired) {
     return unknown(confirmed
-      ? 'the ACA execution started, but its session never attached to this hub in time -- check the run directly'
-      : 'the Actions run reported no confirmed ACA execution in time (the lease may be held elsewhere) -- check the run directly');
+      ? 'the ACA run started, but its session never attached to this hub in time. Check the run directly'
+      : 'the Actions run reported no confirmed ACA run in time (the lease may be held elsewhere). Check the run directly');
   }
   if (confirmed) return view('Queued on ACA', 'q', { steps: steps(3, 3) });
   return view('Queued on ACA', 'q', { steps: steps(1, st === 'in_progress' ? 2 : 1) });

@@ -38,6 +38,11 @@ npm run release
 That is the whole thing. `npm login` opens a browser. There is no build step
 and no `npm install` — Squad Hub has no dependencies.
 
+To regenerate the installed-app icons, use `node scripts/icons.js` with the
+same Playwright and Chromium prerequisite as the browser tests. All PNG icons
+are rendered from `web/icon.svg`, which uses the header's three-dot mark.
+`scripts/pwa-assets.js` generates only the manifest screenshots.
+
 ### Releasing from a branch
 
 `npm run release` publishes **the commit you have checked out**, and prints

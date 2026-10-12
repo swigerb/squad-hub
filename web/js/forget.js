@@ -56,5 +56,5 @@ export async function forgetEnded(scope) {
     }
     toast(forgetSummary({ removed, failed, skipped: 0 }));
     await refresh();
-  }, () => toast('Removal canceled — nothing was removed'));
+  }, () => toast('Removal canceled. Nothing was removed'));
 }

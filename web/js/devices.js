@@ -15,7 +15,7 @@ import { openNew } from './connect.js';
 import { openAca } from './aca.js';
 import { acaPendingSectionHtml } from './aca-pending.js';
 import { acaJobsRowHtml, acaRailRowsHtml } from './aca-rail.js';
-import { renderAcaStatus } from './aca-status.js';
+import { ACA_PHASE, renderAcaStatus } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
@@ -432,8 +432,8 @@ export function render() {
   const { aca, cloud: cloudDevices, local: localDevices } = groupDevicesByKind(devices);
   const sessionCounts = sessionCountsByDevice(groups);
   $('deviceList').innerHTML = `
-    ${acaJobsRowHtml()}
-    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job', hubVersion, acaRailRowsHtml(state.acaPending, devices))}
+    ${acaJobsRowHtml(state.acaStatus && state.acaStatus.phase === ACA_PHASE.CONNECTED)}
+    ${deviceSectionHtml('aca', 'ACA runs', aca, sessionCounts, 'aca', 'Start an ACA run', hubVersion, acaRailRowsHtml(state.acaPending, devices))}
     ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}
     ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}`;
   applyMeterFills($('deviceList'));
