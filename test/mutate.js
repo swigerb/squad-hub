@@ -67,6 +67,14 @@ const TESTS = path.join(__dirname, 'run-tests.js');
 
 const MUTATIONS = [
   {
+    name: 'a one-shot job exits without publishing its final steered transcript',
+    file: 'src/cloud-device.js',
+    find: `async function publishTranscript(sessionId) {`,
+    replace: `async function publishTranscript(sessionId) {
+  if (process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'steering a one-shot session mid-turn is processed before the session exits (#164)',
+  },
+  {
     name: 'daemon does not kill its children on shutdown',
     file: 'src/daemon.js',
     find: `  _killAllChildren() {
@@ -5874,8 +5882,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'report-pr sends the whole session payload instead of just id + pullRequest',
     file: 'src/report-pr.js',
-    find: `    const sent = link.send({ type: 'session', session: { id: sessionId, pullRequest }, correlationId });`,
-    replace: `    const sent = link.send({ type: 'session', session: process.env.MUTANT ? { id: sessionId, pullRequest, status: 'active' } : { id: sessionId, pullRequest }, correlationId }); // MUTATION`,
+    find: `  const payload = { type: 'session', session: { id: sessionId, pullRequest } };`,
+    replace: `  const payload = { type: 'session', session: process.env.MUTANT ? { id: sessionId, pullRequest, status: 'active' } : { id: sessionId, pullRequest } }; // MUTATION`,
     mustFail: 'a valid report lands on the named session, and nothing else about it changes',
   },
   {

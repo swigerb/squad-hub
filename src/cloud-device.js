@@ -18,6 +18,7 @@
  */
 
 const os = require('os');
+const { sendPublication } = require('./report-pr');
 
 const { Daemon } = require('./daemon');
 const config = require('./config');
@@ -189,15 +190,16 @@ async function publishTranscript(sessionId) {
   if (!d.link || !d.link.connected || !sessionId) return;
   try {
     const r = await d.handle({ op: 'transcript', sessionId, limit: 500 });
-    d.link.send({
+    await sendPublication(d.link, {
       type: 'transcript',
       sessionId,
       entries: r.transcript || [],
       nextSince: r.nextSince,
       gap: r.gap,
-    });
+    }, { timeoutMs: 5000, description: 'final transcript' });
   } catch (e) {
     d.log(`could not publish final transcript for ${sessionId}: ${e && e.message}`);
+    process.stderr.write(`could not publish final transcript for ${sessionId}: ${e && e.message}\n`);
   }
 }
 
@@ -335,7 +337,6 @@ async function publishTranscript(sessionId) {
 
     const status = last ? last.status : 'vanished';
     process.stdout.write(`session ${started.id} ${status}\n`);
-    await publishTranscript(started.id);
 
     // A required model has its own verdict, and it is not the session's status:
     // a session that went idle without the agent ever confirming the model is
@@ -354,6 +355,7 @@ async function publishTranscript(sessionId) {
       if (!last || !['failed', 'stopped', 'done'].includes(last.status)) {
         try { await d.handle({ op: 'stop-session', sessionId: started.id }); } catch { /* going anyway */ }
       }
+      await publishTranscript(started.id);
       // Say it to the hub once more, and give the write a moment to leave
       // before the socket is closed under it: a hub that last heard "starting"
       // and then lost the device would report a job that never failed.
@@ -368,8 +370,11 @@ async function publishTranscript(sessionId) {
     // An idle session still holds a live agent. Stop it, or the process would
     // outlive the job it belongs to and the container would not exit.
     if (status === 'idle') {
-      try { await d.handle({ op: 'stop-session', sessionId: started.id }); } catch { /* going anyway */ }
+      await d.handle({ op: 'stop-session', sessionId: started.id });
     }
+    // Close input before awaiting the Hub, so no new turn is accepted while
+    // the final transcript is being persisted.
+    await publishTranscript(started.id);
 
     // Close everything explicitly. The daemon holds a listening server and its
     // hub socket open, and Node will not exit while they live -- which is

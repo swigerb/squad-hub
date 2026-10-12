@@ -304,25 +304,35 @@ function postJson(port, urlPath, token, body) {
      */
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-steer-'));
     let steerResponse = null;
-    const r = await runOneShotWithHook({
-      ...base,
-      SQUAD_HUB_PROMPT: 'first turn',
-      SQUAD_HUB_CWD: work,
-      FAKE_AGENT_MODE: 'steer-race',
-      FAKE_AGENT_MARKER: 'steer-marker.txt',
-      // Comfortably longer than cloud-device.js's 1s status poll, so a
-      // regression (idle reported as finished before this settles) has
-      // every opportunity to tear the session down first.
-      FAKE_AGENT_STEER_DELAY_MS: '2000',
-    }, async (sessionId) => {
-      // Give the device a moment to register itself as reachable over the
-      // hub link before commanding it -- otherwise the steer is refused with
-      // "device is offline" rather than exercising the race at all.
-      await new Promise((res) => setTimeout(res, 500));
-      steerResponse = await postJson(addr.port, '/api/devices/job-1/steer', userTok, {
-        sessionId, text: 'steered instruction',
+    let lateSteer;
+    const receive = svc._fromDevice;
+    svc._fromDevice = function (...args) {
+      if (args[2].type === 'transcript') {
+        lateSteer = postJson(addr.port, '/api/devices/job-1/steer', userTok, {
+          sessionId: args[2].sessionId, text: 'too late to start another turn',
+        });
+        setTimeout(() => receive.apply(this, args), 500);
+      } else receive.apply(this, args);
+    };
+    let r;
+    try {
+      r = await runOneShotWithHook({
+        ...base,
+        SQUAD_HUB_PROMPT: 'first turn',
+        SQUAD_HUB_CWD: work,
+        FAKE_AGENT_MODE: 'steer-race',
+        FAKE_AGENT_MARKER: 'steer-marker.txt',
+        // Longer than the status poll, so an early idle verdict stops this turn.
+        FAKE_AGENT_STEER_DELAY_MS: '2000',
+      }, async (sessionId) => {
+        await new Promise((res) => setTimeout(res, 500));
+        steerResponse = await postJson(addr.port, '/api/devices/job-1/steer', userTok, {
+          sessionId, text: 'steered instruction',
+        });
       });
-    });
+    } finally {
+      svc._fromDevice = receive;
+    }
 
     assert.strictEqual(r.exited, true, `the process never exited (${r.ms} ms). ${r.out.slice(-400)}`);
     assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-400)}`);
@@ -337,6 +347,17 @@ function postJson(port, urlPath, token, body) {
       `the steered turn never ran before the session exited (${r.ms} ms). ${r.out.slice(-400)}`);
     assert.strictEqual(fs.readFileSync(markerPath, 'utf8').trim(), 'steered instruction',
       'the steered text never reached the agent');
+    const id = r.out.match(/session (\S+) started/)[1];
+    const transcript = await postJson(addr.port, '/api/devices/job-1/transcript', userTok, {
+      sessionId: id, limit: 500,
+    });
+    assert.strictEqual(transcript.status, 200, JSON.stringify(transcript));
+    assert.strictEqual(transcript.body.cached, true, 'the job exited before its final transcript was cached');
+    assert.ok(transcript.body.transcript.some(entry => JSON.stringify(entry).includes('steered instruction')),
+      'the cached transcript lost the steered turn');
+    const late = await lateSteer;
+    assert.ok(late.status >= 400 && !late.body.sent,
+      `a new turn was accepted during final history publication: ${JSON.stringify(late)}`);
   });
 
   await check('WITH NO HUB it still runs the work and still exits', async () => {

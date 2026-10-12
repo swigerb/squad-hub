@@ -1826,13 +1826,23 @@ class HubService {
         }
         break;
       }
-      case 'transcript':
-        this.store.cacheTranscript(me.key, deviceId, msg.sessionId, msg.entries || [], {
+      case 'transcript': {
+        const cached = this.store.cacheTranscript(me.key, deviceId, msg.sessionId, msg.entries || [], {
           nextSince: msg.nextSince,
           gap: msg.gap,
         });
+        if (conn && msg.correlationId) {
+          conn.sendJson({
+            type: 'reply',
+            correlationId: msg.correlationId,
+            ok: !!cached,
+            ...(cached ? { result: { id: msg.sessionId, cached: true } }
+              : { error: 'no existing session to cache a transcript against' }),
+          });
+        }
         this._broadcast(me.key, { type: 'transcript', deviceId, sessionId: msg.sessionId, entries: msg.entries });
         return;
+      }
       case 'reply': {
         const p = this._pending.get(msg.correlationId);
         if (p) {

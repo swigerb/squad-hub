@@ -4,6 +4,15 @@ A cloud device runs the **same daemon** as a laptop and appears in the same
 device list. There is no separate cloud code path — that would be a second place
 for the orphan guarantee to be wrong.
 
+## One-shot job history
+
+Before a one-shot worker exits, it closes session input and waits up to five
+seconds for the Hub to acknowledge its final transcript. This keeps completed
+and steered runs readable after the container disappears. The acknowledgement
+comes after the Hub has cached the transcript, not merely after a socket write.
+An unavailable or older Hub does not prevent the work from completing; a
+failed history publication is reported in the worker's error output.
+
 ## Azure App Service — the simplest option
 
 Runs natively on the Node runtime. No container, ~50 KB, and no dependencies.
@@ -168,5 +177,4 @@ installed on — which is a real trust-boundary change, not a convenience
 setting. Read
 [security.md's "GitHub App path"](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
 before setting these.
-
 
