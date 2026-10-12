@@ -571,8 +571,14 @@ should not need to see one in practice.
 has a `squad-dispatch.yml` the hub can dispatch:
 
 ```json
-{ "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true }] }
+{ "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true, "declaredInputs": ["issue", "prompt", "publish_pr", "watch_only"] }] }
 ```
+
+`declaredInputs` is the list of `workflow_dispatch` inputs that repository's
+`squad-dispatch.yml` declares, or `null` when that is not known (no workflow, no
+`workflow_dispatch` trigger, or a body the hub could not read). `null` means
+"do not know", never "none". The New ACA job dialog uses it to decide whether
+to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 
 **`GET /api/aca/dispatches`** — this signed-in user's own recent dispatches
 (in memory only, lost on a hub restart — see

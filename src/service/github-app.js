@@ -424,10 +424,6 @@ class GitHubApp {
     return repos.find((r) => r.fullName.toLowerCase() === target) || null;
   }
 
-  async _hasDispatchWorkflow(owner, repo, token) {
-    const { exists } = await this._dispatchWorkflowFile(owner, repo, token);
-    return exists;
-  }
 
   /**
    * Reads `squad-dispatch.yml` off the repository's own default branch (no
@@ -482,7 +478,10 @@ class GitHubApp {
     }
   }
 
-  /** Every repo the App can see, with whether each has `squad-dispatch.yml`.
+  /** Every repo the App can see, with whether each has `squad-dispatch.yml`
+   * and which `workflow_dispatch` inputs it declares (`null` when that is
+   * unknown: no workflow, no `workflow_dispatch` trigger, or an unreadable
+   * body -- a caller must treat `null` as "do not know", never as "none").
    * `GET /api/aca/repos`. A 404 from the contents check is "no"; anything
    * else is a clear error rather than a silent false, per the issue. */
   async listReposWithDispatchStatus() {
@@ -490,8 +489,10 @@ class GitHubApp {
     const out = [];
     for (const r of repos) {
       const token = await this._installationToken(r.installationId, r.repo);
-      const hasDispatchWorkflow = await this._hasDispatchWorkflow(r.owner, r.repo, token);
-      out.push({ fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow });
+      const { exists, declaredInputs } = await this._dispatchWorkflowFile(r.owner, r.repo, token);
+      out.push({
+        fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow: exists, declaredInputs,
+      });
     }
     return out;
   }

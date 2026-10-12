@@ -98,7 +98,13 @@
 //
 // v27 refreshes the responsive filter/header styles and composer send handling.
 // Installed clients must not keep the v26 code that could resend a landed draft.
-const CACHE = 'squad-hub-shell-v29';
+//
+// v30: the New ACA job dialog (web/js/aca.js) now reads which workflow inputs the
+// target repository declares and stops sending Publish PR / Watch-only to a
+// workflow that lacks them, and index.html gained the note under those options.
+// A v29 install still sends both on every dispatch, so a repository on an older
+// squad-dispatch.yml is refused with a 422 until its cache refreshes.
+const CACHE = 'squad-hub-shell-v30';
 
 /**
  * The shell. Everything here is a public static asset.

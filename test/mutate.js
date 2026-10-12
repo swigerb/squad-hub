@@ -3756,7 +3756,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v29';`,
+    find: `const CACHE = 'squad-hub-shell-v30';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -7255,6 +7255,58 @@ if ($health.accessStore -ne 'durable') {`,
     find: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim() || acaTitle(prompt);`,
     replace: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim(); // MUTATION: dropped the acaTitle(prompt) fallback`,
     mustFail: 'a blank new-issue title falls back to acaTitle of the instructions',
+  },
+  {
+    // #251 (F3): the dialog's default Publish PR / Watch-only choices were sent
+    // on every dispatch, so GitHubApp.dispatch refused a repository whose
+    // squad-dispatch.yml declares neither input (422), whatever the repo hint
+    // said. This restores that always-send behavior.
+    name: 'acaBuildDispatchBody always sends Publish PR and Watch-only again, whatever the workflow declares',
+    file: 'web/js/aca.js',
+    find: `  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;
+  if (!declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly;`,
+    replace: `  if (process.env.MUTANT || !declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr; // MUTATION: always sent
+  if (process.env.MUTANT || !declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly; // MUTATION: always sent`,
+    mustFail: 'the untouched dialog dispatches to a legacy workflow through the real GitHubApp and creates exactly one issue',
+  },
+  {
+    // The other way to "fix" F3 badly: omitting a choice the workflow does not
+    // declare even when it is NOT the default, so an unchecked Publish PR
+    // would silently run (and publish) instead of being refused.
+    name: 'acaBuildDispatchBody drops a non-default Publish PR choice for a workflow that does not declare it',
+    file: 'web/js/aca.js',
+    find: `  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;`,
+    replace: `  if (!declared || declared.includes('publish_pr') || (process.env.MUTANT ? false : !publishPr)) body.publishPr = publishPr; // MUTATION: the explicit no-publish choice is dropped`,
+    mustFail: 'an explicit no-publish choice on a legacy workflow is refused with 422 naming publish_pr before any issue is created',
+  },
+  {
+    // The third wrong fix: stripping every default-valued option, so a workflow
+    // that declares a different default of its own overrides the dialog.
+    name: 'acaBuildDispatchBody omits default-valued choices even for a workflow that declares the inputs',
+    file: 'web/js/aca.js',
+    find: `  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;
+  if (!declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly;`,
+    replace: `  if (!declared || (process.env.MUTANT ? false : declared.includes('publish_pr')) || !publishPr) body.publishPr = publishPr; // MUTATION: declared inputs no longer force the choice
+  if (!declared || (process.env.MUTANT ? false : declared.includes('watch_only')) || watchOnly) body.watchOnly = watchOnly; // MUTATION`,
+    mustFail: 'a modern workflow whose own defaults differ from the dialog still receives the chosen booleans',
+  },
+  {
+    name: 'GET /api/aca/repos stops reporting the inputs each workflow declares',
+    file: 'src/service/github-app.js',
+    find: `fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow: exists, declaredInputs,`,
+    replace: `fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow: exists, declaredInputs: process.env.MUTANT ? undefined : declaredInputs, // MUTATION`,
+    mustFail: 'GET /api/aca/repos reports which workflow_dispatch inputs each workflow declares, null when unknown',
+  },
+  {
+    // A capability read on an earlier open (or before a failed refresh) must not
+    // decide a later dispatch.
+    name: 'the ACA dialog keeps the previous open\'s workflow capabilities when it is reopened',
+    file: 'web/js/aca.js',
+    find: `  $('acaOptionsHint').textContent = '';
+  acaCapabilityRepos = null;`,
+    replace: `  $('acaOptionsHint').textContent = '';
+  if (!process.env.MUTANT) acaCapabilityRepos = null; // MUTATION: stale capability kept`,
+    mustFail: 'a capability read on an earlier open is not reused once the dialog is reopened',
   },
   {
     // A dispatch the hub reports as errored is a failure, with the hub's own

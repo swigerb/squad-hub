@@ -118,8 +118,42 @@ function acaFormValues() {
     reviewer: $('acaReviewer').value,
     publishPr: $('acaPublishPr').checked,
     watchOnly: $('acaWatchOnly').checked,
+    declaredInputs: acaRepoDeclaredInputs(acaCapabilityRepos, $('acaRepo').value),
     prompt: $('acaPrompt').value,
   };
+}
+
+/** The repository list answered for THIS open of the dialog, or `null` until
+ * it has. Kept apart from `state.acaRepos` (which only feeds the picker) so a
+ * capability read from an earlier open, or from a refresh that failed, is
+ * never mistaken for what the target workflow declares now. */
+let acaCapabilityRepos = null;
+
+/**
+ * Which `workflow_dispatch` inputs the chosen repository's `squad-dispatch.yml`
+ * declares, from `GET /api/aca/repos` -- an array, or `null` when that is not
+ * known (list not loaded, repository not in it, or the hub could not read the
+ * workflow). `null` is "do not know", never "declares none".
+ */
+export function acaRepoDeclaredInputs(repos, name) {
+  const target = acaRepoName(name);
+  if (!target) return null;
+  const match = (repos || []).find((r) => String(r.fullName).toLowerCase() === target.toLowerCase());
+  return match && Array.isArray(match.declaredInputs) ? match.declaredInputs : null;
+}
+
+/** The two options a workflow can lack, as the inputs they travel as. */
+const ACA_OPTION_INPUTS = [['publish_pr', 'Publish PR'], ['watch_only', 'Watch-only']];
+
+/** Text for under the Publish PR / Watch-only checkboxes: empty unless the
+ * target workflow is KNOWN to lack one of them. */
+export function acaOptionsNote(declaredInputs) {
+  if (!Array.isArray(declaredInputs)) return '';
+  const missing = ACA_OPTION_INPUTS.filter(([input]) => !declaredInputs.includes(input));
+  if (!missing.length) return '';
+  return `This repository's squad-dispatch.yml does not declare ${missing.map(([input]) => input).join(' or ')}, `
+    + 'so the job runs with its built-in behavior (opens a pull request, asks for approval here). '
+    + `Changing ${missing.map(([, label]) => label).join(' or ')} will be refused rather than ignored.`;
 }
 
 /**
@@ -150,11 +184,25 @@ export function acaBuildDispatchBody(form = {}) {
     prompt,
     model: model || null,
     reviewer: reviewer || null,
-    publishPr: form.publishPr !== false,
-    watchOnly: !!form.watchOnly,
+    publishPr: null,
+    watchOnly: null,
     issue: null,
     newIssue: null,
   };
+
+  // `GitHubApp.dispatch` refuses any option the workflow does not declare, so
+  // an option is sent unless the workflow is KNOWN to lack it AND the choice is
+  // the dialog's default -- the behavior a workflow without the input has
+  // always had. A declared input is always sent (the workflow's own default may
+  // differ from the checkbox, and the choice must win); an unknown capability is
+  // sent too, so the hub's refusal names the field instead of the intent being
+  // dropped. A non-default choice on a known-undeclared input is sent so the
+  // hub can refuse it before any issue exists.
+  const declared = Array.isArray(form.declaredInputs) ? form.declaredInputs : null;
+  const publishPr = form.publishPr !== false;
+  const watchOnly = !!form.watchOnly;
+  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;
+  if (!declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly;
 
   if (form.issueMode === 'existing') {
     const n = Number(form.issueNumber);
@@ -262,6 +310,7 @@ function fillAcaRepoList(repos) {
 function updateAcaRepoHint(repos) {
   const name = acaRepoName($('acaRepo').value);
   const hintEl = $('acaRepoHint');
+  $('acaOptionsHint').textContent = acaOptionsNote(acaRepoDeclaredInputs(acaCapabilityRepos, name));
   if (!name) { hintEl.textContent = ''; hintEl.style.color = ''; return; }
   const match = (repos || []).find((r) => r.fullName.toLowerCase() === name.toLowerCase());
   if (!match) {
@@ -320,6 +369,8 @@ export function openAca(sessionOverride) {
   $('acaWatchOnly').checked = false;
   $('acaPrompt').value = (cur && cur.session.prompt) || '';
   $('acaRepoHint').textContent = '';
+  $('acaOptionsHint').textContent = '';
+  acaCapabilityRepos = null;
   $('acaScrim').hidden = false;
   updateAcaCmdPreview();
   // Enabled until proven otherwise, the same posture the rest of the hub
@@ -340,6 +391,7 @@ export function openAca(sessionOverride) {
       const r = await api('/api/aca/repos');
       if (!acaDialogIsCurrent(generation)) return;
       state.acaRepos = r.repos || [];
+      acaCapabilityRepos = state.acaRepos;
       fillAcaRepoList(state.acaRepos);
       updateAcaRepoHint(state.acaRepos);
     } catch (e) {

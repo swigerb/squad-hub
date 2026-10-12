@@ -491,6 +491,19 @@ identifier shape is accepted by the regex (the two namespaces can overlap),
 but the field's contract is the Squad member id; it is on the caller to
 supply the right one.
 
+The New ACA job dialog (`web/js/aca.js`) also takes the declared inputs into account before it posts.
+It reads each repository's declared inputs from `GET /api/aca/repos`
+(`declaredInputs`) and, for a workflow that declares neither `publish_pr` nor
+`watch_only`, leaves Publish PR and Watch-only out of the request **when they
+are at their defaults** (Publish PR on, Watch-only off) -- the behavior a
+workflow without those inputs has always had -- and says so under the options.
+A non-default choice (Publish PR off, Watch-only on) is still sent, so the hub
+refuses it with the `422` naming the input before any issue is created; it is
+never silently dropped. A workflow that declares the inputs always receives the
+dialog's choices, whatever default the workflow declares for itself, and when
+the declared inputs are not known (the list has not loaded, or the hub could not
+read the workflow) the dialog sends both choices, so the hub's own check decides.
+
 Only fields actually supplied are sent, and only when the target repository's
 own `squad-dispatch.yml` declares that input. GitHub's `workflow_dispatch` API
 answers `422` for an undeclared input — it does not ignore it — so the hub
@@ -648,7 +661,9 @@ declared `workflow_dispatch` inputs first and only ever sends the ones it
 actually declares, refusing the rest with a clear `422` rather than letting
 GitHub reject the whole call. A target repository running an older
 `squad-dispatch.yml` that only declares `issue`/`prompt` is unaffected: it
-simply never receives the newer fields.
+simply never receives the newer fields. The dialog's untouched defaults dispatch
+there; asking for the non-default Publish PR or Watch-only choice is refused
+with a `422` naming the input, because that workflow cannot honor it.
 
 That same conditional rule now includes the hub-owned `hub_correlation_id`
 input. It is not user input and does not pass through

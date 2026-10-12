@@ -40,6 +40,7 @@ const { Authenticator, MODES, subjectKey } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { GitHubOAuth } = require('../src/service/github-oauth');
 const { GitHubApp } = require('../src/service/github-app');
+const { requestedInputNames } = require('../src/aca-dispatch');
 const { Daemon } = require('../src/daemon');
 const { HubLink } = require('../src/hub-link');
 const config = require('../src/config');
@@ -305,8 +306,11 @@ async function watchCsp(pg) {
  * rather than a 501 (no App) or 400 (bad input), both already covered
  * elsewhere.
  */
-function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued', correlationSupported = true } = {}) {
+function fakeInlineGithubApp({
+  dispatchShouldFail = false, runState = 'queued', correlationSupported = true, declaredInputs = null,
+} = {}) {
   const runs = [];
+  const dispatchRequests = [];
   const byCorrelation = new Map();
   const status = (run) => ({
     state: run.state,
@@ -320,13 +324,29 @@ function fakeInlineGithubApp({ dispatchShouldFail = false, runState = 'queued', 
     disabledReason() { return ''; },
     /** Move the n-th dispatched run (1-based) along, as GitHub and the workflow would. */
     setRun(n, patch) { Object.assign(runs[n - 1], patch); },
+    /** Every request `dispatch()` accepted, as `HubService` handed it over. */
+    dispatchRequests,
     async listReposWithDispatchStatus() {
-      return [{ fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true }];
+      return [{
+        fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true, declaredInputs,
+      }];
     },
     async findInstallation(owner, repo) {
       return { installationId: 1, owner, repo };
     },
-    async dispatch({ owner, repo }) {
+    async dispatch(request) {
+      const { owner, repo } = request;
+      // With a declared input list, refuse what `GitHubApp.dispatch` refuses
+      // (it reads the same list), using the hub's own `requestedInputNames`.
+      if (declaredInputs) {
+        const unsupported = requestedInputNames(request).filter((name) => !declaredInputs.includes(name));
+        if (unsupported.length) {
+          const err = new Error(`${owner}/${repo}'s squad-dispatch.yml does not declare the input(s): ${unsupported.join(', ')}.`);
+          err.status = 422;
+          throw err;
+        }
+      }
+      dispatchRequests.push(request);
       if (dispatchShouldFail) {
         const err = new Error('workflow_dispatch refused: no matching workflow file');
         err.status = 502;
@@ -4820,6 +4840,78 @@ function railFacts(page) {
       } finally {
         await pageFail.close();
         await svcFail.close();
+      }
+    });
+
+    await check('a legacy workflow that declares neither option is dispatched from the untouched dialog, and an explicit unsupported choice is refused (#251 F3)', async () => {
+      const legacy = ['issue', 'prompt'];
+      const open = async (hub) => {
+        const { page } = hub;
+        await page.click('#newMoreBtn');
+        await page.click('[data-new="aca"]');
+        await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await page.fill('#acaRepo', 'acme/widgets');
+        await page.fill('#acaPrompt', 'Update the docs and open a pull request');
+        // Start must not be clicked before the repository list has told the
+        // dialog what the workflow declares.
+        await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
+          null, { timeout: 10000 });
+      };
+
+      const untouched = await acaHub(browser, 'f3-legacy', { declaredInputs: legacy });
+      try {
+        await open(untouched);
+        assert.match(await untouched.page.textContent('#acaOptionsHint'), /does not declare publish_pr or watch_only/);
+        await untouched.page.click('#acaStart');
+        await untouched.page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        await untouched.page.waitForSelector('.row:has-text("Queued on ACA")', { timeout: 10000 });
+        assert.strictEqual(untouched.app.dispatchRequests.length, 1, 'the untouched dialog did not dispatch exactly once');
+        const sent = untouched.app.dispatchRequests[0];
+        assert.strictEqual(sent.publishPr, null, 'the dialog default Publish PR was sent to a workflow that does not declare it');
+        assert.strictEqual(sent.watchOnly, null, 'the dialog default Watch-only was sent to a workflow that does not declare it');
+        assert.deepStrictEqual(untouched.errors, []);
+      } finally {
+        await untouched.close();
+      }
+
+      const refused = await acaHub(browser, 'f3-legacy-nopr', { declaredInputs: legacy });
+      try {
+        await open(refused);
+        await refused.page.uncheck('#acaPublishPr');
+        await refused.page.click('#acaStart');
+        await refused.page.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
+        assert.match(await refused.page.textContent('#acaErr'), /publish_pr/);
+        assert.ok(!(await refused.page.evaluate(() => document.getElementById('acaScrim').hidden)),
+          'the dialog closed as if the refused no-publish dispatch had started');
+        assert.strictEqual(refused.app.dispatchRequests.length, 0, 'a refused dispatch was still accepted');
+      } finally {
+        await refused.close();
+      }
+    });
+
+    await check('a workflow that declares Publish PR and Watch-only receives the dialog\'s changed choices (#251 F3)', async () => {
+      const hub = await acaHub(browser, 'f3-modern', {
+        declaredInputs: ['issue', 'prompt', 'publish_pr', 'watch_only', 'hub_correlation_id'],
+      });
+      try {
+        const { page } = hub;
+        await page.click('#newMoreBtn');
+        await page.click('[data-new="aca"]');
+        await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+        await page.fill('#acaRepo', 'acme/widgets');
+        await page.fill('#acaPrompt', 'Update the docs');
+        await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
+          null, { timeout: 10000 });
+        assert.strictEqual((await page.textContent('#acaOptionsHint')).trim(), '');
+        await page.uncheck('#acaPublishPr');
+        await page.check('#acaWatchOnly');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests.length, 1);
+        assert.strictEqual(hub.app.dispatchRequests[0].publishPr, false);
+        assert.strictEqual(hub.app.dispatchRequests[0].watchOnly, true);
+      } finally {
+        await hub.close();
       }
     });
 

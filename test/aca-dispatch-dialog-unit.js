@@ -66,13 +66,13 @@ function check(name, fn) {
 const src = readWebSource();
 const browser = { exports: {} };
 new Function('module', `${src}\nmodule.exports = {
-  acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
+  acaBuildDispatchBody, acaRepoDeclaredInputs, acaOptionsNote, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
   acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, ACA_MAX_PENDING_MS,
   acaDeviceIdFor, acaDispatchEvidence, acaAttachFromOverview,
   trackAcaDispatch, syncAcaPending, retryAcaPending, state, api,
 };`)(browser);
 const {
-  acaBuildDispatchBody, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
+  acaBuildDispatchBody, acaRepoDeclaredInputs, acaOptionsNote, acaStepsForStatus, acaPendingAttached, acaPendingMatch, acaPendingRowHtml,
   acaPendingSectionHtml, ACA_DISPATCH_STEPS, ACA_COMPLETED_WAIT_MS, ACA_MAX_PENDING_MS,
   acaDeviceIdFor, acaDispatchEvidence, acaAttachFromOverview,
   trackAcaDispatch, syncAcaPending, retryAcaPending, state, api,
@@ -165,6 +165,83 @@ check('publishPr defaults to true and watchOnly defaults to false, matching the 
   const r = acaBuildDispatchBody({ ...baseForm(), publishPr: undefined, watchOnly: undefined });
   assert.strictEqual(r.value.publishPr, true);
   assert.strictEqual(r.value.watchOnly, false);
+});
+
+// The workflow's declared inputs decide whether a default-valued option is sent
+// (#251, F3): a workflow without `publish_pr`/`watch_only` is refused by the hub
+// for being sent them, so its dialog defaults must not travel -- but any choice
+// that differs from the default, and every choice for a workflow that declares
+// the input, must.
+const LEGACY_INPUTS = ['issue', 'prompt'];
+const MODERN_INPUTS = ['issue', 'prompt', 'model', 'base_branch', 'publish_pr', 'reviewer', 'watch_only'];
+
+check('the default dialog choices are omitted for a workflow known to declare neither option', () => {
+  const r = acaBuildDispatchBody({ ...baseForm(), declaredInputs: LEGACY_INPUTS });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.value.publishPr, null);
+  assert.strictEqual(r.value.watchOnly, null);
+});
+
+check('a non-default choice is still sent for a workflow that does not declare the option, so the hub can refuse it', () => {
+  const noPublish = acaBuildDispatchBody({ ...baseForm(), declaredInputs: LEGACY_INPUTS, publishPr: false });
+  assert.strictEqual(noPublish.value.publishPr, false);
+  assert.strictEqual(noPublish.value.watchOnly, null);
+  const watch = acaBuildDispatchBody({ ...baseForm(), declaredInputs: LEGACY_INPUTS, watchOnly: true });
+  assert.strictEqual(watch.value.watchOnly, true);
+  assert.strictEqual(watch.value.publishPr, null);
+});
+
+check('each option is decided by its own input: declaring only publish_pr still omits a default watch-only', () => {
+  const r = acaBuildDispatchBody({ ...baseForm(), declaredInputs: ['issue', 'prompt', 'publish_pr'] });
+  assert.strictEqual(r.value.publishPr, true);
+  assert.strictEqual(r.value.watchOnly, null);
+  const r2 = acaBuildDispatchBody({ ...baseForm(), declaredInputs: ['issue', 'prompt', 'watch_only'] });
+  assert.strictEqual(r2.value.publishPr, null);
+  assert.strictEqual(r2.value.watchOnly, false);
+});
+
+check('a workflow that declares the options always receives the dialog\'s choices, whatever default it declares itself', () => {
+  for (const [publishPr, watchOnly] of [[true, false], [false, false], [true, true], [false, true]]) {
+    const r = acaBuildDispatchBody({ ...baseForm(), declaredInputs: MODERN_INPUTS, publishPr, watchOnly });
+    assert.strictEqual(r.value.publishPr, publishPr);
+    assert.strictEqual(r.value.watchOnly, watchOnly);
+  }
+});
+
+check('an unknown capability (no list, repository absent, unreadable workflow) keeps sending both choices', () => {
+  for (const declaredInputs of [undefined, null, 'issue,prompt', {}]) {
+    const r = acaBuildDispatchBody({ ...baseForm(), declaredInputs });
+    assert.strictEqual(r.value.publishPr, true, `declaredInputs ${JSON.stringify(declaredInputs)}`);
+    assert.strictEqual(r.value.watchOnly, false);
+  }
+});
+
+check('acaRepoDeclaredInputs reads the chosen repository case-insensitively and reports unknown as null, never as empty', () => {
+  const repos = [
+    { fullName: 'Acme/Widgets', declaredInputs: LEGACY_INPUTS },
+    { fullName: 'acme/none', hasDispatchWorkflow: false, declaredInputs: null },
+    { fullName: 'acme/old-hub' },
+    { fullName: 'acme/bare', declaredInputs: [] },
+  ];
+  assert.deepStrictEqual(acaRepoDeclaredInputs(repos, 'acme/widgets'), LEGACY_INPUTS);
+  assert.strictEqual(acaRepoDeclaredInputs(repos, 'acme/none'), null);
+  assert.strictEqual(acaRepoDeclaredInputs(repos, 'acme/old-hub'), null);
+  assert.deepStrictEqual(acaRepoDeclaredInputs(repos, 'acme/bare'), []);
+  assert.strictEqual(acaRepoDeclaredInputs(repos, 'acme/missing'), null);
+  assert.strictEqual(acaRepoDeclaredInputs(repos, 'not a repo'), null);
+  assert.strictEqual(acaRepoDeclaredInputs(null, 'acme/widgets'), null);
+});
+
+check('the options note names exactly what the workflow lacks, and is silent when it is complete or unknown', () => {
+  assert.strictEqual(acaOptionsNote(MODERN_INPUTS), '');
+  assert.strictEqual(acaOptionsNote(null), '');
+  assert.strictEqual(acaOptionsNote(undefined), '');
+  const both = acaOptionsNote(LEGACY_INPUTS);
+  assert.match(both, /does not declare publish_pr or watch_only/);
+  assert.match(both, /Changing Publish PR or Watch-only will be refused/);
+  const one = acaOptionsNote(['issue', 'prompt', 'publish_pr']);
+  assert.match(one, /does not declare watch_only,/);
+  assert.doesNotMatch(one, /publish_pr/);
 });
 
 // --- acaStepsForStatus --------------------------------------------------------
@@ -678,6 +755,98 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       await Promise.resolve();
       assert.match(f.element('acaRepoList').innerHTML, /acme\/widgets/);
       assert.doesNotMatch(f.element('acaRepoList').innerHTML, /stale\/old/);
+    });
+
+    // The dialog as a person meets it: the REAL `openAca` defaults (Publish PR
+    // checked, Watch-only unchecked), the repository list answering what the
+    // hub read from the workflow, and the body Start posts (#251, F3).
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const dispatchedBody = async (repos, tweak) => {
+      const reply = deferred();
+      const f = dialogFixture([reply]);
+      f.open('Compatibility job');
+      if (tweak) tweak(f);
+      if (repos) {
+        reply.resolve({ repos });
+        await settle();
+      }
+      const sent = f.submitAcaDispatch();
+      const { body } = f.requests[0];
+      f.requests[0].resolve({ issue: { number: 42 }, trackerId: 'T-compat' });
+      await sent;
+      return { body, f };
+    };
+    const legacyRepo = [{ fullName: 'acme/widgets', hasDispatchWorkflow: true, declaredInputs: ['issue', 'prompt'] }];
+    const modernRepo = [{
+      fullName: 'acme/widgets', hasDispatchWorkflow: true,
+      declaredInputs: ['issue', 'prompt', 'publish_pr', 'watch_only'],
+    }];
+
+    await checkAsync('an untouched dialog dispatches to a legacy workflow without Publish PR or Watch-only, and says why', async () => {
+      const { body, f } = await dispatchedBody(legacyRepo);
+      assert.strictEqual(body.publishPr, null);
+      assert.strictEqual(body.watchOnly, null);
+      assert.match(f.element('acaOptionsHint').textContent, /does not declare publish_pr or watch_only/);
+    });
+
+    await checkAsync('unchecking Publish PR on a legacy workflow is still sent, never silently dropped', async () => {
+      const { body } = await dispatchedBody(legacyRepo, (f) => { f.element('acaPublishPr').checked = false; });
+      assert.strictEqual(body.publishPr, false);
+      assert.strictEqual(body.watchOnly, null);
+    });
+
+    await checkAsync('a workflow that declares the options receives the dialog\'s checked and unchecked choices', async () => {
+      const untouched = await dispatchedBody(modernRepo);
+      assert.strictEqual(untouched.body.publishPr, true);
+      assert.strictEqual(untouched.body.watchOnly, false);
+      assert.strictEqual(untouched.f.element('acaOptionsHint').textContent, '');
+      const changed = await dispatchedBody(modernRepo, (f) => {
+        f.element('acaPublishPr').checked = false;
+        f.element('acaWatchOnly').checked = true;
+      });
+      assert.strictEqual(changed.body.publishPr, false);
+      assert.strictEqual(changed.body.watchOnly, true);
+    });
+
+    await checkAsync('before the repository list has answered, the dialog does not assume the workflow\'s capabilities', async () => {
+      const reply = deferred();
+      const f = dialogFixture([reply]);
+      f.open('Early job');
+      const sent = f.submitAcaDispatch();
+      assert.strictEqual(f.requests[0].body.publishPr, true);
+      assert.strictEqual(f.requests[0].body.watchOnly, false);
+      f.requests[0].resolve({ issue: { number: 42 }, trackerId: 'T-early' });
+      await sent;
+    });
+
+    await checkAsync('a repository list that failed to load leaves the capability unknown', async () => {
+      const reply = deferred();
+      const f = dialogFixture([reply]);
+      f.open('Offline list job');
+      reply.reject(Object.assign(new Error('upstream down'), { status: 502 }));
+      await settle();
+      const sent = f.submitAcaDispatch();
+      assert.strictEqual(f.requests[0].body.publishPr, true);
+      assert.strictEqual(f.requests[0].body.watchOnly, false);
+      f.requests[0].resolve({ issue: { number: 42 }, trackerId: 'T-offline' });
+      await sent;
+    });
+
+    await checkAsync('a capability read on an earlier open is not reused once the dialog is reopened', async () => {
+      const first = deferred();
+      const second = deferred();
+      const f = dialogFixture([first, second]);
+      f.open('First job');
+      first.resolve({ repos: legacyRepo });
+      await settle();
+      f.element('acaScrim').hidden = true;
+      f.open('Second job');
+      assert.strictEqual(f.element('acaOptionsHint').textContent, '');
+      const sent = f.submitAcaDispatch();
+      assert.strictEqual(f.requests[0].body.publishPr, true, 'the earlier open\'s capability decided this dispatch');
+      f.requests[0].resolve({ issue: { number: 42 }, trackerId: 'T-reopen' });
+      await sent;
+      second.resolve({ repos: [] });
     });
 
     await checkAsync('a current dispatch failure remains visible and permits a deliberate retry', async () => {

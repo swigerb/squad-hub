@@ -30,6 +30,13 @@ const { DispatchTracker, MAX_UNMATCHED_RECORD_AGE_MS } = require('../src/service
 const { sanitizeDispatchRequest, buildWorkflowInputs } = require('../src/aca-dispatch');
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
+const { readWebSource } = require('./helpers/web-source');
+
+// The New ACA job dialog's own request builder, loaded from the shipped
+// `web/js/aca.js` so the browser-side half of a dispatch is the real code.
+const dialog = { exports: {} };
+new Function('module', `${readWebSource()}\nmodule.exports = { acaBuildDispatchBody, acaRepoDeclaredInputs };`)(dialog);
+const { acaBuildDispatchBody, acaRepoDeclaredInputs } = dialog.exports;
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -78,7 +85,7 @@ function b64urlDecode(s) {
  * logic in `parseDeclaredWorkflowInputs` the same way a real workflow file
  * would, not just a single trivial block.
  */
-function squadDispatchYaml(inputNames) {
+function squadDispatchYaml(inputNames, inputDefaults = {}) {
   const lines = ['name: Squad dispatch', 'on:', '  workflow_dispatch:'];
   if (inputNames && inputNames.length) {
     lines.push('    inputs:');
@@ -87,6 +94,7 @@ function squadDispatchYaml(inputNames) {
       lines.push('        description: auto-generated for tests');
       lines.push(`        required: ${name === 'issue' || name === 'prompt'}`);
       lines.push('        type: string');
+      if (Object.prototype.hasOwnProperty.call(inputDefaults, name)) lines.push(`        default: ${inputDefaults[name]}`);
     }
   }
   lines.push('jobs:', '  dispatch:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo hi');
@@ -112,6 +120,7 @@ function fakeGitHubApp({
   reposByInstallation = { 1: ['acme/widgets'] },
   hasWorkflow = true,
   declaredInputs = MODERN_DECLARED_INPUTS,
+  inputDefaults = {},
   defaultBranch = 'main',
   dispatchStatus = 204,
   installationsStatus = 200,
@@ -186,7 +195,7 @@ function fakeGitHubApp({
       if (req.url.includes('/contents/.github/workflows/squad-dispatch.yml')) {
         if (hasWorkflow === 'error') return json(500, { message: 'internal error' });
         if (!hasWorkflow) return json(404, { message: 'Not Found' });
-        const yaml = squadDispatchYaml(declaredInputs);
+        const yaml = squadDispatchYaml(declaredInputs, inputDefaults);
         return json(200, { sha: 'deadbeef', content: Buffer.from(yaml, 'utf8').toString('base64'), encoding: 'base64' });
       }
 
@@ -233,6 +242,10 @@ function fakeGitHubApp({
       if (dispatchMatch && req.method === 'POST') {
         let parsed = {};
         try { parsed = JSON.parse(body); } catch { /* ignore */ }
+        // GitHub answers 422 for an input the workflow does not declare; it
+        // does not ignore it, and nothing is dispatched.
+        const undeclared = Object.keys(parsed.inputs || {}).filter((k) => !declaredInputs.includes(k));
+        if (undeclared.length) return json(422, { message: `Unexpected inputs provided: ${JSON.stringify(undeclared)}` });
         state.dispatches.push({ owner: dispatchMatch[1], repo: dispatchMatch[2], ...parsed });
         if (dispatchStatus !== 204) {
           return json(dispatchStatus, { message: 'dispatch refused in fake' });
@@ -729,6 +742,128 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(result.correlationId, null);
     assert.strictEqual(result.correlationSupported, false);
     assert.ok(!Object.prototype.hasOwnProperty.call(state.dispatches[0].inputs, 'hub_correlation_id'));
+  });
+
+  // =========================================================================
+  // #251 (F3): the dialog's default options against the workflow's capabilities
+  // =========================================================================
+
+  /**
+   * The real `GitHubApp` and `HubService` over the faked GitHub REST surface,
+   * driven the way the dialog does: read `GET /api/aca/repos`, build the body
+   * with the shipped `acaBuildDispatchBody` from the dialog's checkboxes, POST it.
+   */
+  async function dialogDispatch(fake, { publishPr = true, watchOnly = false } = {}) {
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    try {
+      const repos = await apiRequest(addr.port, '/api/aca/repos', token);
+      assert.strictEqual(repos.status, 200, JSON.stringify(repos));
+      const built = acaBuildDispatchBody({
+        repo: 'acme/widgets',
+        prompt: 'Update the docs',
+        issueMode: 'new',
+        publishPr,
+        watchOnly,
+        declaredInputs: acaRepoDeclaredInputs(repos.body.repos, 'acme/widgets'),
+      });
+      assert.strictEqual(built.ok, true, JSON.stringify(built));
+      const response = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: built.value });
+      return { repos: repos.body.repos, body: built.value, response };
+    } finally {
+      await svc.close();
+      fake.server.close();
+    }
+  }
+
+  await checkAsync('GET /api/aca/repos reports which workflow_dispatch inputs each workflow declares, null when unknown', async () => {
+    const legacy = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const modern = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const missing = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: false });
+    const lists = [];
+    for (const fake of [legacy, modern, missing]) {
+      const port = await listen(fake.server);
+      const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+      lists.push(await app.listReposWithDispatchStatus());
+      fake.server.close();
+    }
+    assert.deepStrictEqual(lists[0][0].declaredInputs, LEGACY_DECLARED_INPUTS);
+    assert.deepStrictEqual(lists[1][0].declaredInputs, MODERN_DECLARED_INPUTS);
+    assert.strictEqual(lists[2][0].hasDispatchWorkflow, false);
+    assert.strictEqual(lists[2][0].declaredInputs, null);
+  });
+
+  await checkAsync('the untouched dialog dispatches to a legacy workflow through the real GitHubApp and creates exactly one issue', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const { body, response } = await dialogDispatch(fake);
+    assert.strictEqual(body.publishPr, null);
+    assert.strictEqual(body.watchOnly, null);
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.createdIssues.length, 1);
+    assert.strictEqual(fake.state.dispatches.length, 1);
+    assert.deepStrictEqual(Object.keys(fake.state.dispatches[0].inputs).sort(), ['issue', 'prompt']);
+  });
+
+  await checkAsync('an explicit no-publish choice on a legacy workflow is refused with 422 naming publish_pr before any issue is created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const { response } = await dialogDispatch(fake, { publishPr: false });
+    assert.strictEqual(response.status, 422, JSON.stringify(response));
+    assert.match(response.body.error, /publish_pr/);
+    assert.doesNotMatch(response.body.error, /watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0, 'an issue was created for a request that was always going to be refused');
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  await checkAsync('an explicit watch-only choice on a legacy workflow is refused with 422 naming watch_only before any issue is created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const { response } = await dialogDispatch(fake, { watchOnly: true });
+    assert.strictEqual(response.status, 422, JSON.stringify(response));
+    assert.match(response.body.error, /watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  await checkAsync('a modern workflow whose own defaults differ from the dialog still receives the chosen booleans', async () => {
+    const fake = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, inputDefaults: { publish_pr: 'false', watch_only: 'true' },
+    });
+    const { response } = await dialogDispatch(fake);
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.dispatches[0].inputs.publish_pr, 'true');
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'false');
+    const other = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, inputDefaults: { publish_pr: 'true', watch_only: 'false' },
+    });
+    const flipped = await dialogDispatch(other, { publishPr: false, watchOnly: true });
+    assert.strictEqual(flipped.response.status, 200, JSON.stringify(flipped.response));
+    assert.strictEqual(other.state.dispatches[0].inputs.publish_pr, 'false');
+    assert.strictEqual(other.state.dispatches[0].inputs.watch_only, 'true');
+  });
+
+  await checkAsync('the always-send request is still refused by a legacy workflow, naming both inputs, with no issue created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'T' }, prompt: 'go', publishPr: true, watchOnly: false },
+    });
+    await svc.close();
+    fake.server.close();
+    assert.strictEqual(r.status, 422, JSON.stringify(r));
+    assert.match(r.body.error, /publish_pr, watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
   });
 
   // =========================================================================
