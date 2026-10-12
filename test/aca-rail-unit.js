@@ -489,6 +489,45 @@ const running = (over = {}) => dispatchRow({ status: { state: 'in_progress', run
     assert.match(html, /class="device ondemand"/);
   });
 
+  await checkAsync('empty scopes: a local session cannot hide the Cloud connection guidance', async () => {
+    const local = device('local-pc', { kind: 'local' });
+    resetPage([local]);
+    state.overview.groups[0].sessions = [{ id: 'local-session', deviceId: local.deviceId, status: 'active' }];
+    state.overview.counts.sessions = 1;
+    state.scope = 'cloud';
+    render();
+    assert.strictEqual(dom.element('empty').hidden, false);
+    assert.match(dom.element('empty').innerHTML, /No cloud sessions available/);
+    assert.match(dom.element('empty').innerHTML, /No cloud devices are connected/);
+    assert.match(dom.element('empty').innerHTML, /Connect a cloud device/);
+    assert.doesNotMatch(dom.element('groups').innerHTML, /local-pc/);
+  });
+
+  await checkAsync('empty scopes: a cloud session cannot hide the Local connection guidance', async () => {
+    const cloud = device('cloud-worker', { kind: 'cloud' });
+    resetPage([cloud]);
+    state.overview.groups[0].sessions = [{ id: 'cloud-session', deviceId: cloud.deviceId, status: 'active' }];
+    state.overview.counts.sessions = 1;
+    state.scope = 'local';
+    render();
+    assert.strictEqual(dom.element('empty').hidden, false);
+    const html = dom.element('empty').innerHTML;
+    assert.match(html, /No local sessions available/);
+    assert.match(html, /No local devices are connected/);
+    assert.match(html, /generated command on your machine/);
+    assert.match(html, /data-action="connect-device"/);
+    assert.doesNotMatch(dom.element('groups').innerHTML, /cloud-worker/);
+  });
+
+  await checkAsync('empty scopes: a connected local device offers a session, not a false disconnected message', async () => {
+    resetPage([device('local-pc', { kind: 'local' })]);
+    state.scope = 'local';
+    render();
+    assert.match(dom.element('empty').innerHTML, /A local device is connected/);
+    assert.match(dom.element('empty').innerHTML, /id="emptyLocal">New local session/);
+    assert.doesNotMatch(dom.element('empty').innerHTML, /No local devices are connected/);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

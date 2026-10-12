@@ -596,6 +596,23 @@ function railFacts(page) {
       await page.click('#cnCancel');
     });
 
+    await check('empty Local and Cloud tabs explain how to connect, and their Connect buttons work', async () => {
+      await page.click('[data-scope="cloud"]');
+      await page.waitForSelector('#empty:not([hidden])', { timeout: 5000 });
+      assert.match(await page.textContent('#empty'), /No cloud sessions available/);
+      assert.match(await page.textContent('#empty'), /No cloud devices are connected/);
+      await page.click('#empty [data-action="connect-device"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      await page.click('#cnCancel');
+      await page.click('[data-scope="local"]');
+      assert.match(await page.textContent('#empty'), /No local sessions available/);
+      assert.match(await page.textContent('#empty'), /generated command on your machine/);
+      await page.click('#empty [data-action="connect-device"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      await page.click('#cnCancel');
+      await page.click('[data-scope="all"]');
+    });
+
     // ---- minting a device token through the UI ---------------------------
     let deviceToken = null;
     await check('the UI mints a DEVICE token, not the user credential', async () => {

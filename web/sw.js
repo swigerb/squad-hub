@@ -98,7 +98,7 @@
 //
 // v27 refreshes the responsive filter/header styles and composer send handling.
 // Installed clients must not keep the v26 code that could resend a landed draft.
-const CACHE = 'squad-hub-shell-v28';
+const CACHE = 'squad-hub-shell-v29';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -107,6 +107,7 @@ const CACHE = 'squad-hub-shell-v28';
  * resolves to, and what a navigation request asks for.
  */
 const SHELL = [
+  '/js/empty-state.js',
   '/',
   '/css/tokens.css',
   '/css/topbar.css',

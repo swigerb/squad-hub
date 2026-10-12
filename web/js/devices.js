@@ -17,6 +17,7 @@ import { acaPendingSectionHtml } from './aca-pending.js';
 import { acaJobsRowHtml, acaRailRowsHtml } from './aca-rail.js';
 import { ACA_PHASE, renderAcaStatus } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
+import { renderEmptySessions } from './empty-state.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
 // card updates or disappears the moment its approval is answered -- and now
@@ -372,6 +373,8 @@ export function render() {
   // as it does after a filtered fetch (the push carries every session).
   const emptyDevices = narrowGroups(groups, state.filters)
     .filter((g) => !g.sessions.length && g.device.presence !== 'offline')
+    .filter((g) => !state.scope || state.scope === 'all'
+      || isCloudKind(g.device.kind) === (state.scope === 'cloud'))
     .map((g) => ({ key: g.device.name, label: g.device.name, device: g.device, entries: [] }));
 
   const html = [...view.sections, ...emptyDevices].map((sec) => `
@@ -388,7 +391,7 @@ export function render() {
 
   const queued = acaPendingSectionHtml(state.acaPending, state.scope);
   $('groups').innerHTML = queued + html;
-  $('empty').hidden = (counts.sessions || 0) > 0 || queued !== '';
+  $('empty').hidden = view.counts.shown > 0 || queued !== '';
 
   // With no device online there is nothing + New could do, so say what to do
   // first rather than leaving a live button that opens a dialog with an empty
@@ -397,31 +400,7 @@ export function render() {
   const newBtn = $('newBtn');
   newBtn.classList.toggle('needs-device', online.length === 0);
   newBtn.title = online.length ? 'Start a session' : 'Connect a device first';
-  const emptyEl = $('empty');
-  if (!emptyEl.hidden) {
-    // Three buttons, because "start a session" has three genuinely different
-    // answers: an ACA job is provisioned on demand, a cloud device already
-    // exists and is on-demand too, and a local one is the machine already
-    // sitting there. One button forces a person to open a dialog to
-    // discover which they can have.
-    const cloud = devices.filter((d) => isCloudKind(d.kind) && d.presence !== 'offline');
-    const local = online.filter((d) => !isCloudKind(d.kind));
-    const localTotal = groupDevicesByKind(devices).local;
-    emptyEl.innerHTML = `
-      <h3>No sessions yet</h3>
-      <p class="empty-actions">
-        <button class="primary" id="emptyAca">Start ACA job</button>
-        <button class="ghost" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>On an attached cloud device</button>
-        <button class="ghost" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>
-      </p>
-      ${localTotal.length ? '' : localDevicesEmptyHtml()}`;
-    const ab = document.getElementById('emptyAca');
-    if (ab) ab.onclick = () => openAca();
-    const cb = document.getElementById('emptyCloud');
-    if (cb) cb.onclick = () => openNew(cloud.length ? cloud[0].deviceId : undefined);
-    const lb = document.getElementById('emptyLocal');
-    if (lb) lb.onclick = () => openNew(local.length ? local[0].deviceId : undefined);
-  }
+  renderEmptySessions({ scope: state.scope, devices, groups });
 
   // The rail's own summary line, directly under its title: how many devices
   // are actually reachable right now, and how many sessions they are running
