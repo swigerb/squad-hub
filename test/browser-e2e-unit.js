@@ -527,7 +527,7 @@ async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
   await gotoSettled(page, `${origin}/?token=${token}`);
   await page.waitForSelector('#who', { timeout: 15000 });
   return {
-    svc, app, page, origin, subject, errors, calls,
+    svc, app, page, origin, subject, errors, calls, token,
     async close() { await page.close(); await svc.close(); },
   };
 }
@@ -540,6 +540,8 @@ async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
  */
 async function pickCombo(page, sel, text, match) {
   await page.fill(sel, text);
+  // The rows of the previous search stay up while the new one loads; wait for it to answer.
+  await page.waitForFunction((s) => !/Loading/.test(document.querySelector(s).closest('.combo').nextElementSibling.textContent), sel, { timeout: 10000 });
   await page.waitForSelector(`${sel}[data-value], ${sel} ~ .combo-list:not([hidden]) [role="option"]`, { timeout: 10000 });
   if (await page.locator(`${sel}[data-value]`).count()) return;
   await page.locator(`${sel} ~ .combo-list [role="option"]`).filter({ hasText: match || text }).first().click();
@@ -5160,6 +5162,298 @@ function railFacts(page) {
       }
     });
 
+    // --- #257: every field with knowable choices is picked, never typed --------
+    const openAcaDialog = async (page) => {
+      await page.click('#newMoreBtn');
+      await page.click('[data-new="aca"]');
+      await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+    };
+    const optionValues = (page, sel) => page.$$eval(`${sel} option`, (os) => os.map((o) => o.value));
+    const noteOf = (page, sel) => page.$eval(sel, (el) => el.textContent.trim());
+    const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+
+    await check('Model and Reviewer are dropdowns of what the repository reports, at desktop and 390px, with no text box to type an override (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-model', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        for (const [width, height] of [[1280, 900], [390, 844]]) {
+          await page.setViewportSize({ width, height });
+          await openAcaDialog(page);
+          assert.strictEqual(await page.$eval('#acaModel', (el) => el.tagName), 'SELECT', `Model is not a dropdown at ${width}px`);
+          assert.strictEqual(await page.$eval('#acaReviewer', (el) => el.tagName), 'SELECT');
+          assert.strictEqual(await page.locator('input#acaModel, input#acaReviewer, textarea#acaModel').count(), 0,
+            'a free-text control for Model or Reviewer exists');
+          // Nothing is offered before a repository is chosen: no list of another repository's models.
+          assert.strictEqual(await page.isDisabled('#acaModel'), true);
+          assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['']);
+          assert.strictEqual(await page.isDisabled('#acaBranch'), true, 'Base branch was usable with no repository');
+          assert.match(await noteOf(page, '#acaBranchStatus'), /Choose a repository first/);
+
+          await pickCombo(page, '#acaRepo', 'acme/widgets');
+          await page.waitForSelector('#acaModel:not([disabled])', { timeout: 10000 });
+          assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['', 'a-model', 'b-model']);
+          assert.deepStrictEqual(await optionValues(page, '#acaReviewer'), ['', 'someone', 'lead']);
+          assert.strictEqual(await page.inputValue('#acaModel'), '', 'the default is explicit, not the first catalog entry');
+          assert.match(await noteOf(page, '#acaModelNote'), /Not a check of what the job can run/,
+            'the repository-configured choices were presented as verified runtime availability');
+          assert.ok(await noOverflow(page), `the dialog overflows horizontally at ${width}px`);
+
+          await page.selectOption('#acaModel', 'b-model');
+          await page.selectOption('#acaReviewer', 'lead');
+          await page.click('#acaCancel');
+          await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 5000 });
+        }
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await openAcaDialog(hub.page);
+        await pickCombo(hub.page, '#acaRepo', 'acme/widgets');
+        await hub.page.waitForSelector('#acaModel:not([disabled])', { timeout: 10000 });
+        assert.strictEqual(await hub.page.inputValue('#acaModel'), '', 'a model chosen in an earlier open survived into this one');
+        await hub.page.selectOption('#acaModel', 'b-model');
+        await hub.page.selectOption('#acaReviewer', 'lead');
+        await hub.page.fill('#acaPrompt', 'Use the chosen model');
+        await hub.page.click('#acaStart');
+        await hub.page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests[0].model, 'b-model');
+        assert.strictEqual(hub.app.dispatchRequests[0].reviewer, 'lead');
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('Base branch searches the repository past the first page and is chosen by keyboard, and unchosen text is never dispatched (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-branch', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        for (const [width, height] of [[1280, 900], [390, 844]]) {
+          await page.setViewportSize({ width, height });
+          await openAcaDialog(page);
+          await pickCombo(page, '#acaRepo', 'acme/widgets');
+          await page.focus('#acaBranch');
+          await page.waitForSelector('#acaBranch ~ .combo-list:not([hidden]) [role="option"]', { timeout: 10000 });
+          // The unfiltered list stops at its first page, and says so.
+          assert.match(await noteOf(page, '#acaBranchStatus'), /Showing the first 30/);
+          assert.strictEqual(await page.locator('#acaBranch ~ .combo-list .combo-more').count(), 1, 'no way to reach the rest of a long list');
+
+          // A branch beyond that first page is found by searching the target, not by scrolling a cached slice.
+          await page.fill('#acaBranch', 'branch-14');
+          await page.waitForFunction(() => document.querySelectorAll('#acaBranch ~ .combo-list [role="option"]').length === 10, null, { timeout: 10000 });
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'aria-expanded'), 'true');
+          await page.keyboard.press('ArrowDown');
+          await page.keyboard.press('Enter');
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'data-value'), 'feature/branch-141');
+          assert.strictEqual(await page.inputValue('#acaBranch'), 'feature/branch-141');
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'aria-expanded'), 'false');
+          assert.ok(await noOverflow(page), `the picker overflows horizontally at ${width}px`);
+
+          // Editing the text throws the choice away: a half-edited string is not a branch.
+          await page.keyboard.type('x');
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'data-value'), null, 'edited text stayed a chosen branch');
+          await page.waitForFunction(() => /No branches match/.test(document.getElementById('acaBranchStatus').textContent), null, { timeout: 10000 });
+          await page.fill('#acaPrompt', 'Typed branch');
+          await page.click('#acaStart');
+          await page.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
+          assert.match(await page.textContent('#acaErr'), /Choose the base branch from the list/);
+          assert.strictEqual(hub.app.dispatchRequests.length, 0, 'text that was never chosen was dispatched');
+          assert.strictEqual(hub.app.issues.length, 0, 'an issue was created for text that was never chosen');
+          await page.click('#acaCancel');
+          await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 5000 });
+        }
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaBranch', 'feature/branch-150');
+        await page.fill('#acaPrompt', 'Late branch');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests[0].baseBranch, 'feature/branch-150');
+        const lookups = hub.calls.filter((c) => /\/api\/aca\/branches\?/.test(c.url));
+        assert.ok(lookups.some((c) => /q=branch-14/.test(c.url)), 'the search never went to the server');
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('Existing issue is searched in the repository and chosen by number, not typed (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-issue', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await page.check('#acaIssueModeExisting');
+        await page.fill('#acaIssueNumber', 'Backlog item 5');
+        await page.waitForFunction(() => document.querySelectorAll('#acaIssueNumber ~ .combo-list [role="option"]').length >= 1, null, { timeout: 10000 });
+        const rows = await page.$$eval('#acaIssueNumber ~ .combo-list [role="option"]', (os) => os.map((o) => o.textContent));
+        assert.ok(rows.every((r) => /^#\d+ Backlog item/.test(r)), `the search returned something else: ${rows.join(' | ')}`);
+        await page.keyboard.press('Enter');
+        assert.strictEqual(await page.getAttribute('#acaIssueNumber', 'data-value'), '204');
+        await page.fill('#acaPrompt', 'On the chosen issue');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests[0].issue, 204);
+        assert.strictEqual(hub.app.issues.length, 0, 'an existing issue was dispatched as a new one');
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('switching repository clears what belonged to the old one and a late reply for it cannot overwrite the new one (#257)', async () => {
+      const gadgets = {
+        defaultBranch: 'trunk',
+        branches: ['trunk', 'dev'],
+        model: { state: 'ok', source: 'repository-config', default: null, choices: [{ id: 'g-model' }] },
+        reviewer: { state: 'default-only', source: null, default: null, choices: [], reason: 'its roster is kept outside the repository' },
+      };
+      const hub = await acaHub(browser, 'sel-switch', { declaredInputs: F4_INPUTS, otherRepos: { 'acme/gadgets': gadgets } });
+      try {
+        const { page } = hub;
+        let held = null;
+        await page.route(/\/api\/aca\/choices\?repo=acme%2Fwidgets$/, (route) => { held = route; });
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaBranch', 'release');
+        await until(async () => held !== null, 'the widgets choices request to be held');
+        assert.strictEqual(await page.isDisabled('#acaModel'), true, 'a model could be picked before the repository answered');
+        assert.match(await noteOf(page, '#acaModelNote'), /Loading/);
+
+        await pickCombo(page, '#acaRepo', 'acme/gadgets');
+        assert.strictEqual(await page.getAttribute('#acaBranch', 'data-value'), null, 'the old repository\'s branch survived the change');
+        assert.strictEqual(await page.inputValue('#acaBranch'), '');
+        await page.waitForSelector('#acaModel:not([disabled])', { timeout: 10000 });
+        assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['', 'g-model']);
+        assert.match(await page.getAttribute('#acaBranch', 'placeholder'), /trunk/);
+        assert.deepStrictEqual(await optionValues(page, '#acaReviewer'), ['']);
+        assert.match(await noteOf(page, '#acaReviewerNote'), /Only the Squad default is available: its roster is kept outside the repository/);
+
+        // The reply for the replaced repository finally arrives.
+        try { await held.fulfill({ response: await held.fetch() }); } catch (e) { /* already aborted: the intended outcome */ }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['', 'g-model'], 'a late reply replaced the current repository\'s models');
+        assert.deepStrictEqual(await optionValues(page, '#acaReviewer'), ['']);
+
+        await page.selectOption('#acaModel', 'g-model');
+        await page.fill('#acaPrompt', 'On the second repository');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        const sent = hub.app.dispatchRequests[0];
+        assert.deepStrictEqual([sent.repo, sent.baseBranch, sent.model, sent.reviewer], ['gadgets', null, 'g-model', null]);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('loading, empty, default-only and error states are each said, and nothing is invented to fill them (#257)', async () => {
+      const bare = {
+        model: { state: 'default-only', source: null, default: null, choices: [], reason: 'this repository names no model' },
+        reviewer: { state: 'unavailable', status: 502, source: null, default: null, choices: [], reason: 'its roster could not be read' },
+      };
+      const hub = await acaHub(browser, 'sel-states', { declaredInputs: F4_INPUTS, catalog: bare, otherRepos: { 'acme/gadgets': bare } });
+      try {
+        const { page } = hub;
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await page.waitForFunction(() => /Only the Squad default/.test(document.getElementById('acaModelNote').textContent), null, { timeout: 10000 });
+        assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['']);
+        assert.strictEqual(await page.isDisabled('#acaModel'), true);
+        assert.match(await noteOf(page, '#acaModelNote'), /this repository names no model/);
+        assert.match(await noteOf(page, '#acaReviewerNote'), /Could not list reviewers: its roster could not be read/);
+        assert.strictEqual(await page.isDisabled('#acaReviewer'), true);
+        assert.ok(await page.isVisible('#acaChoicesRetry'), 'an unavailable list offered no retry');
+
+        // No match is not an error, and is said as such.
+        await page.fill('#acaBranch', 'zzz-no-such-branch');
+        await page.waitForFunction(() => /No branches match/.test(document.getElementById('acaBranchStatus').textContent), null, { timeout: 10000 });
+        await page.fill('#acaBranch', '');
+
+        // A failing branch search is reported with a way to try again.
+        await page.route(/\/api\/aca\/branches\?/, (route) => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'GitHub could not be reached' }) }));
+        await page.fill('#acaBranch', 'rel');
+        await page.waitForFunction(() => /Could not load branches: GitHub could not be reached/.test(document.getElementById('acaBranchStatus').textContent), null, { timeout: 10000 });
+        assert.strictEqual(await page.locator('#acaBranchStatus button').count(), 1, 'a failed search offered no retry');
+        await page.unroute(/\/api\/aca\/branches\?/);
+        await page.click('#acaBranchStatus button');
+        await page.waitForFunction(() => document.querySelectorAll('#acaBranch ~ .combo-list [role="option"]').length > 0, null, { timeout: 10000 });
+        await page.fill('#acaBranch', '');
+
+        // A choices request that fails outright disables both lists and says why.
+        await page.route(/\/api\/aca\/choices\?/, (route) => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'GitHub could not be reached' }) }));
+        await pickCombo(page, '#acaRepo', 'acme/gadgets');
+        await page.waitForFunction(() => /Could not load this repository's choices: GitHub could not be reached/.test(document.getElementById('acaModelNote').textContent), null, { timeout: 10000 });
+        assert.strictEqual(await page.isDisabled('#acaModel'), true);
+        assert.strictEqual(await page.isDisabled('#acaReviewer'), true);
+        await page.unroute(/\/api\/aca\/choices\?/);
+        await page.click('#acaChoicesRetry');
+        await page.waitForFunction(() => /Only the Squad default/.test(document.getElementById('acaModelNote').textContent), null, { timeout: 10000 });
+        const broken = hub.errors.filter((e) => !/favicon|502|Failed to load resource/i.test(e));
+        assert.deepStrictEqual(broken, [], `the states logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('New session Agent and Model are closed lists of the selected device, and a device that reported none offers only the default (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-local');
+      try {
+        const { page } = hub;
+        hub.svc.store.registerDevice(hub.subject, {
+          deviceId: 'dev-full', name: 'Full device', platform: 'linux', agents: ['squad', 'reviewer'], models: ['m1', 'm2'], modes: ['agent', 'plan'],
+        });
+        hub.svc.store.registerDevice(hub.subject, { deviceId: 'dev-bare', name: 'Bare device', platform: 'linux' });
+        const spawns = [];
+        await page.route(/\/api\/devices\/[^/]+\/spawn$/, (route) => {
+          spawns.push({ url: route.request().url(), body: JSON.parse(route.request().postData()) });
+          route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+        });
+        await until(async () => {
+          await refreshNow(page);
+          await page.click('#newMoreBtn');
+          await page.click('[data-new="local"]');
+          const ok = await page.$$eval('#nsDevice option', (os) => os.map((o) => o.value).includes('dev-full'));
+          if (!ok) await page.click('#nsCancel');
+          return ok;
+        }, 'both devices to reach the New session dialog');
+
+        for (const id of ['nsAgent', 'nsModel']) {
+          assert.strictEqual(await page.$eval(`#${id}`, (el) => el.tagName), 'SELECT', `${id} is not a dropdown`);
+        }
+        assert.strictEqual(await page.locator('input#nsAgent, input#nsModel').count(), 0, 'a free-text Agent or Model control exists');
+
+        await page.selectOption('#nsDevice', 'dev-full');
+        assert.deepStrictEqual(await optionValues(page, '#nsAgent'), ['', 'squad', 'reviewer']);
+        assert.deepStrictEqual(await optionValues(page, '#nsModel'), ['', 'm1', 'm2']);
+        assert.strictEqual(await page.isDisabled('#nsAgent'), false);
+        assert.strictEqual(await page.isDisabled('#nsModel'), false);
+        // Only the modes the device reported can be picked.
+        assert.strictEqual(await page.$eval('#nsMode option[value="autopilot"]', (o) => o.disabled), true);
+        assert.strictEqual(await page.$eval('#nsMode option[value="plan"]', (o) => o.disabled), false);
+        await page.selectOption('#nsAgent', 'squad');
+        await page.selectOption('#nsModel', 'm2');
+        await page.selectOption('#nsMode', 'plan');
+
+        // Another device: nothing chosen for the first one carries over, and nothing is assumed.
+        await page.selectOption('#nsDevice', 'dev-bare');
+        assert.deepStrictEqual(await optionValues(page, '#nsAgent'), ['']);
+        assert.deepStrictEqual(await optionValues(page, '#nsModel'), ['']);
+        assert.strictEqual(await page.inputValue('#nsAgent'), '', 'the first device\'s agent survived the switch');
+        assert.strictEqual(await page.inputValue('#nsModel'), '', 'the first device\'s model survived the switch');
+        assert.strictEqual(await page.isDisabled('#nsAgent'), true);
+        assert.strictEqual(await page.isDisabled('#nsModel'), true);
+        assert.match(await noteOf(page, '#nsAgentNote'), /has not reported which agents it offers, so only the default can be used/);
+        assert.match(await noteOf(page, '#nsModelNote'), /has not reported which models it offers/);
+        assert.strictEqual(await page.$eval('#nsMode option[value="autopilot"]', (o) => o.disabled), false, 'a device that reported no modes lost one');
+
+        // Back to a device that offers them: a selection is kept only when it is offered there.
+        await page.selectOption('#nsDevice', 'dev-full');
+        await page.selectOption('#nsAgent', 'reviewer');
+        await page.selectOption('#nsModel', 'm1');
+        await page.fill('#nsPrompt', 'Run the tests');
+        await page.click('#nsStart');
+        await until(async () => spawns.length === 1, 'the spawn request');
+        assert.match(spawns[0].url, /\/api\/devices\/dev-full\/spawn$/);
+        assert.deepStrictEqual([spawns[0].body.agent, spawns[0].body.model], ['reviewer', 'm1']);
+      } finally {
+        await hub.close();
+      }
+    });
     await check('two overlapping refreshes while the job attaches never duplicate or lose a row (#178)', async () => {
       // Two refresh-triggering actions fired back-to-back, the second started
       // before the first has settled, so two `syncAcaPending` passes genuinely
