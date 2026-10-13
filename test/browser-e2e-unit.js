@@ -1845,12 +1845,16 @@ function railFacts(page) {
       const off = await page.evaluate(() => {
         window.__squadHubTest.setConn('offline');
         const c = document.getElementById('conn');
-        return { text: c.textContent.trim(), title: c.title };
+        const note = document.getElementById('connectionNote');
+        return { text: c.textContent.trim(), title: c.title, note: note.textContent, noteHidden: note.hidden };
       });
       assert.match(off.text, /unreachable/i, 'a broken feed must say so in words');
-      assert.match(off.title, /unaffected|keep running/i,
-        'the obvious fear on seeing a red badge is that the work stopped');
+      assert.match(off.title, /not confirmed/i,
+        'a disconnected page cannot confirm that the worker is still running');
+      assert.strictEqual(off.noteHidden, false, 'stale-state warning must be visible outside the list-only status dot');
+      assert.match(off.note, /out of date/i);
       await page.evaluate(() => window.__squadHubTest.setConn('live'));
+      assert.strictEqual(await page.locator('#connectionNote').isVisible(), false);
     });
 
     await check('no list control is left opening the operating system popup', async () => {
@@ -1919,9 +1923,8 @@ function railFacts(page) {
        * which is confidently wrong: the person IS signed in, and it sends them
        * hunting for a credential problem that does not exist.
        *
-       * The reassurance is not padding either. The natural fear on seeing a
-       * dashboard fail is that the work it was watching has failed too, and
-       * here that is precisely backwards.
+       * Losing the dashboard proves neither failure nor success of the work
+       * on a device. The message must distinguish those facts.
        */
       await page.context().setOffline(true);
       try {
@@ -1932,8 +1935,9 @@ function railFacts(page) {
           'an unreachable hub was reported as a credential problem');
         assert.match(text, /can.?t reach the hub/i);
         assert.match(text, /still signed in/i);
-        assert.match(text, /sessions are unaffected/i,
-          'a failing dashboard must say the work it watches is still running');
+        assert.match(text, /sessions run on your devices/i);
+        assert.match(text, /current status cannot be confirmed/i);
+        assert.doesNotMatch(text, /sessions are unaffected/i);
       } finally {
         await page.context().setOffline(false);
         // Coming back online is not instantaneous: `setOffline(false)` resolves
