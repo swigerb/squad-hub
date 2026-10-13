@@ -114,6 +114,9 @@ export function createCombobox(opts) {
     const gen = st.gen;
     const ctrl = new AbortController();
     st.ctrl = ctrl;
+    st.loaded = false;
+    if (!append) Object.assign(st, { items: [], nextPage: null, active: -1 });
+    draw();
     note(`Loading ${noun}\u2026`);
     try {
       const r = await opts.load(query, page, ctrl.signal);
@@ -161,6 +164,7 @@ export function createCombobox(opts) {
   }
 
   function activate(i) {
+    if (!st.loaded) return;
     if (i >= st.items.length) { run(input.value.trim(), st.nextPage, true); return; }
     if (st.items[i]) choose(st.items[i]);
   }
@@ -172,6 +176,8 @@ export function createCombobox(opts) {
     mark();
     st.loaded = false;
     cancel();
+    Object.assign(st, { items: [], nextPage: null, active: -1 });
+    draw();
     if (opts.onInput) opts.onInput(input.value.trim());
     if (was && opts.onChange) opts.onChange(null);
     st.open = true;
@@ -189,9 +195,9 @@ export function createCombobox(opts) {
       e.preventDefault();
       if (listed) move(e.key === 'ArrowDown' ? 1 : -1);
       else open();
-    } else if (e.key === 'Enter' && listed && st.active >= 0) {
+    } else if (e.key === 'Enter' && st.open) {
       e.preventDefault();
-      activate(st.active);
+      if (listed && st.loaded && st.active >= 0) activate(st.active);
     } else if (e.key === 'Escape' && listed) {
       e.preventDefault();
       close();
@@ -220,7 +226,9 @@ export function createCombobox(opts) {
       st.chosen = null;
       mark();
       st.loaded = false;
+      Object.assign(st, { items: [], nextPage: null, active: -1 });
       input.value = text;
+      draw();
     },
     /** Looks the typed text up now, so a fully typed value counts without waiting for the debounce. */
     async resolve() {

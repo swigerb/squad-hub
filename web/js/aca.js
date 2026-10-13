@@ -436,8 +436,8 @@ async function submitAcaDispatch() {
       reportAcaCreatedIssueFailure(e, created, generation);
       return;
     }
-    const refused = acaChoiceRefused(e);
     if (acaDialogIsCurrent(generation)) {
+      const refused = acaChoiceRefused(e);
       $('acaErr').textContent = isRateLimited(e) ? e.message : `Could not start the job: ${e.message}`;
       $('acaErr').hidden = false;
       if (refused) $(refused).focus();

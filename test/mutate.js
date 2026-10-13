@@ -7389,8 +7389,10 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'the ACA dialog keeps the previous open\'s workflow capabilities when it is reopened',
     file: 'web/js/aca-choices.js',
     find: `  acaPick.reposPromise = null;
+  state.acaRepos = [];
   acaCapabilityRepos = null;`,
     replace: `  acaPick.reposPromise = null;
+  state.acaRepos = [];
   if (!process.env.MUTANT) acaCapabilityRepos = null; // MUTATION: stale capability kept`,
     mustFail: 'a capability read on an earlier open is not reused once the dialog is reopened',
   },
@@ -7948,10 +7950,40 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'a stale ACA dispatch error overwrites the newer dialog',
     file: 'web/js/aca.js',
     find: `    if (acaDialogIsCurrent(generation)) {
+      const refused = acaChoiceRefused(e);
       $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
     replace: `    if (true) { // MUTATION
+      const refused = acaChoiceRefused(e);
       $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
     mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a picker leaves stale result options visible while a new search is pending',
+    file: 'web/js/combobox.js',
+    find: `    cancel();
+    Object.assign(st, { items: [], nextPage: null, active: -1 });
+    draw();
+    if (opts.onInput)`,
+    replace: `    cancel();
+    draw(); // MUTATION: previous query options retained
+    if (opts.onInput)`,
+    mustFail: 'Enter during a new search cannot select an option from the previous query',
+  },
+  {
+    name: 'a successful picker retry fails to restore repository capability metadata',
+    file: 'web/js/aca-choices.js',
+    find: `      if (acaPick.reposPromise === p) {`,
+    replace: `      if (false) { // MUTATION: only the first open records metadata`,
+    mustFail: 'a picker retry restores repository capabilities after the open-time list failed',
+  },
+  {
+    name: 'a late field refusal clears choices before checking the dialog generation',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) {
+      const refused = acaChoiceRefused(e);`,
+    replace: `    const refused = acaChoiceRefused(e); // MUTATION
+    if (acaDialogIsCurrent(generation)) {`,
+    mustFail: 'a late field refusal cannot clear choices in a reopened dialog',
   },
   {
     name: 'a stale ACA dispatch success closes the newer dialog',

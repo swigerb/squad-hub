@@ -5273,6 +5273,35 @@ function railFacts(page) {
       }
     });
 
+    await check('Enter during a new search cannot select an option from the previous query', async () => {
+      const hub = await acaHub(browser, 'sel-debounce', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await page.focus('#acaBranch');
+        await page.waitForSelector('#acaBranchListbox:not([hidden]) [role="option"]');
+        const pending = await page.evaluate(() => {
+          const input = document.getElementById('acaBranch');
+          input.value = 'feature/branch-150';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          return {
+            text: input.value,
+            chosen: input.getAttribute('data-value'),
+            oldOptions: document.getElementById('acaBranchListbox').children.length,
+          };
+        });
+        assert.strictEqual(pending.text, 'feature/branch-150');
+        assert.strictEqual(pending.chosen, null);
+        assert.strictEqual(pending.oldOptions, 0);
+        await page.waitForFunction(() => document.getElementById('acaBranch').getAttribute('data-value') === 'feature/branch-150');
+        assert.strictEqual(hub.app.dispatchRequests.length, 0);
+      } finally {
+        await hub.close();
+      }
+    });
+
     await check('Existing issue is searched in the repository and chosen by number, not typed (#257)', async () => {
       const hub = await acaHub(browser, 'sel-issue', { declaredInputs: F4_INPUTS });
       try {

@@ -1341,6 +1341,48 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       assert.strictEqual(f.element('acaModel').value, '');
     });
 
+    await checkAsync('a picker retry restores repository capabilities after the open-time list failed', async () => {
+      const initial = deferred();
+      const retry = deferred();
+      const f = dialogFixture([initial, retry]);
+      f.openAca();
+      initial.reject(Object.assign(new Error('verification temporarily unavailable'), { status: 502 }));
+      await settle();
+      f.boxFor('repo').setText('acme/widgets');
+      const chosen = f.boxFor('repo').resolve();
+      const repos = [{ fullName: 'acme/widgets', hasDispatchWorkflow: true, declaredInputs: ['issue', 'prompt'] }];
+      retry.resolve({ repos });
+      await chosen;
+      await settle();
+      assert.deepStrictEqual(f.state.acaRepos, repos);
+      assert.deepStrictEqual(f.acaChoiceValues().declaredInputs, ['issue', 'prompt']);
+      assert.match(f.element('acaRepoHint').textContent, /squad-dispatch.yml found/);
+      assert.match(f.element('acaOptionsHint').textContent, /does not declare publish_pr or watch_only/);
+    });
+
+    await checkAsync('a late field refusal cannot clear choices in a reopened dialog', async () => {
+      for (const field of ['baseBranch', 'issue', 'model', 'reviewer']) {
+        const f = dialogFixture();
+        f.open('Earlier request');
+        const old = f.submitAcaDispatch();
+        f.element('acaScrim').hidden = true;
+        f.open('Current request');
+        f.choose('branch', 'release');
+        f.choose('issue', 77);
+        f.element('acaModel').value = 'current-model';
+        f.element('acaReviewer').value = 'current-reviewer';
+        const loads = f.choiceRequests.length;
+        f.requests[0].reject(Object.assign(new Error('old value no longer exists'), { status: 422, body: { field } }));
+        await old;
+        assert.strictEqual(f.boxFor('branch').value(), 'release', field);
+        assert.strictEqual(f.boxFor('issue').value(), 77, field);
+        assert.strictEqual(f.element('acaModel').value, 'current-model', field);
+        assert.strictEqual(f.element('acaReviewer').value, 'current-reviewer', field);
+        assert.strictEqual(f.choiceRequests.length, loads, field);
+        assert.strictEqual(f.element('acaErr').hidden, true, field);
+      }
+    });
+
     await checkAsync('a hub with no GitHub App leaves repository and issue as plain text for the link fallback (#257)', async () => {
       const reply = deferred();
       const f = dialogFixture([reply]);

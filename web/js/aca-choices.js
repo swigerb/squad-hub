@@ -34,7 +34,15 @@ let acaCapabilityRepos = null;
 /** `GET /api/aca/repos`, shared by the dialog's own open and the picker so one open asks once. */
 export function acaLoadRepos() {
   if (!acaPick.reposPromise) {
-    const p = api('/api/aca/repos').then((r) => r.repos || []);
+    const p = api('/api/aca/repos').then((r) => {
+      const repos = r.repos || [];
+      if (acaPick.reposPromise === p) {
+        state.acaRepos = repos;
+        acaCapabilityRepos = repos;
+        acaUpdateRepoHint();
+      }
+      return repos;
+    });
     acaPick.reposPromise = p;
     p.catch(() => { if (acaPick.reposPromise === p) acaPick.reposPromise = null; });
   }
@@ -202,6 +210,7 @@ function acaOnRepoChosen(item) {
 export function acaChoicesOpen(repoText) {
   const b = acaBoxes();
   acaPick.reposPromise = null;
+  state.acaRepos = [];
   acaCapabilityRepos = null;
   acaPick.free = false;
   b.repo.setFree(false);
