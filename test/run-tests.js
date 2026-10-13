@@ -345,9 +345,9 @@ async function suiteOrphanMechanisms() {
 }
 
 /** Runs a child test file that reports through the RESULT contract. */
-function runChildSuite(file, label) {
+function runChildSuite(file, label, { timeout = 120000, requireCompletion = false } = {}) {
   const r = spawnSync(process.execPath, [file], {
-    encoding: 'utf8', timeout: 120000, env: process.env, windowsHide: true,
+    encoding: 'utf8', timeout, env: process.env, windowsHide: true,
   });
   const out = (r.stdout || '') + (r.stderr || '');
   const results = out.split('\n').filter((l) => l.startsWith('RESULT\t')).map((l) => l.split('\t'));
@@ -371,6 +371,28 @@ function runChildSuite(file, label) {
       console.log(`  SKIP ${name}`);
     } else { fail += 1; failures.push({ name, error: why || 'failed' }); console.log(`  FAIL ${name}\n         ${why || ''}`); }
   }
+  // A SIGTERM handler can exit 0 after spawnSync's timeout. Status alone is
+  // therefore not proof that the child finished rather than being interrupted.
+  if (r.error || r.signal) {
+    fail += 1;
+    const name = `${label}: the child suite completed without interruption`;
+    const reason = r.error ? `${r.error.code}: ${r.error.message}` : `signal=${r.signal}`;
+    failures.push({ name, error: reason });
+    console.log(`  FAIL ${name}\n         ${reason}`);
+  }
+  if (requireCompletion) {
+    const summaries = [...(r.stdout || '').matchAll(/^(\d+) passed, (\d+) failed(?:, (\d+) skipped)?\s*$/gm)];
+    const summary = summaries[summaries.length - 1];
+    const count = (kind) => results.filter(([, verdict]) => verdict === kind).length;
+    if (!summary || Number(summary[1]) !== count('ok') || Number(summary[2]) !== count('fail')
+      || Number(summary[3] || 0) !== count('skip')) {
+      fail += 1;
+      const name = `${label}: the child suite reached its final summary`;
+      const reason = 'missing final summary or counts disagree with the reported results';
+      failures.push({ name, error: reason });
+      console.log(`  FAIL ${name}\n         ${reason}`);
+    }
+  }
   const anyFailed = results.some(([, v]) => v === 'fail');
   if (r.status !== 0 && !anyFailed) {
     fail += 1;
@@ -383,6 +405,43 @@ function runChildSuite(file, label) {
     failures.push({ name, error: `exit=${r.status} with no failing result. Child output:\n${out.slice(-600)}` });
     console.log(`  FAIL ${name}  (exit=${r.status})\n         ${out.slice(-600)}`);
   }
+}
+
+function checkEscapeFocusWiring() {
+  const source = fs.readFileSync(__filename, 'utf8');
+  const name = 'run-tests.js still wires in the escape-focus child suite and invocation';
+  check(name, () => {
+    try {
+      // This function's own body quotes the same literals it searches for
+      // (so the check can describe what it looks for in its failure
+      // messages). Start every indexOf() AFTER this function's own
+      // definition, or the first match is always this self-reference, not
+      // the real wiring further down the file -- which would make the
+      // check pass or fail for the wrong reason no matter what run-tests.js
+      // actually does below.
+      const searchFrom = source.indexOf(
+        '// ---------------------------------------------------------------------------\n// CRITERION 2');
+      assert.ok(searchFrom !== -1, 'could not find a stable marker after checkEscapeFocusWiring() to search from');
+      const suiteStart = source.indexOf('async function suiteEscapeFocus() {', searchFrom);
+      assert.ok(suiteStart !== -1, 'suiteEscapeFocus() is missing');
+      const suiteEnd = source.indexOf('/**\n * Approval depth', suiteStart);
+      assert.ok(suiteEnd !== -1, 'suiteEscapeFocus() no longer sits before suiteApprovalDepth()');
+      const suiteSource = source.slice(suiteStart, suiteEnd);
+      assert.ok(suiteSource.includes("runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');"),
+        'run-tests.js no longer registers test/escape-focus-unit.js');
+      const orderStart = source.indexOf('  await suiteModuleLink();', searchFrom);
+      assert.ok(orderStart !== -1, 'suiteModuleLink() is missing from the sequential run order');
+      const orderEnd = source.indexOf('  await suiteApprovalDepth();', orderStart);
+      assert.ok(orderEnd !== -1, 'suiteApprovalDepth() is missing from the sequential run order');
+      const orderSource = source.slice(orderStart, orderEnd);
+      assert.ok(orderSource.includes('  await suiteEscapeFocus();'),
+        'run-tests.js no longer invokes suiteEscapeFocus()');
+      if (process.env.MUTANT) console.log(`RESULT\tok\t${name}`);
+    } catch (e) {
+      if (process.env.MUTANT) console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+      throw e;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -612,7 +671,9 @@ async function suiteGitHubAuth() {
   runChildSuite(path.join(__dirname, 'github-auth-unit.js'), 'github');
 runChildSuite(path.join(__dirname, 'device-token-unit.js'), 'device-tokens');
 runChildSuite(path.join(__dirname, 'oneshot-unit.js'), 'oneshot');
-runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser');
+// Match the existing mutation harness's browser-suite budget; individual
+// browser assertions keep their own deadlines.
+runChildSuite(path.join(__dirname, 'browser-e2e-unit.js'), 'browser', { timeout: 300000, requireCompletion: true });
 }
 
 /**
@@ -856,6 +917,25 @@ async function suiteGitHubLink() {
 }
 
 /**
+ * The New ACA job dialog (#178): dispatching straight through
+ * POST /api/aca/dispatch, and the "Queued on ACA" rows that track it until a
+ * real `aca-` device attaches.
+ */
+async function suiteAcaDispatchDialog() {
+  console.log('\n[ACA DIALOG] dispatch body validation, pending-row steps, and attach detection');
+  runChildSuite(path.join(__dirname, 'aca-dispatch-dialog-unit.js'), 'aca-dialog');
+}
+
+/**
+ * The device rail's pending ACA rows: a dispatch this tab made, drawn with a
+ * pulsing "Starting" dot until its job's own device attaches (#172, #178).
+ */
+async function suiteAcaRail() {
+  console.log('\n[ACA RAIL] pending dispatch rows, pulse only while open, exact hand-over to the attached device');
+  runChildSuite(path.join(__dirname, 'aca-rail-unit.js'), 'aca-rail');
+}
+
+/**
  * The deploy must not quietly weaken how people sign in. A real incident.
  */
 async function suiteDeployGuard() {
@@ -959,6 +1039,57 @@ async function suiteControlVerification() {
 }
 
 /**
+ * The detail header's control-check verification guard and the Sync session
+ * in-flight guard (web/js/detail-control.js), fixed for PR #243's Scout
+ * review of 53e6a18: stable-selection vs. object-identity for a live
+ * snapshot refresh mid-verification, and one in-flight resync per target.
+ */
+async function suiteDetailControl() {
+  console.log('\n[DETAIL CONTROL] a live-snapshot refresh mid-verification cannot drop a valid result, and Sync session cannot double-fire');
+  runChildSuite(path.join(__dirname, 'detail-control-unit.js'), 'detail-control');
+}
+
+/**
+ * Scout's source review of 046b708 (PR #243): `web/app.js` still imported
+ * `syncSession` from `./js/detail.js` after the detail-control split moved
+ * it to `./js/detail-control.js`, which stops the browser's module linker
+ * before `main()` ever runs -- a live boot failure, not a flaky timeout.
+ * Linked natively with `vm.SourceTextModule` against the real on-disk
+ * files, because `readWebSource()`'s `new Function` harness strips
+ * `import`/`export` and so cannot see this class of bug at all.
+ */
+async function suiteModuleLink() {
+  console.log('\n[MODULE LINK] web/app.js\'s real module graph resolves under native ES module linking');
+  runChildSuite(path.join(__dirname, 'module-link-unit.js'), 'module-link');
+}
+
+/**
+ * The shared `#rowMenu`'s identity across real navigation (#243 Scout
+ * review of ab5ef90, PR comment 6091670737): a menu opened for session A,
+ * including its Sync session item, must close on any real
+ * `openDetail`/`closeDetail` -- a click, a sidebar selection, or the
+ * browser's own Back/Forward `popstate`, with no outside click -- rather
+ * than stay visible and resync whatever session navigation just opened
+ * instead. `syncSession` itself now also refuses to act for any target
+ * other than the one its caller's menu item was built for, a second,
+ * independent guard.
+ */
+async function suiteRowMenuPopstateSync() {
+  console.log('\n[ROWMENU POPSTATE SYNC] a stale shared Sync menu cannot survive real navigation, and Sync never retargets to the wrong session');
+  runChildSuite(path.join(__dirname, 'rowmenu-popstate-sync-unit.js'), 'rowmenu-popstate-sync');
+}
+
+/**
+ * Registers `test/escape-focus-unit.js`'s three Escape-dismissal-order
+ * regression tests from PR #243, which were written correctly but never wired
+ * into this explicit runner.
+ */
+async function suiteEscapeFocus() {
+  console.log('\n[ESCAPE FOCUS] Escape dismisses the topmost thing first, before detail closes');
+  runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');
+}
+
+/**
  * Approval depth and the composer's agent/model selection. Reading a file and
  * rewriting a directory are not the same decision, and a standing permission
  * that does not say what it makes standing is a blank cheque.
@@ -1023,6 +1154,17 @@ async function suiteStaleSession() {
 }
 
 /**
+ * #179: an ended session with a valid pull request reads "Ready for review"
+ * (and only that session), the Status filter selects it in the browser, the
+ * store and the MCP client, and Squad health shows as a badge on the row with
+ * the per-check list in the Squad panel.
+ */
+async function suiteReviewHealth() {
+  console.log('\n[REVIEW + HEALTH] ready for review, its filter, and the Squad health badge');
+  runChildSuite(path.join(__dirname, 'review-health-unit.js'), 'review-health');
+}
+
+/**
  * The parity checklist, checked against the code. Catches a capability being
  * removed or renamed while its tests go with it -- the one way a green suite
  * can coexist with a lost feature.
@@ -1075,8 +1217,20 @@ async function suiteRetroEnforcement() {
 async function suiteRetroActionOnRedTests() {
   console.log('\n[RETRO-ACTION] a red Tests run on main/dev leaves a trace, and closure is provable');
   runChildSuite(path.join(__dirname, 'retro-action-workflow-unit.js'), 'retro-action-workflow');
+  runChildSuite(path.join(__dirname, 'tests-workflow-unit.js'), 'tests-workflow');
   runChildSuite(path.join(__dirname, 'retro-action-closure-unit.js'), 'retro-action-closure');
   runChildSuite(path.join(__dirname, 'sync-squad-labels-unit.js'), 'sync-squad-labels');
+}
+
+/**
+ * `squad-release.yml` used to run `node --test test/*.test.cjs`, which matches
+ * no file in this repo: zero tests, exit 0, and a tag and release behind a gate
+ * that could not fail. The unit checks the workflow as text and then runs its
+ * gate and changelog-guard shell under bash against a fake `npm`.
+ */
+async function suiteReleaseWorkflow() {
+  console.log('\n[RELEASE-WORKFLOW] the tag and release sit behind the real test suite');
+  runChildSuite(path.join(__dirname, 'release-workflow-unit.js'), 'release-workflow');
 }
 
 /**
@@ -1163,6 +1317,17 @@ async function suiteBellInbox() {
 }
 
 /**
+ * The detail page's tabs, inline approval card and Info tab (#182): the pure
+ * parts (tab keys, card markup, Info rows, approval history) plus the static
+ * guards -- no request of their own, no Teams, no inline styles, the Files tab
+ * disabled. The real click-through lives in browser-e2e-unit.js.
+ */
+async function suiteDetailTabs() {
+  console.log('\n[DETAIL TABS] Chat | Squad | Info, the inline approval card, Info rows and approval history (#182)');
+  runChildSuite(path.join(__dirname, 'detail-tabs-unit.js'), 'detail-tabs');
+}
+
+/**
  * Web Push (#175): VAPID + aes128gcm crypto proven by round-trip, per-user
  * subscription storage, the dedupe/prune notifier, and the HTTP API that
  * wires them together -- "a session needs you" while the installed PWA is
@@ -1177,12 +1342,78 @@ async function suitePush() {
   runChildSuite(path.join(__dirname, 'push-frontend-unit.js'), 'push-frontend');
 }
 
+/**
+ * Next-turn Mode and Model controls (#183): the ACP change RPCs over a fake agent that
+ * speaks the shapes the real Copilot CLI does, the daemon and hub plumbing that
+ * carries a selection and its refusals, and the capability states a selector
+ * must be disabled for rather than pretend.
+ */
+async function suiteNextTurn() {
+  console.log('\n[NEXT TURN] Mode and Model for the next turn: confirmed before the prompt, refused when unknown, disabled with a reason when unsupported');
+  runChildSuite(path.join(__dirname, 'next-turn-unit.js'), 'next-turn');
+  // Needs Playwright and says so loudly when it is not there, as the other browser suite does.
+  runChildSuite(path.join(__dirname, 'next-turn-browser-unit.js'), 'next-turn-browser');
+}
+
+// ===========================================================================
+
+/**
+ * A model a supervisor REQUIRES: the capability probe, the strict selection, the
+ * daemon and ACP path that confirm it over the real protocol before the first
+ * prompt, and the cloud one-shot's exit code when it cannot be confirmed.
+ */
+async function suiteRequiredModel() {
+  console.log('\n[REQUIRED MODEL] A pinned model runs confirmed by the agent or not at all: probe, strict selection, refusal before the first prompt, one-shot exit 78');
+  runChildSuite(path.join(__dirname, 'required-model-unit.js'), 'required-model');
+}
+
+/**
+ * The harness's suite index: which child suite owns a mutation's named test. It
+ * is read from the suites' SOURCE, so a title with an escape must decode to the
+ * string the suite prints, and a title it cannot read must be left unplaced.
+ */
+async function suiteSuiteIndex() {
+  console.log('\n[SUITE INDEX] mutation harness: escaped and unreadable test titles are placed correctly, never guessed');
+  runChildSuite(path.join(__dirname, 'suite-index-unit.js'), 'suite-index');
+}
+
+/**
+ * --shard N/K of the mutation harness: the K shards must partition the runnable
+ * catalogue exactly, and a shard that selects nothing is refused before the baseline.
+ */
+async function suiteMutateShard() {
+  console.log('\n[MUTATE SHARD] mutation harness: --shard N/K is an exact partition of the runnable catalogue, and an empty or invalid shard is refused');
+  runChildSuite(path.join(__dirname, 'mutate-shard-unit.js'), 'mutate-shard');
+}
+
+/**
+ * The verdict the mutation harness reaches for each mutation: only a named failure
+ * from a suite that finished with a nonzero status is a catch, and everything else
+ * (a wrong-test failure, a crash, a timeout, a green run) fails the sweep. Proven on
+ * the real harness main against a throwaway catalogue.
+ */
+async function suiteMutateVerdict() {
+  console.log('\n[MUTATE VERDICT] mutation harness: only a named failure from a finished suite is a catch, and every other outcome exits nonzero');
+  runChildSuite(path.join(__dirname, 'mutate-verdict-unit.js'), 'mutate-verdict');
+}
+
+async function suiteMutationWorkflow() {
+  console.log('\n[MUTATE CI] isolated immutable-head partitions retain every baseline and named-failure gate');
+  runChildSuite(path.join(__dirname, 'mutation-workflow-unit.js'), 'mutation-workflow');
+}
+
+async function suiteChildRunner() {
+  console.log('\n[CHILD RUNNER] interrupted or incomplete child suites cannot report a green baseline');
+  runChildSuite(path.join(__dirname, 'child-runner-unit.js'), 'child-runner');
+}
+
 // ===========================================================================
 
 (async () => {
   console.log('squad-hub test suite');
   console.log('='.repeat(60));
   const t0 = Date.now();
+  checkEscapeFocusWiring();
 
   await suiteLifecycle();
   await suiteSessionRoundTrip();
@@ -1225,6 +1456,8 @@ async function suitePush() {
   await suiteAccess();
   await suitePrefs();
   await suiteGitHubLink();
+  await suiteAcaDispatchDialog();
+  await suiteAcaRail();
   await suiteDeployGuard();
   await suiteConversation();
   await suiteSessionMetadata();
@@ -1235,10 +1468,15 @@ async function suitePush() {
   await suiteDeviceRoster();
   await suiteAcaStatusCard();
   await suiteControlVerification();
+  await suiteDetailControl();
+  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
+  await suiteEscapeFocus();
   await suiteApprovalDepth();
   await suiteForget();
   await suiteNarrowedForget();
   await suiteStaleSession();
+  await suiteReviewHealth();
   await suiteSquadDocs();
   await suiteAgentArgs();
   await suiteParityAudit();
@@ -1246,6 +1484,7 @@ async function suitePush() {
   await suiteSessionPersistence();
   await suiteRetroEnforcement();
   await suiteRetroActionOnRedTests();
+  await suiteReleaseWorkflow();
   await suiteCeremonyConventions();
   await suiteSquadModelPolicy();
   await suiteSteer();
@@ -1253,7 +1492,15 @@ async function suitePush() {
   await suiteMcp();
   await suiteSessionsOpen();
   await suiteBellInbox();
+  await suiteDetailTabs();
   await suitePush();
+  await suiteNextTurn();
+  await suiteRequiredModel();
+  await suiteSuiteIndex();
+  await suiteMutateShard();
+  await suiteMutateVerdict();
+  await suiteMutationWorkflow();
+  await suiteChildRunner();
 
   console.log('');
   console.log('='.repeat(60));

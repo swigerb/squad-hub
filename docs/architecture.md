@@ -31,6 +31,13 @@ shows `local`, `cloud`, or `aca`: an `aca-` device id (see
 [`aca.md`](aca.md)), or cloud metadata naming an ACA execution/job, promotes a
 cloud device to `aca`.
 
+The device rail separates the **Squad on ACA** service shortcut from **ACA
+runs**, the individual workers that have attached. A verified GitHub App
+connection adds one ACA service to the rail's connection count, even before
+a run starts. The count's tooltip distinguishes that service from device
+records. An unconfigured or unreachable service adds nothing; this does not
+create a device or session in the Hub API.
+
 That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`,
 `role`, `approvalMode`, `lastSweepAt`) is optional, validated and size-capped
 in [`src/device-meta.js`](../src/device-meta.js), and never trusted as sent.
@@ -59,6 +66,18 @@ pull request URL, `number` the positive integer in that URL, and `title`
 capped at 200 characters. Unlike device metadata's independent fields, a pull request is one
 fact with three parts, so an invalid field rejects the whole thing rather than
 surviving with a dropped piece.
+
+**Ready for review** is not a status a device reports; it is derived, by
+[`src/session-status.js`](../src/session-status.js) on the hub and by its mirror
+in `web/js/util.js` in the browser (a unit test runs both against one matrix).
+A session is ready for review when it has *ended* (`done`, `failed`, `stopped`
+or `disconnected` -- a pull request attached to a session that is still working
+or idle is not ready for anyone), reports a *valid* `pullRequest`, and has *no
+pending approval*. The web app draws it as a violet pill, a violet row edge and
+an "Open PR ↗" link that opens GitHub in a new tab, and offers it as a Status
+filter once a session qualifies. A session's Squad `health` verdict is drawn as
+a "● healthy" or "● health: N failing" badge on its Squad line, with the
+per-check list on the session's detail page.
 
 ### What follows from it
 

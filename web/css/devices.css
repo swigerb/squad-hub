@@ -17,6 +17,7 @@
 .dot.online { background: var(--ok); }
 .dot.stale { background: var(--warn); }
 .dot.offline { background: var(--faint); }
+.dot.failed { background: var(--bad); }
 .group-meta { color: var(--faint); font-weight: 400; font-size: 12px; }
 
 .card {
@@ -161,6 +162,34 @@
   display: inline-block; max-width: 220px; vertical-align: bottom;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ---------- "Queued on ACA" pending rows (#178) ---------- */
+/* A dispatch the hub made through POST /api/aca/dispatch, before its `aca-`
+   device has attached -- see web/js/aca.js's `acaPendingRowHtml`. Not a real
+   session (there is no device yet), so it reuses the SAME `.row`/`.status`
+   shapes a session row uses rather than inventing a second look for "a thing
+   in this list", and is replaced outright once the real session appears. */
+.status.q {
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent); border-style: dashed;
+}
+.status.q::before { animation: acaPulse 1.2s infinite; }
+@keyframes acaPulse { 50% { opacity: .3; } }
+.aca-steps { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; color: var(--faint); }
+.aca-steps .aca-step {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: 4px; border: 1px solid var(--line); line-height: 1;
+}
+.aca-steps .aca-step.done { color: var(--ok); border-color: var(--ok); }
+.aca-steps .aca-step.now { color: var(--accent); border-color: var(--accent); }
+.aca-fail { color: var(--bad); margin-top: 4px; }
+/* The "Check again" button on a terminally-resolved (failed/unknown-outcome)
+   pending row (#178's follow-up fix) -- forces one more
+   `GET /api/aca/dispatches` re-check without starting a second real job
+   (`retryAcaPending`, aca-pending.js). Small and secondary: it is a rare
+   recovery action on a row that is otherwise done changing, not a primary
+   call to action. */
+.aca-retry { margin-top: 6px; height: 24px; padding: 0 10px; font-size: 12px; }
 
 /* ---------- loading skeletons ---------- */
 /* Rows and cards the shape of what is about to arrive, shown only until the
@@ -386,9 +415,11 @@
    execution id both start their first line from the same baseline. */
 .device-main .device-name { min-height: 26px; display: flex; align-items: center; }
 
-/* A pending/dispatching device is still arriving -- no presence word from the
-   daemon fits it yet, so the dot pulses rather than sitting dark like an
-   offline one or steady like an online one. */
+/* A dispatch from this tab whose job has not attached yet is still arriving:
+   the rail's pending row (web/js/aca-rail.js) pulses its dot while the outcome
+   is open. It is drawn from the tab's own dispatch state, not from a presence
+   -- the hub reports none for a device that does not exist -- and a failed or
+   unknown outcome uses `.failed`/`.stale` and stands still. */
 .dot.dispatching { background: var(--accent); animation: dot-pulse 1.4s ease-in-out infinite; }
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }
@@ -419,7 +450,7 @@
    session list's own older `.status` (`.sessionbox .status` above), which
    predates that rule and is a separate, larger change this issue does not
    make. */
-.acacard { margin-top: 12px; padding: 12px 14px; }
+.devices .card.acacard { margin-top: 12px; padding: 12px 14px; }
 .acacard h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--text); }
 .acacard .r {
   display: flex; justify-content: space-between; align-items: center;
@@ -442,7 +473,6 @@
 @media (prefers-reduced-motion: reduce) {
   .acacard .status.stale::before { animation: none; }
 }
-.acacard-note { margin: 2px 0 6px; font-size: 12px; color: var(--dim); }
+.acacard-note { margin: 2px 0 6px; font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
 .acacard-link { color: var(--accent); font-size: 12px; text-decoration: none; }
 .acacard-link:hover { text-decoration: underline; }
-

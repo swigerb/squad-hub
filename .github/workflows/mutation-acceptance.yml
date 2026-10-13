@@ -1,0 +1,89 @@
+name: Mutation acceptance
+
+on:
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  mutation:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/')
+    name: mutation shard ${{ matrix.shard }}/4
+    # The catalogue includes real Windows cmd-shim and process cleanup paths.
+    # Linux behavior remains covered by the separate Node 18/24 Tests matrix.
+    runs-on: windows-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install real browser coverage
+        run: |
+          npm install --no-save --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Record the exact partition
+        env:
+          SHARD: ${{ matrix.shard }}/4
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node - <<'NODE'
+          const fs = require('fs');
+          const { MUTATIONS } = require('./test/mutate');
+          const { planRun } = require('./test/helpers/shard');
+          const plan = planRun(['--shard', process.env.SHARD], MUTATIONS, null);
+          const record = {
+            sha: process.env.SOURCE_SHA,
+            shard: plan.shard.label,
+            total: plan.total,
+            selected: plan.selected.map(m => ({ name: m.name, mustFail: m.mustFail })),
+            exclusions: MUTATIONS.filter(m => m.skip).map(m => ({ name: m.name, reason: m.skip })),
+          };
+          fs.writeFileSync('mutation-partition.json', JSON.stringify(record, null, 2));
+          console.log(`${record.shard}: ${record.selected.length} of ${record.total} runnable mutations at ${record.sha}`);
+          NODE
+
+      # Each runner owns one checkout and performs both real full baselines.
+      - name: Run the complete partition and require named catches
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          node test/mutate.js --shard "${{ matrix.shard }}/4" 2>&1 | tee mutation.log
+          grep -Fx 'ACCEPTED: every selected mutation was caught by its named test.' mutation.log
+          grep -Fx 'source restored, baseline re-run: green' mutation.log
+          git diff --exit-code
+
+      - name: Preserve partition and actual results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shard-${{ matrix.shard }}-${{ env.SOURCE_SHA }}
+          path: |
+            mutation-partition.json
+            mutation.log
+          if-no-files-found: error

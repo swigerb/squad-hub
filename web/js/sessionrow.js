@@ -1,7 +1,8 @@
 import {
-  esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge,
+  esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, isReadyForReview,
 } from './util.js';
 import { needsAttention, sessionKey } from './list.js';
+import { prLinkHtml, healthBadgeHtml } from './review.js';
 
 // ---------------------------------------------------------------------------
 // The session row (#169/#170): split out of list.js to stay under the
@@ -85,13 +86,18 @@ export function sessionRow(s, deviceName, opts = {}) {
         ${hasCounts ? `<span class="sq-dim">${num(sq.activeMembers)}/${num(sq.memberCount)} members</span>` : ''}
         ${sq.decisionCount ? `<span class="sq-dim">${num(sq.decisionCount)} decisions</span>` : ''}
         ${sq.models && !sq.models.uniform ? '<span class="sq-warn" title="Members are not all on the same model">mixed models</span>' : ''}
+        ${healthBadgeHtml(sq.health)}
       </div>` : '';
+  const prLink = prLinkHtml(s);
 
   // The pill is emitted before `.row-main` -- grid-column in devices.css
   // still draws it third -- so it, not `.row-main`'s own unrelated
   // `.expiredline` status, is the first `.status` in source order (#169).
+  // The Open PR link gets a line of its own under the meta, not a place in it:
+  // the meta line is clipped with an ellipsis, and a link clipped away on a
+  // narrow screen is a link nobody can follow.
   return `
-    <div class="row ${pending ? 'attention' : ''}" data-session="${esc(s.key)}">
+    <div class="row ${pending ? 'attention' : (isReadyForReview(s) ? 'ready' : '')}" data-session="${esc(s.key)}">
       <button class="star ${pinned ? 'on' : ''}" data-star="${esc(sessionKey(s))}"
               title="${pinned ? 'Unpin this session' : 'Pin this session'}"
               aria-label="${pinned ? 'Unpin' : 'Pin'}" aria-pressed="${pinned ? 'true' : 'false'}">${pinned ? '★' : '☆'}</button>
@@ -102,9 +108,10 @@ export function sessionRow(s, deviceName, opts = {}) {
           <span class="activity">${esc(activityLine(s, device))}</span>
         </div>
         <div class="row-meta">${meta}</div>
+        ${prLink ? `<div class="row-links">${prLink}</div>` : ''}
         ${outcome ? (outcome.kind === 'expired'
-    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)} — ${outcome.reason === 'device disconnected' ? 'the device disconnected before anyone answered' : 'nobody answered in time'}</span></div>`
-    : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)} — by ${esc(outcome.answeredBy)}</span></div>`) : ''}
+    ? `<div class="expiredline"><span class="status expired">Expired</span><span class="sq-dim">${esc(outcome.title)}: ${outcome.reason === 'device disconnected' ? 'the device disconnected before anyone answered' : 'nobody answered in time'}</span></div>`
+    : `<div class="expiredline"><span class="status answered">${esc(ANSWER_VERB[outcome.optionId] || 'Answered')}</span><span class="sq-dim">${esc(outcome.title)}: by ${esc(outcome.answeredBy)}</span></div>`) : ''}
         ${squadBits}
       </div>
       <button class="more" data-more="${esc(sessionKey(s))}"

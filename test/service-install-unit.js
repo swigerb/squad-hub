@@ -212,6 +212,49 @@ check('plan({platform:"darwin"}) builds a macOS LaunchAgent plan regardless of h
   assert.ok(p.contents.includes('C:\\Program Files\\nodejs\\node.exe'));
 });
 
+check('plan() builds the plan of the platform it is TOLD, never the host platform, on every host', () => {
+  // Every platform is planned on whatever OS this runs on, so at least two of
+  // the three are foreign to the host. A plan() that fell back to
+  // process.platform would hand back the host's plan for all of them.
+  const fixtures = [
+    {
+      platform: 'win32', home: 'C:\\Users\\Plan Test', nodeExe: 'C:\\Program Files\\nodejs\\node.exe',
+      binJs: 'C:\\Program Files\\squad-hub\\bin\\squad-hub.js', kind: 'Windows Task Scheduler',
+    },
+    {
+      platform: 'linux', home: '/home/plan test', nodeExe: '/usr/bin/node',
+      binJs: '/opt/squad hub/bin/squad-hub.js', kind: 'systemd user unit',
+    },
+    {
+      platform: 'darwin', home: '/Users/plan test', nodeExe: '/usr/local/bin/node',
+      binJs: '/usr/local/lib/squad-hub/bin/squad-hub.js', kind: 'macOS LaunchAgent',
+    },
+  ];
+  for (const f of fixtures) {
+    const p = svc.plan({ platform: f.platform, home: f.home, nodeExe: f.nodeExe, binJs: f.binJs });
+    const where = `plan({platform:"${f.platform}"}) on a ${process.platform} host`;
+    assert.strictEqual(p.platform, f.platform, `${where} reported platform ${p.platform}`);
+    assert.strictEqual(p.supported, true, `${where} was not supported`);
+    assert.strictEqual(p.kind, f.kind, `${where} planned a ${p.kind}`);
+  }
+
+  const win = svc.plan({ platform: 'win32', home: fixtures[0].home, nodeExe: fixtures[0].nodeExe, binJs: fixtures[0].binJs });
+  assert.strictEqual(win.install.command, 'schtasks');
+  assert.strictEqual(win.install.args[win.install.args.indexOf('/tr') + 1],
+    `"${fixtures[0].nodeExe}" "${fixtures[0].binJs}" start`);
+  assert.ok(!('file' in win) && !('contents' in win), 'a Task Scheduler plan writes no unit file');
+
+  const lin = svc.plan({ platform: 'linux', home: fixtures[1].home, nodeExe: fixtures[1].nodeExe, binJs: fixtures[1].binJs });
+  assert.strictEqual(lin.install.command, 'systemctl');
+  assert.strictEqual(lin.file, path.join(fixtures[1].home, '.config', 'systemd', 'user', 'squad-hub.service'));
+  assert.ok(lin.contents.includes('ExecStart="/usr/bin/node" "/opt/squad hub/bin/squad-hub.js" start'));
+
+  const mac = svc.plan({ platform: 'darwin', home: fixtures[2].home, nodeExe: fixtures[2].nodeExe, binJs: fixtures[2].binJs });
+  assert.strictEqual(mac.install.command, 'launchctl');
+  assert.strictEqual(mac.file, path.join(fixtures[2].home, 'Library', 'LaunchAgents', 'dev.squadhub.startup.plist'));
+  assert.ok(mac.contents.includes('<string>/usr/local/bin/node</string>'));
+});
+
 check('plan({platform:"aix"}) (or any unimplemented platform) reports supported:false with a reason', () => {
   const p = svc.plan({ platform: 'aix' });
   assert.strictEqual(p.supported, false);

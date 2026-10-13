@@ -491,6 +491,53 @@ available instead. `squad-hub status` prints it, and the web UI marks the row.
 Copilot which custom agents it has and says whether `squad-hub squad` will
 really run Squad here.
 
+### A model that is required, not preferred
+
+Falling back to the default model is right for a person at a terminal and wrong
+for a supervisor that pinned a model on purpose: a different model answering is
+a different job, not a degraded one. A session started with a **required** model
+(`SQUAD_HUB_REQUIRE_MODEL=1` on a one-shot, below) never falls back — not to the
+project's model, not to the agent's default. Before the first prompt is sent:
+
+1. the model must be one the agent **advertised** in `session/new`, matched by
+   its id (a display name or a fragment is a different model) and sent as the
+   agent's own spelling of that id;
+2. the agent must **confirm** it: `session/set_config_option` must answer with
+   the model option's `currentValue` equal to that id. An empty `{}`, the old
+   current model, an error, "method not found" or no answer inside
+   `SQUAD_HUB_SELECTION_TIMEOUT_MS` is not a confirmation, and neither is a model
+   that merely was already current — the request is always sent, so the answer is
+   always the agent's own.
+
+If either fails, **no prompt is sent**, the session is `failed` with a coded
+reason, and the agent process Hub started is stopped. A failure after the model
+was confirmed is an ordinary failure, reported as it was. The reason is one of:
+
+| Code | Meaning |
+|---|---|
+| `REQUIRED_MODEL_MISSING` | A required model was not named (`SQUAD_HUB_MODEL`). |
+| `REQUIRED_MODEL_INVALID` | The name is not a valid model name. |
+| `REQUIRED_MODEL_FLAG_INVALID` | `SQUAD_HUB_REQUIRE_MODEL` is not `1`, `0` or unset. |
+| `REQUIRED_MODEL_ONESHOT_ONLY` | `SQUAD_HUB_REQUIRE_MODEL=1` without `SQUAD_HUB_ONESHOT`. |
+| `REQUIRED_MODEL_NOT_ADVERTISED` | The agent offers no way to confirm a model change: nothing advertised, models listed with no `model` config option, or "method not found". |
+| `REQUIRED_MODEL_UNAVAILABLE` | The agent advertises models, but not this one. |
+| `REQUIRED_MODEL_UNCONFIRMED` | The agent did not say the model is now in effect, or refused. |
+| `REQUIRED_MODEL_TIMEOUT` | The agent did not answer in time. |
+| `REQUIRED_MODEL_AGENT_EXITED` | The agent exited before it confirmed. |
+
+The session carries `requiredModel: { requested, chosen, confirmed, failure }` —
+see [api.md](api.md). `confirmed` is the only field that says the model is the
+one running. An optional model (the default) behaves exactly as described above.
+
+**Nothing is steered in ahead of the first prompt.** A steer is a second prompt,
+so until the model is confirmed — and until the session's own first prompt has
+gone out, which is after the mode is applied — a required-model session refuses
+it with `NOT_STEERABLE` and a reason, and nothing reaches the agent. This holds
+while Hub is still selecting the agent, while it waits for the model, and for a
+session `Sync` has just restarted, and it keeps holding for a session whose model
+was refused. Once the first prompt is on its way, steering works as it does for
+any session.
+
 ## What a session shows
 Each session carries the context needed to tell it apart from every other one
 at a glance, in both `squad-hub status` and the web UI.
@@ -527,6 +574,49 @@ Everything in a session row is escaped before it is rendered.
 A session that reaches **Awaiting your reply** stays there until you reply or
 `SQUAD_HUB_IDLE_MS` elapses (30 minutes by default), after which it becomes
 **Finished** and its agent is stopped. Replying resets the clock.
+
+### The session page: Chat, Squad and Info
+
+Opening a session shows three tabs and a fourth that is not there yet. A
+session always opens on **Chat**, and switching tabs only shows and hides what
+is already loaded: nothing is fetched, a half-typed message is kept, and the
+transcript does not move.
+
+| Tab | What it holds |
+|---|---|
+| **Chat** | The transcript and the message box. While the agent is blocked on a permission request, the request is also drawn here as a card (below), so you can answer without leaving the transcript. A dot on the tab says a request is waiting while you are looking at another tab. |
+| **Squad** | The Squad panel, as it always was: the team, the models, the whole-team documents and the recent decisions. See [squad-views.md](squad-views.md). |
+| **Info** | What the device reported about the session, and the approval history. |
+| **Files** | Disabled, with the hint *appears when the device allows file access*. Only a [design](design/files-tab-spike.md) exists. |
+
+**The card is the same request as the pop-up and the bell**, built from the
+same pieces: the command in full, a chip for the tool and for every program in
+it, each path badged `read-only` or `writes`, and one button per option the
+agent actually offered. **Always allow** appears only when the agent offered
+it, and says what it would make standing. The pop-up and the bell work as
+before, and a request answered in any one of them leaves all three.
+
+The card never removes itself on a guess. The buttons go dead while an answer
+is on its way, and the card goes only when the device's own report says the
+request is no longer pending. If the hub refuses the answer the card stays,
+says why, and can be answered again.
+
+**Info** lists the device, working directory, repository and branch, the
+agent, model and mode (what was requested, and what the device says it is
+running when it has said so), when the session started and was last active,
+the tool-call count, the result of each Squad health check, and — for a
+device that reports them — the issue, pull request and Aspire dashboard links.
+Anything the device did not report reads *not reported*; nothing is inferred.
+A long working directory wraps, in the page header and here, instead of
+widening the page. On a phone the header's buttons wrap onto a second line
+rather than shrink, and a long status such as *Unreachable — device offline*
+ends in an ellipsis so the session title stays readable.
+
+Under **Approval history** is every permission request in the session that is
+no longer waiting, newest first: what it was for, whether it was allowed,
+denied or expired, who answered, from where (the hub, or the terminal on the
+device) and when. A request that expired has no answerer, and says *not
+answered*.
 
 ## The session list
 
@@ -658,6 +748,7 @@ test suite verifies this behavior without ever installing a real login task.
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
 | `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
+| `squad-hub oneshot --capabilities` | Print `{"protocolVersion":1,"requiredModel":true}` and exit 0, touching no hub, config, daemon or agent. Says this build understands `SQUAD_HUB_REQUIRE_MODEL`. |
 | `squad-hub report-pr --url <pr-url> --number <N> [--title <t>] [--session <id>]` | Attach a pull request to a session after it ended, as the same device that ran it. |
 | `squad-hub forget --older-than <days>` | Remove the record of sessions that ended more than `<days>` ago. |
 | `squad-hub forget --all` | Remove the record of every session that has ended. |
@@ -795,8 +886,10 @@ Below that, the rail groups devices into sections rather than one flat list
 2. **Squad on ACA executions (N)** — devices of kind `aca`, named from their
    `displayName` metadata when a cloud job supplies one (e.g.
    `#304 · AzureAIDriveThru`), with the raw execution id shown as secondary
-   text. A dispatching execution that has not reported in yet is drawn with a
-   pulsing dot rather than the plain offline one.
+   text. A dispatch you made from this tab whose job has not attached yet is
+   drawn here too, as `#issue · repo` with a pulsing dot (see
+   [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
+   Those rows are not devices and are not in the count.
 3. **Cloud devices (N)** — everything else `cloud`-flavored: on-demand and
    always available, the one place work can always be sent.
 4. **Local machines (N)** — everything else: your laptop, a dev box, a bare
@@ -853,6 +946,33 @@ offers a copyable `npx squad-hub start` command, the same "Connect a
 device…" dialog as the account menu, and a link to the README's "Try it"
 section; an empty **Local machines** section repeats exactly the same block.
 
+### Dispatches still waiting for a device
+
+A job started with **Run on ACA…** has no device until its own session attaches,
+and the hub reports no presence for a device that does not exist. So the rail
+does not read a presence for it: it draws one row per dispatch this tab is
+tracking, from the same dispatch state as the list's "Queued on ACA" row
+([aca.md](aca.md#queued-on-aca-issue-178)), inside **Squad on ACA executions**.
+
+- **Title and dot.** `#issue · repo`, with a blue dot that pulses only while the
+  outcome is open. The pulse stops under *reduce motion*, where the dot simply
+  stays blue.
+- **What it says.** *Queued* until the run is seen running, then *Starting* —
+  and *Starting* only because the run is in progress or the workflow's receipt
+  names the execution. A run that is merely queued is never called Starting, and
+  a run that finished without a receipt reads *Waiting* rather than started.
+- **One row per dispatch.** Two dispatches on one repository are two rows, and a
+  job's device removes only its own row, by the exact `aca-<execution>` id. An
+  older job's device for the same repository removes nothing.
+- **When it ends badly.** A dispatch that failed, or whose outcome the hub cannot
+  prove, stops pulsing, says why and offers **Check again**, which re-reads the
+  dispatch and starts nothing.
+- **Not a device.** These rows are not counted in "Connected devices", the
+  section's count or "N online".
+
+They come from this tab's own dispatch state: a dispatch made from another
+browser shows up only when its job's device attaches.
+
 ### Telemetry
 **Off by default**, like every other thing the daemon could report about the
 machine it runs on.
@@ -905,6 +1025,76 @@ sends them looking in the wrong place.
 **The draft survives everything except a successful send.** Someone typed it;
 clearing it in order to report a transport problem is the wrong trade in every
 case.
+
+### Mode and Model for the next message
+
+Under the message box, **Mode** and **Model** choose how the agent runs the
+message you are about to send.
+
+**What is offered is what the agent said it can do.** The device reads the
+choices from its own agent when the session starts. Copilot (ACP protocol
+version 1) advertises Agent, Plan and Autopilot for Mode and about thirty
+models; nothing is hardcoded in the page, so a model the CLI adds shows up
+without a Squad Hub release, and one it removes disappears. The `i` beside each
+selector explains it on hover; press it (on a phone, tap it) and the same words
+appear under the bar.
+
+**A pick is pending until you press Send.** Then the device, in this order:
+
+1. checks every value against the agent's list **before anything is sent** — a
+   good mode is never applied next to a bad model;
+2. changes the model, then the mode, with `session/set_config_option` and the
+   id the agent advertised, and waits for the agent to report the value it now
+   has (`session/set_mode` and `session/set_model` answer an empty `{}`, which
+   confirms nothing, so they are not used);
+3. writes a line such as `mode: Agent → Plan` into the transcript for each
+   confirmed change;
+4. sends your message.
+
+If any step is refused, is not confirmed, or the session ends in the middle,
+**the message is not sent**, your draft and your pick are kept, and the reason
+is shown under the bar. A change the agent did confirm before the refusal is
+reported as such and stays in effect. There is no "applied anyway" fallback: an
+agent that accepts a change but reports the old value, or says nothing, is not
+believed.
+
+**Send remains held while the message is confirmed and the session refreshes.**
+A slow refresh or live update cannot enable a second send of the same message.
+If refreshing fails or exceeds 15 seconds, the bar reports that separately:
+a message the agent confirmed is still sent, not something to retry blindly.
+
+**The shared draft tracks edits, not just identical words.** Reopening a session
+restores the existing draft without making a new edit. A confirmed send consumes
+that unchanged submitted draft even if you left its page. Typing again creates a
+new draft revision, including when you retype the same words, and a late reply
+cannot erase it. A failed send keeps the draft needed for retry; another send
+already in flight cannot consume that failed send's retry text. Once those
+presses finish, a deliberate retry that succeeds consumes the shared draft.
+
+Opening another session, or closing and reopening the same one, is a new page:
+outcomes and pending choices remain owned by the page that submitted them. A
+refusal that arrives after you leave is shown in a dialog instead of being lost.
+A live update that rebuilds the open session does not count as leaving.
+
+**A selector is disabled, with an `i` that says why, when it cannot be
+honored:**
+
+| Situation | Why |
+|---|---|
+| The session is not `Synced` | The sync banner explains; the selectors wait for it |
+| The agent is working | A change applies to the **next** turn; the protocol has no way to queue one |
+| A one-shot ACA job | The job ends with its prompt; it has no next turn |
+| A watched terminal (`--tui`) session | It is driven from its own terminal, and a queued message cannot be run in a mode the terminal does not know about |
+| A device older than this feature | It would ignore the field and run the message in the old mode, so the hub refuses the request instead (`409 next-turn-unsupported`) |
+| An agent that does not advertise it | For example a model list with no way to confirm a change |
+
+A device reports that it applies the selection as
+`capabilities.nextTurnSelection`, and the hub believes only a literal `true` —
+never a version string.
+
+`SQUAD_HUB_SELECTION_TIMEOUT_MS` bounds how long one change waits for the
+agent. A change that outlives it is reported as unconfirmed ("may or may not
+have applied") rather than assumed either way.
 
 ### What an approval card shows
 
@@ -1088,7 +1278,10 @@ running on — `cloud` includes both a generic cloud device and an Azure
 Container Apps job execution, since both are "not a machine you are sitting
 at". `--status` filters by the session's own status (`active`,
 `waiting_approval`, `idle`, `done`, and so on — the same values `status`
-prints locally). `--json` prints the raw session objects, for scripting.
+prints locally), or by `review` for the sessions that are **ready for review**:
+ended, carrying a valid pull request, and with nobody blocked on them. `review`
+is not a status any device reports, so it is derived the same way the web app's
+Status filter derives it. `--json` prints the raw session objects, for scripting.
 
 ## Open the hub in a browser
 
@@ -1273,6 +1466,7 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_STEER_WATCH_WINDOW_MS` | How recent a `control-check` has to be for a session to count as "watched" and be eligible for the hold above. Default 30000ms. |
 | `SQUAD_HUB_STEER_MAX_FORCED_TURNS` | The runaway guard: the most consecutive turns the daemon will force by returning `block`. Clamped to at most 7 — strictly below Copilot's own 8-block guard — regardless of what this is set to. |
 | `SQUAD_HUB_STEER_IPC_TIMEOUT_MS` | How long the `squad-hub hook agentStop` shim waits for the daemon to answer. Default 8000ms; must exceed `SQUAD_HUB_STEER_HOLD_MS` with room to spare. |
+| `SQUAD_HUB_SELECTION_TIMEOUT_MS` | How long ONE Mode or Model change waits for the agent to confirm it. Default 8000ms — two changes (model, then mode) stay under the hub's 20-second command timeout. A change that outlives it is reported as unconfirmed ("may or may not have applied"), never assumed applied. See [Mode and Model for the next message](#mode-and-model-for-the-next-message). |
 
 `--acp` is the protocol the daemon speaks to the agent, so the default argv is
 just that. `SQUAD_HUB_AGENT_ARGS` replaces it rather than adding to it, because
@@ -1327,7 +1521,8 @@ platform's timeout while doing nothing.
 | `SQUAD_HUB_ONESHOT` | Run one session, then exit. |
 | `SQUAD_HUB_PROMPT` | What to run. Required in one-shot mode. |
 | `SQUAD_HUB_CWD` | Working directory for the session. |
-| `SQUAD_HUB_MODEL` | Model for the session, validated like `--model`. An invalid name is ignored and the default model runs. |
+| `SQUAD_HUB_MODEL` | Model for the session, validated like `--model`. An invalid name is ignored and the default model runs — unless `SQUAD_HUB_REQUIRE_MODEL=1`, which makes it a requirement. |
+| `SQUAD_HUB_REQUIRE_MODEL` | `1` makes `SQUAD_HUB_MODEL` **required**: the agent must advertise it and confirm it before the prompt is sent, or nothing runs and the job exits **78**. `0` or unset leaves it optional. Anything else (`true`, `yes`, a typo) is refused, never guessed at. Needs `SQUAD_HUB_ONESHOT`. See "A model that is required, not preferred". |
 | `SQUAD_HUB_ATTACH_GRACE_MS` | How long to wait for the hub before starting anyway. Default 5000. |
 | `SQUAD_HUB_MAX_SESSION_MS` | Ceiling on one session, so a wedged agent cannot hold the job open. Default 3 hours. |
 | `SQUAD_HUB_IDLE_MS` | How long a session waits for your reply before it is closed and its agent stopped. Default 30 minutes. |
@@ -1335,7 +1530,33 @@ platform's timeout while doing nothing.
 The exit code carries the outcome, so the platform's own status means
 something: **0** when the session completed, **1** when it failed or was cut
 short, **64** when there was no prompt to run, **75** when it needed an
-approval nobody could give, **77** when the hub refused the device.
+approval nobody could give, **77** when the hub refused the device, **78** when
+a required model was not confirmed.
+
+**A required model** is decided before anything else starts. A missing or
+invalid `SQUAD_HUB_MODEL` or `SQUAD_HUB_REQUIRE_MODEL` exits 78 without a
+daemon, hub connection or agent. Otherwise the job prints
+`model required: <name> (waiting for the agent to confirm it)`, and only after
+the agent's own reply says that model is current,
+`model confirmed: requested=<name> chosen=<id>`. A refusal is one stderr line,
+`required-model-refused code=<CODE> reason=<text>`, then exit 78 with the agent
+stopped and the hub told the session failed. Exit 0 needs the confirmation:
+a session that went idle without one is a refusal, not a success. A session that
+fails *after* confirming its model exits 1 as any failed session does.
+
+**Asking whether this build understands that**, without running anything:
+
+```
+$ squad-hub oneshot --capabilities
+{"protocolVersion":1,"requiredModel":true}
+```
+
+It reads no environment, auth, config or socket, starts no daemon or agent, and
+exits 0 — even with `--env` naming an environment that is not configured. It
+speaks about this *code*, not about any account: whether a model is usable is
+something only a live agent can say, at run time. Any other argument next to
+`--capabilities` is refused (exit 2) with no answer printed. A build that
+predates it has no such flag and does not understand `SQUAD_HUB_REQUIRE_MODEL`.
 
 **The hub is an observer, never a dependency.** If it cannot be reached the
 session still runs — it simply says that nobody will be able to approve a tool

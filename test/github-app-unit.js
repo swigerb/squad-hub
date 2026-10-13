@@ -30,6 +30,13 @@ const { DispatchTracker, MAX_UNMATCHED_RECORD_AGE_MS } = require('../src/service
 const { sanitizeDispatchRequest, buildWorkflowInputs } = require('../src/aca-dispatch');
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
+const { readWebSource } = require('./helpers/web-source');
+
+// The New ACA job dialog's own request builder, loaded from the shipped
+// `web/js/aca.js` so the browser-side half of a dispatch is the real code.
+const dialog = { exports: {} };
+new Function('module', `${readWebSource()}\nmodule.exports = { acaBuildDispatchBody, acaRepoDeclaredInputs, acaCreatedIssueOf };`)(dialog);
+const { acaBuildDispatchBody, acaRepoDeclaredInputs, acaCreatedIssueOf } = dialog.exports;
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -78,7 +85,7 @@ function b64urlDecode(s) {
  * logic in `parseDeclaredWorkflowInputs` the same way a real workflow file
  * would, not just a single trivial block.
  */
-function squadDispatchYaml(inputNames) {
+function squadDispatchYaml(inputNames, inputDefaults = {}) {
   const lines = ['name: Squad dispatch', 'on:', '  workflow_dispatch:'];
   if (inputNames && inputNames.length) {
     lines.push('    inputs:');
@@ -87,10 +94,16 @@ function squadDispatchYaml(inputNames) {
       lines.push('        description: auto-generated for tests');
       lines.push(`        required: ${name === 'issue' || name === 'prompt'}`);
       lines.push('        type: string');
+      if (Object.prototype.hasOwnProperty.call(inputDefaults, name)) lines.push(`        default: ${inputDefaults[name]}`);
     }
   }
   lines.push('jobs:', '  dispatch:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo hi');
   return `${lines.join('\n')}\n`;
+}
+
+/** A workflow file around `blockLines` (the lines under `workflow_dispatch:`), for the parser tests. */
+function wfYamlLines(blockLines, onLine = 'on:', dispatchLine = '  workflow_dispatch:') {
+  return `${['name: Squad dispatch', onLine, dispatchLine, ...blockLines, 'jobs:', '  dispatch:', '    runs-on: ubuntu-latest'].join('\n')}\n`;
 }
 
 const LEGACY_DECLARED_INPUTS = ['issue', 'prompt'];
@@ -112,8 +125,11 @@ function fakeGitHubApp({
   reposByInstallation = { 1: ['acme/widgets'] },
   hasWorkflow = true,
   declaredInputs = MODERN_DECLARED_INPUTS,
+  inputDefaults = {},
+  workflowYaml = null,
   defaultBranch = 'main',
   dispatchStatus = 204,
+  issueStatus = 201,
   installationsStatus = 200,
   runsStatus = 200,
   runs = null,
@@ -186,7 +202,9 @@ function fakeGitHubApp({
       if (req.url.includes('/contents/.github/workflows/squad-dispatch.yml')) {
         if (hasWorkflow === 'error') return json(500, { message: 'internal error' });
         if (!hasWorkflow) return json(404, { message: 'Not Found' });
-        const yaml = squadDispatchYaml(declaredInputs);
+        // `workflowYaml` is the file as written (comments, odd layouts); `declaredInputs` is then
+        // what GitHub itself would accept, which is the truth the hub's own reading is tested against.
+        const yaml = workflowYaml || squadDispatchYaml(declaredInputs, inputDefaults);
         return json(200, { sha: 'deadbeef', content: Buffer.from(yaml, 'utf8').toString('base64'), encoding: 'base64' });
       }
 
@@ -224,6 +242,7 @@ function fakeGitHubApp({
       if (issuesMatch && req.method === 'POST') {
         let parsed = {};
         try { parsed = JSON.parse(body); } catch { /* ignore */ }
+        if (issueStatus !== 201) return json(issueStatus, { message: 'issue creation refused in fake' });
         state.createdIssues.push(parsed);
         const number = 100 + state.createdIssues.length;
         return json(201, { number, html_url: `https://github.com/${issuesMatch[1]}/${issuesMatch[2]}/issues/${number}` });
@@ -233,9 +252,15 @@ function fakeGitHubApp({
       if (dispatchMatch && req.method === 'POST') {
         let parsed = {};
         try { parsed = JSON.parse(body); } catch { /* ignore */ }
+        // GitHub answers 422 for an input the workflow does not declare; it
+        // does not ignore it, and nothing is dispatched.
+        const undeclared = Object.keys(parsed.inputs || {}).filter((k) => !declaredInputs.includes(k));
+        if (undeclared.length) return json(422, { message: `Unexpected inputs provided: ${JSON.stringify(undeclared)}` });
         state.dispatches.push({ owner: dispatchMatch[1], repo: dispatchMatch[2], ...parsed });
-        if (dispatchStatus !== 204) {
-          return json(dispatchStatus, { message: 'dispatch refused in fake' });
+        // A function answers per attempt (1-based), so a test can fail one dispatch and accept the next.
+        const status = typeof dispatchStatus === 'function' ? dispatchStatus(state.dispatches.length) : dispatchStatus;
+        if (status !== 204) {
+          return json(status, { message: 'dispatch refused in fake' });
         }
         res.writeHead(204);
         return res.end();
@@ -732,6 +757,252 @@ function apiRequest(port, path, token, opts = {}) {
   });
 
   // =========================================================================
+  // #251 (F3): the dialog's default options against the workflow's capabilities
+  // =========================================================================
+
+  /**
+   * The real `GitHubApp` and `HubService` over the faked GitHub REST surface,
+   * driven the way the dialog does: read `GET /api/aca/repos`, build the body
+   * with the shipped `acaBuildDispatchBody` from the dialog's checkboxes, POST it.
+   */
+  async function dialogDispatch(fake, { publishPr = true, watchOnly = false } = {}) {
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    try {
+      const repos = await apiRequest(addr.port, '/api/aca/repos', token);
+      assert.strictEqual(repos.status, 200, JSON.stringify(repos));
+      const built = acaBuildDispatchBody({
+        repo: 'acme/widgets',
+        prompt: 'Update the docs',
+        issueMode: 'new',
+        publishPr,
+        watchOnly,
+        declaredInputs: acaRepoDeclaredInputs(repos.body.repos, 'acme/widgets'),
+      });
+      assert.strictEqual(built.ok, true, JSON.stringify(built));
+      const response = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: built.value });
+      return { repos: repos.body.repos, body: built.value, response };
+    } finally {
+      await svc.close();
+      fake.server.close();
+    }
+  }
+
+  await checkAsync('GET /api/aca/repos reports which workflow_dispatch inputs each workflow declares, null when unknown', async () => {
+    const legacy = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const modern = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const missing = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: false });
+    const lists = [];
+    for (const fake of [legacy, modern, missing]) {
+      const port = await listen(fake.server);
+      const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+      lists.push(await app.listReposWithDispatchStatus());
+      fake.server.close();
+    }
+    assert.deepStrictEqual(lists[0][0].declaredInputs, LEGACY_DECLARED_INPUTS);
+    assert.deepStrictEqual(lists[1][0].declaredInputs, MODERN_DECLARED_INPUTS);
+    assert.strictEqual(lists[2][0].hasDispatchWorkflow, false);
+    assert.strictEqual(lists[2][0].declaredInputs, null);
+  });
+
+  await checkAsync('the untouched dialog dispatches to a legacy workflow through the real GitHubApp and creates exactly one issue', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const { body, response } = await dialogDispatch(fake);
+    assert.strictEqual(body.publishPr, null);
+    assert.strictEqual(body.watchOnly, null);
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.createdIssues.length, 1);
+    assert.strictEqual(fake.state.dispatches.length, 1);
+    assert.deepStrictEqual(Object.keys(fake.state.dispatches[0].inputs).sort(), ['issue', 'prompt']);
+  });
+
+  await checkAsync('an explicit no-publish choice on a legacy workflow is refused with 422 naming publish_pr before any issue is created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const { response } = await dialogDispatch(fake, { publishPr: false });
+    assert.strictEqual(response.status, 422, JSON.stringify(response));
+    assert.match(response.body.error, /publish_pr/);
+    assert.doesNotMatch(response.body.error, /watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0, 'an issue was created for a request that was always going to be refused');
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  await checkAsync('an explicit watch-only choice on a legacy workflow is refused with 422 naming watch_only before any issue is created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const { response } = await dialogDispatch(fake, { watchOnly: true });
+    assert.strictEqual(response.status, 422, JSON.stringify(response));
+    assert.match(response.body.error, /watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  await checkAsync('a modern workflow whose own defaults differ from the dialog still receives the chosen booleans', async () => {
+    const fake = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, inputDefaults: { publish_pr: 'false', watch_only: 'true' },
+    });
+    const { response } = await dialogDispatch(fake);
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.dispatches[0].inputs.publish_pr, 'true');
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'false');
+    const other = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, inputDefaults: { publish_pr: 'true', watch_only: 'false' },
+    });
+    const flipped = await dialogDispatch(other, { publishPr: false, watchOnly: true });
+    assert.strictEqual(flipped.response.status, 200, JSON.stringify(flipped.response));
+    assert.strictEqual(other.state.dispatches[0].inputs.publish_pr, 'false');
+    assert.strictEqual(other.state.dispatches[0].inputs.watch_only, 'true');
+  });
+
+  await checkAsync('the always-send request is still refused by a legacy workflow, naming both inputs, with no issue created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'T' }, prompt: 'go', publishPr: true, watchOnly: false },
+    });
+    await svc.close();
+    fake.server.close();
+    assert.strictEqual(r.status, 422, JSON.stringify(r));
+    assert.match(r.body.error, /publish_pr, watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+  });
+
+
+  // --- #251 (F3 revision): a comment-aware reading, and uncertainty that is never a "not declared" ---
+
+  const wfYaml = (inputsBlock, { onLine = 'on:', dispatchLine = '  workflow_dispatch:' } = {}) => [
+    'name: Squad dispatch', onLine, dispatchLine, ...inputsBlock,
+    'jobs:', '  dispatch:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo hi', '',
+  ].join('\n');
+
+  // A custom workflow whose watch_only DEFAULTS TO TRUE, declared after a column-0 comment, with the
+  // mandatory issue/prompt before it -- the layout the first F3 parser cut off after `issue`.
+  const COMMENTED_YAML = wfYaml([
+    '    inputs:',
+    '      issue:',
+    '        description: Issue number',
+    '        required: false',
+    '      prompt:',
+    '        description: Prompt',
+    '        required: true',
+    '# supervised by default; uncheck to run unattended',
+    '      watch_only:',
+    '        description: Watch only',
+    '        type: boolean',
+    '        default: true',
+  ]);
+  const COMMENTED_TRUTH = ['issue', 'prompt', 'watch_only'];
+
+  const HEADER_COMMENT_YAML = wfYaml([
+    '    inputs:   # options',
+    '      issue:        # the issue',
+    '        required: false',
+    '      prompt:',
+    '        required: true',
+    '      publish_pr:',
+    '        type: boolean',
+    '        default: false',
+    '      watch_only:',
+    '        type: boolean',
+    '        default: true',
+  ], { onLine: 'on:  # triggers', dispatchLine: '  workflow_dispatch:   # manual' });
+  const HEADER_COMMENT_TRUTH = ['issue', 'prompt', 'publish_pr', 'watch_only'];
+
+  await checkAsync('a column-0 comment inside the inputs block does not hide a later watch_only: the unchecked box is sent as false, not left to the workflow default of true', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: COMMENTED_YAML, declaredInputs: COMMENTED_TRUTH });
+    const { repos, body, response } = await dialogDispatch(fake);
+    assert.deepStrictEqual(repos[0].declaredInputs, COMMENTED_TRUTH);
+    assert.strictEqual(body.watchOnly, false, 'the unchecked Watch-only choice was dropped');
+    assert.strictEqual(body.publishPr, null, 'a default Publish PR was sent to a workflow that does not declare it');
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.createdIssues.length, 1);
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'false', 'the workflow default (true) would have run with the box unchecked');
+    assert.ok(!('publish_pr' in fake.state.dispatches[0].inputs));
+  });
+
+  await checkAsync('a supported custom default is still overridden only by the choice: Watch-only checked reaches a commented workflow as true', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: COMMENTED_YAML, declaredInputs: COMMENTED_TRUTH });
+    const { response } = await dialogDispatch(fake, { watchOnly: true });
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'true');
+  });
+
+  await checkAsync('an unsupported non-default choice on a commented workflow is still refused with 422 naming only that input, before any issue is created', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: COMMENTED_YAML, declaredInputs: COMMENTED_TRUTH });
+    const { response } = await dialogDispatch(fake, { publishPr: false });
+    assert.strictEqual(response.status, 422, JSON.stringify(response));
+    assert.match(response.body.error, /publish_pr/);
+    assert.doesNotMatch(response.body.error, /watch_only/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  await checkAsync('trailing comments on on:, workflow_dispatch: and inputs: do not make a declaring workflow read as declaring nothing', async () => {
+    const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: HEADER_COMMENT_YAML, declaredInputs: HEADER_COMMENT_TRUTH });
+    const { repos, body, response } = await dialogDispatch(fake);
+    assert.deepStrictEqual(repos[0].declaredInputs, HEADER_COMMENT_TRUTH);
+    assert.strictEqual(body.publishPr, true);
+    assert.strictEqual(body.watchOnly, false);
+    assert.strictEqual(response.status, 200, JSON.stringify(response));
+    assert.strictEqual(fake.state.dispatches[0].inputs.publish_pr, 'true', 'the workflow default (false) would have decided Publish PR');
+    assert.strictEqual(fake.state.dispatches[0].inputs.watch_only, 'false', 'the workflow default (true) would have decided Watch-only');
+  });
+
+  const AMBIGUOUS_LAYOUTS = {
+    'a quoted input name': wfYaml(['    inputs:', '      issue:', '      prompt:', '      "watch_only":', '        default: true']),
+    'a flow-style inputs block': wfYaml(['    inputs: {issue: {}, prompt: {}, watch_only: {default: true}}']),
+    'tab indentation': wfYaml(['    inputs:', '      issue:', '      prompt:', '\twatch_only:', '        default: true']),
+  };
+  for (const [layout, yaml] of Object.entries(AMBIGUOUS_LAYOUTS)) {
+    await checkAsync(`${layout}: the inputs are unknown, the dialog sends its explicit choices, and the hub refuses before any issue exists, without claiming an input is undeclared`, async () => {
+      const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: yaml, declaredInputs: COMMENTED_TRUTH });
+      const { repos, body, response } = await dialogDispatch(fake);
+      assert.strictEqual(repos[0].declaredInputs, null);
+      assert.strictEqual(body.publishPr, true);
+      assert.strictEqual(body.watchOnly, false);
+      assert.strictEqual(response.status, 422, JSON.stringify(response));
+      assert.match(response.body.error, /could not determine which workflow_dispatch inputs/);
+      assert.doesNotMatch(response.body.error, /does not declare/);
+      assert.strictEqual(fake.state.createdIssues.length, 0, 'an issue was created for a workflow the hub could not read');
+      assert.strictEqual(fake.state.dispatches.length, 0);
+    });
+  }
+
+  await checkAsync('a direct API dispatch against a workflow whose inputs are unknown is a clean 422 with nothing created, never a 500 or a success', async () => {
+    const fake = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: AMBIGUOUS_LAYOUTS['a flow-style inputs block'], declaredInputs: COMMENTED_TRUTH,
+    });
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'T' }, prompt: 'go' },
+    });
+    await svc.close();
+    fake.server.close();
+    assert.strictEqual(r.status, 422, JSON.stringify(r));
+    assert.match(r.body.error, /could not determine/);
+    assert.strictEqual(fake.state.createdIssues.length, 0);
+    assert.strictEqual(fake.state.dispatches.length, 0);
+  });
+
+  // =========================================================================
   // Must-fix #1 (re-dispatch review): send only inputs the workflow declares
   // =========================================================================
 
@@ -804,6 +1075,108 @@ function apiRequest(port, path, token, opts = {}) {
   });
 
   // =========================================================================
+  // #253 (F4): a dispatch that failed after creating an issue is retried on it
+  // =========================================================================
+
+  /** The real `GitHubApp` and `HubService` over `fake`, and a `post(body)` to `/api/aca/dispatch`. */
+  async function dispatchHarness(fake) {
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const token = auth.mintDevToken('local', 'me', 'me');
+    return {
+      post: (body) => apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body }),
+      async close() { await svc.close(); fake.server.close(); },
+    };
+  }
+
+  const retryForm = () => ({
+    repo: 'acme/widgets',
+    baseBranch: 'release',
+    prompt: 'Update the docs',
+    model: 'a-model',
+    reviewer: 'someone',
+    publishPr: false,
+    watchOnly: true,
+    issueMode: 'new',
+    declaredInputs: MODERN_DECLARED_INPUTS,
+  });
+  const asClientError = (response) => ({ status: response.status, body: response.body });
+
+  await checkAsync('a failed dispatch that created an issue is retried on that issue, with the same options and no second issue (#253 F4)', async () => {
+    const fake = fakeGitHubApp({ dispatchStatus: (attempt) => (attempt === 1 ? 500 : 204) });
+    const hub = await dispatchHarness(fake);
+    try {
+      const first = acaBuildDispatchBody(retryForm());
+      assert.strictEqual(first.ok, true, JSON.stringify(first));
+      assert.ok(first.value.newIssue && first.value.issue === null, 'the first request was not a New-issue request');
+      const failed = await hub.post(first.value);
+      assert.strictEqual(failed.status, 500, JSON.stringify(failed));
+      assert.strictEqual(fake.state.createdIssues.length, 1, 'the first request did not create exactly one issue');
+
+      const created = acaCreatedIssueOf(asClientError(failed), first.value);
+      assert.ok(created, 'the client did not recover the issue the failed dispatch created');
+      assert.strictEqual(created.number, 101);
+      assert.strictEqual(created.repo, 'acme/widgets');
+      assert.strictEqual(created.link, 'https://github.com/acme/widgets/issues/101');
+
+      const retry = acaBuildDispatchBody({ ...retryForm(), issueMode: 'existing', issueNumber: String(created.number) });
+      assert.strictEqual(retry.ok, true, JSON.stringify(retry));
+      assert.strictEqual(retry.value.issue, 101);
+      assert.strictEqual(retry.value.newIssue, null);
+      const second = await hub.post(retry.value);
+      assert.strictEqual(second.status, 200, JSON.stringify(second));
+      assert.strictEqual(second.body.issue.number, 101);
+      assert.strictEqual(fake.state.createdIssues.length, 1, 'the retry created a second issue');
+      assert.strictEqual(fake.state.dispatches.length, 2);
+      assert.deepStrictEqual(fake.state.dispatches.map((d) => d.repo), ['widgets', 'widgets']);
+      assert.strictEqual(fake.state.dispatches[1].inputs.issue, '101', 'the retry was not dispatched against the created issue');
+      const { hub_correlation_id: c1, ...firstInputs } = fake.state.dispatches[0].inputs;
+      const { hub_correlation_id: c2, ...secondInputs } = fake.state.dispatches[1].inputs;
+      assert.ok(c1 && c2 && c1 !== c2, 'each dispatch carries its own correlation id');
+      assert.deepStrictEqual(secondInputs, firstInputs, 'the retry changed the options the person chose');
+    } finally {
+      await hub.close();
+    }
+  });
+
+  await checkAsync('a failure with no created issue (issue creation refused) carries no metadata and claims nothing (#253 F4)', async () => {
+    const fake = fakeGitHubApp({ issueStatus: 500 });
+    const hub = await dispatchHarness(fake);
+    try {
+      const built = acaBuildDispatchBody(retryForm());
+      const failed = await hub.post(built.value);
+      assert.ok(failed.status >= 400, JSON.stringify(failed));
+      assert.strictEqual(fake.state.createdIssues.length, 0);
+      assert.strictEqual(fake.state.dispatches.length, 0);
+      assert.ok(!('issue' in failed.body), `an issue was reported though none was created: ${JSON.stringify(failed.body)}`);
+      assert.strictEqual(acaCreatedIssueOf(asClientError(failed), built.value), null);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  await checkAsync('a failed dispatch on an Existing issue creates nothing and is never described as a creation (#253 F4)', async () => {
+    const fake = fakeGitHubApp({ dispatchStatus: 500 });
+    const hub = await dispatchHarness(fake);
+    try {
+      const built = acaBuildDispatchBody({ ...retryForm(), issueMode: 'existing', issueNumber: '7' });
+      const failed = await hub.post(built.value);
+      assert.strictEqual(failed.status, 500, JSON.stringify(failed));
+      assert.strictEqual(fake.state.createdIssues.length, 0, 'an Existing-issue request created an issue');
+      assert.strictEqual(fake.state.dispatches.length, 1, 'the dispatch was not attempted');
+      assert.strictEqual(acaCreatedIssueOf(asClientError(failed), built.value), null);
+      // Even a response that did name an issue is not a creation by this request.
+      assert.strictEqual(acaCreatedIssueOf({ body: { issue: { number: 9 } } }, built.value), null);
+    } finally {
+      await hub.close();
+    }
+  });
+  // =========================================================================
   // Must-fix #3 (re-dispatch review): never dispatch on baseBranch as ref
   // =========================================================================
 
@@ -849,6 +1222,53 @@ function apiRequest(port, path, token, opts = {}) {
   check('parseDeclaredWorkflowInputs returns null when the workflow has no workflow_dispatch trigger at all', () => {
     const yaml = 'name: CI\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n';
     assert.strictEqual(parseDeclaredWorkflowInputs(yaml), null);
+  });
+
+  check('parseDeclaredWorkflowInputs ignores a column-0 comment inside the inputs block and keeps every name after it', () => {
+    const yaml = wfYamlLines([
+      '    inputs:', '      issue:', '        required: false', '      prompt:', '        required: true',
+      '# a comment at column 0', '      watch_only:', '        default: true',
+    ]);
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt', 'watch_only']);
+  });
+
+  check('parseDeclaredWorkflowInputs reads past trailing comments on the on/workflow_dispatch/inputs lines and input names', () => {
+    const yaml = wfYamlLines([
+      '    inputs:   # options', '      issue:  # the issue', '        required: false', '      prompt:', '        required: true',
+    ], 'on:  # triggers', '  workflow_dispatch:   # manual');
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt']);
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(wfYamlLines([], 'on:', '  workflow_dispatch:  # nothing to ask')), []);
+  });
+
+  check('parseDeclaredWorkflowInputs does not mistake comment or block-scalar text for an input name', () => {
+    const yaml = wfYamlLines([
+      '    inputs:', '      issue:', '        description: |', '          # watch_only: true',
+      '          publish_pr: not an input', '          ', '        required: false',
+      '      prompt:', '        description: "# model: also not one"',
+    ]);
+    assert.deepStrictEqual(parseDeclaredWorkflowInputs(yaml), ['issue', 'prompt']);
+  });
+
+  check('parseDeclaredWorkflowInputs answers null, never a shorter list, whenever it cannot read the block with certainty', () => {
+    const layouts = {
+      'quoted key': wfYamlLines(['    inputs:', '      issue:', '      "watch_only":']),
+      'single-quoted key': wfYamlLines(['    inputs:', "      'issue':", '      prompt:']),
+      'flow-style inputs': wfYamlLines(['    inputs: {issue: {}, prompt: {}}']),
+      'inputs with a trailing value': wfYamlLines(['    inputs: &shared', '      issue:']),
+      'inputs as a list': wfYamlLines(['    inputs:', '      - issue', '      - prompt']),
+      'tab indentation': wfYamlLines(['    inputs:', '      issue:', '\tprompt:']),
+      'a dedent below the block indentation': wfYamlLines(['    inputs:', '        issue:', '      prompt:']),
+      'a name with a space before the colon': wfYamlLines(['    inputs:', '      issue :', '      prompt:']),
+      'a non-inputs child of workflow_dispatch': wfYamlLines(['    branches: [main]', '    inputs:', '      issue:']),
+      'flow-style on': 'name: x\non: [push, workflow_dispatch]\njobs: {}\n',
+      'scalar on': 'name: x\non: workflow_dispatch\njobs: {}\n',
+      'workflow_dispatch not under on': 'name: x\nenv:\n  workflow_dispatch:\n    inputs:\n      issue:\n',
+      'two workflow_dispatch headers': `${wfYamlLines(['    inputs:', '      issue:'])}  other:\n    workflow_dispatch:\n`,
+      'empty file': '',
+    };
+    for (const [name, yaml] of Object.entries(layouts)) {
+      assert.strictEqual(parseDeclaredWorkflowInputs(yaml), null, name);
+    }
   });
 
   check('upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is', () => {
@@ -1045,7 +1465,7 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', model: 'x'.repeat(65) }).ok, false);
   });
 
-  check('reviewer must be a valid GitHub username', () => {
+  check('reviewer must be a valid identifier (the Squad member id, not an arbitrary GitHub username)', () => {
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: 'octocat' }).ok, true);
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: 'oct-o-cat' }).ok, true);
     assert.strictEqual(sanitizeDispatchRequest({ repo: 'a/b', issue: 1, prompt: 'x', reviewer: '-bad' }).ok, false);
@@ -1550,6 +1970,35 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(tracker.list('bob')[0].boundRunId, 980, 'the earlier differently-cased dispatch keeps the shared run');
   });
 
+  await checkAsync('when two dispatches contend for one run, the older dispatch claims it first, for one user or across two', async () => {
+    // One correlation id on two records is the contention `_resolveOrder`
+    // settles. Distinct ids never contend -- a run title matches exactly one
+    // record -- so they cannot show the resolution order at all. A user's own
+    // list() is newest first, so the older record winning is not list order.
+    const corr = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+    const runs = [{ id: 985, status: 'in_progress', conclusion: null, head_branch: 'main', display_title: correlationTitle(corr) }];
+    const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, runs });
+    const port = await listen(server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const target = {
+      owner: 'acme', repo: 'widgets', installationId: 1, ref: 'main', correlationId: corr, correlationSupported: true,
+    };
+    const oneUser = new DispatchTracker();
+    const olderId = oneUser.record('alice', { ...target, dispatchedAt: Date.now() - 1000 });
+    const newerId = oneUser.record('alice', { ...target, dispatchedAt: Date.now() - 900 });
+    const own = await oneUser.listWithStatus('alice', app);
+    const twoUsers = new DispatchTracker();
+    twoUsers.record('bob', { ...target, dispatchedAt: Date.now() - 1000 });
+    twoUsers.record('alice', { ...target, dispatchedAt: Date.now() - 900 });
+    const aliceList = await twoUsers.listWithStatus('alice', app);
+    server.close();
+    const byId = new Map(own.map((r) => [r.id, r]));
+    assert.strictEqual(byId.get(olderId).status.runId, 985, 'the older of two same-user dispatches must claim the run');
+    assert.strictEqual(byId.get(newerId).status.state, 'pending', 'the newer same-user dispatch must not double-claim it');
+    assert.strictEqual(aliceList[0].status.state, 'pending', 'the newer dispatch must not claim the run ahead of another user\'s older one');
+    assert.strictEqual(twoUsers.list('bob')[0].boundRunId, 985, 'the other user\'s older dispatch keeps the run');
+  });
+
   await checkAsync('an unmatched record older than the cap is reported as errored, never searched again', async () => {
     const { server, calls } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
@@ -1876,6 +2325,43 @@ function apiRequest(port, path, token, opts = {}) {
       const second = await tracker.listWithStatus('alice', app);
       assert.strictEqual(second[0].executionName, null, `stale name leaked for ${later.state}`);
       assert.strictEqual(second[0].status.executionName, undefined);
+    }
+  });
+
+  await checkAsync('a rerun clears the cached executionName and its attempt from the tracker record, in every rerun state', async () => {
+    // The public list cannot show this. The attempt comparison in
+    // _withExecutionReceipt and the one in _publicRecord each hide a name cached
+    // for another attempt, so a record that kept it would still read null. The
+    // record is what a later poll starts from, and the one thing that can tell
+    // the drop happened.
+    for (const rerun of [
+      { state: 'queued', runId: 8, runAttempt: 2 },
+      { state: 'pending', runId: 8, runAttempt: 2 },
+      { state: 'error', runId: 8, runAttempt: 2, reason: 'boom' },
+      { state: 'in_progress', runId: 8, runAttempt: 2 },
+    ]) {
+      const tracker = receiptTracker(); const calls = [];
+      const live = tracker.list('alice')[0];
+      let current = { state: 'in_progress', runId: 8, runAttempt: 1 };
+      const app = {
+        resolveRunStatus: async () => current,
+        _getRun: async () => current,
+        resolveExecutionReceipt: async (args) => {
+          calls.push(args);
+          return args.runAttempt === 1 ? { executionName: 'job-attempt1', artifactId: 1 } : null;
+        },
+      };
+      await tracker.listWithStatus('alice', app);
+      assert.deepStrictEqual([live.executionName, live.executionAttempt], ['job-attempt1', 1],
+        'the fixture must cache attempt 1\'s name before the rerun, or the check below proves nothing');
+      current = rerun;
+      await tracker.listWithStatus('alice', app);
+      assert.deepStrictEqual([live.executionName, live.executionAttempt], [null, null],
+        `a ${rerun.state} rerun left attempt 1's name cached on the tracker record`);
+      // Only a run that has started is looked up, for exactly this run and attempt.
+      assert.deepStrictEqual(calls.slice(1), rerun.state === 'in_progress'
+        ? [{ owner: 'acme', repo: 'widgets', installationId: 1, runId: 8, runAttempt: 2 }] : [],
+      `a ${rerun.state} rerun made the wrong receipt lookups: ${JSON.stringify(calls.slice(1))}`);
     }
   });
 

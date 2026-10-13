@@ -67,6 +67,20 @@ not a secret, unlike the paired private key the hub keeps to itself. See
 Everything the main view needs in one call: devices, sessions grouped by device,
 and counts. Prefer this over three separate calls.
 
+It takes four optional filters, which the web app sends and the hub applies:
+`q` (a case-insensitive substring of a session's prompt, working directory or
+id), `status`, `device` (a device id) and `actionNeeded=1` (only sessions with a
+pending approval). Every device is still returned, and one with no matching
+session comes back with an empty list. `status` is either the status a device
+reported (`active`, `idle`, `done`, ...) or `review`, which no device reports:
+it selects the sessions that are **ready for review** -- ended (`done`, `failed`,
+`stopped` or `disconnected`), carrying a valid `pullRequest`, and with no
+pending approval. The same `review` value works for `squad-hub sessions
+--status` and the MCP `list_sessions` tool. The same overview is also pushed
+over the WebSocket without any filter, so the web app applies `q`, `status` and
+`device` to a pushed overview itself, in the browser, to keep the list it
+already narrowed from filling back up with every session.
+
 ### `GET /api/devices`
 
 Your devices, with presence (`online`, `stale`, `offline`), platform, device
@@ -300,6 +314,67 @@ curl -X POST "$HUB/api/devices/$DEVICE/approve" \
 `optionId` is one the agent offered: `allow_once`, `allow_always` or
 `reject_once`.
 
+#### Sending follow-up input (`steer`)
+
+```bash
+curl -X POST "$HUB/api/devices/$DEVICE/steer" \
+  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"...","text":"outline the change first","mode":"plan","model":"claude-sonnet-5.5"}'
+```
+
+`text` is required (at most 4000 characters, refused rather than truncated).
+`mode` and `model` are **optional** — leave them out and the request is exactly
+the steer it has always been: `{ "sent": true }`, or `{ "queued": true,
+"position": n }` for a watched terminal session.
+
+When present they are strings of at most 200 characters with no control
+characters, matched against what the session's agent advertises (see
+`nextTurn` below): by id, by display name, or by the part of a mode id after
+`#`, ignoring case. The device validates both before anything is sent, changes
+the model and then the mode, waits for the agent to confirm each, and only then
+sends `text`. On success the answer lists what the agent confirmed:
+
+```json
+{ "sent": true, "changes": [ { "field": "mode", "from": "…#agent", "to": "…#plan" } ] }
+```
+
+A change that cannot be made is refused, **never** applied-and-sent anyway, and
+the body carries the reason in `error` and the machine-readable `code`:
+
+| Status | `code` | Meaning | `text` sent? |
+|---|---|---|---|
+| `400` | — | `mode` or `model` is not a short string | No |
+| `409` | `next-turn-unsupported` | The device does not support it (older device, one-shot job, watched terminal session, or an agent that does not advertise it) — refused by the hub before it reaches a device that does not claim `capabilities.nextTurnSelection` | No |
+| `409` | `turn-in-progress` | The agent is mid-turn; a change applies to the next one | No |
+| `409` | `selection-busy` | Another change for this session is still being applied | No |
+| `409` | `session-changed` | The session ended while the change was being applied | No |
+| `422` | `selection-not-offered` | The value is not one the agent offers | No |
+| `502` | `selection-failed` | The agent refused it, or did not confirm it in time — it **may or may not** have applied; the error says which changes, if any, stay in effect | No |
+
+Each session in `GET /api/sessions` and `GET /api/overview` may carry `nextTurn`:
+`{ supported, reason, mode, model }`, where `mode` and `model` are each
+`{ supported, reason, current, choices: [{ id, name }] }`. `choices` is empty
+and `reason` says why whenever `supported` is false. A session from a device
+that predates the feature carries no `nextTurn` at all.
+
+A session whose model was **required** (a one-shot with
+`SQUAD_HUB_REQUIRE_MODEL=1`) also carries `requiredModel`:
+`{ requested, chosen, confirmed, failure }`. `requested` is the name asked for;
+`chosen` is the id the agent advertised and then confirmed as current, `null`
+until it has; `confirmed` is `true` only after the agent itself reported that
+model as current, and is the only field that says the model is the one running;
+`failure` is `null` or `{ code, reason }` — a stable `REQUIRED_MODEL_*` code
+(see [commands.md](commands.md#a-model-that-is-required-not-preferred)) and a
+reason for a person. A refused session is `failed` with `applied.model` still
+`null` and no prompt ever sent. `agentSelection.requiredModel` is `true` on such
+a session. A session whose model is only a preference carries neither.
+
+Until the model is confirmed and the session's own first prompt is on its way, a
+session with a required model **refuses a `steer`**: the device answers with the
+error code `NOT_STEERABLE` and a reason, and nothing is sent to the agent. A
+refused session keeps refusing. A session whose model is only a preference is
+steered exactly as before.
+
 Removing the record of sessions that have already ended:
 
 ```bash
@@ -496,8 +571,17 @@ should not need to see one in practice.
 has a `squad-dispatch.yml` the hub can dispatch:
 
 ```json
-{ "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true }] }
+{ "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true, "declaredInputs": ["issue", "prompt", "publish_pr", "watch_only"] }] }
 ```
+
+`declaredInputs` is the list of `workflow_dispatch` inputs that repository's
+`squad-dispatch.yml` declares, or `null` when that is not known (no workflow, no
+`workflow_dispatch` trigger, or an inputs layout the hub cannot read with
+certainty, such as a quoted or flow-style key). `null` means "do not know",
+never "none" and never a partial list; `POST /api/aca/dispatch` against such a
+workflow answers `422` that the inputs could not be determined, before any issue
+is created. The New ACA job dialog uses it to decide whether
+to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 
 **`GET /api/aca/dispatches`** — this signed-in user's own recent dispatches
 (in memory only, lost on a hub restart — see

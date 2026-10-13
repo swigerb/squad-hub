@@ -1,6 +1,7 @@
 import { state, api } from './api.js';
 import { viewStateToParams, paramsToViewState } from './list.js';
 import { render } from './devices.js';
+import { syncAcaPending, acaAttachFromOverview } from './aca-pending.js';
 import { renderTranscript } from './transcript.js';
 import { $, VIEW_PARAM_KEYS } from './util.js';
 import { showSignIn } from './signin.js';
@@ -78,7 +79,10 @@ export function connect() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'overview') {
+      refreshSeq += 1;
       state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };
+      // A pending ACA row is replaced the moment its job's device shows up.
+      acaAttachFromOverview();
       render();
     } else if (msg.type === 'transcript' && state.currentSession
       && msg.sessionId === state.currentSession.session.id) {
@@ -224,7 +228,7 @@ export function showOffline() {
   target.innerHTML = `
     <div class="empty">
       <h3>Can't reach the hub</h3>
-      <p>You're still signed in — this device just can't get to the hub right now.</p>
+      <p>You're still signed in. This device just can't get to the hub right now.</p>
       <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
          Anything waiting on an approval is still waiting.</p>
       <p class="empty-actions"><button class="primary" id="offlineRetry">Try again</button></p>
@@ -255,7 +259,12 @@ export function registerServiceWorker() {
   navigator.serviceWorker.register('/sw.js').catch(() => { /* insecure context, or blocked */ });
 }
 
+// A newer refresh or live overview invalidates older in-flight GET replies.
+// Otherwise a reply taken before registration can erase a pushed ACA session.
+let refreshSeq = 0;
+
 export async function refresh() {
+  const seq = ++refreshSeq;
   const params = new URLSearchParams();
   if (state.filters.q) params.set('q', state.filters.q);
   // "Action needed" (#169) aggregates two session statuses the store cannot
@@ -265,7 +274,14 @@ export async function refresh() {
   // session ever literally has, and get an empty list back every time.
   if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);
   if (state.filters.device) params.set('device', state.filters.device);
-  state.overview = await api(`/api/overview?${params}`);
+  const overview = await api(`/api/overview?${params}`);
+  if (seq === refreshSeq) state.overview = overview;
+  // Only hits `/api/aca/dispatches` when a dispatch this tab made is still
+  // unresolved (#178) -- an ordinary load has nothing pending and never
+  // calls it, which is what keeps a hub with no GitHub App configured from
+  // ever seeing that 501 on a routine refresh (the failure mode #233 broke
+  // CI with).
+  await syncAcaPending();
   render();
 }
 
@@ -437,4 +453,3 @@ export function setRailCollapsed(collapsed) {
   }
   try { localStorage.setItem(RAIL_KEY, state.railCollapsed ? '1' : '0'); } catch { /* never fatal */ }
 }
-

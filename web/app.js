@@ -42,8 +42,9 @@ import {
 } from './js/notifications.js';
 import { render, skeletonDevices } from './js/devices.js';
 import {
-  openDetail, syncSession, renderControl, openSquadDoc,
+  openDetail, renderControl, openSquadDoc,
 } from './js/detail.js';
+import { syncSession } from './js/detail-control.js';
 import { renderTranscript } from './js/transcript.js';
 import { inboxEntries, inboxCount, renderInboxList } from './js/inbox.js';
 import {
@@ -55,7 +56,7 @@ import { loadPrefs, renameSession, toggleFavorite } from './js/prefs-sync.js';
 import {
   acaRepoName, acaSessionRepo, acaTitle, acaNewIssueLink, acaComment, acaIssueLink, openAca,
 } from './js/aca.js';
-import { refreshAcaStatus, ACA_POLL_MS } from './js/aca-status.js';
+import { refreshAcaStatus, ACA_STATUS_POLL_MS } from './js/aca-status.js';
 import { peopleVisible, peopleRows, peopleSummary, openPeople } from './js/access.js';
 import { isInstalled, installSteps, showInstallHelp } from './js/install.js';
 import { urlBase64ToUint8Array, pushSupported } from './js/push.js';
@@ -83,9 +84,12 @@ function runShortcut(id) {
   // Test hook (documented, no secrets, no new capability): now that app.js is
   // an ES module, its top-level `const`/`function` bindings are module-scoped
   // rather than bare globals, so test/browser-e2e-unit.js's page.evaluate()
-  // calls can no longer reach `state`, `setConn` or `renderTranscript` by
-  // name. This exposes exactly those three bindings -- already reachable
-  // through the UI -- for that test harness to read and call directly.
+  // calls can no longer reach `state`, `setConn`, `renderTranscript` or
+  // `refresh` by name. This exposes exactly those bindings -- each already
+  // reachable through the UI (`refresh` is the exact function `setInterval`
+  // already calls every 15s) -- for that test harness to read and call
+  // directly, so it can force an immediate heartbeat/overview refresh instead
+  // of waiting out the real interval.
   //
   // `setUndoDelayForTest` shortens the Undo window below (real deployments
   // keep the full 5 seconds). It changes no behavior a person could not
@@ -93,7 +97,7 @@ function runShortcut(id) {
   // only makes that window short enough for a test suite to wait out without
   // every click costing five real seconds.
   window.__squadHubTest = {
-    state, setConn, renderTranscript, setUndoDelayForTest,
+    state, setConn, renderTranscript, setUndoDelayForTest, refresh,
   };
 
   // Before the sign-in gate: the shell is public, and someone installing the
@@ -173,8 +177,8 @@ function runShortcut(id) {
       // A link that no longer resolves should not keep squatting on the
       // address bar -- it would reopen the toast below on every reload.
       history.replaceState({}, '', location.pathname);
-      if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}" — open it from the list`);
-      else toast(`That session is no longer here — it may have finished, or its device is offline`);
+      if (hit.status === 'ambiguous') toast(`More than one device has a session called "${wanted}". Open it from the list`);
+      else toast(`That session is no longer here. It may have finished, or its device is offline`);
     }
   }
 
@@ -194,6 +198,6 @@ function runShortcut(id) {
   // store. Started right away rather than waiting a full interval, so the
   // card never sits on "Checking…" longer than it has to.
   refreshAcaStatus();
-  setInterval(refreshAcaStatus, ACA_POLL_MS);
+  setInterval(refreshAcaStatus, ACA_STATUS_POLL_MS);
   return undefined;
 }());

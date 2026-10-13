@@ -205,13 +205,72 @@ function readProjectConfig(cwd) {
 const MODES = ['agent', 'plan', 'autopilot'];
 
 /**
+ * A model that MUST run, or the session must not.
+ *
+ * The optional path above warns and carries on with the default model when a
+ * requested one is unusable. That is right for a person at a terminal and wrong
+ * for a supervisor that pinned a model on purpose: it asked for exactly that
+ * model, and a different one answering is not a degraded success, it is a
+ * different job. A required model therefore has no fallback rung -- not the
+ * project's model, not the agent's default -- and refuses instead.
+ *
+ * `code` is the stable part. A caller branches on it; the message is for a
+ * person and never carries the rejected value back out.
+ */
+class RequiredModelError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'RequiredModelError';
+    this.code = code;
+  }
+}
+
+/**
+ * `SQUAD_HUB_REQUIRE_MODEL`, parsed STRICTLY.
+ *
+ * Only `1` turns it on and only `0` (or nothing) leaves it off. Anything else
+ * -- `true`, `yes`, ` 1`, a typo -- is an error rather than a guess either way:
+ * reading it as "off" would run an unpinned job for a caller who asked for a
+ * pinned one, and reading it as "on" would make up a policy from a typo. The
+ * value is never echoed; this is a flag, but the same environment carries
+ * tokens and a refusal that prints neighbours is a leak waiting for a typo.
+ */
+function parseRequireModel(raw) {
+  if (raw === undefined || raw === null || raw === '' || raw === '0') return false;
+  if (raw === '1') return true;
+  throw new RequiredModelError('REQUIRED_MODEL_FLAG_INVALID', 'SQUAD_HUB_REQUIRE_MODEL must be 1 or 0 (or unset)');
+}
+
+/**
+ * The requested model of a required-model session, or a refusal. Exactly the
+ * name isValidName accepts, untrimmed: the model that is confirmed later is
+ * compared against this string, so it must be the string that was asked for.
+ */
+function requireModelName(model) {
+  if (model === undefined || model === null || model === '') {
+    throw new RequiredModelError('REQUIRED_MODEL_MISSING', 'a required model was not named (SQUAD_HUB_MODEL)');
+  }
+  if (!isValidName(model)) {
+    throw new RequiredModelError('REQUIRED_MODEL_INVALID', 'the required model is not a valid model name (letters, digits, \'.\', \'_\', \'-\' only, starting with a letter or digit, up to 64 characters)');
+  }
+  return model;
+}
+
+/**
  * Decide agent + model + mode for a session, and say WHY -- 'explicit' |
  * 'project' | 'auto' | 'default' -- so a status line or `squad-hub doctor` can
  * show the reason, not just the result.
+ *
+ * `requireModel` makes the model mandatory (see RequiredModelError): the
+ * explicit model is validated BEFORE any fallback rung is looked at, so an
+ * invalid or absent one throws instead of becoming the project's or nothing.
  */
 function selectAgent({
-  cwd, explicitAgent, explicitModel, explicitMode,
+  cwd, explicitAgent, explicitModel, explicitMode, requireModel = false,
 } = {}) {
+  // First, so nothing below -- the project file included -- can supply what
+  // the caller failed to.
+  const required = requireModel === true ? requireModelName(explicitModel) : null;
   const squad = isSquadProject(cwd);
   const proj = readProjectConfig(cwd);
   const warnings = [...proj.warnings];
@@ -240,23 +299,32 @@ function selectAgent({
     mode = null;
   }
 
+  if (required) {
+    // Never proj.model: a repository's own model preference is the very
+    // fallback a required model exists to refuse.
+    model = required;
+  } else {
+    model = model || proj.model || null;
+  }
+  const pinned = required ? { requiredModel: true } : {};
+
   if (agent) {
     return {
-      agent, model: model || proj.model || null, mode, source: 'explicit', isSquad: squad, warnings,
+      agent, model, mode, source: 'explicit', isSquad: squad, warnings, ...pinned,
     };
   }
   if (proj.agent) {
     return {
-      agent: proj.agent, model: model || proj.model || null, mode, source: 'project', isSquad: squad, warnings,
+      agent: proj.agent, model, mode, source: 'project', isSquad: squad, warnings, ...pinned,
     };
   }
   if (squad) {
     return {
-      agent: 'squad', model: model || proj.model || null, mode, source: 'auto', isSquad: true, warnings,
+      agent: 'squad', model, mode, source: 'auto', isSquad: true, warnings, ...pinned,
     };
   }
   return {
-    agent: DEFAULT_AGENT, model: model || proj.model || null, mode, source: 'default', isSquad: false, warnings,
+    agent: DEFAULT_AGENT, model, mode, source: 'default', isSquad: false, warnings, ...pinned,
   };
 }
 
@@ -281,4 +349,5 @@ function buildAgentArgs(baseArgs, selection) {
 
 module.exports = {
   DEFAULT_AGENT, MODES, isSquadProject, readProjectConfig, selectAgent, buildAgentArgs, walkUpForMarker,
+  RequiredModelError, parseRequireModel, requireModelName,
 };

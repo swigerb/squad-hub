@@ -1,13 +1,30 @@
 import { state, api } from './api.js';
 import {
-  esc, num, truncateWords, statusLabel, statusPillClass,
-  isStaleSession, isDeviceUnreachable, cleanupControls, $,
+  esc, truncateWords, statusLabel, statusPillClass,
+  isStaleSession, cleanupControls, $,
 } from './util.js';
 import { controlBanner, composerReduce } from './composer.js';
 import { refresh, resolveDeepLink } from './ws.js';
-import { toggleFavorite } from './prefs-sync.js';
+import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
 import { sidebarEntries, sidebarRow, sessionKey } from './list.js';
+import { displayTitle } from './sessionrow.js';
 import { renderTranscript, transcriptSkeleton } from './transcript.js';
+import { syncReviewDetail } from './review.js';
+import { renderSquadPanel } from './squad-panel.js';
+import { initDetailTabs, resetDetailTabs, syncDetailTabs } from './detail-tabs.js';
+// Circular import, same pattern rowmenu.js/wiring.js already use: see
+// detail-control.js's own top-of-file comment for why this is safe.
+import {
+  verifyControl, syncSession, detailSyncMenuItem, invalidateSelection, selectionStillActive,
+  retainedSelection,
+} from './detail-control.js';
+// Circular import, same pattern rowmenu.js/wiring.js already use:
+// `closeRowMenu` is a hoisted `export function` declaration in wiring.js,
+// never read at either module's top level, so by the time `openDetail`/
+// `closeDetail` below actually call it, wiring.js's module body has long
+// finished.
+import { closeRowMenu } from './wiring.js';
+import { renderNextTurn } from './next-turn.js';
 
 // ---------------------------------------------------------------------------
 // Session detail: a full page at /?session=<key>, not a modal (#181)
@@ -28,6 +45,20 @@ function findSession(key) {
     for (const s of g.sessions) if (s.key === key) return { device: g.device, session: s };
   }
   return null;
+}
+
+/** The header star, always from the one pinned set -- openDetail, the star
+ * itself and every refresh/menu pin share it, so none can leave it stale. */
+function renderDetailStar(key) {
+  const pinned = state.favorites.has(key);
+  const label = pinned ? 'Unpin this session' : 'Pin this session';
+  const star = $('dtStar');
+  star.dataset.star = key;
+  star.classList.toggle('on', pinned);
+  star.textContent = pinned ? '★' : '☆';
+  star.title = label;
+  star.setAttribute('aria-label', label);
+  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
 }
 
 function applyNav(nav, key) {
@@ -55,15 +86,46 @@ export function urlSessionKey() {
   return new URLSearchParams(location.search).get('session');
 }
 
+/**
+ * The header title: a custom name when one was set, else the prompt (falling
+ * back to the id) -- the exact same rule `displayTitle` already applies to
+ * the row and the sidebar (#181 part 2 closes this: the header used to
+ * ignore a rename entirely). The raw prompt stays one hover away via
+ * `title`, matching the row's own convention in sessionrow.js.
+ */
+function renderDetailTitle(found) {
+  const raw = found.session.prompt || found.session.id || '';
+  const shown = displayTitle(found.session, state.names);
+  const el = $('dtTitle');
+  el.textContent = truncateWords(shown, 80);
+  if (shown !== raw) el.title = raw; else el.removeAttribute('title');
+}
+
 export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const found = findSession(key);
   if (!found) return false;
+  // Close the shared `#rowMenu` first: it is keyed to whichever session it
+  // was opened for, and a navigation here -- including the browser's own
+  // Back/Forward (`nav: NAV.NONE`) -- never goes through the menu's own
+  // close paths (a click outside it, Esc, another popup opening). Left
+  // open, Sync session would retarget to whatever this call is about to
+  // select instead of the session its menu was actually offered for (#243
+  // Scout review of ab5ef90). Unconditional, so even reopening the SAME key
+  // drops a menu opened before this navigation.
+  closeRowMenu();
+  // Invalidate BEFORE anything else awaits, including the transcript fetch
+  // below -- not only once `verifyControl` itself starts. Scout's review of
+  // 34256a0: a reply for the PREVIOUS selection (even this same session,
+  // closed and reopened) can still be in flight while this function awaits
+  // the transcript, before a new `verifyControl` call would otherwise bump
+  // `controlToken`. Bumping the generation here, synchronously, closes that
+  // gap regardless of how long the rest of this function takes. The
+  // returned generation is captured below so the continuation AFTER the
+  // transcript await can tell whether it is still the active selection.
+  const generation = invalidateSelection();
   applyNav(nav, key);
   state.currentSession = found;
-  // Cut at a word boundary. `slice(0, 80)` alone ended titles mid-word --
-  // "...as the Squad team, using y" -- which reads as a rendering fault rather
-  // than as a long prompt.
-  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  renderDetailTitle(found);
   // The status pill (#169) shares its words and state mapping with the row's
   // `statusBadge` via `statusLabel`/`statusPillClass` (one source), so the
   // detail header and the row it was opened from can never read two
@@ -75,14 +137,7 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   const pillCls = statusPillClass(found.session, found.device);
   $('dtStatusPill').className = `dt-pill ${pillCls}`;
   $('dtStatusPill').textContent = statusLabel(found.session, found.device);
-  const pinned = state.favorites.has(sessionKey(found.session));
-  const star = $('dtStar');
-  star.dataset.star = sessionKey(found.session);
-  star.classList.toggle('on', pinned);
-  star.textContent = pinned ? '★' : '☆';
-  star.title = pinned ? 'Unpin this session' : 'Pin this session';
-  star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
-  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  renderDetailStar(sessionKey(found.session));
   renderCleanup(found);
   // Prefilled from the session when it is on GitHub. Shown either way now that
   // the dialog takes a repository: a run does not have to be about the
@@ -104,6 +159,9 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
   renderSquadPanel(found.session.squad);
+  syncReviewDetail(found.session);
+  // Every open starts on Chat, with this session's own pending cards and Info.
+  resetDetailTabs(found);
   $('dtTranscript').innerHTML = transcriptSkeleton();
   showDetailPage();
   renderSidebar();
@@ -119,15 +177,29 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
     const r = await api(`/api/devices/${encodeURIComponent(found.device.deviceId)}/transcript`, {
       method: 'POST', body: { sessionId: found.session.id, limit: 200 },
     });
-    renderTranscript(r.transcript || []);
+    // The person may have closed this session, reopened it (even the
+    // identical one), or opened something else entirely while this fetch
+    // was in flight -- `openDetail` has no `await` between bumping the
+    // generation above and this one, so any such navigation already ran
+    // its own `invalidateSelection` and moved the generation past what
+    // this call captured. Applying a transcript fetched for a context the
+    // person already left behind would silently overwrite whatever the
+    // CURRENT (correct) session's own transcript render just put on
+    // screen with stale content for a different session.
+    if (selectionStillActive(key, generation)) renderTranscript(r.transcript || []);
   } catch (e) {
-    $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
+    if (selectionStillActive(key, generation)) {
+      $('dtTranscript').innerHTML = `<div class="t-entry t-kind">could not load the transcript: ${esc(e.message)}</div>`;
+    }
   }
 
   // Deliberately AFTER the transcript: a session that cannot be controlled is
   // still worth reading, and blocking the transcript on a control check would
-  // make an unreachable device hide the very history explaining why.
-  verifyControl();
+  // make an unreachable device hide the very history explaining why. Gated
+  // the same way: a superseded selection already has its OWN `verifyControl`
+  // call in flight (started by whichever open/reopen superseded this one),
+  // so starting a second, redundant control-check here would only race it.
+  if (selectionStillActive(key, generation)) verifyControl();
   return true;
 }
 
@@ -140,6 +212,13 @@ export async function openDetail(key, { nav = NAV.PUSH } = {}) {
  * entry that got it here.
  */
 export function closeDetail({ nav = NAV.PUSH } = {}) {
+  // Same reasoning as `openDetail`'s call above: a stale shared menu must
+  // not survive leaving the page it was opened on either.
+  closeRowMenu();
+  // Same reasoning as `openDetail`'s call: a verify/resync reply already in
+  // flight for the session being closed must never be applied after this
+  // point, even if nothing new ever reopens it.
+  invalidateSelection();
   state.currentSession = null;
   applyNav(nav, null);
   hideDetailPage();
@@ -156,13 +235,7 @@ export function toggleCurrentFavorite() {
   const current = state.currentSession;
   if (!current) return;
   toggleFavorite(sessionKey(current.session));
-  const pinned = state.favorites.has(sessionKey(current.session));
-  const star = $('dtStar');
-  star.classList.toggle('on', pinned);
-  star.textContent = pinned ? '★' : '☆';
-  star.title = pinned ? 'Unpin this session' : 'Pin this session';
-  star.setAttribute('aria-label', pinned ? 'Unpin this session' : 'Pin this session');
-  star.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  renderDetailStar(sessionKey(current.session));
   renderSidebar();
 }
 
@@ -180,7 +253,7 @@ export function renderSidebar() {
   const selectedKey = state.currentSession ? sessionKey(state.currentSession.session) : null;
   const entries = sidebarEntries((state.overview && state.overview.groups) || [], filterText);
   list.innerHTML = entries.length
-    ? entries.map((e) => sidebarRow(e, selectedKey)).join('')
+    ? entries.map((e) => sidebarRow(e, selectedKey, state.names)).join('')
     : '<div class="dt-side-empty">No sessions match this filter</div>';
 }
 
@@ -201,10 +274,13 @@ export function syncDetailHeader() {
   renderSidebar();
   if (!state.currentSession) return;
   const key = sessionKey(state.currentSession.session);
-  const found = findSession(key);
-  if (!found) return;
+  // The live row when the overview still lists it; otherwise (a server-side
+  // status/search/device filter dropped it) the retained selection itself, so
+  // the title, status, pin and cleanup controls keep following the local name
+  // and the device's presence instead of freezing on what was open.
+  const found = findSession(key) || retainedSelection(key);
   state.currentSession = found;
-  $('dtTitle').textContent = truncateWords(found.session.prompt || found.session.id, 80);
+  renderDetailTitle(found);
   $('dtMeta').textContent = [
     found.device.name,
     found.session.cwd || '',
@@ -218,10 +294,13 @@ export function syncDetailHeader() {
   ].filter(Boolean);
   $('dtWarn').textContent = warnings.join(' · ');
   $('dtWarn').hidden = warnings.length === 0;
-  const pinned = state.favorites.has(key);
-  const star = $('dtStar');
-  star.classList.toggle('on', pinned);
-  star.textContent = pinned ? '★' : '☆';
+  syncReviewDetail(found.session);
+  renderNextTurn();
+  renderDetailStar(key);
+  renderCleanup(found);
+  // The inline approval card, the Info tab and the Squad tab's empty state
+  // follow the same live feed as the header above.
+  syncDetailTabs(found);
 }
 
 /**
@@ -233,8 +312,14 @@ export function initDetailRouting() {
   const back = (e) => { e.preventDefault(); closeDetail(); };
   $('dtBack').onclick = back;
   $('dtBackPhone').onclick = back;
+  initDetailTabs();
 
   $('dtSidebarFilter').oninput = () => renderSidebar();
+  $('dtRename').onclick = () => {
+    const current = state.currentSession;
+    if (!current) return;
+    promptRenameSession(sessionKey(current.session), current.session);
+  };
 
   $('detailSidebarList').onclick = (e) => {
     const row = e.target.closest('[data-session]');
@@ -305,77 +390,13 @@ export async function forgetStaleSession() {
     await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/forget`, {
       method: 'POST', body: { sessionId: current.session.id, force: true },
     });
-    $('detailScrim').hidden = true;
+    if (state.currentSession && sessionKey(state.currentSession.session) === sessionKey(current.session)) closeDetail({ nav: NAV.REPLACE });
     await refresh();
   } catch (e) {
     alert(`Could not forget: ${e.message}`);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Forget stale session'; }
   }
-}
-
-/** How long to wait for the device to answer before saying so. */
-const CONTROL_TIMEOUT_MS = 8000;
-
-/**
- * Ask the device whether it can take a control command for this session.
- *
- * The answer comes from the machine running the agent, not from the hub. The
- * hub is a cache: it knowing about a session proves only that a heartbeat once
- * mentioned it.
- */
-async function verifyControl() {
-  const current = state.currentSession;
-  if (!current) return;
-  state.composer = composerReduce(state.composer, { type: 'verify-start' });
-  renderControl();
-
-  const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), CONTROL_TIMEOUT_MS));
-  const ask = api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/control-check`, {
-    method: 'POST', body: { sessionId: current.session.id },
-  }).catch((e) => ({ error: e.message }));
-
-  const outcome = await Promise.race([ask, timeout]);
-
-  // The detail panel may have been closed, or moved to another session, while
-  // this was in flight. Applying a stale answer would enable the composer for
-  // a session nobody verified.
-  if (state.currentSession !== current) return;
-
-  state.composer = composerReduce(state.composer, { type: 'verify-result', outcome });
-  renderControl();
-}
-
-/**
- * `Sync session` -- restart the engine, keeping the session id, then re-check.
- *
- * Re-verifying alone would be a button that asks the same question twice and
- * expects a different answer. When the device has said the agent process is
- * gone, nothing changes until something restarts it.
- *
- * The id survives on purpose: it is what the row, the Teams card and anyone's
- * terminal history all refer to. A "sync" that produced a new session would
- * quietly orphan every one of those references.
- */
-export async function syncSession() {
-  const current = state.currentSession;
-  if (!current) return;
-  const btn = $('dtSync');
-  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
-  try {
-    await api(`/api/devices/${encodeURIComponent(current.device.deviceId)}/resync`, {
-      method: 'POST', body: { sessionId: current.session.id },
-    });
-    await refresh();
-  } catch (e) {
-    state.composer = composerReduce(state.composer, { type: 'verify-result', outcome: { error: e.message } });
-    renderControl();
-    return;
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Sync session'; }
-  }
-  // Only now is the question worth asking again.
-  await verifyControl();
 }
 
 export function renderControl() {
@@ -394,124 +415,12 @@ export function renderControl() {
   // label. `Forget stale session` (see renderCleanup) is the real next step
   // for an unreachable device; Sync stays for the case it was built for, a
   // reachable device whose session the hub has lost track of.
-  const current = state.currentSession;
-  const deviceUnreachable = !!(current && isDeviceUnreachable(current.device));
-  $('dtSync').hidden = !b.canSync || deviceUnreachable;
   $('dtInput').disabled = !b.enabled;
   $('dtSend').disabled = !b.enabled;
   $('dtInput').placeholder = b.enabled
     ? 'Send follow-up input to the running agent'
     : 'Controls are disabled until this session is verified';
-}
-
-/**
- * The Squad panel: team, models, and recent decisions beside the transcript.
- *
- * Decisions are the artifact people actually go looking for after the fact --
- * "why did it do that" is answered in decisions.md, not in a tool log.
- */
-function renderSquadPanel(sq) {
-  const el = $('dtSquad');
-  if (!sq) { el.hidden = true; return; }
-  el.hidden = false;
-
-  const models = sq.models || {};
-  const modelLine = models.uniform
-    ? `all on <b>${esc((models.distinctModels || [])[0] || models.defaultModel || 'default')}</b>`
-    : `<span class="sq-warn">mixed: ${esc((models.distinctModels || []).join(', '))}</span>`;
-  const policyBits = [];
-  if (models.costPolicy && models.costPolicy.maxCategory) {
-    policyBits.push(`cost ceiling: ${esc(models.costPolicy.maxCategory)}`);
-  }
-  if (models.economyMode) policyBits.push('economy mode');
-  const modelSummary = [modelLine, ...policyBits.map((p) => `<span class="sq-dim">${p}</span>`)].join(' &middot; ');
-
-  // Same rule as the row badge: a count is shown only when there is a count,
-  // and the lists are defended because a partial payload must degrade rather
-  // than throw halfway through building the panel.
-  const counts = Number.isFinite(sq.activeMembers) && Number.isFinite(sq.memberCount)
-    ? `${num(sq.activeMembers)}/${num(sq.memberCount)} members &middot; ` : '';
-  const members = Array.isArray(sq.members) ? sq.members : [];
-  const decisions = Array.isArray(sq.decisions) ? sq.decisions : [];
-
-  el.innerHTML = `
-    <div class="sq-head">
-      <b>${esc(sq.project)}</b>
-      <span class="sq-dim">${counts}${modelSummary}</span>
-    </div>
-    ${sq.memberSource ? `<div class="sq-sub">Roster source: ${esc(sq.memberSource)}</div>` : ''}
-    <div class="sq-members">
-      ${members.map((m) => `
-        <button type="button" class="sq-member ${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} ${m.active ? '' : 'off'}"
-                data-squaddoc="charter:${esc(m.name)}" title="Read ${esc(m.name)}'s charter">
-          ${esc(m.name)}${m.role && m.role !== m.name ? `<i>${esc(m.role)}</i>` : ''}
-        </button>`).join('')}
-    </div>
-    <div class="sq-docbar" id="dtSquadDocs"></div>
-    <div class="sq-doc" id="dtSquadDoc" hidden></div>
-    ${decisions.length ? `
-      <div class="sq-sub">Recent decisions (${num(sq.decisionCount)})</div>
-      <ol class="sq-decisions">
-        ${sq.decisions.slice(0, 5).map((d) => `
-          <li class="${d.superseded ? 'old' : ''}">
-            ${d.date ? `<span class="sq-date">${esc(d.date)}</span>` : ''}
-            <span class="sq-title">${esc(d.title)}</span>
-            ${d.summary ? `<div class="sq-why">${esc(d.summary.slice(0, 180))}${d.summary.length > 180 ? '…' : ''}</div>` : ''}
-          </li>`).join('')}
-      </ol>` : '<div class="sq-sub">No decisions recorded yet</div>'}`;
-
-  renderSquadDocBar();
-}
-
-/**
- * The documents this workspace actually has.
- *
- * Asked for once, when the session is opened. Offering a document that is not
- * there is a link to a dead end; hiding one that is, is worse -- and only the
- * device can answer, so it is asked rather than guessed.
- *
- * Member charters are reached by clicking the member, so the bar carries the
- * whole-team documents and nothing else.
- */
-const TEAM_DOC_LABEL = { team: 'Team', decisions: 'Decisions', routing: 'Routing', config: 'Models' };
-
-async function renderSquadDocBar() {
-  const bar = $('dtSquadDocs');
-  if (!bar || !state.currentSession) return;
-  const { device, session } = state.currentSession;
-  bar.innerHTML = '';
-  let docs = [];
-  try {
-    const r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/squad-docs`, {
-      method: 'POST', body: { sessionId: session.id },
-    });
-    docs = (r && r.docs) || [];
-  } catch {
-    // The device holds these files, so it is the only thing that can list
-    // them. Saying so beats an empty bar that looks like an empty team.
-    bar.innerHTML = '<span class="sq-dim">the device is offline; these files live on it</span>';
-    return;
-  }
-  const teamDocs = docs.filter((d) => Object.prototype.hasOwnProperty.call(TEAM_DOC_LABEL, d));
-  /**
-   * A member with no charter is not offered as one.
-   *
-   * The coordinator usually has no `charter.md`, so every panel had at least
-   * one button that looked live and answered "no charter:Squad in this
-   * workspace". Offering a link to a dead end is the thing the document list
-   * exists to prevent -- it applies to members as much as to tabs.
-   */
-  const haveCharter = new Set(docs.filter((d) => d.startsWith('charter:')));
-  for (const b of document.querySelectorAll('#dtSquad .sq-member[data-squaddoc]')) {
-    const ok = haveCharter.has(b.dataset.squaddoc);
-    b.classList.toggle('nodoc', !ok);
-    b.disabled = !ok;
-    if (!ok) b.title = 'no charter recorded for this member';
-  }
-  if (!teamDocs.length) return;
-  bar.innerHTML = teamDocs
-    .map((d) => `<button type="button" class="sq-doctab" data-squaddoc="${esc(d)}">${esc(TEAM_DOC_LABEL[d])}</button>`)
-    .join('');
+  renderNextTurn();
 }
 
 /**

@@ -11,16 +11,17 @@ import {
 } from './util.js';
 import { acaSessionRepo } from './aca.js';
 import { state, api } from './api.js';
-import { toggleFavorite, renameSession } from './prefs-sync.js';
-import { openDetail } from './detail.js';
+import { toggleFavorite, promptRenameSession } from './prefs-sync.js';
+import { openDetail, closeDetail } from './detail.js';
 import { openAca } from './aca.js';
-import { displayTitle } from './sessionrow.js';
 import { refresh } from './ws.js';
+import { retainedSelection } from './detail-control.js';
 // Circular import, same as `prefs-sync.js`'s own back-reference into `ws.js`:
-// `closeRowMenu` is a hoisted `export function` declaration in `wiring.js`,
-// never read at either module's top level, so by the time `onRowMenuAction`
-// below actually calls it, `wiring.js`'s module body has long finished.
-import { closeRowMenu } from './wiring.js';
+// `closeRowMenu`/`detailMenuOpen` are hoisted `export function` declarations
+// in `wiring.js`, never read at either module's top level, so by the time
+// `onRowMenuAction` below actually calls them, `wiring.js`'s module body has
+// long finished.
+import { closeRowMenu, detailMenuOpen } from './wiring.js';
 
 /**
  * The per-row ⋯ menu's contents (#170): what to offer, and in what state,
@@ -107,24 +108,34 @@ export function findSessionByKey(key) {
   return null;
 }
 
+/**
+ * What the shared menu acts on for `key`: the live overview's row, or -- for
+ * the persistent detail header's own ⋯ ONLY (`fromDetail`) -- the open page's
+ * retained selection when a server-side filter/search/device refresh has
+ * dropped it from that overview. A list row's menu never falls back: its row
+ * is rebuilt on every refresh, and a removed or unrelated session must not
+ * be kept alive behind it.
+ */
+export function menuTarget(key, fromDetail) {
+  return findSessionByKey(key) || (fromDetail ? retainedSelection(key) : null);
+}
+
 /** What a row-menu click actually does, split out of `wiring.js` (part of
  * #170) to keep that file under the size budget `test/package-unit.js`
  * holds every web/js module to. */
 export async function onRowMenuAction(key, action, href) {
-  const found = findSessionByKey(key);
+  const found = menuTarget(key, detailMenuOpen());
   if (!found) { closeRowMenu(); return; }
   const { device, session } = found;
-  if (action === 'open') { closeRowMenu(); openDetail(key); return; }
+  if (action === 'open') {
+    closeRowMenu();
+    if (!state.currentSession || (state.currentSession.session.key || state.currentSession.session.id) !== key) openDetail(key);
+    return;
+  }
   if (action === 'pin') { closeRowMenu(); toggleFavorite(key); return; }
   if (action === 'rename') {
     closeRowMenu();
-    const raw = session.prompt || session.id || '';
-    const current = displayTitle(session, state.names);
-    // Blank unless already renamed -- prompting with the raw prompt back at
-    // you would read as "this IS the name".
-    const name = window.prompt('Rename this session', current === raw ? '' : current);
-    if (name === null) return; // canceled
-    renameSession(key, name);
+    promptRenameSession(key, session);
     return;
   }
   if (action === 'copylink') {
@@ -183,6 +194,8 @@ export async function onRowMenuAction(key, action, href) {
       if (!sweep) return;
       try {
         await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, { method: 'POST', body: {} });
+        if (state.currentSession && state.currentSession.device.deviceId === device.deviceId
+          && !NON_TERMINAL_STATUSES.has(state.currentSession.session.status)) closeDetail({ nav: 'replace' });
         await refresh();
       } catch (e) { toast(`Could not remove: ${e.message}`); }
       return;
@@ -195,6 +208,7 @@ export async function onRowMenuAction(key, action, href) {
       await api(`/api/devices/${encodeURIComponent(device.deviceId)}/forget`, {
         method: 'POST', body: { sessionId: session.id },
       });
+      if (state.currentSession && (state.currentSession.session.key || state.currentSession.session.id) === key) closeDetail({ nav: 'replace' });
       await refresh();
     } catch (e) { toast(`Could not remove: ${e.message}`); }
   }

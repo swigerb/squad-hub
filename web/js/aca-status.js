@@ -2,10 +2,9 @@
 // this hub's GitHub App is connected, whether the issue watcher and Ralph
 // (the triage sweep) are reachable, and the state of the last dispatch.
 //
-// This is the first UI consumer of `GET /api/aca/repos` and
-// `GET /api/aca/dispatches` (#177): the existing "Start on ACA" dialog
-// (aca.js) only ever builds a `github.com/.../issues/new` link and never
-// calls either route. Everything here is read-only and never starts a job.
+// Like the dispatch dialog and pending rows, this card reads
+// `GET /api/aca/repos` and `GET /api/aca/dispatches` (#177).
+// Everything here is read-only and never starts a job.
 //
 // Split out as its own module, pure functions first, so every state the card
 // can be in -- checking, not connected, connected with nothing yet, connected
@@ -32,7 +31,17 @@ export const ACA_PHASE = {
  * two browser tabs polling independently never approaches the limit a real
  * dispatch request also draws from.
  */
-export const ACA_POLL_MS = 30000;
+export const ACA_STATUS_POLL_MS = 30000;
+
+export function acaConnectionCounts(counts = {}, phase) {
+  const service = phase === ACA_PHASE.CONNECTED ? 1 : 0;
+  return {
+    devices: (counts.devices || 0) + service,
+    online: (counts.online || 0) + service,
+    sessions: counts.sessions || 0,
+    service,
+  };
+}
 
 /**
  * Split a device's own name (or a job-shaped metadata field) into lowercase
@@ -343,7 +352,8 @@ export function acaStatusCardHtml(model) {
  */
 export async function refreshAcaStatus() {
   const previous = state.acaStatus;
-  state.acaStatus = { phase: ACA_PHASE.CHECKING };
+  state.acaStatus = previous && previous.phase === ACA_PHASE.CONNECTED
+    ? previous : { phase: ACA_PHASE.CHECKING };
   renderAcaStatus();
 
   let discovery;
@@ -407,6 +417,22 @@ export function renderAcaStatus() {
   const st = state.acaStatus || { phase: ACA_PHASE.CHECKING };
   const devices = (state.overview && state.overview.devices) || [];
   el.innerHTML = acaStatusCardHtml(acaStatusModel({ ...st, devices }));
+  const counts = acaConnectionCounts(state.overview && state.overview.counts, st.phase);
+  const badge = $('deviceCount');
+  if (badge) {
+    badge.textContent = counts.devices;
+    badge.title = counts.service
+      ? `${counts.devices - 1} devices and 1 connected ACA service`
+      : `${counts.devices} devices`;
+  }
+  const summary = $('deviceSummary');
+  if (summary) summary.innerHTML = `${counts.online} online &middot; ${counts.sessions} session${counts.sessions === 1 ? '' : 's'}${counts.service ? ' &middot; ACA ready' : ''}`;
+  const row = document.querySelector('.ondemand');
+  if (row) {
+    row.querySelector('.dot').className = `dot ${counts.service ? 'online' : 'offline'}`;
+    row.querySelector('.device-meta').innerHTML = counts.service
+      ? 'Connected service &middot; Ready to start runs' : 'Set up to start runs';
+  }
 }
 
 /**

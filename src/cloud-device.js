@@ -18,11 +18,13 @@
  */
 
 const os = require('os');
+const { sendPublication } = require('./report-pr');
 
 const { Daemon } = require('./daemon');
 const config = require('./config');
 const { parseDeviceMetaEnv } = require('./device-meta');
 const { cloudDeviceId } = require('./device-identity');
+const { RequiredModelError, parseRequireModel, requireModelName } = require('./agent-select');
 
 const HUB = process.env.SQUAD_HUB_URL;
 const TOKEN = process.env.SQUAD_HUB_TOKEN;
@@ -41,6 +43,13 @@ const CWD = process.env.SQUAD_HUB_CWD || null;
 // ACP (`copilot --acp` ignores a --model flag); an invalid name is ignored
 // with a warning and the default model runs.
 const MODEL = process.env.SQUAD_HUB_MODEL || null;
+// SQUAD_HUB_REQUIRE_MODEL=1 turns that model from a request into a REQUIREMENT,
+// for a supervisor that pinned it on purpose: the session runs on exactly this
+// model, confirmed by the agent itself, or it does not run and the process says
+// why with REQUIRED_MODEL_EXIT. Parsed strictly -- see `parseRequireModel`.
+// `squad-hub oneshot --capabilities` is how a caller learns this build
+// understands the flag at all.
+const REQUIRED_MODEL_EXIT = 78;
 // How long to wait for the hub before starting anyway. The hub is an observer,
 // never a dependency, so this is a courtesy to the approver -- not a gate.
 const ATTACH_GRACE_MS = Number(process.env.SQUAD_HUB_ATTACH_GRACE_MS || 5000);
@@ -51,6 +60,37 @@ const MAX_SESSION_MS = Number(process.env.SQUAD_HUB_MAX_SESSION_MS || 3 * 3600 *
 if (!HUB || !TOKEN) {
   process.stderr.write('SQUAD_HUB_URL and SQUAD_HUB_TOKEN are required for a cloud device\n');
   process.exit(64);
+}
+
+/**
+ * A required-model refusal, in the one shape a supervisor reads: a single
+ * stderr line, `required-model-refused code=<CODE> reason=<text>`, and the exit
+ * code above. The code is stable; the reason is for a person. Neither carries
+ * a value from the environment other than what the agent itself said.
+ */
+function refuseRequiredModel(code, reason) {
+  const text = String(reason || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 300);
+  process.stderr.write(`required-model-refused code=${code} reason=${text}\n`);
+}
+
+// Decided before anything else is started -- no daemon, no hub connection, no
+// agent -- so a mistake in the request costs nothing and an unparseable flag
+// can never be mistaken for "not required".
+let REQUIRE_MODEL = false;
+try {
+  REQUIRE_MODEL = parseRequireModel(process.env.SQUAD_HUB_REQUIRE_MODEL);
+  if (REQUIRE_MODEL) {
+    // Outside one-shot mode there is no session started from this environment,
+    // so the flag would silently require nothing.
+    if (!ONESHOT) {
+      throw new RequiredModelError('REQUIRED_MODEL_ONESHOT_ONLY', 'SQUAD_HUB_REQUIRE_MODEL applies to a one-shot session (SQUAD_HUB_ONESHOT)');
+    }
+    requireModelName(MODEL);
+  }
+} catch (e) {
+  if (!(e instanceof RequiredModelError)) throw e;
+  refuseRequiredModel(e.code, e.message);
+  process.exit(REQUIRED_MODEL_EXIT);
 }
 
 // A name a human can pick out of a device list. CONTAINER_APP_REPLICA_NAME is
@@ -140,22 +180,26 @@ if (!hasAgentCredential && !process.env.SQUAD_HUB_AGENT) {
  */
 const deviceId = cloudDeviceId(process.env);
 
-const d = new Daemon();
+// A one-shot job ends its session when the turn does (see ONESHOT below), so
+// there is never a next turn to change the mode or model of -- and the hub is
+// told so rather than left to offer a selector that cannot work (#183).
+const d = new Daemon({ nextTurnSelection: !ONESHOT });
 d.deviceName = deviceName;
 
 async function publishTranscript(sessionId) {
   if (!d.link || !d.link.connected || !sessionId) return;
   try {
     const r = await d.handle({ op: 'transcript', sessionId, limit: 500 });
-    d.link.send({
+    await sendPublication(d.link, {
       type: 'transcript',
       sessionId,
       entries: r.transcript || [],
       nextSince: r.nextSince,
       gap: r.gap,
-    });
+    }, { timeoutMs: 5000, description: 'final transcript' });
   } catch (e) {
     d.log(`could not publish final transcript for ${sessionId}: ${e && e.message}`);
+    process.stderr.write(`could not publish final transcript for ${sessionId}: ${e && e.message}\n`);
   }
 }
 
@@ -195,7 +239,8 @@ async function publishTranscript(sessionId) {
    * container ran 180s past completion before it was killed.
    *
    * The exit code carries the outcome so the platform's own status means
-   * something: 0 for a completed session, 1 for a failed one.
+   * something: 0 for a completed session, 1 for a failed one, and 78 when a
+   * REQUIRED model (SQUAD_HUB_REQUIRE_MODEL) could not be confirmed.
    */
   if (ONESHOT) {
     if (!PROMPT) {
@@ -217,12 +262,23 @@ async function publishTranscript(sessionId) {
     try {
       started = await d.handle({
         op: 'start-session', prompt: PROMPT, cwd: CWD || process.cwd(), model: MODEL || undefined,
+        // Only ever sent as true: absent is the optional path, and a value that
+        // is not a boolean is something the daemon refuses rather than reads.
+        ...(REQUIRE_MODEL ? { requiredModel: true } : {}),
       });
     } catch (e) {
+      if (REQUIRE_MODEL && e instanceof RequiredModelError) {
+        refuseRequiredModel(e.code, e.message);
+        d.shutdown(REQUIRED_MODEL_EXIT);
+      }
       process.stderr.write(`could not start the session: ${e.message}\n`);
       process.exit(1);
     }
-    if (MODEL) {
+    if (REQUIRE_MODEL) {
+      // Not "requested": nothing has been confirmed yet, and the next line that
+      // says the model is in effect has to come from the agent's own answer.
+      process.stdout.write(`model required: ${MODEL} (waiting for the agent to confirm it)\n`);
+    } else if (MODEL) {
       const chosen = started.agentSelection && started.agentSelection.model;
       process.stdout.write(chosen === MODEL
         ? `model requested: ${chosen}\n`
@@ -232,6 +288,14 @@ async function publishTranscript(sessionId) {
 
     const deadline = Date.now() + MAX_SESSION_MS;
     let last = null;
+    let confirmationLogged = false;
+    // Says which model is running, once, and only on the agent's own word.
+    const noteConfirmation = () => {
+      const rm = last && last.requiredModel;
+      if (!REQUIRE_MODEL || confirmationLogged || !rm || rm.confirmed !== true) return;
+      confirmationLogged = true;
+      process.stdout.write(`model confirmed: requested=${rm.requested} chosen=${rm.chosen}\n`);
+    };
     /**
      * `idle` COUNTS AS FINISHED HERE, and getting this wrong costs money.
      *
@@ -246,6 +310,7 @@ async function publishTranscript(sessionId) {
     while (Date.now() < deadline) {
       const st = await d.handle({ op: 'status' });
       last = (st.sessions || []).find((s) => s.id === started.id);
+      noteConfirmation();
       if (last && FINISHED.includes(last.status)) break;
 
       /**
@@ -272,13 +337,44 @@ async function publishTranscript(sessionId) {
 
     const status = last ? last.status : 'vanished';
     process.stdout.write(`session ${started.id} ${status}\n`);
-    await publishTranscript(started.id);
+
+    // A required model has its own verdict, and it is not the session's status:
+    // a session that went idle without the agent ever confirming the model is
+    // not a success, and one that failed AFTER confirming it is an ordinary
+    // failure, not a refusal. Exit 0 needs the confirmation, whatever else
+    // looks finished.
+    const rm = REQUIRE_MODEL ? (last && last.requiredModel) || null : null;
+    if (REQUIRE_MODEL && !(rm && rm.confirmed === true)) {
+      const finished = last && FINISHED.includes(last.status);
+      const failure = (rm && rm.failure) || (finished
+        ? { code: 'REQUIRED_MODEL_UNCONFIRMED', reason: `the session ended ${status} without the agent confirming the model` }
+        : { code: 'REQUIRED_MODEL_TIMEOUT', reason: `the agent had not confirmed the model when the ${Math.round(MAX_SESSION_MS / 1000)}s session ceiling was reached` });
+      refuseRequiredModel(failure.code, failure.reason);
+      // A session that already failed keeps saying so: stopping it would
+      // overwrite "failed" with "stopped". Only one still running is stopped.
+      if (!last || !['failed', 'stopped', 'done'].includes(last.status)) {
+        try { await d.handle({ op: 'stop-session', sessionId: started.id }); } catch { /* going anyway */ }
+      }
+      await publishTranscript(started.id);
+      // Say it to the hub once more, and give the write a moment to leave
+      // before the socket is closed under it: a hub that last heard "starting"
+      // and then lost the device would report a job that never failed.
+      try {
+        if (d.link) d.link.send({ type: 'sessions', sessions: d.snapshot().sessions });
+      } catch { /* going anyway */ }
+      await new Promise((r) => setTimeout(r, 250));
+      try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
+      d.shutdown(REQUIRED_MODEL_EXIT);
+    }
 
     // An idle session still holds a live agent. Stop it, or the process would
     // outlive the job it belongs to and the container would not exit.
     if (status === 'idle') {
-      try { await d.handle({ op: 'stop-session', sessionId: started.id }); } catch { /* going anyway */ }
+      await d.handle({ op: 'stop-session', sessionId: started.id });
     }
+    // Close input before awaiting the Hub, so no new turn is accepted while
+    // the final transcript is being persisted.
+    await publishTranscript(started.id);
 
     // Close everything explicitly. The daemon holds a listening server and its
     // hub socket open, and Node will not exit while they live -- which is

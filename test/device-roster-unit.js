@@ -477,6 +477,43 @@ check('listLinuxVolumes skips pseudo filesystems and read-only mounts', () => {
     'proc, tmpfs and the read-only overlay mount must not appear as volumes');
 });
 
+// `statfsSafe` swallows a stat that throws, so a fixture whose stat refuses a
+// mount cannot tell a mount that was filtered from one that was merely
+// unreadable. These answer for EVERY path, the way a real tmpfs or a read-only
+// disk does, and record which paths were asked.
+function sizedFs() {
+  const statted = [];
+  const fsMod = fakeFs((p) => { statted.push(p); return { bsize: 4096, blocks: 1000, bavail: 500 }; });
+  return { statted, fsMod };
+}
+
+check('listLinuxVolumes drops a pseudo filesystem that reports a real size, without asking it for one', () => {
+  const raw = [
+    'tmpfs /run tmpfs rw,nosuid,nodev 0 0',
+    'tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0',
+    'overlay /var/lib/docker/overlay2/x/merged overlay rw,relatime 0 0',
+    'proc /proc proc rw,relatime 0 0',
+    '/dev/sda1 / ext4 rw,relatime 0 0',
+  ].join('\n');
+  const { statted, fsMod } = sizedFs();
+  const volumes = listLinuxVolumes({ fsMod, readMounts: () => raw });
+  assert.deepStrictEqual(volumes.map((v) => v.mountPoint), ['/'], 'a writable pseudo filesystem was listed as a disk');
+  assert.deepStrictEqual(statted, ['/'], 'a pseudo filesystem was still asked for its size');
+});
+
+check('listLinuxVolumes drops a read-only mount on a real filesystem, and keeps one that only mentions remount-ro', () => {
+  const raw = [
+    '/dev/sr0 /mnt/cdrom iso9660 ro,relatime 0 0',
+    '/dev/sdb1 /backup ext4 ro,noatime 0 0',
+    '/dev/sda1 / ext4 rw,relatime,errors=remount-ro 0 0',
+    '/dev/sdc1 /data ext4 rw,relatime 0 0',
+  ].join('\n');
+  const { statted, fsMod } = sizedFs();
+  const volumes = listLinuxVolumes({ fsMod, readMounts: () => raw });
+  assert.deepStrictEqual(volumes.map((v) => v.mountPoint), ['/', '/data'], 'a read-only mount was listed as a disk, or a writable one dropped');
+  assert.deepStrictEqual(statted, ['/', '/data'], 'a read-only mount was still asked for its size');
+});
+
 check('listLinuxVolumes returns no volumes rather than throwing when /proc/mounts is unreadable', () => {
   const fsMod = fakeFs(() => { throw new Error('should not be called'); });
   assert.deepStrictEqual(listLinuxVolumes({ fsMod, readMounts: () => { throw new Error('EPERM'); } }), []);

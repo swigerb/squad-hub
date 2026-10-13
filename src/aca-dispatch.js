@@ -39,8 +39,16 @@ const BRANCH_RE = /^(?!\/)(?!.*\/\/)(?!.*\.\.)(?!.*\.lock(?:\/|$))[A-Za-z0-9][A-
 /** A model identifier: a short slug, nothing else. */
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** A GitHub username/login: 1-39 characters, alphanumeric and single
- * internal hyphens, never leading or trailing or doubled. */
+/** A reviewer identifier: shape-checked only, not what it means. Per issue
+ * #178's own scope ("Required reviewer: defaults to the squad reviewer"),
+ * this is the SQUAD MEMBER ID that must approve the pull request (e.g. a
+ * cast name from this repository's own `.squad/team.md`, such as
+ * `reviewer`) -- not an arbitrary GitHub login, even though the character
+ * class happens to be the same 1-39-character, single-internal-hyphen shape
+ * GitHub logins use. Whatever `squad-dispatch.yml` and squad-on-aca
+ * (swigerb/squad-on-aca#135, not yet implemented) ultimately do with this
+ * value is out of this hub's scope; it only validates the shape and passes
+ * it through as the `reviewer` workflow input (see docs/aca.md). */
 const REVIEWER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 /** A headline, not an essay -- same cap as `pull-request.js`'s PR title. */
@@ -138,7 +146,7 @@ function sanitizeDispatchRequest(input) {
   let safeReviewer = null;
   if (reviewer !== undefined && reviewer !== null) {
     if (typeof reviewer !== 'string' || !REVIEWER_RE.test(reviewer)) {
-      return { ok: false, reason: 'reviewer is not a valid GitHub username' };
+      return { ok: false, reason: 'reviewer is not a valid identifier (the Squad member id, e.g. "reviewer")' };
     }
     safeReviewer = reviewer;
   }

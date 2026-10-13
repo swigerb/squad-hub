@@ -31,7 +31,82 @@
 // Bumping this discards every previous cache on activate. It only needs to
 // change when the SHAPE of what is cached changes -- the network-first
 // strategy already keeps content fresh on its own.
-const CACHE = 'squad-hub-shell-v15';
+//
+// v22 (#179 with #178): the combined shell of #179 (v16: /js/review.js joined
+// SHELL) and #178 (v21: /js/aca-pending.js and /js/aca-match.js joined SHELL and
+// the pending row's attach logic was reworked). Neither branch's value
+// described the merged shell, and 22 was above both.
+//
+// #181/#243: bumped again here even though no file was added or removed from
+// SHELL. The header-row fix below restructures `.detail-head-line` enough
+// (a new `.detail-head-titlerow` wrapper and a real two-row phone layout
+// instead of whole-line `flex-wrap`) that a stale offline install serving the
+// OLD `detail.css`/`index.html` pair out of its cache would keep showing the
+// exact 390px misalignment this PR fixes, with no way to tell from the
+// network-first path alone since that only helps while online. v16 is
+// already spent by #178's branch (`squad/hub-178-aca-job-dialog`), so this
+// uses v17 -- a value neither sibling branch has used -- to avoid a
+// cross-PR cache collision if both merge close together. v20: this PR's
+// completion slice changed cached code (web/js/wiring.js's row-menu click
+// dispatch was extracted into `handleRowMenuClick`), not just tests, so an
+// existing install's cache must actually refresh rather than keep serving
+// the old file forever.
+//
+// #182: v22. The detail page gained Chat | Squad | Info tabs, so index.html and
+// detail.js changed shape, `renderSquadPanel` moved into a new module, and
+// three more modules and a stylesheet joined the shell. An existing install
+// must not pair the old markup with the new scripts, or the reverse. v21 is
+// already spent by #181's branch, so this is v22.
+//
+// v23 (#182 and #243 over v22): the integrated shell. The detail tabs, the
+// inline approval card and the session-info panel added modules and a
+// stylesheet to SHELL on top of #179's and #178's, so a v22 install (which has
+// neither) must refresh rather than pair the old markup with the new scripts.
+// 23 is above every value any branch has used so far (v22 is the highest).
+// `/js/forget.js` (the "Remove ended sessions" action, moved out of wiring.js
+// so that file stays inside its size budget) joined the shell in the same bump.
+//
+// #183 (the composer's next-turn mode and model controls) added /js/next-turn.js
+// and /css/composer-next-turn.css to the shell. Its own branch called that v16,
+// which #179 had already spent, so the integrated shell stays v23: the value
+// every file of #179, #178, #181/#243, #182 and #183 is cached under together.
+//
+// v24 (#243's retained header menu over v23): detail.js, detail-control.js,
+// rowmenu.js and wiring.js changed again. The open page's header and its shared
+// ⋯ menu now follow the retained selection when a server-side filter drops the
+// session from the overview, and the header star renders from one helper. A v23
+// install would keep serving the old scripts, so this is v24: above the v23 of
+// the integrated shell, with no module added to SHELL.
+//
+// v25 (the composer's send-generation fix over v24): next-turn.js,
+// detail-control.js and wiring.js changed. A send now writes its outcome to the
+// page it began on, not to any page that happens to share the key or the text
+// (draft, queued note and error all check the page's generation), and an
+// unhandled failure on a page the person left is shown as a dialog. The
+// composer's handlers (`wireComposer`) moved out of wiring.js into the new
+// `/js/composer-wire.js` so that file stays inside its size budget, which adds
+// one module to SHELL. A v24 install has neither the changed scripts nor the
+// new module, so this is v25: above the v24 of the retained header shell.
+//
+// v26 (the rail's pending ACA dispatches over v25): the device rail now draws a
+// pulsing row for every dispatch this tab made whose job has not attached, and
+// a finished-but-unattached one stops pulsing and says why. devices.js,
+// connect.js, aca-pending.js and devices.css changed, and the rail's ACA
+// rendering moved out of devices.js (at its size budget) into the new
+// `/js/aca-rail.js`, which joins SHELL. A v25 install has neither the changed
+// scripts nor the new module, so this is v26.
+//
+// v27 refreshes the responsive filter/header styles and composer send handling.
+// Installed clients must not keep the v26 code that could resend a landed draft.
+//
+// v30: the New ACA job dialog (web/js/aca.js) now reads which workflow inputs the
+// target repository declares and stops sending Publish PR / Watch-only to a
+// workflow that lacks them, and index.html gained the note under those options.
+// A v29 install still sends both on every dispatch, so a repository on an older
+// squad-dispatch.yml is refused with a 422 until its cache refreshes.
+// It also recovers the issue a failed dispatch had already created and retries on it
+// (Existing issue N), where a v29 install stays in New-issue mode and creates a second one.
+const CACHE = 'squad-hub-shell-v30';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -40,6 +115,7 @@ const CACHE = 'squad-hub-shell-v15';
  * resolves to, and what a navigation request asks for.
  */
 const SHELL = [
+  '/js/empty-state.js',
   '/',
   '/css/tokens.css',
   '/css/topbar.css',
@@ -47,12 +123,15 @@ const SHELL = [
   '/css/devices.css',
   '/css/modals.css',
   '/css/detail.css',
+  '/css/detail-tabs.css',
   '/css/squad.css',
   '/css/inbox.css',
+  '/css/composer-next-turn.css',
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
   '/js/sessionrow.js',
+  '/js/review.js',
   '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
@@ -63,15 +142,27 @@ const SHELL = [
   '/js/devices.js',
   '/js/device-detail.js',
   '/js/detail.js',
+  '/js/detail-control.js',
+  '/js/detail-tabs.js',
+  '/js/approval-card.js',
+  '/js/session-info.js',
+  '/js/squad-panel.js',
   '/js/transcript.js',
+  '/js/next-turn.js',
+  '/js/composer-wire.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
+  '/js/aca-created-issue.js',
+  '/js/aca-match.js',
+  '/js/aca-rail.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
   '/js/filters.js',
+  '/js/forget.js',
   '/js/push.js',
   '/js/wiring.js',
   '/js/signin.js',
@@ -229,7 +320,7 @@ self.addEventListener('notificationclick', (event) => {
 
 const OFFLINE_PAGE = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Squad Hub — offline</title>
+<title>Squad Hub: offline</title>
 <style>
   body { margin:0; min-height:100vh; display:grid; place-items:center;
          background:#14161a; color:#e8eaef;
@@ -243,6 +334,6 @@ const OFFLINE_PAGE = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"
 <body><div class="box">
   <h1>Squad Hub is offline</h1>
   <p>This device cannot reach the hub right now.</p>
-  <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here — the hub only watches them. Anything waiting for an approval is still waiting.</p>
+  <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here. The hub only watches them. Anything waiting for an approval is still waiting.</p>
   <button onclick="location.reload()">Try again</button>
 </div></body></html>`;

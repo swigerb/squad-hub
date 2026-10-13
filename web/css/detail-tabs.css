@@ -1,0 +1,97 @@
+/* ---------- detail tabs (#182): Chat | Squad | Info | Files (spike) ----------
+   Sizes follow the rest of the product: a status pill is 22px (the shared
+   .dt-pill), a button is 32px with a 6px radius, and a small button is 28px.
+   Colors come from the tokens only, so dark and light both work. There are no
+   inline styles anywhere in the markup these classes style (the CSP forbids
+   them). */
+
+/* The bar is as tall as its tabs (40px) and the 1px rule under it is an inset
+   shadow, not a border: a tab that overlapped a real border would be scrollable
+   overflow, so overflow-x:auto (which makes overflow-y auto too) would give the
+   bar a vertical scrollbar of its own on classic-scrollbar browsers and clip the
+   selected tab's 2px underline to 1px. With no height of its own, a horizontal
+   scrollbar on a very narrow window grows the bar instead of squeezing the tabs. */
+.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;
+  background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
+  color: var(--dim); font: inherit; font-weight: 600; cursor: pointer;
+}
+.dt-tab:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
+.dt-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.dt-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dt-tab:disabled { opacity: .45; cursor: not-allowed; }
+.dt-tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: 0 0 auto; }
+
+.dt-pane > .squadpanel { margin-top: 12px; }
+/* Chat gets its gap from the transcript's own margin and Squad from the panel's; Info has none. */
+#dtPane-info { margin-bottom: 12px; }
+.dt-empty { color: var(--faint); font-size: 13px; margin: 12px 0; }
+.dt-dim { color: var(--faint); }
+.dt-link { color: var(--accent); }
+/* The header's summary line names the working directory, and a path has no place to break. */
+#dtMeta { overflow-wrap: anywhere; }
+
+/* The inline approval card: the pop-up's request, drawn under the transcript. */
+.dt-approvals:empty { display: none; }
+.dt-appr {
+  border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 10px;
+  padding: 12px 14px; margin: 0 0 12px;
+}
+.dt-appr-head { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; }
+.dt-appr-head .hint-btn { margin-left: 0; }
+.dt-appr-sub { color: var(--dim); font-size: 12px; }
+.dt-appr-title { margin: 8px 0 0; }
+.dt-appr-cmd {
+  margin: 8px 0; padding: 8px 10px; border-radius: 6px;
+  background: var(--code-bg); border: 1px solid var(--code-line);
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.dt-appr-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.dt-appr-paths:empty { display: none; }
+.dt-appr-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.dt-appr-actions button { height: 32px; padding: 0 14px; border-radius: 6px; box-sizing: border-box; }
+.dt-appr-note { margin: 8px 0 0; font-size: 12px; color: var(--dim); }
+.dt-appr-note:empty { display: none; }
+
+.dt-chip {
+  display: inline-flex; align-items: center; max-width: 100%;
+  padding: 0 8px; height: 22px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
+  font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* The Info tab. */
+.dt-kv { width: 100%; border-collapse: collapse; font-size: 13px; margin: 12px 0 18px; }
+.dt-kv th, .dt-kv td {
+  padding: 6px 0; border-bottom: 1px solid var(--line); text-align: left;
+  vertical-align: top; line-height: 22px;
+}
+.dt-kv th { color: var(--dim); font-weight: 400; width: 180px; padding-right: 12px; }
+.dt-kv td { overflow-wrap: anywhere; }
+.dt-kv code { font-family: var(--mono); font-size: 12px; }
+.dt-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-sec { display: flex; align-items: center; margin: 6px 0 8px; font-size: 14px; }
+.dt-sec .hint-btn { margin-left: 6px; }
+
+.dt-hist { list-style: none; margin: 0; padding: 0; }
+.dt-hist li {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 22px;
+}
+.dt-hist li.dt-empty { margin: 0; padding: 8px 0; }
+.dt-hist-who { color: var(--dim); min-width: 0; overflow-wrap: anywhere; }
+.dt-hist-when { margin-left: auto; color: var(--faint); font-size: 12px; white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .dt-kv th { width: 112px; }
+}
+@media (max-width: 480px) {
+  .dt-tab { padding: 0 10px; }
+  .dt-appr { padding: 10px 12px; }
+  .dt-hist-when { margin-left: 0; }
+}

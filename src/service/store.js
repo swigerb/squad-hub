@@ -18,6 +18,7 @@ const { MemoryBacking } = require('./store-backing');
 const { sanitizeDeviceMeta } = require('../device-meta');
 const { sanitizeDiskVolumes } = require('../disk-meta');
 const { sanitizePullRequest } = require('../pull-request');
+const { TERMINAL_STATUSES, matchesStatusFilter } = require('../session-status');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
@@ -26,9 +27,10 @@ const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' }
  * Statuses a session never comes back from.
  *
  * Anything else -- starting, active, waiting_approval -- is live work and must
- * never be aged out from under someone.
+ * never be aged out from under someone. Shared with `src/session-status.js`,
+ * which the derived "ready for review" filter (#179) also reads.
  */
-const TERMINAL = new Set(['done', 'failed', 'stopped', 'disconnected']);
+const TERMINAL = TERMINAL_STATUSES;
 const LIVE_WHILE_ATTACHED = new Set(['starting', 'active', 'waiting_approval']);
 const TRANSCRIPT_CACHE_LIMIT = 500;
 
@@ -69,7 +71,54 @@ function sanitizeShortString(v, maxLen = 100) {
  */
 function sanitizeCapabilities(v) {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  return { narrowedForget: v.narrowedForget === true };
+  // `nextTurnSelection` (#183) is the same kind of claim: this daemon will
+  // apply a steer's `mode`/`model` rather than ignore them. Literal `true`
+  // only, and NOT carried over from an earlier registration -- a device that
+  // is downgraded stops claiming it, and the hub must stop believing it.
+  return { narrowedForget: v.narrowedForget === true, nextTurnSelection: v.nextTurnSelection === true };
+}
+
+/** Most mode or model choices a session may publish; the live model list is about thirty. */
+const NEXT_TURN_CHOICE_MAX = 64;
+
+/**
+ * A session's `nextTurn` (#183) as the browser may read it: what the agent
+ * offers for the next turn's mode and model, and what it last confirmed.
+ *
+ * INPUT, like everything a device sends -- bounded, strings only, and nothing
+ * markup-shaped. Anything that is not the expected shape becomes `null`, which
+ * every reader treats as "cannot change", so an old device that publishes no
+ * `nextTurn` at all and a hostile one that publishes garbage end up the same
+ * place: a disabled selector, never an enabled one.
+ */
+function sanitizeNextTurn(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const field = (f) => {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) {
+      return { supported: false, reason: null, current: null, choices: [] };
+    }
+    const choices = [];
+    for (const c of (Array.isArray(f.choices) ? f.choices : []).slice(0, NEXT_TURN_CHOICE_MAX)) {
+      if (!c || typeof c !== 'object') continue;
+      const id = sanitizeShortString(c.id, 200);
+      if (!id) continue;
+      choices.push({ id, name: sanitizeShortString(c.name, 200) || id });
+    }
+    return {
+      supported: f.supported === true && choices.length > 0,
+      reason: sanitizeShortString(f.reason, 300),
+      current: sanitizeShortString(f.current, 200),
+      choices,
+    };
+  };
+  const mode = field(v.mode);
+  const model = field(v.model);
+  return {
+    supported: v.supported === true && (mode.supported || model.supported),
+    reason: sanitizeShortString(v.reason, 300),
+    mode,
+    model,
+  };
 }
 
 /**
@@ -170,6 +219,10 @@ function normaliseSession(session) {
   for (const f of SESSION_LIST_FIELDS) {
     if (Array.isArray(s[f])) s[f] = s[f].map(normaliseApproval);
   }
+  // Absent stays absent (an older device: nothing claimed, so nothing offered);
+  // present is made safe. Either way a reader sees no selector it can use
+  // unless the device said so in a shape it can trust.
+  if ('nextTurn' in s) s.nextTurn = sanitizeNextTurn(s.nextTurn);
   return s;
 }
 
@@ -768,7 +821,7 @@ class Store extends EventEmitter {
   listSessions(subject, filter = {}) {
     let out = [...this._bucket(subject).sessions.values()];
     if (filter.deviceId) out = out.filter((s) => s.deviceId === filter.deviceId);
-    if (filter.status) out = out.filter((s) => s.status === filter.status);
+    if (filter.status) out = out.filter((s) => matchesStatusFilter(s, filter.status));
     if (filter.keyword) {
       const k = String(filter.keyword).toLowerCase();
       out = out.filter((s) => `${s.prompt || ''} ${s.cwd || ''} ${s.id}`.toLowerCase().includes(k));

@@ -2043,9 +2043,17 @@ function usage() {
 
   ONE-SHOT (for a job platform: ACA, Kubernetes, CI)
   squad-hub oneshot     run ONE session from the environment, then exit
-                        SQUAD_HUB_URL / _TOKEN / _PROMPT / _CWD
+                        SQUAD_HUB_URL / _TOKEN / _PROMPT / _CWD / _MODEL
+                        SQUAD_HUB_REQUIRE_MODEL=1  _MODEL must run, confirmed by
+                                                   the agent, or nothing runs
                         exits 0 done, 1 failed, 64 no prompt,
-                              75 nobody could approve, 77 hub refused the device
+                              75 nobody could approve, 77 hub refused the device,
+                              78 the required model was not confirmed
+  squad-hub oneshot --capabilities
+                        print {"protocolVersion":1,"requiredModel":true} and exit
+                        0, touching no hub, config, daemon or agent. Says this
+                        build understands SQUAD_HUB_REQUIRE_MODEL -- not that any
+                        account has any model.
   squad-hub report-pr --url <https://github.com/o/r/pull/N> --number <N>
                        [--title <text>] [--session <sessionId>]
                        attach a pull request to a session after it ended, as
@@ -2242,13 +2250,34 @@ function withTimeout(promise, ms, message) {
  *   SQUAD_HUB_TOKEN   a DEVICE token, never a personal credential
  *   SQUAD_HUB_PROMPT  what to run
  *   SQUAD_HUB_CWD     where to run it
+ *   SQUAD_HUB_MODEL   the model to run it on
+ *   SQUAD_HUB_REQUIRE_MODEL=1   that model is REQUIRED: it is confirmed by the
+ *                     agent before the prompt is sent, or nothing runs
  *
  * It exists so a caller does not have to reach into `src/` and depend on this
  * package's internal file layout. The exit codes are the contract: 0 done,
  * 1 failed, 64 no prompt, 75 an approval nobody could give, 77 the hub refused
- * the device.
+ * the device, 78 the required model was not confirmed.
+ *
+ * `oneshot --capabilities` is a probe, not a run. It prints
+ * `ONESHOT_CAPABILITIES` and exits 0 having read nothing and started nothing:
+ * no hub, no token, no config, no daemon, no agent. What it says is about THIS
+ * CODE -- that it understands `SQUAD_HUB_REQUIRE_MODEL` -- and nothing about
+ * which models an account can use, which only a live agent can say. Anything
+ * else on the line is refused rather than ignored, so a caller can never read
+ * an answer that was given to a question it did not ask.
  */
-function cmdOneshot() {
+const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: true });
+
+function cmdOneshot(argv = []) {
+  if (argv.includes('--capabilities')) {
+    if (argv.length !== 1) {
+      err('usage: squad-hub oneshot --capabilities (takes no other arguments)');
+      return 2;
+    }
+    out(JSON.stringify(ONESHOT_CAPABILITIES));
+    return 0;
+  }
   process.env.SQUAD_HUB_ONESHOT = process.env.SQUAD_HUB_ONESHOT || '1';
   require('./cloud-device');
   /**
@@ -2279,8 +2308,11 @@ async function main(argv) {
   const [cmd, ...rest] = globals.argv;
 
   // `help` and `--version` answer without touching a hub, so an unconfigured
-  // environment must not stop someone reading the usage text.
-  const needsEnvironment = cmd !== undefined && !['help', '--help', '-h', '--version', '-v'].includes(cmd);
+  // environment must not stop someone reading the usage text. The same goes for
+  // the oneshot capability probe: `--env ppe` with ppe not configured is an
+  // error for a run and says nothing about what this build understands.
+  const isProbe = cmd === 'oneshot' && rest.includes('--capabilities');
+  const needsEnvironment = cmd !== undefined && !isProbe && !['help', '--help', '-h', '--version', '-v'].includes(cmd);
   if (needsEnvironment) {
     const code = applyEnvironment(globals.env);
     if (code !== 0) return code;

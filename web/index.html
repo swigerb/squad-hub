@@ -23,8 +23,10 @@
 <link rel="stylesheet" href="/css/devices.css">
 <link rel="stylesheet" href="/css/modals.css">
 <link rel="stylesheet" href="/css/detail.css">
+<link rel="stylesheet" href="/css/detail-tabs.css">
 <link rel="stylesheet" href="/css/squad.css">
 <link rel="stylesheet" href="/css/inbox.css">
+<link rel="stylesheet" href="/css/composer-next-turn.css">
 </head>
 <body>
 <header class="topbar">
@@ -88,7 +90,7 @@
   -->
   <button class="account" id="menuBtn" aria-haspopup="true" aria-expanded="false" title="Account">
     <span class="avatar" id="avatar" aria-hidden="true">?</span>
-    <span class="visually-hidden" id="who">—</span>
+    <span class="visually-hidden" id="who">Not signed in</span>
   </button>
 </header>
 
@@ -208,17 +210,17 @@
         </button>
         <nav class="menu anchored" id="newMenu" hidden>
           <div class="menu-head">Create</div>
-          <button data-new="local" title="A machine running `squad-hub connect` — your laptop or desktop. The session runs there.">
+          <button data-new="local" title="A machine running `squad-hub connect`, such as your laptop or desktop. The session runs there.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2C8.27614 2 8.5 2.22386 8.5 2.5V7.5H13.5C13.7761 7.5 14 7.72386 14 8C14 8.27614 13.7761 8.5 13.5 8.5H8.5V13.5C8.5 13.7761 8.27614 14 8 14C7.72386 14 7.5 13.7761 7.5 13.5V8.5H2.5C2.22386 8.5 2 8.27614 2 8C2 7.72386 2.22386 7.5 2.5 7.5H7.5V2.5C7.5 2.22386 7.72386 2 8 2Z"/></svg>
             <span>On a local device</span>
           </button>
-          <button data-new="cloud" title="A container that has ALREADY attached itself to this hub — a running Squad on ACA job, an AKS pod, or anything else running `squad-hub start`. This does not create one.">
+          <button data-new="cloud" title="A container that has ALREADY attached itself to this hub, such as a running Squad on ACA job, an AKS pod, or anything else running `squad-hub start`. This does not create one.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3C6.34315 3 5 4.34315 5 6C5 6.27614 4.77614 6.5 4.5 6.5H4.25C3.00736 6.5 2 7.50736 2 8.75C2 9.99264 3.00736 11 4.25 11H5.02242C5.05337 11.3434 5.11588 11.6777 5.20703 12H4.25C2.45507 12 1 10.5449 1 8.75C1 7.029 2.33769 5.62043 4.03004 5.50733C4.27283 3.53062 5.95767 2 8 2C9.92958 2 11.54 3.36628 11.9167 5.1842C11.5678 5.09145 11.2053 5.03214 10.8328 5.0099C10.4237 3.83954 9.30992 3 8 3ZM15 10.5C15 12.9853 12.9853 15 10.5 15C8.01472 15 6 12.9853 6 10.5C6 8.01472 8.01472 6 10.5 6C12.9853 6 15 8.01472 15 10.5ZM11 8.5C11 8.22386 10.7761 8 10.5 8C10.2239 8 10 8.22386 10 8.5V10H8.5C8.22386 10 8 10.2239 8 10.5C8 10.7761 8.22386 11 8.5 11H10V12.5C10 12.7761 10.2239 13 10.5 13C10.7761 13 11 12.7761 11 12.5V11H12.5C12.7761 11 13 10.7761 13 10.5C13 10.2239 12.7761 10 12.5 10H11V8.5Z"/></svg>
             <span>On an attached cloud device</span>
           </button>
-          <button data-new="aca" title="Opens GitHub, where the repository's own workflow starts a NEW Azure Container Apps job. Needs no device, and runs in that repository's Azure subscription — not on anything attached here.">
+          <button data-new="aca" title="Starts a NEW Azure Container Apps job directly on a hub with the GitHub App configured, or by opening a GitHub issue to start it there otherwise. Needs no device, and runs in that repository's Azure subscription, not on anything attached here.">
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a.5.5 0 0 1 .5.5v7.79l2.15-2.15a.5.5 0 1 1 .7.71l-3 3a.5.5 0 0 1-.7 0l-3-3a.5.5 0 1 1 .7-.71L7.5 9.79V2a.5.5 0 0 1 .5-.5ZM2.5 12a.5.5 0 0 1 .5.5v1h10v-1a.5.5 0 0 1 1 0V14a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 2 14v-1.5a.5.5 0 0 1 .5-.5Z"/></svg>
-            <span>Start a new ACA job…</span>
+            <span>New ACA job…</span>
           </button>
           <div class="menu-note" id="newMenuNote" hidden></div>
         </nav>
@@ -442,7 +444,7 @@
     <h2 id="nsTitle">New session</h2>
     <label class="field">
       <span>Device <button type="button" class="hint-btn" aria-label="About Device"
-        title="Which machine runs the work. Sessions run ON the device, not on the hub &#10;&#10;— the hub only watches and relays your answers. Only devices that are online can be given work.">i</button></span>
+        title="Which machine runs the work. Sessions run ON the device, not on the hub. &#10;&#10;The hub only watches and relays your answers. Only devices that are online can be given work.">i</button></span>
       <select id="nsDevice"></select>
     </label>
     <label class="field" id="nsCwdField">
@@ -459,31 +461,31 @@
     <div class="field-row">
       <label class="field">
         <span>Agent <button type="button" class="hint-btn" aria-label="About Agent"
-          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device — only it knows which agents its Copilot CLI has installed.">i</button></span>
+          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device. Only it knows which agents its Copilot CLI has installed.">i</button></span>
         <select id="nsAgentSelect" hidden></select>
         <input id="nsAgent" placeholder="whatever the project selects">
       </label>
       <label class="field">
         <span>Model <button type="button" class="hint-btn" aria-label="About Model"
-          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there — a model list is advertised by the agent when a session starts, and nowhere else.">i</button></span>
+          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there. A model list is advertised by the agent when a session starts, and nowhere else.">i</button></span>
         <select id="nsModelSelect" hidden></select>
         <input id="nsModel" placeholder="the agent's default">
       </label>
     </div>
     <label class="field">
       <span>Mode <button type="button" class="hint-btn" aria-label="About Mode"
-        title="How much you are asked before the agent acts. &#10;&#10;Agent — asks you to approve each tool it wants to run. &#10;Plan — works out an approach and shows it, without changing anything. &#10;Autopilot — runs without asking, for work you would approve anyway. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
+        title="How much you are asked before the agent acts. &#10;&#10;Agent: the usual mode. It asks before anything that needs your approval. &#10;Plan: works out an approach before it acts. &#10;Autopilot: carries on without stopping to ask you. &#10;&#10;Autopilot removes the questions, not the limits: a tool the device refuses is still refused. Leave blank for the agent's own default.">i</button></span>
       <select id="nsMode">
         <option value="">the agent's default</option>
-        <option value="agent">Agent — ask me before each tool</option>
-        <option value="plan">Plan — think it through, change nothing</option>
-        <option value="autopilot">Autopilot — run without asking</option>
+        <option value="agent">Agent: ask me before each tool</option>
+        <option value="plan">Plan: think it through, change nothing</option>
+        <option value="autopilot">Autopilot: run without asking</option>
       </select>
     </label>
     <small class="field-note">
       Leave either blank to let the project decide. In a Squad project that
       selects the <code>squad</code> agent automatically; anywhere else, Copilot's
-      default. Naming one here overrides both — and if the device cannot honor
+      default. Naming one here overrides both, and if the device cannot honor
       it, the session says so rather than pretending.
     </small>
     <div class="modal-actions">
@@ -524,14 +526,24 @@
     <div class="detail-main">
       <div class="detail-head">
         <div class="detail-head-line">
-          <!-- Phone only (see detail.css): the sidebar's own back link is
-               hidden there, so the header carries it instead. -->
-          <a class="back-btn phone-only" id="dtBackPhone" href="/" aria-label="Back to all sessions" title="Back to all sessions">
-            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M7.85355 3.14645C8.04882 3.34171 8.04882 3.65829 7.85355 3.85355L4.70711 7H13.5C13.7761 7 14 7.22386 14 7.5C14 7.77614 13.7761 8 13.5 8H4.70711L7.85355 11.1464C8.04882 11.3417 8.04882 11.6583 7.85355 11.8536C7.65829 12.0488 7.34171 12.0488 7.14645 11.8536L3.14645 7.85355C2.95118 7.65829 2.95118 7.34171 3.14645 7.14645L7.14645 3.14645C7.34171 2.95118 7.65829 2.95118 7.85355 3.14645Z"/></svg>
-          </a>
-          <button class="star" id="dtStar" data-star="" title="Pin this session" aria-label="Pin this session" aria-pressed="false">☆</button>
-          <h2 id="dtTitle">Session</h2>
-          <span class="dt-pill" id="dtStatusPill"></span>
+          <!-- #181/#243: the back arrow, star, title, rename pencil and status
+               pill are one atomic, non-wrapping row -- see .detail-head-titlerow
+               in detail.css. Grouping them in a static wrapper (same ids, same
+               DOM order, same menu anchors/focus/tooltips) is what lets the
+               phone breakpoint give the right-side actions their OWN line box
+               below without ever letting THIS row split across two lines
+               itself, which is the #243 regression this group exists to fix. -->
+          <div class="detail-head-titlerow">
+            <!-- Phone only (see detail.css): the sidebar's own back link is
+                 hidden there, so the header carries it instead. -->
+            <a class="back-btn phone-only" id="dtBackPhone" href="/" aria-label="Back to all sessions" title="Back to all sessions">
+              <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M7.85355 3.14645C8.04882 3.34171 8.04882 3.65829 7.85355 3.85355L4.70711 7H13.5C13.7761 7 14 7.22386 14 7.5C14 7.77614 13.7761 8 13.5 8H4.70711L7.85355 11.1464C8.04882 11.3417 8.04882 11.6583 7.85355 11.8536C7.65829 12.0488 7.34171 12.0488 7.14645 11.8536L3.14645 7.85355C2.95118 7.65829 2.95118 7.34171 3.14645 7.14645L7.14645 3.14645C7.34171 2.95118 7.65829 2.95118 7.85355 3.14645Z"/></svg>
+            </a>
+            <button class="star" id="dtStar" data-star="" title="Pin this session" aria-label="Pin this session" aria-pressed="false">☆</button>
+            <h2 id="dtTitle">Session</h2>
+            <button type="button" class="pen-btn" id="dtRename" title="Rename" aria-label="Rename this session">✎</button>
+            <span class="dt-pill" id="dtStatusPill"></span>
+          </div>
           <div class="spacer"></div>
           <div class="detail-actions">
             <!-- Hidden unless the session is on GitHub. Squad Hub cannot start a
@@ -544,16 +556,37 @@
             <button class="icon-btn boxed" id="dtMoreBtn" aria-label="More actions" aria-haspopup="true" aria-expanded="false">
               <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 5C7.44772 5 7 4.55228 7 4C7 3.44772 7.44772 3 8 3C8.55228 3 9 3.44772 9 4C9 4.55228 8.55228 5 8 5ZM8 9C7.44771 9 7 8.55229 7 8C7 7.44772 7.44771 7 8 7C8.55228 7 9 7.44772 9 8C9 8.55229 8.55228 9 8 9ZM7 12C7 12.5523 7.44771 13 8 13C8.55228 13 9 12.5523 9 12C9 11.4477 8.55228 11 8 11C7.44771 11 7 11.4477 7 12Z"/></svg>
             </button>
-            <nav class="menu anchored" id="dtMenu" hidden>
-              <button id="dtSync" hidden>Sync session</button>
-            </nav>
           </div>
         </div>
         <p class="modal-sub" id="dtMeta"></p>
+        <p class="detail-links" id="dtLinks" hidden></p>
         <p class="agent-warn" id="dtWarn" hidden></p>
+        <!-- #182: Chat | Squad | Info. Files is a spike only (docs/design/files-tab-spike.md):
+             it is disabled, has no pane and no code, and only says a later
+             release may offer it when the device allows file access. -->
+        <div class="dt-tabs" id="dtTabs" role="tablist" aria-label="Session sections">
+          <button type="button" class="dt-tab on" id="dtTab-chat" data-dttab="chat" role="tab" aria-selected="true" aria-controls="dtPane-chat">Chat<span class="dt-tab-dot" id="dtTabChatDot" hidden></span></button>
+          <button type="button" class="dt-tab" id="dtTab-squad" data-dttab="squad" role="tab" aria-selected="false" aria-controls="dtPane-squad" tabindex="-1">Squad</button>
+          <button type="button" class="dt-tab" id="dtTab-info" data-dttab="info" role="tab" aria-selected="false" aria-controls="dtPane-info" tabindex="-1">Info</button>
+          <button type="button" class="dt-tab" id="dtTab-files" data-dttab="files" role="tab" aria-selected="false" aria-disabled="true" disabled title="Spike only: appears when the device allows file access">Files</button>
+        </div>
       </div>
-      <div class="transcript" id="dtTranscript"></div>
-      <div class="squadpanel" id="dtSquad" hidden></div>
+      <div class="dt-pane" id="dtPane-chat" role="tabpanel" aria-labelledby="dtTab-chat">
+        <div class="transcript" id="dtTranscript"></div>
+        <!-- The same pending permission request the pop-up and the bell show. -->
+        <div class="dt-approvals" id="dtApprovals" aria-live="polite"></div>
+      </div>
+      <div class="dt-pane" id="dtPane-squad" role="tabpanel" aria-labelledby="dtTab-squad" hidden>
+        <div class="squadpanel" id="dtSquad" hidden></div>
+        <p class="dt-empty" id="dtSquadNone">No Squad workspace was reported for this session.</p>
+      </div>
+      <div class="dt-pane" id="dtPane-info" role="tabpanel" aria-labelledby="dtTab-info" hidden>
+        <table class="dt-kv" aria-label="Session details"><tbody id="dtInfoRows"></tbody></table>
+        <h3 class="dt-sec">Approval history
+          <button type="button" class="hint-btn" aria-label="About approval history" title="Permission requests that are no longer waiting: who answered each one, what it was for, when, and from where. A request nobody answered shows as expired.">i</button>
+        </h3>
+        <ul class="dt-hist" id="dtInfoHistory"></ul>
+      </div>
       <div class="composer">
         <div class="control-banner" id="dtControl">
           <span class="control-state" id="dtControlLabel">Checking control…</span>
@@ -561,8 +594,31 @@
         </div>
         <div class="composer-row">
           <textarea id="dtInput" rows="3" placeholder="Send follow-up input to the running agent&#10;Enter to send · Shift+Enter for a new line" disabled></textarea>
+        </div>
+        <div class="composer-bar">
+          <div class="nt-bar" id="dtNextTurn">
+            <div class="nt-field">
+              <div class="selectpill">
+                <span class="nt-lab">Mode</span>
+                <select id="dtNtMode" aria-label="Mode for the next turn" disabled><option value="">Unavailable</option></select>
+                <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+              </div>
+              <button type="button" class="hint-btn" id="dtNtModeHint" aria-label="About Mode"
+                title="How the agent handles your next message. &#10;&#10;Agent: the usual mode. It asks before anything that needs your approval. &#10;Plan: works out an approach before it acts. &#10;Autopilot: carries on without stopping to ask you. &#10;&#10;The agent confirms the change before your message is sent, and the session keeps that mode until you change it again. Leave it alone and the session keeps its current mode.">i</button>
+            </div>
+            <div class="nt-field">
+              <div class="selectpill">
+                <span class="nt-lab">Model</span>
+                <select id="dtNtModel" aria-label="Model for the next turn" disabled><option value="">Unavailable</option></select>
+                <svg class="i caret-i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"/></svg>
+              </div>
+              <button type="button" class="hint-btn" id="dtNtModelHint" aria-label="About Model"
+                title="The model for your next turn. &#10;&#10;The list comes from this device, since only it knows what its Copilot CLI can use. The agent confirms the change before your message is sent. &#10;&#10;In a Squad session, team members can keep the models their charters assign.">i</button>
+            </div>
+          </div>
           <button class="primary" id="dtSend" disabled>Send</button>
         </div>
+        <p class="nt-note" id="dtNtNote" role="status" aria-live="polite" hidden></p>
       </div>
     </div>
   </div>
@@ -572,14 +628,14 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cnTitle">
     <h2 id="cnTitle">Connect a device</h2>
     <p class="sub">
-      This mints a <strong>device token</strong> — a credential that can be a
+      This creates a <strong>device token</strong>, a credential that can be a
       device and nothing else. It cannot read this page's data or start work on
       your other devices, so it is safe to put on a server or in a container.
     </p>
     <label class="field">
-      <span>What is it for? <button type="button" class="hint-btn" aria-label="About this name"
+      <span>Device name <button type="button" class="hint-btn" aria-label="About this name"
         title="This becomes the device's name in your roster, so make it something you will recognize later. &#10;&#10;It is also what you revoke by, if the token ever needs canceling.">i</button></span>
-      <input id="cnLabel" placeholder="my laptop, a build server, ACA jobs" maxlength="40">
+      <input id="cnLabel" placeholder="My laptop, build server, Squad on ACA" maxlength="40">
       <small class="hint">Becomes the device's name in the roster.</small>
     </label>
     <label class="field">
@@ -599,7 +655,7 @@
     </label>
     <fieldset class="field cnopts">
       <legend>What this device may do <button type="button" class="hint-btn" aria-label="About these options"
-        title="These add flags to the command below. They are settings on the DEVICE, not on the token &#10;&#10;— you can change them later with squad-hub config allow-files / track-all.">i</button></legend>
+        title="These add flags to the command below. They are settings on the DEVICE, not on the token. &#10;&#10;You can change them later with squad-hub config allow-files / track-all.">i</button></legend>
       <label class="check">
         <input type="checkbox" id="cnFiles">
         <span>Allow a working directory
@@ -621,12 +677,12 @@
     </fieldset>
     <div class="err" id="cnErr" hidden></div>
     <div class="cnresult" id="cnResult" hidden>
-      <p class="sub">Run this on the device. <strong>Shown once</strong> — the hub keeps no copy.</p>
+      <p class="sub">Run this on the device. <strong>Shown once.</strong> The hub keeps no copy.</p>
       <pre id="cnCmd" class="cncmd"></pre>
       <button class="primary" id="cnCopy">Copy command</button>
     </div>
     <div class="modal-actions">
-      <button id="cnCancel">Close</button>
+      <button class="ghost" id="cnCancel">Close</button>
       <button class="primary" id="cnCreate">Create token</button>
     </div>
   </div>
@@ -634,60 +690,143 @@
 
 <div class="scrim" id="acaScrim" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="acaTitle">
-    <h2 id="acaTitle">Run on Squad on ACA</h2>
+    <h2 id="acaTitle">New ACA job</h2>
     <p class="modal-sub">
-      Squad Hub cannot start a cloud job and holds no credential that could.
-      It writes the request; you send it on GitHub, and the repository's own
-      workflow starts the job in <em>its</em> Azure subscription.
+      Starts a Squad session in its own Azure Container Apps job. It runs
+      through the repository's own <code>squad-dispatch.yml</code>, so Azure
+      access stays with that repository. Squad Hub never holds Azure
+      credentials.
     </p>
 
+    <!-- Repository and Instructions stay visible either way (issue #178):
+         they are also what the two fallback links below read from, so a hub
+         with no GitHub App configured still lets you fill them in before
+         falling back -- only the fields below that mean nothing without a
+         direct dispatch (branch, model, reviewer, checkboxes, the route
+         note) hide with the rest of #acaForm.
+
+         Issue is ALSO outside #acaForm, restored here by #178's release-gate
+         review: the redesign that split this dialog moved the new/existing
+         issue picker INSIDE #acaForm, so a hub with no GitHub App configured
+         lost the "Existing issue" option -- and with it, acaReviewLink's
+         only way to open the issue you actually meant instead of always
+         creating a new one. The picker means something with or without a
+         direct dispatch: both fallback links below read `acaIssueNumber`
+         when "Existing issue" is selected. -->
     <label class="field">
-      <span>Repository <button type="button" class="hint-btn" aria-label="About Repository"
-        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed — the workflow and its Azure credentials live in that repository, not in Squad Hub. A repository without it will just get an issue and no job. &#10;&#10;Prefilled from the session you opened this from, when that session is a GitHub checkout.">i</button></span>
-      <input id="acaRepo" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+      <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+      <datalist id="acaRepoList"></datalist>
       <small id="acaRepoHint"></small>
     </label>
 
+    <fieldset class="field cnopts">
+      <legend>Issue <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Issue"
+        title="Every ACA job is tied to an issue: it holds the lease that stops a second job starting for the same work, and it is where the session reports back. &#10;&#10;New issue: one is created from your instructions. Existing issue: the job works that issue, and its body and comments are added to the brief.">i</button></legend>
+      <label class="check">
+        <input type="radio" name="acaIssueMode" id="acaIssueModeNew" value="new" checked>
+        <span>New issue
+          <small>Created from the instructions below.</small>
+        </span>
+      </label>
+      <div id="acaNewIssueFields">
+        <label class="field">
+          <span>Issue title</span>
+          <input id="acaNewIssueTitle" placeholder="(first line of the instructions)" maxlength="200">
+        </label>
+      </div>
+      <label class="check">
+        <input type="radio" name="acaIssueMode" id="acaIssueModeExisting" value="existing">
+        <span>Existing issue
+          <small>Its body and comments are added to the session's brief.</small>
+        </span>
+      </label>
+      <div id="acaExistingIssueFields" hidden>
+        <label class="field">
+          <span>Issue number</span>
+          <input id="acaIssueNumber" inputmode="numeric" placeholder="e.g. 72">
+        </label>
+      </div>
+    </fieldset>
+
+    <!-- Shown once GET /api/aca/repos answers (issue #178, backend #177/#213).
+         Hidden by default so a hub with no GitHub App configured never shows a
+         form whose submit can only 501 -- see acaSetMode() in aca.js. -->
+    <div id="acaForm">
+      <label class="field">
+        <span>Base branch <button type="button" class="hint-btn" aria-label="About Base branch"
+          title="The branch the session checks out and opens its pull request against. &#10;&#10;Leave blank for the repository's default branch.">i</button></span>
+        <input id="acaBranch" placeholder="(repository default)" autocapitalize="off" spellcheck="false">
+        <small>The pull request targets this branch.</small>
+      </label>
+
+      <label class="field">
+        <span>Model <button type="button" class="hint-btn" aria-label="About Model"
+          title="Leave blank and each squad member uses the model its charter and .squad config assign. &#10;&#10;Set one to override it for this job only -- the squad's cost policy still applies.">i</button></span>
+        <input id="acaModel" placeholder="Squad default" autocapitalize="off" spellcheck="false">
+      </label>
+
+      <label class="field">
+        <span>Required reviewer <button type="button" class="hint-btn" aria-label="About Required reviewer"
+          title="The Squad member id who must review the pull request before it can merge -- the same member id used throughout this Squad's own config and roster, not a GitHub username. &#10;&#10;Leave blank for the squad's own default reviewer, so no ACA job ships unreviewed.">i</button></span>
+        <input id="acaReviewer" placeholder="Squad default" autocapitalize="off" spellcheck="false">
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="acaPublishPr" checked>
+        <span>Publish PR when done <button type="button" class="hint-btn" aria-label="About Publish PR"
+          title="On: the session pushes its branch and opens a pull request when it finishes. &#10;&#10;Off: it pushes the branch only, and you open the pull request yourself.">i</button>
+        </span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="acaWatchOnly">
+        <span>Watch-only <button type="button" class="hint-btn" aria-label="About Watch-only"
+          title="Off (default): every ungated tool waits for your approval here. &#10;&#10;On: the session stays visible and stoppable, but runs tools without asking. The deny list still applies.">i</button>
+        </span>
+      </label>
+      <small id="acaOptionsHint" aria-live="polite"></small>
+
+      <p class="aca-route">
+        <strong>How it runs:</strong> Squad Hub &rarr; GitHub <code>workflow_dispatch</code>
+        (via the Squad Hub GitHub App, on repos you choose) &rarr; shared dispatch
+        lease &rarr; Azure OIDC inside Actions &rarr; ACA job.
+        <strong>Squad Hub never holds Azure credentials.</strong>
+      </p>
+    </div>
+
     <label class="field">
-      <span>What should it do? <button type="button" class="hint-btn" aria-label="About the instruction"
-        title="Plain language, the same as any other prompt. &#10;&#10;This becomes the body of a new GitHub issue. The agent is told to read that issue, do the work, and open a pull request.">i</button></span>
-      <textarea id="acaPrompt" rows="3" placeholder="e.g. Update the docs and open a pull request"></textarea>
+      <span>Instructions <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Instructions"
+        title="What you want done, in plain language. This becomes the session's prompt and, for a new issue, the issue body. &#10;&#10;You can keep talking to the session afterwards from its detail view.">i</button></span>
+      <textarea id="acaPrompt" rows="4" placeholder="e.g. Update the docs and open a pull request"></textarea>
     </label>
 
-    <div class="aca-preview">
-      <div class="aca-preview-label">
-        This opens a new issue, labeled <code>squad-aca</code>, which is what
-        starts the job:
-      </div>
-      <div class="cmdblock"><code id="acaPreview"></code></div>
-    </div>
+    <!-- Shown instead of #acaForm when the GitHub App is not configured on
+         this hub (GET /api/aca/repos answers 501) -- the only path in that
+         case is the two fallback links below, which stay links either way. -->
+    <p class="modal-sub" id="acaDisabledNote" hidden></p>
+
+    <!-- The visible, selectable /squad-aca command (issue #178's
+         release-gate review): restored to the same `.cncmd` look
+         connect.js's Connect-a-device dialog already uses (see
+         web/css/modals.css), so a denied/never-granted clipboard
+         permission still leaves something to select and copy by hand --
+         updated live by aca.js's updateAcaCmdPreview(). -->
+    <pre id="acaCmdPreview" class="cncmd">/squad-aca &hellip;</pre>
 
     <div class="modal-actions">
+      <span class="aca-alt-links" id="acaFallbackLinks">
+        <a class="lnk" href="#" id="acaReviewLink">Review on GitHub instead…</a>
+        <a class="lnk" href="#" id="acaCopyLink">Copy /squad-aca command</a>
+      </span>
       <button class="ghost" id="acaCancel">Cancel</button>
-      <button class="primary" id="acaOpen">Review on GitHub…</button>
+      <button class="primary" id="acaStart">Start job</button>
     </div>
-
-    <details class="aca-alt">
-      <summary>Add it to an issue that already exists instead</summary>
-      <p class="sub">
-        GitHub cannot prefill a comment, so this copies the command for you to
-        paste. Everything above is ignored except the instruction.
-      </p>
-      <label class="field">
-        <span>Issue number <button type="button" class="hint-btn" aria-label="About Issue number"
-          title="An open issue in the repository above. The command is posted as a comment on it, and the job works that issue.">i</button></span>
-        <input id="acaIssue" inputmode="numeric" placeholder="e.g. 72">
-      </label>
-      <div class="cmdblock"><code id="acaComment"></code></div>
-      <div class="aca-alt-actions">
-        <button class="ghost" id="acaCopy">Copy command</button>
-        <button class="ghost" id="acaOpenIssue">Open that issue…</button>
-      </div>
-    </details>
 
     <p class="err" id="acaErr" hidden></p>
   </div>
 </div>
+
 
 <div class="scrim" id="peopleScrim" hidden>
   <div class="modal people" role="dialog" aria-modal="true" aria-labelledby="pplTitle">

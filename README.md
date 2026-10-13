@@ -31,7 +31,7 @@ Squad Hub fixes both.
 | **Device presence** | Online, stale, or offline, from a heartbeat |
 | **Answer approvals remotely** | The card shows the literal command and the paths it touches |
 | **Start a session anywhere** | Pick a device, write a prompt |
-| **Steer and stop** | Send follow-up input, or cut a run short |
+| **Steer and stop** | Send follow-up input, choosing its Mode and Model where the agent supports it, or cut a run short |
 | **Device tokens** | Give a server a credential that can be a device and nothing else |
 | **Squad-aware** | Reads Squad's resolved state for team, decisions, routing, model policy, and health summary |
 | **Filter, sort, pin** | Keyword, status, device, repository and time-window filters, plus per-person pins that float above all of them |
@@ -291,6 +291,11 @@ can run one session and exit, so it does not bill for a process doing nothing:
 SQUAD_HUB_ONESHOT=1
 SQUAD_HUB_PROMPT="add a health endpoint and a test for it"
 ```
+
+Add `SQUAD_HUB_MODEL=<name>` and `SQUAD_HUB_REQUIRE_MODEL=1` to pin a model: the
+agent must confirm it before the prompt is sent, or the job exits 78 instead of
+quietly running on the default. `squad-hub oneshot --capabilities` says whether
+a build understands that, without starting anything.
 
 That is how Squad Hub supervises [Squad on ACA](docs/aca.md) runs, which lets a
 tool call inside a cloud job be approved from your phone — something an

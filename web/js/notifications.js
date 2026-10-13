@@ -1,9 +1,9 @@
-import { state, api } from './api.js';
+import { state } from './api.js';
 import {
-  esc, asList, ANSWER_VERB, $, toast,
+  asList, ANSWER_VERB, $, toast,
 } from './util.js';
-import { approvalRows } from './approvals.js';
-import { approvalOptions, alwaysAllowRule } from './cleanup.js';
+import { approvalChipsHtml, approvalButtonsHtml, holdApprovalButtons, submitApproval } from './approvals.js';
+import { alwaysAllowRule } from './cleanup.js';
 
 // ---------------------------------------------------------------------------
 // Desktop notifications
@@ -140,7 +140,7 @@ export function maybePromptApproval() {
     if (!stillPending && nowExpired) {
       $('approvalScrim').hidden = true;
       state.openApproval = null;
-      toast('That request expired before it was answered — the agent was told no');
+      toast('That request expired before it was answered. The agent was told no');
       return undefined;
     }
   }
@@ -169,13 +169,9 @@ function showApproval(device, session, approval) {
 
   // What it actually touches, each row saying whether it is read-only.
   // Reading a file and rewriting a directory are not the same decision.
-  const rows = approvalRows(approval);
-  $('apPathsWrap').hidden = rows.length === 0;
-  $('apPaths').innerHTML = rows.map((r) => `
-    <span class="ap-row ${r.readOnly ? 'ro' : 'rw'}">
-      <span class="ap-label">${esc(r.label)}</span>
-      <span class="ap-badge">${r.readOnly ? 'read-only' : 'writes'}</span>
-    </span>`).join('');
+  const chips = approvalChipsHtml(approval);
+  $('apPathsWrap').hidden = !chips;
+  $('apPaths').innerHTML = chips;
 
   // A standing permission button that does not say what it makes standing is
   // a blank cheque.
@@ -183,34 +179,20 @@ function showApproval(device, session, approval) {
   $('apRule').hidden = !rule;
   $('apRule').textContent = rule || '';
 
-  $('apActions').innerHTML = approvalOptions(approval).map((o) => `
-    <button class="${o.danger ? 'ghost danger' : o.standing ? 'ghost' : 'primary'}"
-            data-answer="${esc(o.optionId)}">${esc(o.label)}</button>`).join('');
+  $('apActions').innerHTML = approvalButtonsHtml(approval);
 
   $('apActions').onclick = async (ev) => {
     const btn = ev.target.closest('[data-answer]');
     if (!btn || btn.disabled) return;
-    for (const b of $('apActions').querySelectorAll('button')) b.disabled = true;
-    try {
-      await api(`/api/devices/${encodeURIComponent(device.deviceId)}/approve`, {
-        method: 'POST',
-        body: { sessionId: session.id, approvalId: approval.approvalId, optionId: btn.dataset.answer },
-      });
-      $('approvalScrim').hidden = true;
-    } catch (e) {
+    const sent = await submitApproval($('apActions'), device, session, approval, btn.dataset.answer, (e) => {
       $('apDesc').textContent = `Could not answer: ${e.message}`;
-      for (const b of $('apActions').querySelectorAll('button')) b.disabled = false;
-    }
+    });
+    if (sent) $('approvalScrim').hidden = true;
   };
 
   // Answering one approval can immediately reveal the next, in the same place
-  // on screen. Without a moment's delay a stray second click lands on the new
-  // dialog and approves a command nobody has read. Observed happening during
-  // manual testing, so the buttons stay inert briefly on each new card.
-  for (const b of $('apActions').querySelectorAll('button')) b.disabled = true;
+  // on screen -- so the buttons stay inert briefly on each new card (see
+  // APPROVAL_HOLD_MS in approvals.js for the failure this prevents).
+  holdApprovalButtons($('apActions'));
   $('approvalScrim').hidden = false;
-  setTimeout(() => {
-    for (const b of $('apActions').querySelectorAll('button')) b.disabled = false;
-  }, 350);
 }
-

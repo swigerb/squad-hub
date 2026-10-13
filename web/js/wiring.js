@@ -1,40 +1,36 @@
-// The main Wiring entry point, split out of app.js by #200 (part 4/4 of
-// #165). `wire()` attaches every control's event handler, delegating to the
-// feature modules (aca.js, access.js, connect.js, filters.js, install.js)
-// for the dialogs that moved there, and keeping the handlers that are
-// general chrome -- the account menu, the Create/Tidy split buttons, the
-// detail panel's composer -- here, next to the menu/popup machinery they
-// share. Behavior is unchanged byte-for-byte from the original.
+// Main UI event wiring; feature-specific dialog handlers live in their modules.
 
 import { state, api } from './api.js';
-import { $, esc, toast, undoToast } from './util.js';
+import { $, esc, toast } from './util.js';
 import { enhanceAllSelects, closeAllSelectPills } from './dropdowns.js';
-import {
-  forgetWindowMs, forgetTargets, forgetSummary, forgetUndoLabel, newMenuState,
-} from './cleanup.js';
-import {
-  spawnRequest, spawnError, controlsEnabled, composerReduce,
-} from './composer.js';
+import { newMenuState } from './cleanup.js';
+import { spawnRequest, spawnError } from './composer.js';
 import {
   notifyState, requestNotifyPermission, syncBell, maybePromptApproval,
 } from './notifications.js';
+import { answerApproval } from './approvals.js';
 import { render } from './devices.js';
 import {
-  openDetail, closeDetail, initDetailRouting, syncSession, renderControl, openSquadDoc, forgetStaleSession,
+  openDetail, closeDetail, initDetailRouting, openSquadDoc, forgetStaleSession,
 } from './detail.js';
+import { syncSession, detailSyncMenuItem } from './detail-control.js';
+import { sessionKey } from './list.js';
 import {
   setRailCollapsed, applyTheme, nextTheme, saveView, refresh,
 } from './ws.js';
 import { toggleFavorite } from './prefs-sync.js';
 import { openAca, wireAca } from './aca.js';
+import { retryAcaPending } from './aca-pending.js';
 import { wireAcaStatusCard } from './aca-status.js';
 import { openPeople, wireAccess } from './access.js';
 import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
+import { forgetEnded } from './forget.js';
+import { wireComposer } from './composer-wire.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
 import { wirePush, syncPushMenuItem } from './push.js';
-import { rowMenuItems, rowMenuHtml, findSessionByKey, onRowMenuAction } from './rowmenu.js';
+import { rowMenuItems, rowMenuHtml, menuTarget, onRowMenuAction } from './rowmenu.js';
 
 /** A persistent warning the user cannot miss and can dismiss once read. */
 export function showBanner(text) {
@@ -75,7 +71,7 @@ function toggleMenu(force) {
  * intends and every stray click produces.
  */
 const POPUP_BUTTON = {
-  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn', dtMenu: 'dtMoreBtn',
+  newMenu: 'newMoreBtn', tidyMenu: 'tidyBtn', inboxMenu: 'bellBtn',
 };
 
 function togglePopup(menuId, btnId, force) {
@@ -95,6 +91,40 @@ function togglePopup(menuId, btnId, force) {
   if (open && menuId === 'inboxMenu') renderInboxMenu();
 }
 
+function closeFilterBar() {
+  $('filterbarEnd').classList.remove('open');
+  $('filterToggle').setAttribute('aria-expanded', 'false');
+}
+
+/** Dismiss one Escape target at a time, topmost first, before the detail page itself. */
+export function dismissTopmostEscapeTarget() {
+  for (const id of ['approvalScrim', 'newScrim']) {
+    if (!$(id).hidden) {
+      $(id).hidden = true;
+      return true;
+    }
+  }
+  if (!$('menu').hidden) {
+    toggleMenu(false);
+    return true;
+  }
+  for (const [menuId, btnId] of Object.entries(POPUP_BUTTON)) {
+    if (!$(menuId).hidden) {
+      togglePopup(menuId, btnId, false);
+      return true;
+    }
+  }
+  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return true;
+  }
+  if ($('filterbarEnd').classList.contains('open')) {
+    closeFilterBar();
+    return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // The per-row ⋯ menu (#170): one shared, floating `<nav id="rowMenu">`,
 // repositioned per click -- the mockup's own approach, rather than one
@@ -104,33 +134,42 @@ function togglePopup(menuId, btnId, force) {
 
 let rowMenuKey = null;
 let rowMenuBtn = null;
+let rowMenuMarkup = null;
 
-/** Closed on every refresh, Esc, a click outside it, or any other popup
- * opening -- a popup like any other, it just has no one fixed trigger. */
-export function closeRowMenu() {
+/** Navigation, Escape and outside clicks close either kind of menu anchor. */
+export function closeRowMenu({ restoreFocus = false } = {}) {
   if (rowMenuKey === null) return;
   const m = $('rowMenu');
+  const btn = rowMenuBtn;
   if (m) m.hidden = true;
-  if (rowMenuBtn) rowMenuBtn.setAttribute('aria-expanded', 'false');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
   rowMenuKey = null;
   rowMenuBtn = null;
+  rowMenuMarkup = null;
+  if (restoreFocus && btn && typeof btn.focus === 'function') btn.focus();
 }
 
-function openRowMenu(key, btn) {
+/** Whether the open shared menu is the persistent detail header's, not a list row's. */
+export function detailMenuOpen() {
+  return rowMenuKey !== null && !!rowMenuBtn && rowMenuBtn.id === 'dtMoreBtn';
+}
+
+export function openRowMenu(key, btn, { extra = [] } = {}) {
   const reopening = rowMenuKey === key;
   toggleMenu(false);
   togglePopup('newMenu', 'newMoreBtn', false);
   togglePopup('tidyMenu', 'tidyBtn', false);
   togglePopup('inboxMenu', 'bellBtn', false);
-  togglePopup('dtMenu', 'dtMoreBtn', false);
   closeRowMenu();
   if (reopening) return; // a second click on the SAME ⋯ closes it again
 
-  const found = findSessionByKey(key);
+  const found = menuTarget(key, btn.id === 'dtMoreBtn');
   if (!found) return;
   const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(key) });
+  if (extra.length) items.push({ sep: true }, ...extra);
   const m = $('rowMenu');
-  m.innerHTML = rowMenuHtml(items);
+  rowMenuMarkup = rowMenuHtml(items);
+  m.innerHTML = rowMenuMarkup;
   m.hidden = false;
   rowMenuKey = key;
   rowMenuBtn = btn;
@@ -153,6 +192,39 @@ function openRowMenu(key, btn) {
 
   const first = m.querySelector('button:not([disabled])');
   if (first) first.focus();
+}
+
+/**
+ * List anchors are rebuilt; the persistent detail anchor keeps its menu and
+ * focus -- built from the live overview's row, else the retained selection
+ * when a server-side filter has dropped it (see `menuTarget`).
+ */
+export function syncRowMenu() {
+  if (rowMenuKey === null) return;
+  const current = state.currentSession;
+  const found = detailMenuOpen() && current && sessionKey(current.session) === rowMenuKey
+    ? menuTarget(rowMenuKey, true) : null;
+  if (!found) {
+    closeRowMenu();
+    return;
+  }
+  const menu = $('rowMenu');
+  const focused = document.activeElement;
+  const action = menu.contains(focused) ? focused.dataset.rowAction : null;
+  const items = rowMenuItems(found.session, found.device, { pinned: state.favorites.has(rowMenuKey) });
+  const sync = detailSyncMenuItem();
+  if (sync) items.push({ sep: true }, sync);
+  const html = rowMenuHtml(items);
+  if (rowMenuMarkup !== html) {
+    rowMenuMarkup = html;
+    menu.innerHTML = html;
+    if (action) {
+      const next = [...menu.querySelectorAll('button:not([disabled])')]
+        .find((button) => button.dataset.rowAction === action);
+      const fallback = menu.querySelector('button:not([disabled])');
+      if (next || fallback) (next || fallback).focus();
+    }
+  }
 }
 
 /** Arrow-key navigation among the row menu's own (enabled) buttons. */
@@ -194,10 +266,7 @@ async function answerFromInbox(btn) {
   const buttons = row ? [...row.querySelectorAll('[data-answer]')] : [btn];
   for (const b of buttons) b.disabled = true;
   try {
-    await api(`/api/devices/${encodeURIComponent(device)}/approve`, {
-      method: 'POST',
-      body: { sessionId, approvalId: approval, optionId: answer },
-    });
+    await answerApproval({ deviceId: device }, { id: sessionId }, { approvalId: approval }, answer);
     // The next overview -- pushed immediately by the hub once the device
     // acts on it, same as everywhere else this api call is made -- drives
     // `renderInboxMenu()` again and drops the card. Nothing to do here but
@@ -230,57 +299,6 @@ function renderNewMenu() {
   if (s.note) note.textContent = s.note;
 }
 
-/**
- * Remove the record of sessions that have already ended.
- *
- * Sent to every reachable device, because the device is the source of truth
- * and a hub-side removal would be undone by the next heartbeat. The result is
- * assembled from what each device actually reported.
- *
- * The confirm dialog (for "all") still asks once, up front. What is new is
- * the few seconds AFTER that: nothing is sent to any device until the Undo
- * toast expires, so a mis-click on a button right beside the one you meant is
- * recoverable for as long as the toast is on screen.
- */
-async function forgetEnded(scope) {
-  const olderThanMs = forgetWindowMs(scope);
-  if (olderThanMs === null) return;
-
-  // Offline devices are swept too. Their ended sessions are removed by the hub
-  // rather than by the device, because a device that never comes back cannot
-  // be asked and cannot object -- and an ephemeral cloud job never comes back.
-  const { reachable, skipped } = forgetTargets((state.overview && state.overview.devices) || []);
-  const targets = [...reachable, ...skipped];
-  if (!targets.length) {
-    toast('No devices to remove sessions from');
-    return;
-  }
-  if (scope === 'all' && !window.confirm(
-    'Remove every ended session from the list?\n\n'
-    + 'This clears the record of finished work. '
-    + 'Sessions that are still running are not affected.')) return;
-
-  undoToast(forgetUndoLabel(scope), async () => {
-    let removed = 0;
-    let failed = 0;
-    for (const d of targets) {
-      try {
-        const r = await api(`/api/devices/${encodeURIComponent(d.deviceId)}/forget`, {
-          method: 'POST',
-          body: { olderThanMs },
-        });
-        removed += (r && r.count) || 0;
-      } catch {
-        // Counted, never swallowed: a device that refused must not be
-        // indistinguishable from one that had nothing to remove.
-        failed += 1;
-      }
-    }
-    toast(forgetSummary({ removed, failed, skipped: 0 }));
-    await refresh();
-  }, () => toast('Removal canceled — nothing was removed'));
-}
-
 async function onMenu(action) {
   toggleMenu(false);
   if (action === 'refresh') {
@@ -310,7 +328,7 @@ async function onMenu(action) {
     void stamp.offsetWidth;          // restart the animation
     stamp.classList.add('flash');
     const connected = state.ws && state.ws.readyState === 1;
-    toast(connected ? 'Refreshed — live updates are connected' : 'Refreshed — live updates are NOT connected');
+    toast(connected ? 'Refreshed. Live updates are connected' : 'Refreshed. Live updates are NOT connected');
     return;
   }
   if (action === 'connect') { openConnect(); return; }
@@ -334,6 +352,32 @@ async function onMenu(action) {
 }
 
 /**
+ * The shared `#rowMenu`'s click dispatch, extracted so tests can drive the
+ * exact function `wire()` installs as the real `onclick` -- not a
+ * reimplementation of its body (#243: a stale-menu wrong-target regression
+ * in the Sync branch was only caught because the real handler, not a proxy
+ * restating it, was exercised).
+ */
+export function handleRowMenuClick(e) {
+  const b = e.target.closest('[data-row-action]');
+  if (!b || b.disabled || !rowMenuKey) return;
+  if (b.dataset.rowAction === 'sync') {
+    // Captured before `closeRowMenu()` clears `rowMenuKey` -- `syncSession`
+    // revalidates against this target itself (detail-control.js), the
+    // same identity every other row action already gets below (#243
+    // Scout review of ab5ef90: Sync alone discarded it and resynced
+    // whatever session happened to be open at click time instead).
+    const target = rowMenuKey;
+    closeRowMenu();
+    // Returned (not just fired) so tests can await the real request this
+    // click actually issues; a bare `onclick` return value is otherwise
+    // ignored by the browser, so this changes nothing in production.
+    return syncSession(target);
+  }
+  onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
+}
+
+/**
  * Attach every control's event handler. Called once, from main(), after the
  * page has a token and is past the sign-in gate.
  */
@@ -350,20 +394,29 @@ export function wire() {
       toggleFavorite(star.dataset.star);
       return;
     }
+    // A terminally-resolved "Queued on ACA" row's own "Check again" button
+    // (aca-pending.js's acaPendingRowHtml) -- claimed before the row-open
+    // check below for the same reason the star is, though a pending row is
+    // never itself `[data-session]` so this is mostly belt-and-suspenders.
+    // Never dispatches a new job -- see retryAcaPending's own doc comment.
+    const retry = e.target.closest('[data-aca-retry]');
+    if (retry) {
+      retryAcaPending(retry.dataset.acaRetry).then(render);
+      return;
+    }
     const more = e.target.closest('[data-more]');
     if (more) {
       openRowMenu(more.dataset.more, more);
       return;
     }
+    // Following the Open PR link (#179) goes to GitHub and nowhere else: the
+    // browser handles the anchor, and the row must not open the session too.
+    if (e.target.closest('a[data-pr-link]')) return;
     const row = e.target.closest('[data-session]');
     if (row) openDetail(row.dataset.session);
   };
 
-  $('rowMenu').onclick = (e) => {
-    const b = e.target.closest('[data-row-action]');
-    if (!b || b.disabled || !rowMenuKey) return;
-    onRowMenuAction(rowMenuKey, b.dataset.rowAction, b.dataset.href);
-  };
+  $('rowMenu').onclick = handleRowMenuClick;
   $('rowMenu').onkeydown = (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveRowMenuFocus(1); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveRowMenuFocus(-1); }
@@ -408,7 +461,13 @@ export function wire() {
   };
   $('apCancel').onclick = () => { $('approvalScrim').hidden = true; };
   initDetailRouting();
-  $('dtMoreBtn').onclick = (e) => { e.stopPropagation(); togglePopup('dtMenu', 'dtMoreBtn'); };
+  $('dtMoreBtn').onclick = (e) => {
+    e.stopPropagation();
+    const current = state.currentSession;
+    if (!current) return;
+    const extraItem = detailSyncMenuItem();
+    openRowMenu(sessionKey(current.session), e.currentTarget, { extra: extraItem ? [extraItem] : [] });
+  };
 
   $('bellBtn').onclick = async (e) => {
     e.stopPropagation();
@@ -418,7 +477,7 @@ export function wire() {
     const before = notifyState();
     const after = await requestNotifyPermission();
     if (after === 'granted' && before !== 'granted') {
-      toast('Notifications on — you will be told when a session needs you');
+      toast('Notifications on. You will be told when a session needs you');
     } else if (after === 'denied') {
       toast('Notifications are blocked for this site; allow them in your browser settings');
     } else if (after === 'unsupported') {
@@ -463,13 +522,9 @@ export function wire() {
     if (!$('tidyMenu').hidden && !e.target.closest('#tidySplit')) togglePopup('tidyMenu', 'tidyBtn', false);
     if (!$('installCard').hidden && !e.target.closest('.install-wrap')) closeInstallCard();
     if (!$('inboxMenu').hidden && !e.target.closest('#inboxMenu') && !e.target.closest('#bellBtn')) togglePopup('inboxMenu', 'bellBtn', false);
-    if (!$('dtMenu').hidden && !e.target.closest('#dtMoreBtn') && !e.target.closest('#dtMenu')) togglePopup('dtMenu', 'dtMoreBtn', false);
     if (!$('rowMenu').hidden && !e.target.closest('#rowMenu') && !e.target.closest('[data-more]')) closeRowMenu();
     if (!e.target.closest('.selectpill')) closeAllSelectPills(null);
-    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) {
-      $('filterbarEnd').classList.remove('open');
-      $('filterToggle').setAttribute('aria-expanded', 'false');
-    }
+    if ($('filterbarEnd').classList.contains('open') && !e.target.closest('#filterbarEnd') && !e.target.closest('#filterToggle')) closeFilterBar();
   });
 
   wireInstall();
@@ -493,57 +548,14 @@ export function wire() {
 
   $('dtForget').onclick = () => forgetStaleSession();
 
-  $('dtSend').onclick = async () => {
-    if (!state.currentSession) return;
-    if (!controlsEnabled(state.composer.control)) return;
-    const text = $('dtInput').value.trim();
-    if (!text) return;
-    const { device, session } = state.currentSession;
-    try {
-      const r = await api(`/api/devices/${encodeURIComponent(device.deviceId)}/steer`, {
-        method: 'POST', body: { sessionId: session.id, text },
-      });
-      // Cleared only once it LANDED. Clearing first meant a failed send threw
-      // away what the person had written in order to report the failure.
-      //
-      // The response is READ, not discarded: a watched session answers
-      // `{queued:true}` and an owned one `{sent:true}`, and those are not the
-      // same promise to the person who just pressed send.
-      state.composer = composerReduce(state.composer, { type: 'sent', queued: !!(r && r.queued) });
-      $('dtInput').value = '';
-      renderControl();
-    } catch (e) {
-      state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });
-      renderControl();
-      alert(`Could not send: ${e.message}`);
-    }
-  };
-
-  $('dtInput').oninput = (e) => {
-    state.composer = composerReduce(state.composer, { type: 'type', text: e.target.value });
-  };
-
-  // Enter sends, Shift+Enter starts a new line. The box is a textarea so a
-  // follow-up can be more than one line, and a multi-line box with no way to
-  // send from the keyboard makes you reach for the mouse on every message.
-  $('dtInput').onkeydown = (e) => {
-    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-    e.preventDefault();
-    $('dtSend').click();
-  };
-
-  $('dtSync').onclick = () => { togglePopup('dtMenu', 'dtMoreBtn', false); syncSession(); };
+  wireComposer();
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    toggleMenu(false);
-    togglePopup('newMenu', 'newMoreBtn', false);
-    togglePopup('tidyMenu', 'tidyBtn', false);
-    togglePopup('dtMenu', 'dtMoreBtn', false);
-    closeRowMenu();
-    $('filterbarEnd').classList.remove('open');
-    $('filterToggle').setAttribute('aria-expanded', 'false');
-    for (const id of ['approvalScrim', 'newScrim']) $(id).hidden = true;
-    if (!$('detailScrim').hidden) closeDetail();
+    // Escape closes an open Mode/Model list first (dropdowns.js has already
+    // handled that key and said so with preventDefault); only another press
+    // goes on to dismiss the topmost menu or leave the session.
+    if (e.defaultPrevented) return;
+    if (!dismissTopmostEscapeTarget() && !$('detailScrim').hidden) closeDetail();
   });
 }

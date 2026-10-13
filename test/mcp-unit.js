@@ -30,6 +30,12 @@ const mcpServer = require('../src/mcp-server');
 
 const BIN = path.join(__dirname, '..', 'bin', 'squad-hub.js');
 
+// These protocol fixtures seed their own records; unrelated persisted sessions
+// must not become part of a later suite or restored-baseline run.
+const IN_MEMORY = {
+  persistStore: false, persistAccess: false, persistDeviceTokens: false, persistPrefs: false, persistPush: false,
+};
+
 let pass = 0; let fail = 0;
 function check(name, fn) {
   try {
@@ -73,7 +79,7 @@ async function assertRejects(promise, matcher) {
 await (async () => {
   const secret = crypto.randomBytes(16).toString('hex');
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: secret });
-  const svc = new HubService({ auth, serveWeb: false });
+  const svc = new HubService({ auth, serveWeb: false, ...IN_MEMORY });
   const addr = await svc.listen(0, '127.0.0.1');
   const { port } = addr;
   const hub = `http://127.0.0.1:${port}`;
@@ -128,6 +134,10 @@ await (async () => {
   });
 
   // -- list_sessions ---------------------------------------------------------
+
+  check('the hub keeps its sessions in memory, so nothing another suite or an earlier run left can be listed', () => {
+    assert.strictEqual(svc.store.durable, false, 'the hub read shared persisted sessions into this fixture');
+  });
 
   await checkAsync('list_sessions returns every session, each carrying its key', async () => {
     const { sessions } = await client.listSessions();
@@ -256,7 +266,7 @@ await (async () => {
 await (async () => {
   const secret = crypto.randomBytes(16).toString('hex');
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: secret });
-  const svc = new HubService({ auth, serveWeb: false });
+  const svc = new HubService({ auth, serveWeb: false, ...IN_MEMORY });
   const addr = await svc.listen(0, '127.0.0.1');
   const hub = `http://127.0.0.1:${addr.port}`;
   const token = auth.mintDevToken('t1', 'user-1', 'Alice');

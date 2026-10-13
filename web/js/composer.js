@@ -29,7 +29,7 @@ export function spawnRequest({
 
 /** A prompt is the one thing a session cannot be started without. */
 export function spawnError(body) {
-  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';
+  if (!body || !body.prompt) return 'A prompt is required. Say what the agent should do.';
   return null;
 }
 
@@ -125,8 +125,17 @@ export function composerReduce(prev, event) {
     case 'type':
       // A new draft supersedes whatever happened to the last message, so the
       // outcome note goes with it rather than lingering over unrelated text.
+      //
+      // Every typing event, and nothing else, is a new revision of the draft.
+      // A draft put back in the box by opening a session is not typed, so it
+      // keeps the revision it was sent under, and a send that landed can tell
+      // "the text I sent, still untouched" from "the same words, typed again".
       return {
-        ...s, draft: String(event.text == null ? '' : event.text), outcome: null, outcomeNote: '',
+        ...s,
+        draft: String(event.text == null ? '' : event.text),
+        rev: (s.rev || 0) + 1,
+        outcome: null,
+        outcomeNote: '',
       };
     case 'verify-start':
       return { ...s, control: CONTROL.VERIFYING, reason: '' };
@@ -154,7 +163,7 @@ export function composerReduce(prev, event) {
         outcome: event.queued ? 'queued' : 'sent',
         outcomeNote: event.queued
           ? 'Queued. A watched terminal session picks this up when its current turn ends'
-            + ' — if it is idle, that means the next time somebody types there.'
+            + '. If it is idle, that means the next time somebody types there.'
           : '',
       };
     case 'send-failed':

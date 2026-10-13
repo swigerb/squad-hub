@@ -3,7 +3,7 @@ import {
   $, esc, ago, humanBytes, meter, applyMeterFills, clamp01,
 } from './util.js';
 import {
-  buildView, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses,
+  buildView, repositoriesIn, organizationsIn, activeFilterCount, presentStatuses, narrowGroups,
 } from './list.js';
 import { sessionRow } from './sessionrow.js';
 import { isCloudKind } from './cleanup.js';
@@ -13,8 +13,11 @@ import { syncDetailHeader } from './detail.js';
 import { inboxCount } from './inbox.js';
 import { openNew } from './connect.js';
 import { openAca } from './aca.js';
-import { renderAcaStatus } from './aca-status.js';
+import { acaPendingSectionHtml } from './aca-pending.js';
+import { acaJobsRowHtml, acaRailRowsHtml } from './aca-rail.js';
+import { ACA_PHASE, renderAcaStatus } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
+import { renderEmptySessions } from './empty-state.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
 // card updates or disappears the moment its approval is answered -- and now
@@ -24,7 +27,7 @@ import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-deta
 // Neither module reaches into the other at module-evaluation time, so the
 // cycle resolves the same way any other two ES modules that call back into
 // each other do.
-import { renderInboxMenu, closeRowMenu } from './wiring.js';
+import { renderInboxMenu, syncRowMenu } from './wiring.js';
 
 //
 // Pure, for the same reason the list controls are: ordering and presence
@@ -286,12 +289,15 @@ export function localDevicesEmptyHtml() {
  * Not a `<button>`: the section's own "+" lives inside its header, and a
  * button cannot nest inside another button. `role="button"` plus the
  * `onkeydown` handler in connect.js give it the same keyboard behavior.
+ *
+ * `pendingHtml` is rows for work that has no device yet (the ACA section's
+ * dispatches still starting). They follow the devices, and they are not
+ * devices: the count in the header stays the number of devices in `list`.
  */
-function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle, hubVersion) {
+function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle, hubVersion, pendingHtml = '') {
   const collapsed = isSectionCollapsed(key);
-  const body = list.length
-    ? list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0, hubVersion })).join('')
-    : (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
+  const cards = list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0, hubVersion })).join('') + pendingHtml;
+  const body = cards || (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
   return `
     <div class="devsec" data-sec="${key}" role="button" tabindex="0"
          aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="devsecbody-${key}">
@@ -301,23 +307,6 @@ function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle,
     </div>
     <div class="devsecbody" id="devsecbody-${key}"${collapsed ? ' hidden' : ''}>
       <div class="card">${body}</div>
-    </div>`;
-}
-
-/**
- * The always-visible "ACA jobs" row: on-demand compute, not a roster of
- * devices, so it has no count and nothing to collapse -- only the + that
- * opens the ACA dialog (#172).
- */
-function acaJobsRowHtml() {
-  return `
-    <div class="device ondemand">
-      <span class="dot online"></span>
-      <div class="device-main">
-        <div class="device-name">ACA jobs</div>
-        <div class="device-meta">On-demand &middot; Always available</div>
-      </div>
-      <button class="add" data-action="aca" title="Start an ACA job">+</button>
     </div>`;
 }
 
@@ -379,8 +368,13 @@ export function render() {
     badge.textContent = activeFilters;
   }
 
-  const emptyDevices = groups
+  // The same sessions the hub would have kept for this keyword, status and
+  // device, so a device left with none reads as empty after a live push exactly
+  // as it does after a filtered fetch (the push carries every session).
+  const emptyDevices = narrowGroups(groups, state.filters)
     .filter((g) => !g.sessions.length && g.device.presence !== 'offline')
+    .filter((g) => !state.scope || state.scope === 'all'
+      || isCloudKind(g.device.kind) === (state.scope === 'cloud'))
     .map((g) => ({ key: g.device.name, label: g.device.name, device: g.device, entries: [] }));
 
   const html = [...view.sections, ...emptyDevices].map((sec) => `
@@ -395,9 +389,9 @@ export function render() {
     : ''}
     </div>`).join('');
 
-  $('groups').innerHTML = html;
-  closeRowMenu();
-  $('empty').hidden = (counts.sessions || 0) > 0;
+  const queued = acaPendingSectionHtml(state.acaPending, state.scope);
+  $('groups').innerHTML = queued + html;
+  $('empty').hidden = view.counts.shown > 0 || queued !== '';
 
   // With no device online there is nothing + New could do, so say what to do
   // first rather than leaving a live button that opens a dialog with an empty
@@ -406,31 +400,7 @@ export function render() {
   const newBtn = $('newBtn');
   newBtn.classList.toggle('needs-device', online.length === 0);
   newBtn.title = online.length ? 'Start a session' : 'Connect a device first';
-  const emptyEl = $('empty');
-  if (!emptyEl.hidden) {
-    // Three buttons, because "start a session" has three genuinely different
-    // answers: an ACA job is provisioned on demand, a cloud device already
-    // exists and is on-demand too, and a local one is the machine already
-    // sitting there. One button forces a person to open a dialog to
-    // discover which they can have.
-    const cloud = devices.filter((d) => isCloudKind(d.kind) && d.presence !== 'offline');
-    const local = online.filter((d) => !isCloudKind(d.kind));
-    const localTotal = groupDevicesByKind(devices).local;
-    emptyEl.innerHTML = `
-      <h3>No sessions yet</h3>
-      <p class="empty-actions">
-        <button class="primary" id="emptyAca">Start ACA job</button>
-        <button class="ghost" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>On an attached cloud device</button>
-        <button class="ghost" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>
-      </p>
-      ${localTotal.length ? '' : localDevicesEmptyHtml()}`;
-    const ab = document.getElementById('emptyAca');
-    if (ab) ab.onclick = () => openAca();
-    const cb = document.getElementById('emptyCloud');
-    if (cb) cb.onclick = () => openNew(cloud.length ? cloud[0].deviceId : undefined);
-    const lb = document.getElementById('emptyLocal');
-    if (lb) lb.onclick = () => openNew(local.length ? local[0].deviceId : undefined);
-  }
+  renderEmptySessions({ scope: state.scope, devices, groups });
 
   // The rail's own summary line, directly under its title: how many devices
   // are actually reachable right now, and how many sessions they are running
@@ -441,8 +411,8 @@ export function render() {
   const { aca, cloud: cloudDevices, local: localDevices } = groupDevicesByKind(devices);
   const sessionCounts = sessionCountsByDevice(groups);
   $('deviceList').innerHTML = `
-    ${acaJobsRowHtml()}
-    ${deviceSectionHtml('aca', 'Squad on ACA executions', aca, sessionCounts, 'aca', 'Start an ACA job', hubVersion)}
+    ${acaJobsRowHtml(state.acaStatus && state.acaStatus.phase === ACA_PHASE.CONNECTED)}
+    ${deviceSectionHtml('aca', 'ACA runs', aca, sessionCounts, 'aca', 'Start an ACA run', hubVersion, acaRailRowsHtml(state.acaPending, devices))}
     ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}
     ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}`;
   applyMeterFills($('deviceList'));
@@ -475,18 +445,20 @@ export function render() {
   fillSelect($('repoFilter'), 'All repositories', repositoriesIn(groups), state.filters.repo);
   fillSelect($('orgFilter'), 'All organizations', organizationsIn(groups), state.filters.org);
 
-  // "Queued on ACA" and "Ready for review" (#169) are statuses that nothing
-  // can report yet -- the daemons that set them ship in #178/#179. Offering
-  // them as choices before any session can ever have one would be a filter
-  // that always empties the list, so each option stays hidden until a session
-  // with that exact status actually exists. `enhanceSelect`'s own popup skips
-  // a hidden <option> the same way the native one does, so this is the one
-  // place that needs to know.
+  // "Queued on ACA" and "Ready for review" (#169) stay hidden until a session
+  // with that status actually exists: offering a choice before any session
+  // can have it would be a filter that always empties the list. `queued` is
+  // reported by the device; `review` (#179) is derived (an ended session with a
+  // pull request), which `presentStatuses` accounts for. A SELECTED option is
+  // never hidden, though: the last session to qualify can stop qualifying while
+  // the filter is on, and the control must go on saying what it is set to.
+  // `enhanceSelect`'s own popup skips a hidden <option> the same way the
+  // native one does, so this is the one place that needs to know.
   const statuses = presentStatuses(groups);
   const statusSel = $('statusFilter');
   for (const value of ['queued', 'review']) {
     const opt = statusSel && statusSel.querySelector(`option[value="${value}"]`);
-    if (opt) opt.hidden = !statuses.has(value);
+    if (opt) opt.hidden = !statuses.has(value) && state.filters.status !== value;
   }
 
   // Rebuilding a select's options does NOT fire `change`, so the visible label
@@ -504,6 +476,7 @@ export function render() {
   // from this same overview; keep them in step with every refresh and every
   // WebSocket push, the same as the list above.
   syncDetailHeader();
+  syncRowMenu();
 
   // The "Squad on ACA" status card (#180): its own connection fetch runs on
   // a slower, independent interval (see web/app.js), but its watcher/Ralph

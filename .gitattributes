@@ -1,3 +1,15 @@
+# Source and text fixtures must have the same bytes on Windows and Linux.
+*.js text eol=lf
+*.css text eol=lf
+web/*.html text eol=lf
+*.svg text eol=lf
+*.webmanifest text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+
 # Squad: union merge for append-only team state files
 .squad/decisions.md merge=union
 .squad/agents/*/history.md merge=union

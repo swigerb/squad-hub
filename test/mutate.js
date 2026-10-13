@@ -11,7 +11,18 @@
  * NAMED test fails. A mutation that nothing catches is a mechanism nothing is
  * testing -- and that is a finding, not a pass.
  *
- * Exit 0 only if every mutation is caught by the test that claims to cover it.
+ * Exit 0 only if every selected mutation is CAUGHT: the suite finished with a
+ * nonzero exit status and the test the catalogue NAMES is among those that
+ * failed. Every other outcome is a failure and exits 1, each labelled so the
+ * cause reads at a glance, and none of them is counted as caught:
+ *   ESCAPED    the suite stayed green; nothing tests the mechanism.
+ *   IMPRECISE  the suite went red, but not on the named test; the claim is wrong.
+ *   ERROR      the suite timed out, was killed, or crashed before failing any
+ *              test; there is no verdict to read.
+ *   ANCHOR     the text to mutate is gone, so the mutation never ran.
+ * The baseline, and the re-run after the last restore, must each be a clean run
+ * that executed tests and skipped none. The decisions are made in
+ * test/helpers/verdict.js and covered by test/mutate-verdict-unit.js.
  *
  * ONLY THE SUITE THAT OWNS THE NAMED TEST IS RUN. This used to run all 764
  * tests for every mutation, which took 137 seconds to answer a question that
@@ -29,14 +40,23 @@
  * cost is visible rather than silently skipped.
  *
  * Usage:
- *   node test/mutate.js [--only <substring of a mutation name>] [--full]
+ *   node test/mutate.js [--only <substring of a mutation name>] [--full] [--shard N/K]
  *
  *   --full   run the entire suite for every mutation, as it did before.
+ *   --shard N/K   run shard N of K (1 <= N <= K) and nothing else: the runnable
+ *            mutations are numbered from zero in catalogue order, after --only,
+ *            and shard N takes ordinals N-1, N-1+K, ... Run every N of one K,
+ *            each in its own checkout, to cover the whole catalogue. Each shard
+ *            keeps its own baseline and every other check; the flag only picks
+ *            which mutations this run executes. An empty shard is an error.
  */
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { readSuiteSources, buildSuiteIndex, suiteIn } = require('./helpers/suite-index');
+const { planRun } = require('./helpers/shard');
+const { judgeBaseline, classify, summarise } = require('./helpers/verdict');
 
 const onlyIdx = process.argv.indexOf('--only');
 const ONLY = onlyIdx !== -1 ? process.argv[onlyIdx + 1] : null;
@@ -46,6 +66,14 @@ const ROOT = path.join(__dirname, '..');
 const TESTS = path.join(__dirname, 'run-tests.js');
 
 const MUTATIONS = [
+  {
+    name: 'a one-shot job exits without publishing its final steered transcript',
+    file: 'src/cloud-device.js',
+    find: `async function publishTranscript(sessionId) {`,
+    replace: `async function publishTranscript(sessionId) {
+  if (process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'steering a one-shot session mid-turn is processed before the session exits (#164)',
+  },
   {
     name: 'daemon does not kill its children on shutdown',
     file: 'src/daemon.js',
@@ -376,9 +404,9 @@ const MUTATIONS = [
     name: 'a device refusal is reported to the caller as success',
     file: 'src/service/hub-service.js',
     find: `          if (msg.ok) p.resolve(msg.result);
-          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));`,
+          else {`,
     replace: `          if (msg.ok || process.env.MUTANT) p.resolve(msg.result || {}); // MUTATION
-          else p.reject(Object.assign(new Error(msg.error || 'the device refused'), { status: 400 }));`,
+          else {`,
     mustFail: 'a device that refuses a command surfaces the refusal, not a success',
   },
   {
@@ -764,11 +792,14 @@ const MUTATIONS = [
     mustFail: 'raw trailing-space projectKey is refused before sanitisation',
   },
   {
+    // '.' itself is refused by the raw trailing-dot guard, and the guard that
+    // follows this one exempts '.', so THIS line alone stops a key such as
+    // '-.-' (sanitised to '.') from resolving to the shared projects root.
     name: 'external project key collapsing to dot is accepted',
     file: 'src/squad-context.js',
     find: `  if (sanitized === '.') return null;`,
     replace: `  if (!process.env.MUTANT && sanitized === '.') return null; // MUTATION`,
-    mustFail: 'invalid projectKey is refused and empty sanitisation falls back local',
+    mustFail: 'a projectKey that sanitises to a bare dot is refused, not resolved to the shared projects root',
   },
   {
     name: 'reserved and trailing-dot external project keys are accepted',
@@ -875,12 +906,15 @@ const MUTATIONS = [
     mustFail: 'externalized state reads roster and decisions externally but models locally',
   },
   {
+    // readJsonSafe is called twice. A malformed LOCAL config is masked by the
+    // catch in resolveSquadDirs, which lands on the same local result; only a
+    // malformed config in a remote team dir shows an unguarded parse.
     name: 'malformed JSON config throws instead of degrading',
     file: 'src/squad-context.js',
     find: `  try { return JSON.parse(raw); } catch { return null; }`,
     replace: `  if (process.env.MUTANT) return JSON.parse(raw); // MUTATION
   try { return JSON.parse(raw); } catch { return null; }`,
-    mustFail: 'state resolution never throws and degrades to local on bad config or targets',
+    mustFail: 'a malformed config.json in a remote team parent is read as absent, so the team link survives',
   },
   {
     // Issue #92 Sprint 3: a mention-based guess must be labelled `inferred:
@@ -946,24 +980,380 @@ const MUTATIONS = [
     // proves the row and the panel read the same field rather than two
     // independent (and driftable) re-derivations.
     name: 'the session detail panel stops reading the same activeMember field as the row',
-    file: 'web/js/detail.js',
+    file: 'web/js/squad-panel.js',
     find: `class="sq-member \${sq.activeMember && sq.activeMember.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
     replace: `class="sq-member \${sq.lastKnownActor /* MUTATION */ && sq.lastKnownActor.name === m.name ? 'now' : ''} \${m.active ? '' : 'off'}"`,
     mustFail: 'the session detail panel reads activeMember from the same field the row does',
   },
   {
+    // Plain behaviour only: this mustFail lives in the real-browser suite,
+    // where `process` does not exist, so an `process.env.MUTANT` guard here
+    // would throw a ReferenceError inside Chromium and "catch" the mutant for
+    // the wrong reason. Dropping the `canSync` half of the condition makes
+    // Sync session appear for an already-synced session -- the one thing the
+    // named assertion exists to rule out.
+    name: 'the detail header menu always offers Sync session again, even when the session is already synced (#181 part 2)',
+    file: 'web/js/detail-control.js',
+    find: `  if (!canSync(state.composer.control) || isDeviceUnreachable(current.device)) return null;`,
+    replace: `  if (isDeviceUnreachable(current.device)) return null; // MUTATION: Sync offered even when already synced`,
+    mustFail: 'the detail header ⋯ opens the shared row menu, not a second popup, and only adds Sync session conditionally (#181 part 2)',
+  },
+  // ---- #181 review finding 1: the detail header ⋯ for a session a
+  // server-side status/search/device filter has dropped from the overview.
+  // Every mutation below is a distinct edit, each caught by an ASSERTION of
+  // the named check (never by an exception), and plain behaviour only: the
+  // browser-owned ones run in Chromium, where `process` does not exist.
+  {
+    name: 'the detail header menu stops falling back to the retained session, so its ⋯ does nothing once a filter drops the session (unit)',
+    file: 'web/js/rowmenu.js',
+    find: `  return findSessionByKey(key) || (fromDetail ? retainedSelection(key) : null);`,
+    replace: `  return findSessionByKey(key); // MUTATION: no retained fallback for the detail header`,
+    mustFail: 'the detail header ⋯ still opens for the open session after a server-side filter drops it from the overview, offering the actions of the retained session',
+  },
+  {
+    name: 'a render closes the detail header menu as soon as its session leaves the overview',
+    file: 'web/js/wiring.js',
+    find: `    ? menuTarget(rowMenuKey, true) : null;`,
+    replace: `    ? menuTarget(rowMenuKey, false) : null; // MUTATION: syncRowMenu ignores the retained selection`,
+    mustFail: 'a refresh or WebSocket render keeps the header menu open on the retained session and rebuilds it for a changed pin',
+  },
+  {
+    name: 'a header menu action resolves its target through the overview alone, so Remove/Stop/Rename/Pin/PR do nothing for a retained session (unit)',
+    file: 'web/js/rowmenu.js',
+    find: `  const found = menuTarget(key, detailMenuOpen());`,
+    replace: `  const found = menuTarget(key, false); // MUTATION: actions ignore the retained selection`,
+    mustFail: 'Remove from the retained header menu forgets exactly that session on the retained device, then leaves the detail page',
+  },
+  {
+    name: 'a click on any row menu may act on the open page retained session once its own row has left the overview',
+    file: 'web/js/rowmenu.js',
+    find: `  const found = menuTarget(key, detailMenuOpen());`,
+    replace: `  const found = menuTarget(key, true); // MUTATION: every menu may fall back to the detail session`,
+    mustFail: 'a stale LIST row menu cannot act on the retained session of the open page: a click that lands before the next render does nothing',
+  },
+  {
+    name: 'a LIST row menu may borrow the open detail page retained session when its own row has left the overview',
+    file: 'web/js/wiring.js',
+    find: `  const found = menuTarget(key, btn.id === 'dtMoreBtn');`,
+    replace: `  const found = menuTarget(key, true); // MUTATION: every opener may fall back to the detail session`,
+    mustFail: 'a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there',
+  },
+  {
+    name: 'a render keeps a LIST row menu alive on the open detail page retained session after its row left the overview',
+    file: 'web/js/wiring.js',
+    find: `  const found = detailMenuOpen() && current && sessionKey(current.session) === rowMenuKey`,
+    replace: `  const found = current && sessionKey(current.session) === rowMenuKey // MUTATION: not restricted to the detail header menu`,
+    mustFail: 'a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there',
+  },
+  {
+    name: 'detailMenuOpen stops telling the detail header menu apart from a list row menu',
+    file: 'web/js/wiring.js',
+    find: `  return rowMenuKey !== null && !!rowMenuBtn && rowMenuBtn.id === 'dtMoreBtn';`,
+    replace: `  return rowMenuKey !== null && !!rowMenuBtn; // MUTATION: any open menu counts as the detail header's`,
+    mustFail: 'a LIST row menu never falls back to the retained session of the open page: it closes when its row leaves the overview and will not open for a row that is not there',
+  },
+  {
+    name: 'syncDetailHeader freezes the title, status and pin once the session leaves the overview',
+    file: 'web/js/detail.js',
+    find: `  const found = findSession(key) || retainedSelection(key);`,
+    replace: `  const found = findSession(key);
+  if (!found) return; // MUTATION: the header freezes once the session leaves the overview`,
+    mustFail: 'the detail header keeps following the retained session after it leaves the overview, and defers to the live row as soon as it is listed again',
+  },
+  {
+    name: 'the header star is no longer re-rendered from the pinned set on a refresh',
+    file: 'web/js/detail.js',
+    find: `  renderDetailStar(key);
+  renderCleanup(found);
+  // The inline approval card,`,
+    replace: `  // MUTATION: the star is not re-rendered on refresh
+  renderCleanup(found);
+  // The inline approval card,`,
+    mustFail: 'Rename, Pin and Open pull request from the retained header menu all act on the retained session, and the header follows the new name and pin',
+  },
+  {
+    name: 'the retained selection keeps the open-time device instead of re-reading the overview latest record',
+    file: 'web/js/detail-control.js',
+    find: `  return { device: group ? group.device : current.device, session: current.session };`,
+    replace: `  return { device: current.device, session: current.session }; // MUTATION: stale device`,
+    mustFail: 'the DEVICE of the retained session is re-read from the overview, so Stop and the header controls follow its presence rather than the open-time snapshot',
+  },
+  {
+    name: 'the retained selection takes the first device group in the overview instead of the session\'s own device',
+    file: 'web/js/detail-control.js',
+    find: `    .find((g) => g.device && g.device.deviceId === current.device.deviceId);`,
+    replace: `    .find((g) => g.device); // MUTATION: the first device, not this session's`,
+    mustFail: 'the device of the retained session is the overview group with its OWN device id, never the record of another device',
+  },
+  {
+    name: 'the retained selection answers for ANY key, so a stale header menu acts on whatever session is open now',
+    file: 'web/js/detail-control.js',
+    find: `  if (!current || sessionKey(current.session) !== key) return null;
+  const group`,
+    replace: `  if (!current) return null; // MUTATION: the key is never compared
+  const group`,
+    mustFail: 'stale target safety holds for a retained header menu: once the open page is a different session it neither acts on it nor survives a sync',
+  },
+  {
+    name: 'the retained header ⋯ no longer opens once a filter drops its session, from the click handler\'s own opener (browser)',
+    file: 'web/js/wiring.js',
+    find: `  const found = menuTarget(key, btn.id === 'dtMoreBtn');`,
+    replace: `  const found = menuTarget(key, false); // MUTATION: openRowMenu ignores the retained selection`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'Copy link from the retained header menu copies the bare session id URL instead of the session key (browser)',
+    file: 'web/js/rowmenu.js',
+    find: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(key)}\`);`,
+    replace: `    const copied = await copyToClipboard(\`\${location.origin}/?session=\${encodeURIComponent(session.id)}\`); // MUTATION: the bare id, not the key`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'Remove from the retained header menu sweeps every ended session of the device instead of exactly this one (browser)',
+    file: 'web/js/rowmenu.js',
+    find: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/forget\`, {
+        method: 'POST', body: { sessionId: session.id },
+      });`,
+    replace: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/forget\`, {
+        method: 'POST', body: {}, // MUTATION: not narrowed to this session
+      });`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'the header star title stops following a pin made from the retained header menu (browser)',
+    file: 'web/js/detail.js',
+    find: `  star.title = label;`,
+    replace: `  star.title = 'Pin this session'; // MUTATION: the title never follows the pin`,
+    mustFail: 'after the active filter drops an ended open session, its header ⋯ still opens and Copy link, Rename, Pin and Remove act on exactly that session (#181 review)',
+  },
+  {
+    name: 'Stop from the retained header menu sends the session key instead of the device-local session id (browser)',
+    file: 'web/js/rowmenu.js',
+    find: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/stop\`, {
+        method: 'POST', body: { sessionId: session.id },
+      });`,
+    replace: `      await api(\`/api/devices/\${encodeURIComponent(device.deviceId)}/stop\`, {
+        method: 'POST', body: { sessionId: key }, // MUTATION: the key, not the id
+      });`,
+    mustFail: 'a live detail session that leaves a search filter keeps a header ⋯ that can Open its pull request, Sync and Stop on its own device (#181 review)',
+  },
+  {
+    name: 'Sync session from the retained header menu resyncs the session key instead of the device-local session id (browser)',
+    file: 'web/js/detail-control.js',
+    find: `    await api(\`/api/devices/\${encodeURIComponent(current.device.deviceId)}/resync\`, {
+      method: 'POST', body: { sessionId: current.session.id },
+    });`,
+    replace: `    await api(\`/api/devices/\${encodeURIComponent(current.device.deviceId)}/resync\`, {
+      method: 'POST', body: { sessionId: key }, // MUTATION: the key, not the id
+    });`,
+    mustFail: 'a live detail session that leaves a search filter keeps a header ⋯ that can Open its pull request, Sync and Stop on its own device (#181 review)',
+  },
+  {
+    name: 'the header menu is anchored to the button\'s left edge, so it runs off the right of the viewport (browser)',
+    file: 'web/js/wiring.js',
+    find: `  m.style.left = \`\${left}px\`;`,
+    replace: `  m.style.left = \`\${rect.left}px\`; // MUTATION: ignores the viewport clamp`,
+    mustFail: 'a retained header keeps one line box and an on-screen ⋯ menu at 1280, 900 and 390px, in dark and light (#181 review)',
+  },
+  {
+    // The real-browser CI regression this whole fix addresses: comparing by
+    // OBJECT REFERENCE instead of session key discards a valid control-check
+    // answer any time `syncDetailHeader` reassigns `state.currentSession` to
+    // a freshly-`findSession`'d wrapper for the SAME device/session, which it
+    // does on every overview refresh/WebSocket push. Reverting the guard to
+    // reference equality must bring that hang straight back.
+    name: 'verifyControl compares by object reference again, discarding a result after any same-session refresh',
+    file: 'web/js/detail-control.js',
+    find: `  const stillSameSelection = state.currentSession && sessionKey(state.currentSession.session) === key;`,
+    replace: `  const stillSameSelection = process.env.MUTANT ? state.currentSession === current : (state.currentSession && sessionKey(state.currentSession.session) === key); // MUTATION`,
+    mustFail: 'a same-session live-snapshot refresh mid-verification does not drop the valid result (stable selection, not object identity)',
+  },
+  {
+    // The OTHER half of the same guard: `sessionKey` equality alone is not
+    // enough, because a second `verifyControl` call for the SAME session
+    // (a reopen, or `syncSession`'s own re-check) must still win over an
+    // earlier call's late reply. Dropping `controlToken` from the guard
+    // re-admits that stale, superseded answer.
+    name: 'verifyControl drops the controlToken check, so a superseded verification can still apply its late reply',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection || (!process.env.MUTANT && token !== controlToken) || generation !== selectionGeneration) return; // MUTATION`,
+    mustFail: 'a second verifyControl call for the same session supersedes the first; its late reply is rejected',
+  },
+  {
+    // Scout's actual-source review of 34256a0: `controlToken` only
+    // increments once a NEW `verifyControl` call actually starts, but
+    // `openDetail` sets `state.currentSession` and awaits the transcript
+    // fetch BEFORE calling `verifyControl` again -- a reply for an OLD
+    // verification can land in that gap and pass a same-key/same-token
+    // check. Dropping the `selectionGeneration` guard re-admits exactly
+    // that stale result once the session is closed and reopened.
+    name: 'verifyControl drops the selectionGeneration check, so a reply from before a close+reopen can still be applied',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection || token !== controlToken || (!process.env.MUTANT && generation !== selectionGeneration)) return; // MUTATION`,
+    mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
+  },
+  {
+    // `invalidateSelection` is useless if nothing ever calls it at the
+    // actual moment of navigation -- this proves `openDetail`/`closeDetail`
+    // really do call it, not merely that the function exists.
+    name: 'invalidateSelection is never actually bumped (a no-op stub), so close+reopen never invalidates a stale reply',
+    file: 'web/js/detail-control.js',
+    find: `export function invalidateSelection() {
+  selectionGeneration += 1;
+  return selectionGeneration;
+}`,
+    replace: `export function invalidateSelection() {
+  if (process.env.MUTANT) return selectionGeneration; // MUTATION
+  selectionGeneration += 1;
+  return selectionGeneration;
+}`,
+    mustFail: 'a verifyControl reply that arrives after close+reopen of the SAME session (before the new verification even starts) is discarded',
+  },
+  {
+    // The Sync regression: moving "Sync session" into the shared row menu
+    // (rebuilt fresh on every open) dropped the old dedicated button's
+    // self-disabling in-flight guard. Removing this early return re-admits a
+    // second resync for a target already being resynced.
+    name: 'syncSession drops its one-in-flight-per-target guard, allowing a reopened menu to restart the same resync',
+    file: 'web/js/detail-control.js',
+    find: `  if (syncInFlightKeys.has(key)) return;`,
+    replace: `  if (!process.env.MUTANT && syncInFlightKeys.has(key)) return; // MUTATION`,
+    mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
+  },
+  {
+    // Scout's actual-source review of 34256a0: a single scalar lock gets
+    // silently overwritten when a SECOND target starts its own Sync, so a
+    // target the lock no longer names is treated as free even though it is
+    // still pending. Replacing the `Set` with a scalar that only remembers
+    // the MOST RECENT target reproduces exactly that A-navigate-to-B-back-
+    // to-A regression.
+    name: 'syncInFlightKeys regresses to a single scalar, so starting Sync for a second target un-blocks the first target\u2019s own reopened click',
+    file: 'web/js/detail-control.js',
+    find: `const syncInFlightKeys = new Set();`,
+    replace: `const syncInFlightKeys = process.env.MUTANT ? (() => { let last = null; return { has: (k) => k === last, add: (k) => { last = k; }, delete: (k) => { if (last === k) last = null; } }; })() : new Set(); // MUTATION`,
+    mustFail: 'A-B-A interleaving: starting Sync for A, then B, then A again before either settles issues exactly one resync for A and one for B',
+  },
+  {
+    name: 'syncSession never clears its in-flight flag, so a target gets permanently stuck disabled after one resync',
+    file: 'web/js/detail-control.js',
+    find: `  } finally {
+    syncInFlightKeys.delete(key);
+  }`,
+    replace: `  } finally {
+    if (!process.env.MUTANT) syncInFlightKeys.delete(key); // MUTATION
+  }`,
+    mustFail: 'a resync failure for the STILL-open session reports the error on its own composer',
+  },
+  {
+    // The disabled flag is what stops the reopened menu from re-firing
+    // (wiring.js's click handler bails on `b.disabled`); if the item never
+    // reports pending, that protection is gone even though the in-flight
+    // flag itself is still tracked correctly.
+    name: 'detailSyncMenuItem never reports Sync session as pending/disabled while a resync is in flight',
+    file: 'web/js/detail-control.js',
+    find: `  const pending = syncInFlightKeys.has(sessionKey(current.session));`,
+    replace: `  const pending = !process.env.MUTANT && syncInFlightKeys.has(sessionKey(current.session)); // MUTATION`,
+    mustFail: 'syncSession issues exactly one resync request per target while one is already pending',
+  },
+  {
+    // Scout's actual-source review of 34256a0: a late resync success/failure
+    // for an abandoned session must not re-verify or clobber a context the
+    // person has since closed and reopened, even of the SAME session key.
+    // Dropping the generation half of this guard (leaving only the sessionKey
+    // check) re-admits the stale-verify-after-reopen regression through the
+    // sync path specifically.
+    name: 'syncSession\u2019s late-success re-verify ignores selectionGeneration, re-verifying after a close+reopen of the same session',
+    file: 'web/js/detail-control.js',
+    find: `  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && generation === selectionGeneration
+  ) await verifyControl();`,
+    replace: `  if (
+    state.currentSession
+    && sessionKey(state.currentSession.session) === key
+    && (process.env.MUTANT || generation === selectionGeneration)
+  ) await verifyControl(); // MUTATION`,
+    mustFail: 'a syncSession success that arrives after close+reopen of the SAME session must not apply or re-verify the new context',
+  },
+  {
+    // Scout's source review of 046b708 (PR #243): the detail-control split
+    // moved `syncSession` out of `web/js/detail.js` into the new
+    // `web/js/detail-control.js`, and `web/js/wiring.js` was updated to
+    // match -- but `web/app.js` was not, and kept importing `syncSession`
+    // from `./js/detail.js`, which no longer exports it. That stops the
+    // browser's module linker before `main()` ever runs: a live boot
+    // failure, reproduced in CI as 11 failing browser-e2e assertions
+    // (run 37901451265) including the very first "the page loads" check.
+    // Restoring exactly that stale import must fail the native-linking
+    // regression test, not merely "some test or other".
+    name: 'app.js imports syncSession from detail.js again, where it no longer lives (PR #243 Scout source review)',
+    file: 'web/app.js',
+    find: `import {
+  openDetail, renderControl, openSquadDoc,
+} from './js/detail.js';
+import { syncSession } from './js/detail-control.js';`,
+    replace: `import {
+  openDetail, syncSession, renderControl, openSquadDoc,
+} from './js/detail.js'; // MUTATION: syncSession moved to detail-control.js`,
+    mustFail: "web/app.js and its entire real module graph link under native ES module resolution (no missing or renamed export)",
+  },
+  {
+    // Companion to the two mutations above, catching a regression in the
+    // REAL call sites rather than the guard they call: `openDetail`
+    // applying its transcript fetch's result unconditionally once the
+    // `await` settled, with no check that the person had not since closed,
+    // reopened, or opened something else while that fetch was in flight.
+    name: 'openDetail applies a transcript fetch result unconditionally again, ignoring whether the selection is still active',
+    file: 'web/js/detail.js',
+    find: `    if (selectionStillActive(key, generation)) renderTranscript(r.transcript || []);
+  } catch (e) {
+    if (selectionStillActive(key, generation)) {
+      $('dtTranscript').innerHTML = \`<div class="t-entry t-kind">could not load the transcript: \${esc(e.message)}</div>\`;
+    }
+  }`,
+    replace: `    if (process.env.MUTANT || selectionStillActive(key, generation)) renderTranscript(r.transcript || []); // MUTATION
+  } catch (e) {
+    if (process.env.MUTANT || selectionStillActive(key, generation)) { // MUTATION
+      $('dtTranscript').innerHTML = \`<div class="t-entry t-kind">could not load the transcript: \${esc(e.message)}</div>\`;
+    }
+  }`,
+    mustFail: '(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now',
+  },
+  {
+    // The other half of the same openDetail guard: even if the transcript
+    // render itself stayed correctly guarded, an abandoned open's late
+    // continuation must not ALSO start its own redundant `verifyControl`
+    // call for whatever session happens to be open by then.
+    name: 'openDetail starts a redundant verifyControl call from an abandoned open, ignoring whether the selection is still active',
+    file: 'web/js/detail.js',
+    find: `  if (selectionStillActive(key, generation)) verifyControl();
+  return true;`,
+    replace: `  if (process.env.MUTANT || selectionStillActive(key, generation)) verifyControl(); // MUTATION
+  return true;`,
+    mustFail: '(real call sites) a slow transcript fetch from an abandoned open does not overwrite the transcript or redundantly re-verify the session actually open now',
+  },
+  {
     // The OUTER catch in readSquad is unreachable while every inner reader is
     // itself safe -- so mutating it proves nothing. Mutate the layer that
     // actually does the work instead: if readFileSafe stops swallowing a
-    // missing file, a workspace with no team.md must still degrade to a usable
-    // context rather than to nothing.
+    // missing file, it must be reported as absent rather than raised.
+    //
+    // 'an empty .squad directory is still a squad' does NOT own this: a
+    // missing file never reaches readFileSafe through readFileConfined (the
+    // real-path check gives up first), and its one direct read sits inside a
+    // try whose fallback is the identical local result. The old catalogue run
+    // recorded a kill by three unrelated remote-teamRoot tests instead. The
+    // direct readFileSafe test below is the one that names this contract.
     name: 'a missing .squad file propagates instead of degrading',
     file: 'src/squad-context.js',
     find: `    return fs.readFileSync(p, 'utf8');
   } catch { return null; }`,
     replace: `    return fs.readFileSync(p, 'utf8');
   } catch (e) { if (process.env.MUTANT) throw e; return null; } // MUTATION`,
-    mustFail: 'an empty .squad directory is still a squad',
+    mustFail: 'readFileSafe reads a missing path and a directory as absent, and a real file as its text',
   },
   {
     name: 'secrets are posted to Teams unredacted',
@@ -1211,15 +1601,44 @@ const MUTATIONS = [
     name: 'the browser reconnects every two seconds forever',
     file: 'web/js/ws.js',
     find: `    const wait = Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000);`,
-    replace: `    const wait = process.env.MUTANT ? 2000 : Math.min(1000 * (2 ** (state.reconnectAttempt - 1)), 30000); // MUTATION`,
+    replace: `    const wait = 2000; // MUTATION: a fixed two-second retry, no back-off`,
     mustFail: 'the connection state backs off instead of strobing',
   },
   {
     name: 'Refresh now gives no visible timestamp',
     file: 'web/js/wiring.js',
     find: `    stamp.textContent = \`updated \${hh}:\${mm}:\${ss}\`;`,
-    replace: `    stamp.textContent = process.env.MUTANT ? 'refreshing…' : \`updated \${hh}:\${mm}:\${ss}\`; // MUTATION`,
+    replace: `    stamp.textContent = 'refreshing…'; // MUTATION: the stamp never gets its timestamp`,
     mustFail: 'a manual refresh gives visible feedback where the data is',
+  },
+  {
+    name: 'Escape falls through from the row menu and also closes detail',
+    file: 'web/js/wiring.js',
+    find: `  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return true;
+  }`,
+    replace: `  if (rowMenuKey !== null) {
+    closeRowMenu({ restoreFocus: true });
+    return process.env.MUTANT ? false : true; // MUTATION
+  }`,
+    mustFail: 'Escape closes the detail header row menu first, returns focus, and only the next Escape closes detail',
+  },
+  {
+    name: 'the row menu Sync click reads rowMenuKey fresh instead of capturing it before closing the menu',
+    file: 'web/js/wiring.js',
+    find: `    const target = rowMenuKey;
+    closeRowMenu();
+    // Returned (not just fired) so tests can await the real request this
+    // click actually issues; a bare \`onclick\` return value is otherwise
+    // ignored by the browser, so this changes nothing in production.
+    return syncSession(target);`,
+    replace: `    const target = rowMenuKey;
+    closeRowMenu();
+    // MUTATION: re-reads rowMenuKey AFTER closeRowMenu() clears it, instead
+    // of the target captured beforehand -- the exact #243 stale-menu bug.
+    return syncSession(process.env.MUTANT ? rowMenuKey : target);`,
+    mustFail: 'the accepted-positive path is unaffected: Sync for the session actually open fires exactly once through the real row-menu click dispatch, and re-enables once it settles',
   },
   {
     name: 'a transient Windows file lock is not retried',
@@ -1347,7 +1766,7 @@ const MUTATIONS = [
     replace: `function plan({ platform = process.platform, home = os.homedir(), nodeExe = NODE_EXE, binJs = BIN_JS } = {}) {
   if (process.env.MUTANT) platform = process.platform; // MUTATION
   if (platform === 'win32') {`,
-    mustFail: 'plan({platform:"linux"}) builds a systemd user unit plan regardless of host OS',
+    mustFail: 'plan() builds the plan of the platform it is TOLD, never the host platform, on every host',
   },
   {
     name: 'macOS install/uninstall loses its "already loaded" idempotency tolerance',
@@ -1502,7 +1921,7 @@ const MUTATIONS = [
     file: 'src/agent-select.js',
     find: `    const isHome = home !== null && sameDir(dir, home);`,
     replace: `    const isHome = process.env.MUTANT ? false : (home !== null && sameDir(dir, home)); // MUTATION`,
-    mustFail: 'a plain directory is not a Squad project',
+    mustFail: 'detection stops at the home directory: a Squad marker or .squad-hub.json above it, or inside it, is never inherited by a nested cwd',
   },
   {
     name: 'Squad detection ignores the .git repository boundary and leaks into an unrelated ancestor project',
@@ -1953,8 +2372,8 @@ const MUTATIONS = [
     const copyBtn = e.target.closest('[data-copy-cmd]');
     if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
   });`,
-    replace: `  if (!process.env.MUTANT) document.addEventListener('click', (e) => { // MUTATION
-    const copyBtn = e.target.closest('[data-copy-cmd]');
+    replace: `  document.addEventListener('click', (e) => { // MUTATION: only a button inside the device rail is wired
+    const copyBtn = e.target.closest('#deviceRail [data-copy-cmd]');
     if (copyBtn) copyCommand(copyBtn.dataset.copyCmd);
   });`,
     mustFail: 'the local-devices pitch copies its start command (#172)',
@@ -2076,6 +2495,13 @@ const MUTATIONS = [
     mustFail: 'a session with no start time is kept, not filtered out',
   },
   {
+    name: 'the detail sidebar ignores a custom session name again (#181 part 2)',
+    file: 'web/js/list.js',
+    find: `  const title = truncateWords(displayTitle(s, names), 60);`,
+    replace: `  const title = truncateWords(process.env.MUTANT ? (s.prompt || s.id) : displayTitle(s, names), 60); // MUTATION`,
+    mustFail: 'sidebarRow uses the same renamed displayTitle as the main row',
+  },
+  {
     name: 'an unknown window key empties the entire list',
     file: 'web/js/list.js',
     find: `  if (!w || w.ms == null) return true;`,
@@ -2122,10 +2548,10 @@ const MUTATIONS = [
   {
     name: 'a pinned session is still subject to every filter',
     file: 'web/js/list.js',
-    find: `      const entry = { session: s, device: g.device };
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;
       if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
-    replace: `      const entry = { session: s, device: g.device };
-      if (pinnedKeys.has(sessionKey(s))) { if (!process.env.MUTANT || matchesFilters(s, filters, now)) pinned.push(entry); continue; } // MUTATION`,
+    replace: `      if (!matchesHubFilters(s, filters, g.device)) continue;
+      if (pinnedKeys.has(sessionKey(s))) { if (!process.env.MUTANT || matchesFilters(s, filters, now, g.device)) pinned.push(entry); continue; } // MUTATION`,
     mustFail: 'pinning outranks every filter',
   },
   {
@@ -2197,8 +2623,10 @@ const MUTATIONS = [
   {
     name: 'scopeCounts stops honouring the pin, undercounting a filtered-out favourite',
     file: 'web/js/list.js',
-    find: `      const included = pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now);`,
-    replace: `      const included = (pinnedKeys.has(sessionKey(s)) && !process.env.MUTANT) || matchesFilters(s, filters, now); // MUTATION`,
+    find: `      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));`,
+    replace: `      const included = matchesHubFilters(s, filters, g.device)
+        && ((pinnedKeys.has(sessionKey(s)) && !process.env.MUTANT) || matchesFilters(s, filters, now, g.device)); // MUTATION`,
     mustFail: 'scope tabs: scopeCounts counts a pinned session under its own scope, bypassing filters',
   },
   {
@@ -2322,14 +2750,14 @@ const MUTATIONS = [
     name: 'devices.js stops withholding the "action" status from the server, so Action needed asks the store for a status that never matches',
     file: 'web/js/ws.js',
     find: `  if (state.filters.status && state.filters.status !== 'action') params.set('status', state.filters.status);`,
-    replace: `  if (state.filters.status && (state.filters.status !== 'action' || process.env.MUTANT)) params.set('status', state.filters.status); // MUTATION`,
-    mustFail: '"Action needed" (#169) narrows to blocked and awaiting-reply sessions, without a server round trip for a status no session has',
+    replace: `  if (state.filters.status) params.set('status', state.filters.status); // MUTATION: "action" is sent to the server too`,
+    mustFail: 'the Action needed view asks the hub for the keyword and device it holds and never for status=action, which no session has (#169 with #179)',
   },
   {
     name: 'the custom dropdown popup stops skipping a hidden <option>, so "Queued on ACA" / "Ready for review" appear with no data behind them',
     file: 'web/js/dropdowns.js',
     find: `      if (o.hidden) return;`,
-    replace: `      if (o.hidden && !process.env.MUTANT) return; // MUTATION`,
+    replace: `      if (false) return; // MUTATION: a hidden option is listed anyway`,
     mustFail: 'a dropdown opens on click and lists exactly the VISIBLE options its select holds',
   },
   {
@@ -2435,8 +2863,12 @@ const MUTATIONS = [
   {
     name: 'a device name is interpolated into the roster unescaped',
     file: 'web/js/devices.js',
+    // The marker is a BLOCK comment inside the expression. A line comment here
+    // runs to the end of the source line, takes the rest of the template with
+    // it, and makes web/js/devices.js a SyntaxError -- the whole suite then
+    // dies with no named failure instead of failing the escaping test.
     find: '          <span>${esc(displayName)}</span>${isCloudKind(d.kind)',
-    replace: '          <span>${process.env.MUTANT ? displayName : esc(displayName)}</span>${isCloudKind(d.kind) // MUTATION',
+    replace: '          <span>${/* MUTATION */ process.env.MUTANT ? displayName : esc(displayName)}</span>${isCloudKind(d.kind)',
     mustFail: 'a malicious device name renders as inert escaped text',
   },
   {
@@ -2475,14 +2907,14 @@ const MUTATIONS = [
     file: 'src/telemetry.js',
     find: `    if (LINUX_PSEUDO_FS.has(m.fsType)) continue;`,
     replace: `    if (!process.env.MUTANT && LINUX_PSEUDO_FS.has(m.fsType)) continue; // MUTATION`,
-    mustFail: 'listLinuxVolumes skips pseudo filesystems and read-only mounts',
+    mustFail: 'listLinuxVolumes drops a pseudo filesystem that reports a real size, without asking it for one',
   },
   {
     name: 'a read-only mount is reported as a disk volume',
     file: 'src/telemetry.js',
     find: `    if (m.options.includes('ro')) continue;`,
     replace: `    if (!process.env.MUTANT && m.options.includes('ro')) continue; // MUTATION`,
-    mustFail: 'listLinuxVolumes skips pseudo filesystems and read-only mounts',
+    mustFail: 'listLinuxVolumes drops a read-only mount on a real filesystem, and keeps one that only mentions remount-ro',
   },
   {
     // A mount-point list is a privacy-sensitive fact (#173): file access off
@@ -3060,8 +3492,8 @@ const MUTATIONS = [
   {
     name: 'a session can be started with no prompt at all',
     file: 'web/js/composer.js',
-    find: "  if (!body || !body.prompt) return 'A prompt is required — say what the agent should do.';",
-    replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required — say what the agent should do.'; // MUTATION",
+    find: "  if (!body || !body.prompt) return 'A prompt is required. Say what the agent should do.';",
+    replace: "  if ((!body || !body.prompt) && !process.env.MUTANT) return 'A prompt is required. Say what the agent should do.'; // MUTATION",
     mustFail: 'a missing prompt is refused with a reason a person can act on',
   },
 
@@ -3142,10 +3574,28 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // invisible; a stale /api/overview is a page saying "nothing needs you"
     // while an agent sits blocked, and on a shared hub it is one user's data
     // outliving another's sign-out.
-    name: 'the service worker caches API responses too',
+    //
+    // Deleting the whole `/api/` line is the obvious mutant and cannot be
+    // used: with every API route cached the browser suite's later checks wait
+    // on fetches the worker has swallowed, the suite never finishes and the
+    // harness can only report a timeout, which is not a kill. So the guard is
+    // narrowed by ONE route instead, which the named check still finds through
+    // the Cache API and the rest of the suite is unaffected by. /api/me is the
+    // signed-in user's identity, the response that must not outlive a sign-out.
+    name: 'the service worker also caches the signed-in user\'s /api/me response, which would outlive a sign-out',
     file: 'web/sw.js',
     find: `  if (url.pathname.startsWith('/api/')) return false;`,
-    replace: `  // MUTATION: /api/ is no longer excluded`,
+    replace: `  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/me') return false; // MUTATION`,
+    mustFail: 'an API response is NEVER served from the cache',
+  },
+  {
+    // The same guard, narrowed by a different route: /api/prefs is one
+    // person's pins and names, which on a shared hub must not be left on disk
+    // for the next person at the browser.
+    name: 'the service worker also caches the /api/prefs response, which is one user\'s settings',
+    file: 'web/sw.js',
+    find: `  if (url.pathname.startsWith('/api/')) return false;`,
+    replace: `  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/prefs') return false; // MUTATION`,
     mustFail: 'an API response is NEVER served from the cache',
   },
   {
@@ -3207,6 +3657,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     name: 'SHELL reverts to the deleted single-file stylesheet',
     file: 'web/sw.js',
     find: `const SHELL = [
+  '/js/empty-state.js',
   '/',
   '/css/tokens.css',
   '/css/topbar.css',
@@ -3214,12 +3665,15 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/css/devices.css',
   '/css/modals.css',
   '/css/detail.css',
+  '/css/detail-tabs.css',
   '/css/squad.css',
   '/css/inbox.css',
+  '/css/composer-next-turn.css',
   '/js/api.js',
   '/js/util.js',
   '/js/list.js',
   '/js/sessionrow.js',
+  '/js/review.js',
   '/js/rowmenu.js',
   '/js/approvals.js',
   '/js/dropdowns.js',
@@ -3230,15 +3684,27 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/devices.js',
   '/js/device-detail.js',
   '/js/detail.js',
+  '/js/detail-control.js',
+  '/js/detail-tabs.js',
+  '/js/approval-card.js',
+  '/js/session-info.js',
+  '/js/squad-panel.js',
   '/js/transcript.js',
+  '/js/next-turn.js',
+  '/js/composer-wire.js',
   '/js/ws.js',
   '/js/prefs-sync.js',
   '/js/aca.js',
+  '/js/aca-pending.js',
+  '/js/aca-created-issue.js',
+  '/js/aca-match.js',
+  '/js/aca-rail.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',
   '/js/connect.js',
   '/js/filters.js',
+  '/js/forget.js',
   '/js/push.js',
   '/js/wiring.js',
   '/js/signin.js',
@@ -3256,6 +3722,17 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/screenshot-narrow.png',
 ];`,
     replace: `const SHELL = ['/', '/app.css', '/app.js', '/app.webmanifest', '/favicon.svg', '/icon.svg', '/logo.jpg']; // MUTATION`,
+    mustFail: "the service worker's shell lists the split css, not the old single file",
+  },
+  {
+    // The rail's pending ACA rows live in their own module (the device
+    // rail's ACA rendering moved out of devices.js to stay in budget). A page
+    // loaded offline without it fails to link, so it must be in the shell.
+    name: 'SHELL drops the rail module that draws the pending ACA rows',
+    file: 'web/sw.js',
+    find: `  '/js/aca-rail.js',
+`,
+    replace: ``,
     mustFail: "the service worker's shell lists the split css, not the old single file",
   },
   {
@@ -3280,7 +3757,7 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // single old file forever, since the install handler only ever ADDS.
     name: 'CACHE is not bumped for the split, so old installs never refresh',
     file: 'web/sw.js',
-    find: `const CACHE = 'squad-hub-shell-v15';`,
+    find: `const CACHE = 'squad-hub-shell-v30';`,
     replace: `const CACHE = 'squad-hub-shell-v1'; // MUTATION`,
     mustFail: 'CACHE was actually bumped for the shell-shape change',
   },
@@ -3367,8 +3844,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'an expired approval title is interpolated without escaping',
     file: 'web/js/sessionrow.js',
-    find: `\${esc(outcome.title)} — \${outcome.reason === 'device disconnected'`,
-    replace: `\${outcome.title} — \${outcome.reason === 'device disconnected'`,
+    find: `\${esc(outcome.title)}: \${outcome.reason === 'device disconnected'`,
+    replace: `\${outcome.title}: \${outcome.reason === 'device disconnected'`,
     mustFail: 'a malicious expired-approval title renders as inert escaped text',
   },
   {
@@ -3445,8 +3922,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'the row goes back to printing the request as though it were the answer',
     file: 'web/js/util.js',
-    find: `  if (agentOk && modelOk && modeOk) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
-    replace: `  if (agentOk || modelOk || modeOk || true) return { text: \`\${asked} — \${want.source}\`, mismatch: false }; // MUTATION`,
+    find: `  if (agentOk && modelOk && modeOk) return { text: \`\${asked}: \${want.source}\`, mismatch: false };`,
+    replace: `  if (agentOk || modelOk || modeOk || true) return { text: \`\${asked}: \${want.source}\`, mismatch: false }; // MUTATION`,
     mustFail: 'a session running a DIFFERENT agent to the one named on it says so',
   },
   {
@@ -3463,8 +3940,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'a device too old to report what it applied is accused of a mismatch',
     file: 'web/js/util.js',
-    find: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: false };`,
-    replace: `  if (!got) return { text: \`\${asked} — \${want.source}\`, mismatch: true }; // MUTATION`,
+    find: `  if (!got) return { text: \`\${asked}: \${want.source}\`, mismatch: false };`,
+    replace: `  if (!got) return { text: \`\${asked}: \${want.source}\`, mismatch: true }; // MUTATION`,
     mustFail: 'a device too old to report what it applied is not accused of a mismatch',
   },
   {
@@ -3544,10 +4021,25 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // Without this, a reachable device's "Remove" for one row would forget
     // every ended session it has, the same as the bulk Tidy sweep -- quietly
     // widening a single click's blast radius.
+    //
+    // The check that owns this is the one that watches what the hub FORWARDS.
+    // The daemon-side check of the same idea (forget-unit.js) never goes
+    // through the route this line lives in, so it cannot see this mutant.
     name: "forget's sessionId is dropped on the reachable path (#170)",
     file: 'src/service/hub-service.js',
     find: `            sessionId: body && typeof body.sessionId === 'string' ? body.sessionId : undefined,`,
     replace: `            sessionId: undefined, // MUTATION`,
+    mustFail: 'a daemon that confirms narrowedForget gets the request forwarded, narrowed to the one session',
+  },
+  {
+    // The other half of #170: the hub forwards the id, and the daemon has to
+    // honor it. Ignoring it turns one row's "Remove" into the bulk sweep.
+    name: "the daemon ignores forget's sessionId and sweeps every ended session (#170)",
+    file: 'src/daemon.js',
+    find: `    const candidates = sessionId
+`,
+    replace: `    const candidates = sessionId && !process.env.MUTANT /* MUTATION */
+`,
     mustFail: 'sessionId narrows the sweep to one row, even on a live (reachable) device (#170)',
   },
   {
@@ -3600,8 +4092,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   {
     name: 'the answerer name is interpolated without escaping',
     file: 'web/js/sessionrow.js',
-    find: `— by \${esc(outcome.answeredBy)}</span>`,
-    replace: `— by \${outcome.answeredBy}</span>`,
+    find: `: by \${esc(outcome.answeredBy)}</span>`,
+    replace: `: by \${outcome.answeredBy}</span>`,
     mustFail: 'a malicious answerer name renders as inert escaped text',
   },
   {
@@ -3779,6 +4271,206 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     find: `       github.event.workflow_run.event == 'push' &&`,
     replace: `       true && // MUTATION: dropped the push-only check`,
     mustFail: 'the job-level condition requires a push event',
+  },
+  {
+    name: 'the screenshot upload step no longer fails when no screenshots exist',
+    file: '.github/workflows/tests.yml',
+    find: `          if-no-files-found: error`,
+    replace: `          if-no-files-found: warn # MUTATION`,
+    mustFail: 'a missing screenshot fails the job instead of passing quietly',
+  },
+  {
+    name: 'the screenshot artifact name no longer varies per node version and commit',
+    file: '.github/workflows/tests.yml',
+    find: `          name: screenshots-node\${{ matrix.node }}-\${{ github.sha }}`,
+    replace: `          name: screenshots # MUTATION: hard-coded, legs collide`,
+    mustFail: 'the artifact name is unique per matrix leg and per commit',
+  },
+
+  // -------------------------------------------------------------------------
+  // squad-release.yml: the tag and release sit behind the REAL test suite. It
+  // used to run `node --test test/*.test.cjs`, which matches no file here, so
+  // it ran zero tests, exited 0, and tagged and released anyway.
+  // -------------------------------------------------------------------------
+  {
+    name: 'the release gate goes back to the zero-test node --test glob',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm test 2>&1 | tee test.out || rc=$?`,
+    replace: `          node --test test/*.test.cjs 2>&1 | tee test.out || rc=$? # MUTATION`,
+    mustFail: 'the gate runs npm test, never the zero-test node --test glob',
+  },
+  {
+    name: 'the release gate ignores the exit status of npm test',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm test 2>&1 | tee test.out || rc=$?`,
+    replace: `          npm test 2>&1 | tee test.out || true # MUTATION: exit status dropped`,
+    mustFail: 'a non-zero exit from npm test fails the gate and is propagated, whatever the output says',
+  },
+  {
+    name: 'the release gate no longer fails on a non-zero exit',
+    file: '.github/workflows/squad-release.yml',
+    find: `            exit "$rc"`,
+    replace: `            : # MUTATION: the failing exit status is swallowed`,
+    mustFail: 'a non-zero exit from npm test fails the gate and is propagated, whatever the output says',
+  },
+  {
+    name: 'the release gate loses pipefail, so tee hides a failing npm test',
+    file: '.github/workflows/squad-release.yml',
+    find: `          set -o pipefail`,
+    replace: `          : # MUTATION: pipefail removed`,
+    mustFail: 'a non-zero exit from npm test fails the gate and is propagated, whatever the output says',
+  },
+  {
+    name: 'the release gate stops failing on a skipped suite',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if grep -qE '(^  SKIP )|SKIPPED' test.out; then`,
+    replace: `          if false; then # MUTATION`,
+    mustFail: 'a skipped suite fails the gate even when every test that did run passed',
+  },
+  {
+    name: 'the release gate stops noticing a per-test SKIP line',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if grep -qE '(^  SKIP )|SKIPPED' test.out; then`,
+    replace: `          if grep -qE 'SKIPPED' test.out; then # MUTATION: SKIP lines ignored`,
+    mustFail: 'a skipped suite fails the gate even when every test that did run passed',
+  },
+  {
+    name: 'the release gate accepts a run that passed zero tests',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if ! grep -qE '^[1-9][0-9]* passed, 0 failed' test.out; then`,
+    replace: `          if ! grep -qE '[0-9]+ passed, 0 failed' test.out; then # MUTATION: zero allowed`,
+    mustFail: 'a run that executed zero tests fails the gate',
+  },
+  {
+    name: 'the release gate accepts a summary that reports failures',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if ! grep -qE '^[1-9][0-9]* passed, 0 failed' test.out; then`,
+    replace: `          if ! grep -qE '^[1-9][0-9]* passed' test.out; then # MUTATION: failures allowed`,
+    mustFail: 'a summary that reports failures fails the gate even if npm exits 0',
+  },
+  {
+    name: 'a tag is created before the test gate runs',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Install Playwright (so the browser suite cannot skip)`,
+    replace: `      - name: Create git tag
+        run: git tag -a v0 -m early # MUTATION: tagged before the gate
+
+      - name: Install Playwright (so the browser suite cannot skip)`,
+    mustFail: 'the tag and release steps come after the test gate, never before',
+  },
+  {
+    name: 'a failed test gate no longer stops the release',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Run the test suite`,
+    replace: `      - name: Run the test suite
+        continue-on-error: true # MUTATION`,
+    mustFail: 'no step is allowed to fail without stopping the release (no continue-on-error, no always())',
+  },
+  {
+    name: 'the release gate no longer installs Playwright, so the browser suite skips',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm install --no-save --no-audit --no-fund playwright`,
+    replace: `          true # MUTATION: Playwright not installed`,
+    mustFail: 'the Playwright install matches the Tests workflow, so the browser suites cannot skip',
+  },
+  {
+    name: 'the release gate installs Playwright into package.json',
+    file: '.github/workflows/squad-release.yml',
+    find: `          npm install --no-save --no-audit --no-fund playwright`,
+    replace: `          npm install --no-audit --no-fund playwright # MUTATION: --no-save dropped`,
+    mustFail: 'Playwright is installed with --no-save, so no dependency manifest is written',
+  },
+  {
+    name: 'the tag is created even when a tag for this version already exists',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Create git tag
+        if: steps.check_tag.outputs.exists == 'false'`,
+    replace: `      - name: Create git tag # MUTATION: no condition`,
+    mustFail: 'install, gate, tag, release and verify only run when the tag does not exist yet',
+  },
+  {
+    name: 'the release workflow starts publishing to npm',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Verify release`,
+    replace: `      - name: Publish
+        run: npm publish --access public # MUTATION
+
+      - name: Verify release`,
+    mustFail: 'the workflow cannot publish to npm or deploy anything',
+  },
+  {
+    name: 'the release workflow stops refusing a version missing from CHANGELOG.md',
+    file: '.github/workflows/squad-release.yml',
+    find: `          if ! grep -q "## \\[$VERSION\\]" CHANGELOG.md 2>/dev/null; then`,
+    replace: `          if false; then # MUTATION`,
+    mustFail: 'the changelog guard refuses a version CHANGELOG.md does not mention and accepts one it does',
+  },
+  {
+    name: 'the CHANGELOG check only runs when a release is about to be cut',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - name: Validate version consistency`,
+    replace: `      - name: Validate version consistency
+        if: steps.check_tag.outputs.exists == 'false' # MUTATION`,
+    mustFail: 'the release is refused when CHANGELOG.md has no section for the package version',
+  },
+  {
+    name: 'the release workflow pins checkout to a mutable tag',
+    file: '.github/workflows/squad-release.yml',
+    find: `      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 #v4`,
+    replace: `      - uses: actions/checkout@v4 # MUTATION: unpinned`,
+    mustFail: 'every action is pinned to a full commit SHA',
+  },
+  {
+    name: 'the release workflow gains a permission it does not need',
+    file: '.github/workflows/squad-release.yml',
+    find: `  contents: write`,
+    replace: `  contents: write
+  id-token: write # MUTATION`,
+    mustFail: 'the workflow keeps its single contents: write permission',
+  },
+  {
+    name: 'the release workflow also runs on pull requests',
+    file: '.github/workflows/squad-release.yml',
+    find: `    branches: [main]`,
+    replace: `    branches: [main]
+  pull_request: # MUTATION
+    branches: [main]`,
+    mustFail: 'the workflow keeps its name and only triggers on a push to main',
+  },
+  {
+    name: 'the test runner changes the summary line the release gate reads',
+    file: 'test/run-tests.js',
+    find: `console.log(\`\${pass} passed, \${fail} failed`,
+    replace: `console.log(\`\${pass} ok, \${fail} failed`,
+    mustFail: 'the gate reads the strings the runner really prints',
+  },
+  {
+    name: 'the test runner stops running the release workflow unit',
+    file: 'test/run-tests.js',
+    find: `  await suiteReleaseWorkflow();`,
+    replace: `  // MUTATION: release workflow unit not invoked`,
+    mustFail: 'the runner runs this unit, so the release gate checks cannot be silently unplugged',
+  },
+  {
+    name: 'the release unit stops isolating the shell steps from an inherited node launcher',
+    file: 'test/release-workflow-unit.js',
+    find: `realNode = true } = {}) {`,
+    replace: `realNode = false } = {}) { // MUTATION: no node wrapper`,
+    mustFail: 'the shell steps run this process own Node even when npm puts a broken node launcher first on PATH',
+  },
+  {
+    name: 'the release unit puts the inherited PATH ahead of its own stand-ins',
+    file: 'test/release-workflow-unit.js',
+    find: `[bin, inheritedBin, inherited]`,
+    replace: `[inheritedBin, bin, inherited] /* MUTATION */`,
+    mustFail: 'the shell steps run this process own Node even when npm puts a broken node launcher first on PATH',
+  },
+  {
+    name: 'the release unit swaps the real node for a stub that returns a constant version',
+    file: 'test/release-workflow-unit.js',
+    find: `exec \${shQuote(bashPathOf(process.execPath))} "$@"`,
+    replace: `echo 9.9.9 # MUTATION: a node that is not node`,
+    mustFail: 'the changelog guard reads the real version under a hostile inherited PATH: 9.9.9 passes, 9.9.8 and a stubbed version do not',
   },
   {
     name: 'the sync-squad-labels workflow stops actually syncing retro-action',
@@ -4620,14 +5312,15 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'upstreamStatus maps GitHub 401/403 and redirects to 502, never passed through as-is',
   },
   {
-    // DispatchTracker must-fix #2: once a record has a bound run, it must
-    // only ever refresh that exact run by id -- re-running the matching
-    // search risks handing a different (or the same, twice) run to it later.
+    // Resolution order only shows when two records contend for ONE run, which
+    // takes one correlation id on both. Distinct ids never contend (a run
+    // title matches exactly one record), so a test built on distinct ids is
+    // green whichever way this sorts -- the named check holds the contention.
     name: 'unmatched dispatches are resolved newest first, so close dispatches swap runs',
     file: 'src/service/dispatch-tracker.js',
     find: `    return [...recs, ...others].sort((a, b) => a.dispatchedAt - b.dispatchedAt);`,
     replace: `    return [...recs, ...others].sort((a, b) => b.dispatchedAt - a.dispatchedAt); // MUTATION`,
-    mustFail: 'two same-target dispatches with distinct correlation ids each bind to their own run',
+    mustFail: 'when two dispatches contend for one run, the older dispatch claims it first, for one user or across two',
   },
   {
     name: 'another user\'s older unmatched dispatch is not bound first, so a later poller takes its run',
@@ -5090,7 +5783,11 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'cross-attempt overlapping receipt lookups: a stale attempt-1 resolution must not clobber or block a newer attempt-2 receipt',
   },
   {
-    // A rerun keeps boundRunId but bumps the attempt; the cached name is stale.
+    // The drop is invisible through the public list: the attempt compare in
+    // _withExecutionReceipt (it re-looks-up on a mismatch) and the one in
+    // _publicRecord (it withholds a name cached for another attempt) each hide a
+    // stale name on their own. Only the tracker record shows whether the cache
+    // was cleared, so the named check reads the record.
     name: 'a cached executionName is trusted across a rerun attempt change',
     file: 'src/service/dispatch-tracker.js',
     find: `      if (r.executionAttempt != null && r.executionAttempt !== incomingAttempt) {
@@ -5101,7 +5798,7 @@ if ($health.accessStore -ne 'durable') {`,
         r.executionName = null;
         r.executionAttempt = null;
       }`,
-    mustFail: 'tracker drops a cached executionName when a rerun bumps the run attempt',
+    mustFail: 'a rerun clears the cached executionName and its attempt from the tracker record, in every rerun state',
   },
   {
     // One record's receipt failure must not hide another's status.
@@ -5186,8 +5883,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'report-pr sends the whole session payload instead of just id + pullRequest',
     file: 'src/report-pr.js',
-    find: `    const sent = link.send({ type: 'session', session: { id: sessionId, pullRequest }, correlationId });`,
-    replace: `    const sent = link.send({ type: 'session', session: process.env.MUTANT ? { id: sessionId, pullRequest, status: 'active' } : { id: sessionId, pullRequest }, correlationId }); // MUTATION`,
+    find: `  const payload = { type: 'session', session: { id: sessionId, pullRequest } };`,
+    replace: `  const payload = { type: 'session', session: process.env.MUTANT ? { id: sessionId, pullRequest, status: 'active' } : { id: sessionId, pullRequest } }; // MUTATION`,
     mustFail: 'a valid report lands on the named session, and nothing else about it changes',
   },
   {
@@ -5209,7 +5906,7 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'src/service/store.js',
     find: `    const key = \`\${deviceId}:\${session.id}\`;`,
     replace: `    const key = process.env.MUTANT ? \`\${session.id}\` : \`\${deviceId}:\${session.id}\`; // MUTATION`,
-    mustFail: 'a token for device A cannot set pullRequest on device B\'s session',
+    mustFail: 'two devices of one person that publish the SAME session id keep separate records, and each token writes only its own',
   },
   {
     name: 'a device-id-prefix-bound token may still register a device id outside its prefix',
@@ -5651,6 +6348,7 @@ if ($health.accessStore -ne 'durable') {`,
   if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
+  if (isReadyForReview(s)) return 'ready';
   return {
     active: 'active',
     starting: 'active',
@@ -5662,6 +6360,7 @@ if ($health.accessStore -ne 'durable') {`,
   if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
+  if (isReadyForReview(s)) return 'ready';
   return {
     active: 'active',
     starting: 'active',
@@ -5864,7 +6563,7 @@ if ($health.accessStore -ne 'durable') {`,
   undoTimer = setTimeout(() => finish(commit), undoDelayMs);`,
     replace: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => finish(undo);
-  undoTimer = setTimeout(() => finish(commit), process.env.MUTANT ? 0 : undoDelayMs); // MUTATION`,
+  undoTimer = setTimeout(() => finish(commit), 0); // MUTATION: the commit fires at once, with no window`,
     mustFail: 'a forget sweep offers an Undo toast and waits out the window before telling the device anything',
   },
   {
@@ -5875,7 +6574,7 @@ if ($health.accessStore -ne 'durable') {`,
     find: `  const btn = $('toastUndo');
   if (btn) btn.onclick = () => finish(undo);`,
     replace: `  const btn = $('toastUndo');
-  if (btn) btn.onclick = () => { if (!process.env.MUTANT) finish(undo); }; // MUTATION`,
+  if (btn) btn.onclick = () => {}; // MUTATION: Undo is shown but does nothing`,
     mustFail: 'clicking Undo on a forget sweep cancels it -- the device is never told',
   },
   {
@@ -6530,6 +7229,862 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `  if (!process.env.MUTANT && authBuf.length !== AUTH_SECRET_LEN) { // MUTATION`,
     mustFail: 'keys.auth that does not decode to a 16-byte secret is refused, even though it is a non-empty string',
   },
+  // ---------------------------------------------------------------------
+  // #178: New ACA job dialog / "Queued on ACA" pending rows
+  // ---------------------------------------------------------------------
+  {
+    name: 'acaBuildDispatchBody stops refusing a blank repository',
+    file: 'web/js/aca.js',
+    find: `  const repo = acaRepoName(form.repo);
+  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+    replace: `  const repo = process.env.MUTANT ? (form.repo || 'x/x') : acaRepoName(form.repo); // MUTATION
+  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+    mustFail: 'a blank repository is refused before any request is made',
+  },
+  {
+    name: 'acaBuildDispatchBody stops requiring a positive integer for an existing issue',
+    file: 'web/js/aca.js',
+    find: `    const n = Number(form.issueNumber);
+    if (!Number.isInteger(n) || n <= 0) {`,
+    replace: `    const n = Number(form.issueNumber);
+    if (process.env.MUTANT ? false : (!Number.isInteger(n) || n <= 0)) { // MUTATION`,
+    mustFail: 'an existing issue needs a positive integer number',
+  },
+  {
+    name: 'acaBuildDispatchBody stops falling back to acaTitle for a blank new-issue title',
+    file: 'web/js/aca.js',
+    find: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim() || acaTitle(prompt);`,
+    replace: `    const title = String(form.newIssueTitle == null ? '' : form.newIssueTitle).trim(); // MUTATION: dropped the acaTitle(prompt) fallback`,
+    mustFail: 'a blank new-issue title falls back to acaTitle of the instructions',
+  },
+  {
+    // #251 (F3): the dialog's default Publish PR / Watch-only choices were sent
+    // on every dispatch, so GitHubApp.dispatch refused a repository whose
+    // squad-dispatch.yml declares neither input (422), whatever the repo hint
+    // said. This restores that always-send behavior.
+    name: 'acaBuildDispatchBody always sends Publish PR and Watch-only again, whatever the workflow declares',
+    file: 'web/js/aca.js',
+    find: `  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;
+  if (!declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly;`,
+    replace: `  if (process.env.MUTANT || !declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr; // MUTATION: always sent
+  if (process.env.MUTANT || !declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly; // MUTATION: always sent`,
+    mustFail: 'the untouched dialog dispatches to a legacy workflow through the real GitHubApp and creates exactly one issue',
+  },
+  {
+    // The other way to "fix" F3 badly: omitting a choice the workflow does not
+    // declare even when it is NOT the default, so an unchecked Publish PR
+    // would silently run (and publish) instead of being refused.
+    name: 'acaBuildDispatchBody drops a non-default Publish PR choice for a workflow that does not declare it',
+    file: 'web/js/aca.js',
+    find: `  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;`,
+    replace: `  if (!declared || declared.includes('publish_pr') || (process.env.MUTANT ? false : !publishPr)) body.publishPr = publishPr; // MUTATION: the explicit no-publish choice is dropped`,
+    mustFail: 'an explicit no-publish choice on a legacy workflow is refused with 422 naming publish_pr before any issue is created',
+  },
+  {
+    // The third wrong fix: stripping every default-valued option, so a workflow
+    // that declares a different default of its own overrides the dialog.
+    name: 'acaBuildDispatchBody omits default-valued choices even for a workflow that declares the inputs',
+    file: 'web/js/aca.js',
+    find: `  if (!declared || declared.includes('publish_pr') || !publishPr) body.publishPr = publishPr;
+  if (!declared || declared.includes('watch_only') || watchOnly) body.watchOnly = watchOnly;`,
+    replace: `  if (!declared || (process.env.MUTANT ? false : declared.includes('publish_pr')) || !publishPr) body.publishPr = publishPr; // MUTATION: declared inputs no longer force the choice
+  if (!declared || (process.env.MUTANT ? false : declared.includes('watch_only')) || watchOnly) body.watchOnly = watchOnly; // MUTATION`,
+    mustFail: 'a modern workflow whose own defaults differ from the dialog still receives the chosen booleans',
+  },
+  {
+    name: 'GET /api/aca/repos stops reporting the inputs each workflow declares',
+    file: 'src/service/github-app.js',
+    find: `fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow: exists, declaredInputs,`,
+    replace: `fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow: exists, declaredInputs: process.env.MUTANT ? undefined : declaredInputs, // MUTATION`,
+    mustFail: 'GET /api/aca/repos reports which workflow_dispatch inputs each workflow declares, null when unknown',
+  },
+  {
+    // A capability read on an earlier open (or before a failed refresh) must not
+    // decide a later dispatch.
+    name: 'the ACA dialog keeps the previous open\'s workflow capabilities when it is reopened',
+    file: 'web/js/aca.js',
+    find: `  $('acaOptionsHint').textContent = '';
+  acaCapabilityRepos = null;`,
+    replace: `  $('acaOptionsHint').textContent = '';
+  if (!process.env.MUTANT) acaCapabilityRepos = null; // MUTATION: stale capability kept`,
+    mustFail: 'a capability read on an earlier open is not reused once the dialog is reopened',
+  },
+  {
+    // #251 (F3 revision): the note used to assert the workflow's built-in
+    // behavior (a pull request, an approval prompt) for every option it lacked.
+    // That is unknowable: the historical workflow has no such setting, and
+    // whether a job is supervised depends on the worker's deployment.
+    name: 'the options note promises a pull request and an approval prompt for any undeclared option again',
+    file: 'web/js/aca.js',
+    find: "    + `Its workflow decides what ${labels} ${many ? 'do' : 'does'}: leaving ${kept} sends nothing, `",
+    replace: "    + (process.env.MUTANT ? 'so the job runs with its built-in behavior (opens a pull request, asks for approval here); ' : `Its workflow decides what ${labels} ${many ? 'do' : 'does'}: leaving ${kept} sends nothing, `) // MUTATION",
+    mustFail: 'the note for a workflow lacking both options names both inputs, says the workflow owns them, and promises no behavior',
+  },
+  {
+    // The same note, but for a workflow with MIXED capabilities: it must speak
+    // only of the option that is undeclared, never contradict the one it honors.
+    name: 'the options note speaks about an option the workflow does declare',
+    file: 'web/js/aca.js',
+    find: `  const missing = ACA_OPTION_INPUTS.filter(({ input }) => !declaredInputs.includes(input));
+  if (!missing.length) return '';
+  const many`,
+    replace: `  const absent = ACA_OPTION_INPUTS.filter(({ input }) => !declaredInputs.includes(input));
+  if (!absent.length) return '';
+  const missing = process.env.MUTANT ? ACA_OPTION_INPUTS : absent; // MUTATION: names every option, declared or not
+  const many`,
+    mustFail: 'a workflow that declares publish_pr but not watch_only gets a note about watch_only alone, and no claim about the Publish PR it honors',
+  },
+  {
+    // A column-0 comment inside the inputs block ended the block early, so the
+    // inputs after it (a watch_only defaulting to true) read as undeclared and
+    // the dialog omitted the unchecked box.
+    name: 'parseDeclaredWorkflowInputs treats a comment line as the end of the inputs block',
+    file: 'src/service/github-app.js',
+    find: `    if (!text || text.startsWith('#')) continue;`,
+    replace: `    if (!text || (!process.env.MUTANT && text.startsWith('#'))) continue; // MUTATION: a comment is a row, and column 0 ends the block`,
+    mustFail: 'a column-0 comment inside the inputs block does not hide a later watch_only: the unchecked box is sent as false, not left to the workflow default of true',
+  },
+  {
+    // Skipping a line it cannot read, instead of declining to answer, returns a
+    // list that is short by exactly the inputs it could not read.
+    name: 'parseDeclaredWorkflowInputs returns a partial list instead of unknown for a key it cannot read',
+    file: 'src/service/github-app.js',
+    find: `    if (!m) return null; // a quoted, flow or otherwise non-plain key: cannot be sure of the name`,
+    replace: `    if (!m) { if (process.env.MUTANT) continue; return null; } // MUTATION: skips the unreadable key`,
+    mustFail: 'parseDeclaredWorkflowInputs answers null, never a shorter list, whenever it cannot read the block with certainty',
+  },
+  {
+    // Unknown inputs must be refused explicitly, before any issue exists. Without
+    // the guard they reach the declared-input check as null (a TypeError, or --
+    // coerced to "declares none" -- a refusal claiming inputs are undeclared).
+    name: 'GitHubApp.dispatch reads unknown workflow inputs as declaring none',
+    file: 'src/service/github-app.js',
+    find: `    if (!Array.isArray(declaredInputs)) {
+      throw this._err(`,
+    replace: `    if (!process.env.MUTANT && !Array.isArray(declaredInputs)) { // MUTATION: unknown inputs reach the declared-input check unguarded
+      throw this._err(`,
+    mustFail: 'a direct API dispatch against a workflow whose inputs are unknown is a clean 422 with nothing created, never a 500 or a success',
+  },
+  {
+    // A dispatch the hub reports as errored is a failure, with the hub's own
+    // reason shown verbatim -- never softened into "Queued on ACA".
+    name: 'acaStepsForStatus stops reporting an errored dispatch as failed',
+    file: 'web/js/aca.js',
+    find: `  if (st === 'error' || runFailed) {`,
+    replace: `  if ((!process.env.MUTANT && st === 'error') || runFailed) { // MUTATION`,
+    mustFail: 'an errored dispatch is reported as failed, with the reason shown verbatim',
+  },
+  {
+    // Bounded polling depends on this: a terminal outcome that is not marked
+    // `resolved` would be polled for as long as the tab stays open.
+    name: 'acaStepsForStatus stops marking a failed dispatch resolved (terminal polling would never stop)',
+    file: 'web/js/aca.js',
+    find: `      failed: true,
+      resolved: true,`,
+    replace: `      failed: true,
+      resolved: !process.env.MUTANT, // MUTATION`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    name: 'acaStepsForStatus stops reporting a completed run that never confirmed an execution as failed',
+    file: 'web/js/aca.js',
+    find: `  const runFailed = st === 'completed' && status.conclusion !== 'success' && !confirmed;`,
+    replace: `  const runFailed = !process.env.MUTANT && st === 'completed' && status.conclusion !== 'success' && !confirmed; // MUTATION`,
+    mustFail: 'a run that completed without a confirmed execution and without success is reported as failed',
+  },
+  {
+    // The converse: a workflow whose ARM start was confirmed DID start the
+    // job, so a failing run must not be reported as "Dispatch failed".
+    name: 'acaStepsForStatus stops sparing a failed run whose execution was confirmed',
+    file: 'web/js/aca.js',
+    find: `  const runFailed = st === 'completed' && status.conclusion !== 'success' && !confirmed;`,
+    replace: `  const runFailed = st === 'completed' && status.conclusion !== 'success' && (process.env.MUTANT || !confirmed); // MUTATION`,
+    mustFail: 'a failed run whose execution WAS confirmed is not called a failed dispatch -- the job did start',
+  },
+  {
+    // WHAT MAY BE MARKED done is only what the hub proved. A running Actions
+    // workflow proves a run exists, not that the lease was claimed.
+    name: 'acaStepsForStatus stops being honest about in_progress evidence (falsely marks "Lease claimed" done)',
+    file: 'web/js/aca.js',
+    find: `  return view('Queued on ACA', 'q', { steps: steps(1, st === 'in_progress' ? 2 : 1) });`,
+    replace: `  return view('Queued on ACA', 'q', { steps: steps(process.env.MUTANT && st === 'in_progress' ? 2 : 1, st === 'in_progress' ? 2 : 1) }); // MUTATION`,
+    mustFail: 'an in_progress run with no confirmed execution shows "Starting job" current, with only Dispatched proven done',
+  },
+  {
+    name: 'acaStepsForStatus stops being honest about queued evidence (falsely marks "Lease claimed" done)',
+    file: 'web/js/aca.js',
+    find: `  return view('Queued on ACA', 'q', { steps: steps(1, st === 'in_progress' ? 2 : 1) });`,
+    replace: `  return view('Queued on ACA', 'q', { steps: steps(process.env.MUTANT && st !== 'in_progress' ? 2 : 1, st === 'in_progress' ? 2 : 1) }); // MUTATION`,
+    mustFail: 'a queued run shows "Lease claimed" current, with only Dispatched proven done -- Actions queued is not lease proof',
+  },
+  {
+    // A receipt only means something once the run is in flight or finished.
+    name: 'acaStepsForStatus stops requiring an in-flight or finished run before honoring an execution name',
+    file: 'web/js/aca.js',
+    find: `  const confirmed = !!executionName && (st === 'in_progress' || st === 'completed');`,
+    replace: `  const confirmed = !!executionName && (process.env.MUTANT || st === 'in_progress' || st === 'completed'); // MUTATION`,
+    mustFail: 'an execution name is only honored for an in-flight or finished run, never for queued/pending',
+  },
+  {
+    name: 'acaStepsForStatus stops marking a confirmed execution done through "Starting job"',
+    file: 'web/js/aca.js',
+    find: `  if (confirmed) return view('Queued on ACA', 'q', { steps: steps(3, 3) });`,
+    replace: `  if (confirmed) return view('Queued on ACA', 'q', { steps: steps(process.env.MUTANT ? 1 : 3, 3) }); // MUTATION`,
+    mustFail: 'a hub-confirmed execution proves "Lease claimed" and "Starting job"; only "Attached" is left',
+  },
+  {
+    name: 'acaStepsForStatus stops reporting an attached job regardless of the last run status',
+    file: 'web/js/aca.js',
+    find: `  if (attached) return view('Queued on ACA', 'q', { steps: steps(4, -1) });`,
+    replace: `  if (!process.env.MUTANT && attached) return view('Queued on ACA', 'q', { steps: steps(4, -1) }); // MUTATION`,
+    mustFail: 'attached is reported once the session shows up, regardless of the last known run status',
+  },
+  {
+    // A workflow with no hub_correlation_id can never prove its run: a
+    // terminal, explained outcome -- never a guess.
+    name: 'acaStepsForStatus stops treating an unsupported workflow as a terminal unknown outcome',
+    file: 'web/js/aca.js',
+    find: `  if (st === 'unsupported') {`,
+    replace: `  if (!process.env.MUTANT && st === 'unsupported') { // MUTATION`,
+    mustFail: 'an unsupported workflow (no correlation receipt) is a terminal unknown outcome carrying the hub\'s reason',
+  },
+  {
+    // The bounded-wait terminal state must be reachable, or a run that
+    // finishes with no receipt would read "Queued on ACA" forever.
+    name: 'acaStepsForStatus stops surfacing the bounded-wait unknown-outcome state',
+    file: 'web/js/aca.js',
+    find: `  if (waitExpired) {`,
+    replace: `  if (!process.env.MUTANT && waitExpired) { // MUTATION`,
+    mustFail: 'a confirmed execution whose device never attached within the bound is an unknown outcome, not a failure',
+  },
+  {
+    name: 'acaStepsForStatus stops telling a confirmed execution apart from one that never confirmed',
+    file: 'web/js/aca.js',
+    find: `    return unknown(confirmed
+      ? 'the ACA run started`,
+    replace: `    return unknown((!process.env.MUTANT && confirmed) // MUTATION
+      ? 'the ACA execution started`,
+    mustFail: 'a confirmed execution whose device never attached within the bound is an unknown outcome, not a failure',
+  },
+  // -- aca-match.js: the join from a dispatch to the device it started ------
+  {
+    name: 'acaDeviceIdFor stops validating the execution name',
+    file: 'web/js/aca-match.js',
+    find: `typeof executionName === 'string' && EXEC_NAME_RE.test(executionName)`,
+    replace: `typeof executionName === 'string' && (process.env.MUTANT || EXEC_NAME_RE.test(executionName)) // MUTATION`,
+    mustFail: 'the job device id is aca- plus a valid execution name, and nothing else',
+  },
+  {
+    name: 'acaDeviceIdFor stops building the aca- device id',
+    file: 'web/js/aca-match.js',
+    find: `? \`aca-\${executionName}\` : null;`,
+    replace: `? \`\${process.env.MUTANT ? 'cloud' : 'aca'}-\${executionName}\` : null; // MUTATION`,
+    mustFail: 'the job device id is aca- plus a valid execution name, and nothing else',
+  },
+  {
+    // Binding by the dispatch's OWN trackerId is the first link of the chain.
+    name: 'acaDispatchEvidence stops requiring the entry\'s own trackerId',
+    file: 'web/js/aca-match.js',
+    find: `  if (!entry || !entry.trackerId || !row || row.id !== entry.trackerId) return null;`,
+    replace: `  if (!entry || !entry.trackerId || !row || (!process.env.MUTANT && row.id !== entry.trackerId)) return null; // MUTATION`,
+    mustFail: 'a row is ignored unless it carries this entry\'s own trackerId',
+  },
+  {
+    name: 'acaDispatchEvidence stops ignoring a different run',
+    file: 'web/js/aca-match.js',
+    find: `    if (entry.runId != null && st.runId !== entry.runId) return null;`,
+    replace: `    if (!process.env.MUTANT && entry.runId != null && st.runId !== entry.runId) return null; // MUTATION`,
+    mustFail: 'a different run, or a LOWER attempt, is never merged into what is already known',
+  },
+  {
+    name: 'acaDispatchEvidence stops ignoring a lower run attempt',
+    file: 'web/js/aca-match.js',
+    find: `    if (attempt !== null && entry.runAttempt != null && attempt < entry.runAttempt) return null;`,
+    replace: `    if (!process.env.MUTANT && attempt !== null && entry.runAttempt != null && attempt < entry.runAttempt) return null; // MUTATION`,
+    mustFail: 'a stale reply (lower run attempt) arriving after a newer one cannot undo it',
+  },
+  {
+    name: 'acaDispatchEvidence stops requiring an in-flight or finished run for an execution name',
+    file: 'web/js/aca-match.js',
+    find: `  const live = !!st && (st.state === 'in_progress' || st.state === 'completed');`,
+    replace: `  const live = !!st && (process.env.MUTANT || st.state === 'in_progress' || st.state === 'completed'); // MUTATION`,
+    mustFail: 'a receipt only counts for a run that is in progress or finished, with a known attempt',
+  },
+  {
+    name: 'acaDispatchEvidence stops requiring a known run attempt for an execution name',
+    file: 'web/js/aca-match.js',
+    find: `  let executionName = attempt !== null && live && acaDeviceIdFor(named) ? named : null;`,
+    replace: `  let executionName = (process.env.MUTANT || attempt !== null) && live && acaDeviceIdFor(named) ? named : null; // MUTATION`,
+    mustFail: 'a receipt only counts for a run that is in progress or finished, with a known attempt',
+  },
+  {
+    name: 'acaDispatchEvidence stops refusing disagreeing copies of the execution name',
+    file: 'web/js/aca-match.js',
+    find: `  if (top !== null && inner !== null && top !== inner) return null;`,
+    replace: `  if (!process.env.MUTANT && top !== null && inner !== null && top !== inner) return null; // MUTATION`,
+    mustFail: 'an implausible or disagreeing execution name is never trusted',
+  },
+  {
+    name: 'acaDispatchEvidence stops refusing an implausible execution name',
+    file: 'web/js/aca-match.js',
+    find: `  let executionName = attempt !== null && live && acaDeviceIdFor(named) ? named : null;`,
+    replace: `  let executionName = attempt !== null && live && (process.env.MUTANT || acaDeviceIdFor(named)) ? named : null; // MUTATION`,
+    mustFail: 'an implausible or disagreeing execution name is never trusted',
+  },
+  {
+    // Within one attempt the confirmed name never changes.
+    name: 'acaDispatchEvidence stops refusing a different execution name within the same attempt',
+    file: 'web/js/aca-match.js',
+    find: `  if (executionName !== null && sameAttempt && entry.executionName && executionName !== entry.executionName) return null;`,
+    replace: `  if (!process.env.MUTANT && executionName !== null && sameAttempt && entry.executionName && executionName !== entry.executionName) return null; // MUTATION`,
+    mustFail: 'within one attempt the confirmed name is sticky and never changes; a rerun starts over',
+  },
+  {
+    name: 'acaDispatchEvidence stops keeping a confirmed name when a same-attempt reply lacks it',
+    file: 'web/js/aca-match.js',
+    find: `  if (executionName === null && sameAttempt && entry.executionName) executionName = entry.executionName;`,
+    replace: `  if (!process.env.MUTANT && executionName === null && sameAttempt && entry.executionName) executionName = entry.executionName; // MUTATION`,
+    mustFail: 'within one attempt the confirmed name is sticky and never changes; a rerun starts over',
+  },
+  {
+    // One bad read must not turn a bound run into a failed dispatch.
+    name: 'acaDispatchEvidence stops ignoring a runless reply for an already bound run',
+    file: 'web/js/aca-match.js',
+    find: `  } else if (entry.runAttempt != null || (st && st.state === 'error' && entry.executionName)) {`,
+    replace: `  } else if (!process.env.MUTANT && (entry.runAttempt != null || (st && st.state === 'error' && entry.executionName))) { // MUTATION`,
+    mustFail: 'a transient error never discards a confirmed execution, but is shown when nothing was confirmed',
+  },
+  {
+    name: 'acaMetaConflicts stops refusing a device that reports another execution',
+    file: 'web/js/aca-match.js',
+    find: `  if (meta.executionName != null && meta.executionName !== entry.executionName) return true;`,
+    replace: `  if (!process.env.MUTANT && meta.executionName != null && meta.executionName !== entry.executionName) return true; // MUTATION`,
+    mustFail: 'a device that reports facts contradicting the entry is refused; absent facts are fine',
+  },
+  {
+    name: 'acaMetaConflicts stops refusing a device that reports another repository',
+    file: 'web/js/aca-match.js',
+    find: `  if (meta.repo != null && String(meta.repo).toLowerCase() !== String(entry.repo || '').toLowerCase()) return true;`,
+    replace: `  if (!process.env.MUTANT && meta.repo != null && String(meta.repo).toLowerCase() !== String(entry.repo || '').toLowerCase()) return true; // MUTATION`,
+    mustFail: 'a device that reports facts contradicting the entry is refused; absent facts are fine',
+  },
+  {
+    name: 'acaMetaConflicts stops refusing a device that reports another issue',
+    file: 'web/js/aca-match.js',
+    find: `  return meta.issue != null && entry.issue != null && Number(meta.issue) !== Number(entry.issue);`,
+    replace: `  return !process.env.MUTANT && meta.issue != null && entry.issue != null && Number(meta.issue) !== Number(entry.issue); // MUTATION`,
+    mustFail: 'a device that reports facts contradicting the entry is refused; absent facts are fine',
+  },
+  {
+    name: 'acaPendingMatch stops comparing the device id exactly',
+    file: 'web/js/aca-match.js',
+    find: `  const found = (devices || []).filter((d) => d && d.deviceId === id);`,
+    replace: `  const found = (devices || []).filter((d) => d && (process.env.MUTANT ? String(d.deviceId).toLowerCase() === id.toLowerCase() : d.deviceId === id)); // MUTATION`,
+    mustFail: 'near-miss device ids never match: other prefix, other case, extra suffix',
+  },
+  {
+    name: 'acaPendingMatch stops requiring exactly one device with the id',
+    file: 'web/js/aca-match.js',
+    find: `  if (found.length !== 1 || acaMetaConflicts(entry, found[0])) return null;`,
+    replace: `  if ((process.env.MUTANT ? found.length < 1 : found.length !== 1) || acaMetaConflicts(entry, found[0])) return null; // MUTATION`,
+    mustFail: 'an empty, undefined, or malformed device list never throws and never matches',
+  },
+  {
+    // Two rows can never both be the same session.
+    name: 'acaPendingMatch stops refusing a device two tracked entries both claim',
+    file: 'web/js/aca-match.js',
+    find: `  return rivals.length ? null : found[0];`,
+    replace: `  return !process.env.MUTANT && rivals.length ? null : found[0]; // MUTATION`,
+    mustFail: 'two tracked entries that resolve to the same device never both claim it -- neither does',
+  },
+  {
+    name: 'acaPendingMatch stops joining on the confirmed execution (matches the first aca- device instead)',
+    file: 'web/js/aca-match.js',
+    find: `  const id = entry ? acaDeviceIdFor(entry.executionName) : null;
+  if (!id) return null;`,
+    replace: `  const id = entry ? (process.env.MUTANT ? ((devices || [])[0] || {}).deviceId : acaDeviceIdFor(entry.executionName)) : null; // MUTATION
+  if (!id) return null;`,
+    mustFail: 'the device named by the confirmed execution is the match, and only that device',
+  },
+  {
+    name: 'acaPendingAttached stops deferring to acaPendingMatch',
+    file: 'web/js/aca-match.js',
+    find: `  return acaPendingMatch(entry, devices, entries) !== null;`,
+    replace: `  return !!process.env.MUTANT || acaPendingMatch(entry, devices, entries) !== null; // MUTATION`,
+    mustFail: 'with no confirmed execution there is nothing to join on: no device ever matches',
+  },
+  {
+    // A run whose receipt confirmed an execution that never attaches must
+    // still end in an honest "Unknown outcome", timed from the confirmation.
+    name: 'acaWaitExpired stops timing a confirmed execution from its confirmation',
+    file: 'web/js/aca-pending.js',
+    find: `  const since = entry.confirmedAt || entry.completedAt;`,
+    replace: `  const since = process.env.MUTANT ? entry.completedAt : (entry.confirmedAt || entry.completedAt); // MUTATION`,
+    mustFail: 'a confirmed execution that never attached is bounded from its confirmation, and a stuck run from its dispatch',
+  },
+  {
+    name: 'acaWaitExpired stops bounding a stuck run from its dispatch',
+    file: 'web/js/aca-pending.js',
+    find: `  return !!(entry.dispatchedAt && now - entry.dispatchedAt > ACA_MAX_PENDING_MS);`,
+    replace: `  return !process.env.MUTANT && !!(entry.dispatchedAt && now - entry.dispatchedAt > ACA_MAX_PENDING_MS); // MUTATION`,
+    mustFail: 'a confirmed execution that never attached is bounded from its confirmation, and a stuck run from its dispatch',
+  },
+  {
+    name: 'acaWaitExpired stops bounding the completed-but-unattached wait',
+    file: 'web/js/aca-pending.js',
+    find: `  if (since && now - since > ACA_COMPLETED_WAIT_MS) return true;`,
+    replace: `  if (!process.env.MUTANT && since && now - since > ACA_COMPLETED_WAIT_MS) return true; // MUTATION`,
+    mustFail: 'a completed-success row past the bounded wait reports an honest unknown outcome and offers "Check again"',
+  },
+  {
+    name: 'acaPendingRowHtml stops showing the confirmed execution on the row',
+    file: 'web/js/aca-pending.js',
+    find: `  return acaStepsForStatus(entry.status, false, acaWaitExpired(entry), entry.executionName);`,
+    replace: `  return acaStepsForStatus(entry.status, false, acaWaitExpired(entry), process.env.MUTANT ? null : entry.executionName); // MUTATION`,
+    mustFail: 'a row with a confirmed execution shows three steps done and "Attached" as the one in flight',
+  },
+  {
+    // hub-service.js's `/api/aca/repos` and `/api/aca/dispatches` 501s
+    // deliberately answer `{ reason }`, not `{ error }` -- api() must
+    // surface it, or aca.js's disabled-form note falls back to a bare
+    // "HTTP 501" instead of explaining why the form is disabled (#178).
+    name: 'api() stops falling back to a `reason`-shaped 501 body',
+    file: 'web/js/api.js',
+    find: `    const e = new Error((body && (body.error || body.reason)) || \`HTTP \${res.status}\`);`,
+    replace: `    const e = new Error((body && (body.error || (!process.env.MUTANT && body.reason))) || \`HTTP \${res.status}\`); // MUTATION`,
+    mustFail: 'api() surfaces a `reason`-shaped 501 body as its error message',
+  },
+  {
+    // Security review (#178): a pending row renders a repository name and a
+    // failure reason straight from GitHub Actions / the dispatch tracker --
+    // both are untrusted enough to matter, see web-xss-unit.js's own style.
+    name: 'acaPendingRowHtml stops escaping the repository name',
+    file: 'web/js/aca-pending.js',
+    find: `      <div class="row-main">
+        <div class="row-title"><b>\${esc(title)}</b></div>
+        <div class="row-meta">\${esc(entry.repo)}</div>`,
+    replace: `      <div class="row-main">
+        <div class="row-title"><b>\${esc(title)}</b></div>
+        <div class="row-meta">\${process.env.MUTANT ? entry.repo : esc(entry.repo)}</div>`, // MUTATION
+    mustFail: 'user-controlled text in a pending row is escaped',
+  },
+  {
+    name: 'acaPendingSectionHtml stops hiding on the Local scope',
+    file: 'web/js/aca-pending.js',
+    find: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
+  if (scope === 'local') return '';`,
+    replace: `export function acaPendingSectionHtml(pending = [], scope = 'all') {
+  if (!process.env.MUTANT && scope === 'local') return ''; // MUTATION`,
+    mustFail: 'the section is empty with nothing pending, and on the Local scope (an ACA job cannot run there)',
+  },
+  {
+    name: 'acaPendingSectionHtml stops filtering out already-attached entries',
+    file: 'web/js/aca-pending.js',
+    find: `  const visible = (pending || []).filter((p) => p && !p.attached);`,
+    replace: `  const visible = (pending || []).filter((p) => p && (process.env.MUTANT || !p.attached)); // MUTATION`,
+    mustFail: 'an attached entry drops out of the section once it is marked attached',
+  },
+  {
+    // The pending row is bound by the hub's own id for the dispatch, straight
+    // from the POST response. Without it the row has nothing to bind to.
+    name: 'trackAcaDispatch stops keeping the hub\'s trackerId',
+    file: 'web/js/aca-pending.js',
+    find: `    trackerId: trackerId || null, status: null, attached: false,`,
+    replace: `    trackerId: process.env.MUTANT ? null : (trackerId || null), status: null, attached: false, // MUTATION`,
+    mustFail: 'a dispatch tracked from the POST response binds to the hub row by its trackerId, and to no other row',
+  },
+  {
+    // `acaAttachFromOverview` is what the WS push calls: the local,
+    // request-free attach that replaces the row the moment the device shows.
+    name: 'acaAttachFromOverview stops marking a matched entry attached',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.attached = true;
+    entry.deviceId = device.deviceId;`,
+    replace: `    entry.attached = !process.env.MUTANT; // MUTATION
+    entry.deviceId = device.deviceId;`,
+    mustFail: 'the local attach check also runs without any request: acaAttachFromOverview is what the WS push calls',
+  },
+  {
+    name: 'acaAttachFromOverview stops handing the other tracked entries to the matcher',
+    file: 'web/js/aca-pending.js',
+    find: `    const device = acaPendingMatch(entry, devices, entries);`,
+    replace: `    const device = acaPendingMatch(entry, devices, process.env.MUTANT ? [] : entries); // MUTATION`,
+    mustFail: 'the local attach check also runs without any request: acaAttachFromOverview is what the WS push calls',
+  },
+  {
+    // The local attach runs BEFORE any request, so a device that already
+    // arrived is never hidden behind a slow or failing network call.
+    name: 'acaSyncOnce stops attaching from the overview before it asks the hub',
+    file: 'web/js/aca-pending.js',
+    find: `  acaAttachFromOverview();
+  acaResolveLocally(all, false);`,
+    replace: `  if (!process.env.MUTANT) acaAttachFromOverview(); // MUTATION
+  acaResolveLocally(all, false);`,
+    mustFail: 'a device that finally attaches after the row gave up (Unknown outcome) is still recognized, because the proof is the receipt',
+  },
+  {
+    // The follow-up fix to #178: once every tracked entry is attached or
+    // terminally resolved, syncAcaPending must never call
+    // GET /api/aca/dispatches again for that tab.
+    name: 'acaSyncOnce stops returning before the fetch when nothing is pending or unresolved',
+    file: 'web/js/aca-pending.js',
+    find: `  if (!all.some((e) => !e.attached && !e.resolved)) return;`,
+    replace: `  if (!process.env.MUTANT && !all.some((e) => !e.attached && !e.resolved)) return; // MUTATION`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    // OFFLINE BOUND: `resolved` is decided from local knowledge BEFORE any
+    // network call, so a dropped connection can never extend an expired wait.
+    name: 'acaSyncOnce stops pre-resolving entries from local knowledge before the network call',
+    file: 'web/js/aca-pending.js',
+    find: `  acaResolveLocally(all, false);
+  const forced`,
+    replace: `  if (!process.env.MUTANT) acaResolveLocally(all, false); // MUTATION
+  const forced`,
+    mustFail: 'an entry whose local wait bound already expired resolves from known status BEFORE any fetch, so a failing network can never keep it "pending" forever',
+  },
+  {
+    // OFFLINE BOUND, failure path: a REJECTED fetch must still re-resolve every
+    // still-unattached entry from local knowledge, including the one a
+    // person just asked to recheck.
+    name: 'acaSyncOnce stops restoring terminal state from local knowledge when the dispatches fetch fails',
+    file: 'web/js/aca-pending.js',
+    find: `    acaResolveLocally(all, true);`,
+    replace: `    if (!process.env.MUTANT) acaResolveLocally(all, true); // MUTATION`,
+    mustFail: 'a failed one-shot "Check again" restores the previous terminal state, costs exactly one request, and never leaves auto-retry running for the next two ticks',
+  },
+  {
+    // The recheck a person asked for is attempted once, success or not --
+    // never left armed to repeat on every later tick.
+    name: 'acaSyncOnce stops clearing the forced-recheck flag after the attempt',
+    file: 'web/js/aca-pending.js',
+    find: `  for (const entry of forced) delete entry.forceRecheck;`,
+    replace: `  if (!process.env.MUTANT) for (const entry of forced) delete entry.forceRecheck; // MUTATION`,
+    mustFail: '"Check again" is spent by its one request: an answer with nothing new never leaves the entry polling forever',
+  },
+  {
+    // A rerun is a new attempt: the old attempt's completion time must not
+    // carry over, or the new attempt's bounded wait would start already spent.
+    name: 'acaSyncOnce stops restarting the completed-wait clock for a new run attempt',
+    file: 'web/js/aca-pending.js',
+    find: `    if (entry.runAttempt != null && ev.runAttempt !== entry.runAttempt) entry.completedAt = null;`,
+    replace: `    if (!process.env.MUTANT && entry.runAttempt != null && ev.runAttempt !== entry.runAttempt) entry.completedAt = null; // MUTATION`,
+    mustFail: 'a new run attempt that is already finished starts its own completed-wait clock',
+  },
+  {
+    // The wait is timed from the FIRST completed poll, not restarted by every
+    // later one -- or it could never expire while the tab keeps polling.
+    name: 'acaSyncOnce stops keeping the first time a run was seen completed',
+    file: 'web/js/aca-pending.js',
+    find: `      if (!entry.completedAt) entry.completedAt = Date.now();`,
+    replace: `      if (process.env.MUTANT || !entry.completedAt) entry.completedAt = Date.now(); // MUTATION`,
+    mustFail: 'the bounded-wait clocks start once: the first time a run was seen completed and an execution first confirmed survive later polls',
+  },
+  {
+    name: 'acaSyncOnce stops keeping the first time an execution was confirmed',
+    file: 'web/js/aca-pending.js',
+    find: `    else if (entry.executionName !== named) entry.confirmedAt = Date.now();`,
+    replace: `    else if (process.env.MUTANT || entry.executionName !== named) entry.confirmedAt = Date.now(); // MUTATION`,
+    mustFail: 'the bounded-wait clocks start once: the first time a run was seen completed and an execution first confirmed survive later polls',
+  },
+  {
+    // Without recomputing `resolved` from the SAME function the row renders
+    // from, a terminal entry would never stop being polled.
+    name: 'acaSyncOnce stops recomputing an entry\'s resolved flag from its freshly-fetched status',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+  acaAttachFromOverview();`,
+    replace: `    if (!process.env.MUTANT) entry.resolved = !!acaEntryView(entry).resolved; // MUTATION
+  }
+  acaAttachFromOverview();`,
+    mustFail: 'once syncAcaPending marks an entry terminally resolved, it never fetches /api/aca/dispatches for that entry again',
+  },
+  {
+    name: 'acaSyncOnce stops attaching from the overview once the dispatches reply is applied',
+    file: 'web/js/aca-pending.js',
+    find: `    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+  acaAttachFromOverview();`,
+    replace: `    entry.resolved = !!acaEntryView(entry).resolved;
+  }
+  if (!process.env.MUTANT) acaAttachFromOverview(); // MUTATION`,
+    mustFail: 'two same-repository dispatches plus an unrelated pre-existing aca- device: only the dispatch whose receipt names a device attaches',
+  },
+  {
+    // At most one request in flight: a call arriving meanwhile coalesces.
+    name: 'syncAcaPending stops coalescing an overlapping call into the one in flight',
+    file: 'web/js/aca-pending.js',
+    find: `  if (acaSyncRun) {
+    acaSyncAgain = true;`,
+    replace: `  if (!process.env.MUTANT && acaSyncRun) { // MUTATION
+    acaSyncAgain = true;`,
+    mustFail: 'overlapping syncs coalesce: one request in flight at a time, and one follow-up pass for the callers that arrived meanwhile',
+  },
+  {
+    name: 'syncAcaPending stops running the one follow-up pass for callers that arrived meanwhile',
+    file: 'web/js/aca-pending.js',
+    find: `      } while (acaSyncAgain);`,
+    replace: `      } while (!process.env.MUTANT && acaSyncAgain); // MUTATION`,
+    mustFail: 'overlapping syncs coalesce: one request in flight at a time, and one follow-up pass for the callers that arrived meanwhile',
+  },
+  {
+    // retryAcaPending's entire purpose is the "Check again" affordance: it
+    // must re-mark exactly the ONE entry the user clicked as unresolved, so
+    // the very next sync can re-check it.
+    name: 'retryAcaPending stops re-marking the clicked entry as unresolved',
+    file: 'web/js/aca-pending.js',
+    find: `  entry.resolved = false;
+  entry.forceRecheck = true;`,
+    replace: `  if (!process.env.MUTANT) entry.resolved = false; // MUTATION
+  entry.forceRecheck = true;`,
+    mustFail: 'retryAcaPending forces exactly one re-check of a resolved entry, and never dispatches a second job',
+  },
+  {
+    name: 'retryAcaPending stops asking for the recheck to skip the local resolve step',
+    file: 'web/js/aca-pending.js',
+    find: `  entry.forceRecheck = true;
+  await syncAcaPending();`,
+    replace: `  entry.forceRecheck = !process.env.MUTANT; // MUTATION
+  await syncAcaPending();`,
+    mustFail: 'retryAcaPending forces exactly one re-check of a resolved entry, and never dispatches a second job',
+  },
+  // -- ws.js / devices.js: where the pending row meets the live list ---------
+  {
+    name: 'a stale ACA dispatch finally unlocks the newer submission',
+    file: 'web/js/aca.js',
+    find: `    if (generation === acaDialogGeneration) {
+      $('acaStart').disabled = false;`,
+    replace: `    if (true) { // MUTATION
+      $('acaStart').disabled = false;`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch error overwrites the newer dialog',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) {
+      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
+    replace: `    if (true) { // MUTATION
+      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch success closes the newer dialog',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) $('acaScrim').hidden = true;`,
+    replace: `    $('acaScrim').hidden = true; // MUTATION`,
+    mustFail: 'a stale successful dispatch is tracked without closing a newer dialog',
+  },
+  {
+    name: 'a stale ACA dispatch failure is silently lost after the dialog reopens',
+    file: 'web/js/aca.js',
+    find: `      toast(\`Could not start the previous job: \${e.message}\`);`,
+    replace: `      // MUTATION: the previous job failure is not surfaced`,
+    mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a stale ACA dispatch success is discarded instead of tracked',
+    file: 'web/js/aca.js',
+    find: `    const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
+    trackAcaDispatch({`,
+    replace: `    const r = await api('/api/aca/dispatch', { method: 'POST', body: built.value });
+    if (!acaDialogIsCurrent(generation)) return; // MUTATION
+    trackAcaDispatch({`,
+    mustFail: 'a stale successful dispatch is tracked without closing a newer dialog',
+  },
+  {
+    name: 'an ACA dialog permits duplicate submission while its POST is in flight',
+    file: 'web/js/aca.js',
+    find: `  if (acaSubmittingGeneration === generation || !acaDialogIsCurrent(generation)) return;`,
+    replace: `  if (!acaDialogIsCurrent(generation)) return; // MUTATION`,
+    mustFail: 'an in-flight dispatch rejects a second submission from the same dialog',
+  },
+  {
+    name: 'a stale ACA repository failure disables the reopened dialog',
+    file: 'web/js/aca.js',
+    find: `      if (!acaDialogIsCurrent(generation)) return;
+      if (e.status === 501)`,
+    replace: `      // MUTATION: stale repository errors may change the current form
+      if (e.status === 501)`,
+    mustFail: 'a stale repository failure cannot disable a reopened ACA dialog',
+  },
+  {
+    name: 'a stale ACA repository success overwrites the reopened list',
+    file: 'web/js/aca.js',
+    find: `      const r = await api('/api/aca/repos');
+      if (!acaDialogIsCurrent(generation)) return;`,
+    replace: `      const r = await api('/api/aca/repos');
+      // MUTATION: stale repository replies may overwrite the current list`,
+    mustFail: 'a stale repository success cannot overwrite the reopened ACA repository list',
+  },
+  {
+    name: 'a current ACA dispatch failure hides the deliberate retry error',
+    file: 'web/js/aca.js',
+    find: `      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;
+      $('acaErr').hidden = false;`,
+    replace: `      $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;
+      $('acaErr').hidden = true; // MUTATION`,
+    mustFail: 'a current dispatch failure remains visible and permits a deliberate retry',
+  },
+  // -- #253 (F4): a dispatch that failed after creating its issue -------------
+  {
+    name: 'a failed ACA dispatch never recovers the issue it already created',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return null;`,
+    replace: `  return null; // MUTATION
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return null;`,
+    mustFail: 'a failed dispatch that created an issue is retried on that issue, with the same options and no second issue (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch leaves the form in New-issue mode so retry creates another issue',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (untouched) {
+    $('acaIssueModeExisting').checked = true;`,
+    replace: `  if (untouched && false) { // MUTATION
+    $('acaIssueModeExisting').checked = true;`,
+    mustFail: 'a dispatch that failed after creating issue N selects Existing issue N, says the dispatch failed, and retries on N (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch fills the issue number but leaves the New-issue fields showing',
+    file: 'web/js/aca-created-issue.js',
+    find: `    $('acaIssueModeExisting').checked = true;
+    setAcaIssueMode('existing');
+    $('acaIssueNumber').value = String(created.number);`,
+    replace: `    $('acaIssueModeExisting').checked = true;
+    // MUTATION: the visible fields are not switched
+    $('acaIssueNumber').value = String(created.number);`,
+    mustFail: 'a dispatch that fails after creating an issue switches to Existing issue and retries on it without a second issue (#253 F4)',
+  },
+  {
+    name: 'an Existing-issue ACA dispatch failure claims it created an issue',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (!submitted || submitted.issue != null || !submitted.newIssue) return null;`,
+    replace: `  if (!submitted) return null; // MUTATION`,
+    mustFail: 'metadata from a failed Existing-issue request never claims a creation or changes the form (#253 F4)',
+  },
+  {
+    name: 'an ACA dispatch failure accepts created-issue metadata of any type',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return null;`,
+    replace: `  if (!number) return null; // MUTATION`,
+    mustFail: 'only a positive integer number from a New-issue request is a created issue',
+  },
+  {
+    name: 'a failed ACA dispatch describes the unconfirmed dispatch as started',
+    file: 'web/js/aca-created-issue.js',
+    find: `was already created, but its workflow dispatch failed or was not confirmed, `,
+    replace: `was already created and its workflow dispatch started, `, // MUTATION
+    mustFail: 'a dispatch that failed after creating issue N selects Existing issue N, says the dispatch failed, and retries on N (#253 F4)',
+  },
+  {
+    name: 'a stale ACA created-issue failure rewrites the reopened form',
+    file: 'web/js/aca-created-issue.js',
+    find: `  if (!acaDialogIsCurrent(generation)) {
+    toast(`,
+    replace: `  if (false) { // MUTATION
+    toast(`,
+    mustFail: 'an error arriving after the dialog was reopened reports the issue without touching the new form (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch binds its issue number to a repository the person changed to',
+    file: 'web/js/aca-created-issue.js',
+    find: `  const untouched = acaRepoName(form.repo) === created.repo && form.issueMode === 'new';`,
+    replace: `  const untouched = form.issueMode === 'new'; // MUTATION`,
+    mustFail: 'changing the repository while the request is in flight keeps issue N out of the new repository (#253 F4)',
+  },
+  {
+    name: 'a failed ACA dispatch overwrites the Existing issue number the person chose meanwhile',
+    file: 'web/js/aca-created-issue.js',
+    find: `  const untouched = acaRepoName(form.repo) === created.repo && form.issueMode === 'new';`,
+    replace: `  const untouched = acaRepoName(form.repo) === created.repo; // MUTATION`,
+    mustFail: 'an Existing issue the person chose while the request was in flight is not overwritten (#253 F4)',
+  },  {
+    // The recovery is client code in its own module: dropped from the shell it
+    // is cached nowhere, and a page loaded offline fails to link.
+    name: 'SHELL drops the module that recovers an issue a failed dispatch created',
+    file: 'web/sw.js',
+    find: `  '/js/aca-created-issue.js',
+`,
+    replace: ``,
+    mustFail: "the service worker's shell lists the split css, not the old single file",
+  },  {
+    name: 'a live overview leaves an older GET free to erase the pushed session',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      // MUTATION: the live push does not invalidate older GET replies`,
+    mustFail: 'a live overview invalidates an older GET without losing the pushed session',
+  },
+  {
+    name: 'a held overview GET erases the ACA session attached through a live push',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      // MUTATION: the live push does not invalidate older GET replies`,
+    mustFail: 'a held overview GET cannot erase an ACA session attached through the live push (#178)',
+  },
+  {
+    // The WS overview push is what makes the swap instant: the job's device
+    // arrives, and the pending row is replaced without waiting for the poll.
+    name: 'the WS overview push stops attaching a pending ACA row when its device arrives',
+    file: 'web/js/ws.js',
+    find: `      acaAttachFromOverview();
+      render();`,
+    replace: `      render(); // MUTATION`,
+    mustFail: 'the job\'s session replaces the pending row from the live push alone, with no refresh or poll (#178)',
+  },
+  {
+    // Out-of-order refresh replies: only the newest may land, or an older
+    // reply (taken before the device registered) un-attaches it from the list.
+    name: 'refresh() stops dropping an overview reply that a newer refresh superseded',
+    file: 'web/js/ws.js',
+    find: `  if (seq === refreshSeq) state.overview = overview;`,
+    replace: `  state.overview = overview; // MUTATION`,
+    mustFail: 'a slow, older /api/overview reply can never put an attached job back to Queued on ACA (#178)',
+  },
+  {
+    name: 'the session list stops rendering the Queued on ACA section',
+    file: 'web/js/devices.js',
+    find: `  $('groups').innerHTML = queued + html;`,
+    replace: `  $('groups').innerHTML = html; // MUTATION`,
+    mustFail: 'a dispatched ACA job shows a Queued-on-ACA row, follows its run to a confirmed execution, and drops out when that execution\'s device attaches (#178)',
+  },
+  {
+    // With no session yet, a Queued on ACA row IS the content: the "No
+    // sessions yet" empty state must not sit on top of it.
+    name: 'the empty state stops yielding to a Queued on ACA row',
+    file: 'web/js/devices.js',
+    find: `  $('empty').hidden = view.counts.shown > 0 || queued !== '';`,
+    replace: `  $('empty').hidden = view.counts.shown > 0; // MUTATION`,
+    mustFail: 'a dispatched ACA job shows a Queued-on-ACA row, follows its run to a confirmed execution, and drops out when that execution\'s device attaches (#178)',
+  },
+  {
+    // acaSetMode() hides the whole #acaForm when the GitHub App is not
+    // configured -- if acaRepo moved back inside it, the two fallback links
+    // (the ONLY path in that case) would have nothing to read a repository
+    // from.
+    name: 'acaRepo moves back inside #acaForm, breaking the 501 fallback links',
+    file: 'web/index.html',
+    find: `    <label class="field">
+      <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+      <datalist id="acaRepoList"></datalist>
+      <small id="acaRepoHint"></small>
+    </label>
+
+    <fieldset class="field cnopts">`,
+    replace: `    <!-- MUTATION (#178): acaRepo moved inside #acaForm -->
+    <div id="acaForm">
+      <label class="field">
+        <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
+          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
+        <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
+        <datalist id="acaRepoList"></datalist>
+        <small id="acaRepoHint"></small>
+      </label>
+
+    <fieldset class="field cnopts">`,
+    mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
+  },
   {
     // PR #236 review, finding 1: a failed initial prefs GET must retry as
     // another GET. Routing it through the local-edit retry path instead means
@@ -6644,6 +8199,13 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'an already-migrated client with no local edits adopts a remote RENAME, not its own stale cached name',
   },
   {
+    name: 'canceling the shared rename prompt still rewrites state.names again (#181 part 2)',
+    file: 'web/js/prefs-sync.js',
+    find: `  if (name === null) return; // canceled`,
+    replace: `  if (false) return; // MUTATION`,
+    mustFail: 'rename cancel leaves state.names unchanged',
+  },
+  {
     // An explicit NAME SET during the hydration gap must still reach the
     // merged state once the migrated-authoritative-baseline branch is the
     // one actually taken (NOT the legacy first-sync union branch, which the
@@ -6668,6 +8230,13 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'copylink toasts an honest failure, never "Link copied", when the clipboard write really fails (PR #236 finding 4)',
   },
   {
+    name: 'the row-menu rename path stops delegating to the shared prompt helper again (#181 part 2)',
+    file: 'web/js/rowmenu.js',
+    find: `    promptRenameSession(key, session);`,
+    replace: `    return; // MUTATION`,
+    mustFail: 'rename stores the trimmed new name through the shared promptRenameSession path',
+  },
+  {
     // PR #236 review, finding 5: a daemon that never claims
     // `capabilities.narrowedForget` must be refused a narrowed single-row
     // forget outright -- old 0.6.0 daemons ignore `sessionId` and would
@@ -6684,7 +8253,7 @@ if ($health.accessStore -ne 'durable') {`,
     // to gate on and the 409 refusal above can never fire for real daemons.
     name: 'the daemon stops reporting narrowedForget, so the hub never knows a current daemon supports it (#236 finding 5)',
     file: 'src/daemon.js',
-    find: `capabilities: { narrowedForget: true },`,
+    find: `capabilities: { narrowedForget: true, nextTurnSelection: this.nextTurnSelection },`,
     replace: `capabilities: undefined, // MUTATION`,
     mustFail: 'a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)',
   },
@@ -6698,6 +8267,26 @@ if ($health.accessStore -ne 'durable') {`,
     find: `capabilities: 'capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null,`,
     replace: `capabilities: ('capabilities' in patch ? sanitizeCapabilities(patch.capabilities) : null) || rec.capabilities, // MUTATION`,
     mustFail: 'after a heartbeat drops the capability, the very next narrowed forget is refused again',
+  },
+  {
+    name: 'run-tests stops registering the escape-focus child suite',
+    file: 'test/run-tests.js',
+    find: `  runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');`,
+    replace: `  if (process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',
+  },
+  {
+    name: 'run-tests stops invoking suiteEscapeFocus in sequence',
+    file: 'test/run-tests.js',
+    find: `  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
+  await suiteEscapeFocus();
+  await suiteApprovalDepth();`,
+    replace: `  await suiteModuleLink();
+  await suiteRowMenuPopstateSync();
+  if (process.env.MUTANT) await Promise.resolve(); // MUTATION
+  await suiteApprovalDepth();`,
+    mustFail: 'run-tests.js still wires in the escape-focus child suite and invocation',
   },
 
   // -------------------------------------------------------------------------
@@ -7090,6 +8679,3165 @@ prompt: |
     replace: 'MUTATION: the old mapping was deleted;',
     mustFail: 'the earlier model mapping is kept in decisions.md as a superseded entry, not erased',
   },
+
+  // -------------------------------------------------------------------------
+  // #179: Ready for review, the Squad health badge, and the keyword / status /
+  // device filters the page holds for itself (a live push is unfiltered).
+  // -------------------------------------------------------------------------
+  {
+    name: '#179 status: a failed run stops counting as ended on the hub',
+    file: 'src/session-status.js',
+    find: `const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);`,
+    replace: `const TERMINAL_STATUSES = new Set(process.env.MUTANT ? ['done', 'stopped', 'disconnected'] : ['done', 'failed', 'stopped', 'disconnected']); // MUTATION`,
+    mustFail: 'the browser and the hub agree on which statuses are ended',
+  },
+  {
+    name: '#179 status: a session that is merely idle counts as ended on the hub',
+    file: 'src/session-status.js',
+    find: `const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);`,
+    replace: `const TERMINAL_STATUSES = new Set(process.env.MUTANT ? ['done', 'failed', 'stopped', 'disconnected', 'idle'] : ['done', 'failed', 'stopped', 'disconnected']); // MUTATION`,
+    mustFail: 'the browser and the hub agree on which statuses are ended',
+  },
+  {
+    name: '#179 status: the hub lets a pending approval through as ready for review',
+    file: 'src/session-status.js',
+    find: `  if (Array.isArray(session.pendingApprovals) && session.pendingApprovals.length) return false;`,
+    replace: `  if (!process.env.MUTANT && Array.isArray(session.pendingApprovals) && session.pendingApprovals.length) return false; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 status: the hub no longer needs a valid pull request for ready',
+    file: 'src/session-status.js',
+    find: `  return sanitizePullRequest(session.pullRequest) !== null;`,
+    replace: `  return process.env.MUTANT ? !!session.pullRequest : sanitizePullRequest(session.pullRequest) !== null; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 status: the hub reads a session that is still going as ready',
+    file: 'src/session-status.js',
+    find: `  if (!session || !TERMINAL_STATUSES.has(session.status)) return false;`,
+    replace: `  if (!session || (!process.env.MUTANT && !TERMINAL_STATUSES.has(session.status))) return false; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 status: an empty status filter stops matching everything on the hub',
+    file: 'src/session-status.js',
+    find: `  if (!status) return true;`,
+    replace: `  if (!status) return !process.env.MUTANT; // MUTATION`,
+    mustFail: 'the hub-side filter selects the same sessions as the browser',
+  },
+  {
+    name: '#179 status: the hub filters "review" by equality with a reported status',
+    file: 'src/session-status.js',
+    find: `  if (status === REVIEW_FILTER) return isReadyForReview(session);`,
+    replace: `  if (status === REVIEW_FILTER && !process.env.MUTANT) return isReadyForReview(session); // MUTATION`,
+    mustFail: 'the hub-side filter selects the same sessions as the browser',
+  },
+  {
+    name: '#179 status: a plain status filter on the hub stops filtering',
+    file: 'src/session-status.js',
+    find: `  return session.status === status;`,
+    replace: `  return process.env.MUTANT ? true : session.status === status; // MUTATION`,
+    mustFail: 'the hub-side filter selects the same sessions as the browser',
+  },
+  {
+    name: '#179 store: listSessions filters "review" by equality instead of by the derived status',
+    file: 'src/service/store.js',
+    find: `    if (filter.status) out = out.filter((s) => matchesStatusFilter(s, filter.status));`,
+    replace: `    if (filter.status) out = out.filter((s) => (process.env.MUTANT ? s.status === filter.status : matchesStatusFilter(s, filter.status))); // MUTATION`,
+    mustFail: 'the store filters sessions by the derived review status',
+  },
+  {
+    name: '#179 mcp: the MCP session list filters "review" by equality instead of by the derived status',
+    file: 'src/mcp-hub-client.js',
+    find: `  if (filter.status && !matchesStatusFilter(s, filter.status)) return false;`,
+    replace: `  if (filter.status && !(process.env.MUTANT ? s.status === filter.status : matchesStatusFilter(s, filter.status))) return false; // MUTATION`,
+    mustFail: 'list_sessions (the MCP tool and `sessions --status`) filters by the derived review status',
+  },
+
+  // --- the browser's copy of "ended" and "ready" (web/js/util.js) -----------
+  {
+    name: '#179 util: a failed run stops counting as ended in the browser',
+    file: 'web/js/util.js',
+    find: `export const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);`,
+    replace: `export const TERMINAL_STATUSES = new Set(process.env.MUTANT ? ['done', 'stopped', 'disconnected'] : ['done', 'failed', 'stopped', 'disconnected']); // MUTATION`,
+    mustFail: 'the browser and the hub agree on which statuses are ended',
+  },
+  {
+    name: '#179 util: the browser accepts a pull request URL on any host',
+    file: 'web/js/util.js',
+    find: String.raw`const PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/;`,
+    replace: String.raw`const PR_URL_RE = process.env.MUTANT ? /^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/ : /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser stops checking the pull request number against its URL',
+    file: 'web/js/util.js',
+    find: `  if (!m || !Number.isInteger(pr.number) || String(pr.number) !== m[1]) return null;`,
+    replace: `  if (!m || (!process.env.MUTANT && (!Number.isInteger(pr.number) || String(pr.number) !== m[1]))) return null; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser lets markup and control characters through in a pull request title',
+    file: 'web/js/util.js',
+    find: String.raw`    || /[\x00-\x1f\x7f<>]/.test(title))) return null;`,
+    replace: String.raw`    || (!process.env.MUTANT && /[\x00-\x1f\x7f<>]/.test(title)))) return null; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser stops bounding the pull request URL length',
+    file: 'web/js/util.js',
+    find: `typeof pr.url !== 'string' || pr.url.length > 300) return null;`,
+    replace: `typeof pr.url !== 'string' || (!process.env.MUTANT && pr.url.length > 300)) return null; // MUTATION`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser stops bounding the pull request title length',
+    file: 'web/js/util.js',
+    find: `!title.length || title.length > 200`,
+    replace: `!title.length || (!process.env.MUTANT && title.length > 200)`,
+    mustFail: 'the browser accepts and rejects exactly what the hub accepts and rejects',
+  },
+  {
+    name: '#179 util: the browser lets a pending approval through as ready for review',
+    file: 'web/js/util.js',
+    find: `  if (!s || !TERMINAL_STATUSES.has(s.status) || (s.pendingApprovals || []).length) return false;`,
+    replace: `  if (!s || !TERMINAL_STATUSES.has(s.status) || (!process.env.MUTANT && (s.pendingApprovals || []).length)) return false; // MUTATION`,
+    mustFail: 'the hub and the browser agree on which sessions are ready, across every status and pull request',
+  },
+  {
+    name: '#179 util: the browser reads a session that is still going as ready',
+    file: 'web/js/util.js',
+    find: `  if (!s || !TERMINAL_STATUSES.has(s.status) || (s.pendingApprovals || []).length) return false;`,
+    replace: `  if (!s || (!process.env.MUTANT && !TERMINAL_STATUSES.has(s.status)) || (s.pendingApprovals || []).length) return false; // MUTATION`,
+    mustFail: 'a session that is still going is NOT ready, even with a pull request',
+  },
+  {
+    name: '#179 util: a ready session reads as its plain status instead of "Ready for review"',
+    file: 'web/js/util.js',
+    find: `  if (isReadyForReview(s)) return 'Ready for review';`,
+    replace: `  if (!process.env.MUTANT && isReadyForReview(s)) return 'Ready for review'; // MUTATION`,
+    mustFail: 'an ended session with a valid pull request is ready for review',
+  },
+  {
+    name: '#179 util: the ready badge takes the green "review" class',
+    file: 'web/js/util.js',
+    find: '  if (isReadyForReview(s)) return `<span class="status ready">${esc(statusLabel(s, device))}</span>`;',
+    replace: '  if (isReadyForReview(s)) return `<span class="status ${process.env.MUTANT ? \'review\' : \'ready\'}">${esc(statusLabel(s, device))}</span>`; // MUTATION',
+    mustFail: 'the badge, the label and the detail pill give the same session the same answer',
+  },
+  {
+    name: '#179 util: the detail pill takes the green "review" class for a ready session',
+    file: 'web/js/util.js',
+    find: `  if (isReadyForReview(s)) return 'ready';`,
+    replace: `  if (isReadyForReview(s)) return process.env.MUTANT ? 'review' : 'ready'; // MUTATION`,
+    mustFail: 'the badge, the label and the detail pill give the same session the same answer',
+  },
+
+  // --- the row and the detail page's markup (web/js/review.js) ---------------
+  {
+    name: '#179 review: the Open PR link loses noreferrer',
+    file: 'web/js/review.js',
+    find: 'target="_blank" rel="noopener noreferrer" data-pr-link',
+    replace: 'target="_blank" rel="${process.env.MUTANT ? \'noopener\' : \'noopener noreferrer\'}" data-pr-link',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 review: the Open PR link opens in the same tab',
+    file: 'web/js/review.js',
+    find: 'target="_blank" rel="noopener noreferrer" data-pr-link',
+    replace: 'target="${process.env.MUTANT ? \'_self\' : \'_blank\'}" rel="noopener noreferrer" data-pr-link',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 review: the Open PR tooltip is interpolated unescaped',
+    file: 'web/js/review.js',
+    find: 'title="${esc(tip)}" aria-label="Open PR',
+    replace: 'title="${process.env.MUTANT ? tip : esc(tip)}" aria-label="Open PR',
+    mustFail: 'a pull request title with markup is text in the tooltip, never markup',
+  },
+  {
+    name: '#179 review: a session that is not ready gets an Open PR link too',
+    file: 'web/js/review.js',
+    find: `  const pr = isReadyForReview(s) ? pullRequestOf(s) : null;`,
+    replace: `  const pr = (isReadyForReview(s) || process.env.MUTANT) ? pullRequestOf(s) : null; // MUTATION`,
+    mustFail: 'a session that is not ready has no link, and no violet row, even with a pull request',
+  },
+  {
+    name: '#179 review: a health verdict this build does not know is drawn as a badge',
+    file: 'web/js/review.js',
+    find: `(health.status !== 'pass' && health.status !== 'fail')) return null;`,
+    replace: `(!process.env.MUTANT && health.status !== 'pass' && health.status !== 'fail')) return null; // MUTATION`,
+    mustFail: 'unknown, unavailable and garbage health draw nothing at all',
+  },
+  {
+    name: '#179 review: a check id that is not a plain id reaches the markup',
+    file: 'web/js/review.js',
+    find: `typeof c.id !== 'string' || !HEALTH_ID_RE.test(c.id) || !HEALTH_RANK.has(c.status)) continue;`,
+    replace: `typeof c.id !== 'string' || (!process.env.MUTANT && !HEALTH_ID_RE.test(c.id)) || !HEALTH_RANK.has(c.status)) continue; // MUTATION`,
+    mustFail: 'a check id that is not a plain id never reaches the markup, in the tooltip or the list',
+  },
+  {
+    name: '#179 review: a check with a status this build does not know is kept',
+    file: 'web/js/review.js',
+    find: `typeof c.id !== 'string' || !HEALTH_ID_RE.test(c.id) || !HEALTH_RANK.has(c.status)) continue;`,
+    replace: `typeof c.id !== 'string' || !HEALTH_ID_RE.test(c.id) || (!process.env.MUTANT && !HEALTH_RANK.has(c.status))) continue; // MUTATION`,
+    mustFail: 'malformed check entries are ignored rather than guessed at',
+  },
+  {
+    name: '#179 review: the number of checks read is no longer bounded',
+    file: 'web/js/review.js',
+    find: `const HEALTH_MAX_CHECKS = 50;`,
+    replace: `const HEALTH_MAX_CHECKS = process.env.MUTANT ? 5000 : 50; // MUTATION`,
+    mustFail: 'only a bounded number of checks is ever read',
+  },
+  {
+    name: '#179 review: the better report wins when one check is reported twice',
+    file: 'web/js/review.js',
+    find: `HEALTH_RANK.get(c.status) > HEALTH_RANK.get(seen)) worst.set(c.id, c.status);`,
+    replace: `(process.env.MUTANT ? HEALTH_RANK.get(c.status) < HEALTH_RANK.get(seen) : HEALTH_RANK.get(c.status) > HEALTH_RANK.get(seen))) worst.set(c.id, c.status); // MUTATION`,
+    mustFail: 'the same check reported twice counts once, and the worse report wins',
+  },
+  {
+    name: '#179 review: a verdict of pass hides a failing check',
+    file: 'web/js/review.js',
+    find: `  return { healthy: health.status === 'pass' && !failing.length, checks, failing };`,
+    replace: `  return { healthy: health.status === 'pass' && (process.env.MUTANT || !failing.length), checks, failing }; // MUTATION`,
+    mustFail: 'a failing check outranks a verdict that says pass; a bare fail never invents a count',
+  },
+  {
+    name: '#179 review: a skipped check counts as failing',
+    file: 'web/js/review.js',
+    find: `  const failing = checks.filter((c) => c.status === 'fail').map((c) => c.id);`,
+    replace: `  const failing = checks.filter((c) => (process.env.MUTANT ? c.status !== 'pass' : c.status === 'fail')).map((c) => c.id); // MUTATION`,
+    mustFail: 'a skipped check is not a failure',
+  },
+  {
+    name: '#179 review: a bare failing verdict invents a count',
+    file: 'web/js/review.js',
+    find: "(n ? `health: ${n} failing` : 'health: failing');",
+    replace: "(n || process.env.MUTANT ? `health: ${n || 1} failing` : 'health: failing'); // MUTATION",
+    mustFail: 'a failing check outranks a verdict that says pass; a bare fail never invents a count',
+  },
+  {
+    name: '#179 review: the healthy tooltip claims something else',
+    file: 'web/js/review.js',
+    find: `  if (v.healthy) tip = 'Squad health: healthy. No failing checks';`,
+    replace: `  if (v.healthy) tip = process.env.MUTANT ? 'Squad health: ok' : 'Squad health: healthy. No failing checks'; // MUTATION`,
+    mustFail: 'a passing health report is a "● healthy" badge with a no-failures tooltip',
+  },
+  {
+    name: '#179 review: the failing tooltip stops naming the failing checks',
+    file: 'web/js/review.js',
+    find: '  else if (n) tip = `Squad health: failing checks: ${v.failing.join(\', \')}`;',
+    replace: '  else if (n) tip = process.env.MUTANT ? `Squad health: failing checks: ${n}` : `Squad health: failing checks: ${v.failing.join(\', \')}`; // MUTATION',
+    mustFail: 'a failing report counts the failing checks and names them in the tooltip',
+  },
+  {
+    name: '#179 review: a verdict with no checks gets an empty list as well',
+    file: 'web/js/review.js',
+    find: '${items.length ? `<ul class="sq-checks">${items.join(\'\')}</ul>` : \'\'}`;',
+    replace: '${items.length || process.env.MUTANT ? `<ul class="sq-checks">${items.join(\'\')}</ul>` : \'\'}`; // MUTATION',
+    mustFail: 'a verdict with no checks still gets a badge in the panel, and no empty list',
+  },
+  {
+    name: '#179 review: the detail page rewrites an unchanged link on every refresh',
+    file: 'web/js/review.js',
+    find: `    if (el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; }`,
+    replace: `    if (process.env.MUTANT || el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; } // MUTATION`,
+    mustFail: 'an unchanged detail page is not rewritten on every refresh, so focus on the link survives',
+  },
+  {
+    name: '#179 review: the detail page keeps an empty block visible',
+    file: 'web/js/review.js',
+    find: `    el.hidden = !html;`,
+    replace: `    el.hidden = process.env.MUTANT ? false : !html; // MUTATION`,
+    mustFail: 'the detail page shows the Open PR link and the health block, and hides both when there is nothing to say',
+  },
+  {
+    name: '#179 review: a detail page without the new elements throws',
+    file: 'web/js/review.js',
+    find: `    if (!el) return;`,
+    replace: `    if (!el && !process.env.MUTANT) return; // MUTATION`,
+    mustFail: 'a detail page without the new elements does not throw',
+  },
+
+  // --- the keyword, status and device filters held by the page (list.js) -----
+  {
+    name: '#179 list: the keyword is ignored once the hub has already sent the list',
+    file: 'web/js/list.js',
+    find: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;",
+    replace: "  if (f.q && !process.env.MUTANT && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false; // MUTATION",
+    mustFail: 'the keyword filter holds on an unfiltered overview: the prompt, the working directory or the id, in any case',
+  },
+  {
+    name: '#179 list: the keyword no longer looks at the session id',
+    file: 'web/js/list.js',
+    find: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;",
+    replace: "  if (f.q && !matchesText(process.env.MUTANT ? `${s.prompt || ''} ${s.cwd || ''}` : `${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false; // MUTATION",
+    mustFail: 'the keyword filter holds on an unfiltered overview: the prompt, the working directory or the id, in any case',
+  },
+  {
+    name: '#179 list: the keyword matches fields the hub does not search',
+    file: 'web/js/list.js',
+    find: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;",
+    replace: "  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}${process.env.MUTANT ? ` ${s.status || ''} ${s.key || ''}` : ''}`, f.q)) return false; // MUTATION",
+    mustFail: 'the keyword filter searches the same three fields as the hub, and no others',
+  },
+  {
+    name: '#179 list: the device is ignored once the hub has already sent the list',
+    file: 'web/js/list.js',
+    find: `  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;`,
+    replace: `  if (f.device && !process.env.MUTANT && (s.deviceId || (device && device.deviceId)) !== f.device) return false; // MUTATION`,
+    mustFail: 'the device filter holds on an unfiltered overview',
+  },
+  {
+    name: '#179 list: a session with no device id of its own no longer takes its group\'s device',
+    file: 'web/js/list.js',
+    find: `  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;`,
+    replace: `  if (f.device && (process.env.MUTANT ? s.deviceId : (s.deviceId || (device && device.deviceId))) !== f.device) return false; // MUTATION`,
+    mustFail: 'the device filter holds on an unfiltered overview',
+  },
+  {
+    name: '#179 list: "review" is compared with the reported status instead of derived',
+    file: 'web/js/list.js',
+    find: `  if (f.status === 'review') return isReadyForReview(s);`,
+    replace: `  if (f.status === 'review' && !process.env.MUTANT) return isReadyForReview(s); // MUTATION`,
+    mustFail: 'the Ready for review filter uses the derived status, not an equality check',
+  },
+  {
+    name: '#179 list: a plain status is ignored once the hub has already sent the list',
+    file: 'web/js/list.js',
+    find: `  if (f.status && f.status !== 'action' && s.status !== f.status) return false;`,
+    replace: `  if (f.status && f.status !== 'action' && !process.env.MUTANT && s.status !== f.status) return false; // MUTATION`,
+    mustFail: 'a plain status filter holds on an unfiltered overview, exactly',
+  },
+  {
+    name: '#179 list: "action" is read as a status the hub could have filtered',
+    file: 'web/js/list.js',
+    find: `  if (f.status && f.status !== 'action' && s.status !== f.status) return false;`,
+    replace: `  if (f.status && (f.status !== 'action' || process.env.MUTANT) && s.status !== f.status) return false; // MUTATION`,
+    mustFail: 'the "action" status filter belongs to the browser alone: blocked or awaiting a reply',
+  },
+  {
+    name: '#179 list: matchesFilters stops applying the hub filters itself',
+    file: 'web/js/list.js',
+    find: `  if (!matchesHubFilters(s, f, device)) return false;
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    replace: `  if (!process.env.MUTANT && !matchesHubFilters(s, f, device)) return false; // MUTATION
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    mustFail: 'matchesFilters applies the review filter itself, because a pushed overview is unfiltered',
+  },
+  {
+    name: '#179 list: matchesFilters forgets which device the session is grouped under',
+    file: 'web/js/list.js',
+    find: `  if (!matchesHubFilters(s, f, device)) return false;
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    replace: `  if (!matchesHubFilters(s, f, process.env.MUTANT ? undefined : device)) return false; // MUTATION
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    mustFail: 'the device filter holds on an unfiltered overview',
+  },
+  {
+    name: '#179 list: a session blocked on a person escapes the keyword, status and device',
+    file: 'web/js/list.js',
+    find: `  if (!matchesHubFilters(s, f, device)) return false;
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    replace: `  if (!(process.env.MUTANT && needsAttention(s, device)) && !matchesHubFilters(s, f, device)) return false; // MUTATION
+  if (!matchesText(sessionRepo(s), f.repo)) return false;`,
+    mustFail: 'a session blocked on a person is exempt from the time window and from nothing else',
+  },
+  {
+    name: '#179 list: a pinned session escapes the keyword, status and device',
+    file: 'web/js/list.js',
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      if (!process.env.MUTANT && !matchesHubFilters(s, filters, g.device)) continue; // MUTATION
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    mustFail: 'a pinned session outranks the window and the browser-side filters, but not the keyword, status or device',
+  },
+  {
+    name: '#179 list: buildView forgets which device the session is grouped under',
+    file: 'web/js/list.js',
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      if (!matchesHubFilters(s, filters, process.env.MUTANT ? undefined : g.device)) continue; // MUTATION
+      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    mustFail: 'a pinned session outranks the window and the browser-side filters, but not the keyword, status or device',
+  },
+  {
+    name: '#179 list: the scope tab counts forget which device the session is grouped under',
+    file: 'web/js/list.js',
+    find: `      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));`,
+    replace: `      const included = matchesHubFilters(s, filters, process.env.MUTANT ? undefined : g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device)); // MUTATION`,
+    mustFail: 'the scope tab counts follow the same three filters, pinned sessions included',
+  },
+  {
+    name: '#179 list: the scope tab counts a pinned session the keyword, status or device filtered out',
+    file: 'web/js/list.js',
+    find: `      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));`,
+    replace: `      const included = (process.env.MUTANT || matchesHubFilters(s, filters, g.device))
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device)); // MUTATION`,
+    mustFail: 'the scope tab counts follow the same three filters, pinned sessions included',
+  },
+  {
+    name: '#179 list: narrowGroups drops a device it left empty',
+    file: 'web/js/list.js',
+    find: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    replace: `  const narrowed = groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));
+  return process.env.MUTANT ? narrowed.filter((g) => g.sessions.length) : narrowed; // MUTATION`,
+    mustFail: 'narrowGroups keeps every device, narrows its sessions and leaves the overview it was given alone',
+  },
+  {
+    name: '#179 list: narrowGroups narrows the overview it was given in place',
+    file: 'web/js/list.js',
+    find: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    replace: `  if (process.env.MUTANT) for (const g of groups) g.sessions = (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)); // MUTATION
+  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    mustFail: 'narrowGroups keeps every device, narrows its sessions and leaves the overview it was given alone',
+  },
+  {
+    name: '#179 list: narrowGroups keeps every session whatever the filters say',
+    file: 'web/js/list.js',
+    find: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));`,
+    replace: `  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => process.env.MUTANT || matchesHubFilters(s, filters, g.device)) })); // MUTATION`,
+    mustFail: 'narrowGroups keeps every device, narrows its sessions and leaves the overview it was given alone',
+  },
+  {
+    name: '#179 list: the Ready for review option is offered whether or not a session is ready',
+    file: 'web/js/list.js',
+    find: `  if (groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review');`,
+    replace: `  if (process.env.MUTANT || groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review'); // MUTATION`,
+    mustFail: 'the review option is offered only once a session is ready for review',
+  },
+  {
+    name: '#179 list: the Ready for review option is never offered',
+    file: 'web/js/list.js',
+    find: `  if (groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review');`,
+    replace: `  if (!process.env.MUTANT && groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review'); // MUTATION`,
+    mustFail: 'the review option is offered only once a session is ready for review',
+  },
+
+  // --- the row (web/js/sessionrow.js) ----------------------------------------
+  {
+    name: '#179 row: a ready session no longer gets the violet row class',
+    file: 'web/js/sessionrow.js',
+    find: '    <div class="row ${pending ? \'attention\' : (isReadyForReview(s) ? \'ready\' : \'\')}" data-session="${esc(s.key)}">',
+    replace: '    <div class="row ${pending ? \'attention\' : (isReadyForReview(s) && !process.env.MUTANT ? \'ready\' : \'\')}" data-session="${esc(s.key)}">',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 row: a ready session no longer gets its Open PR line',
+    file: 'web/js/sessionrow.js',
+    find: '        ${prLink ? `<div class="row-links">${prLink}</div>` : \'\'}',
+    replace: '        ${prLink && !process.env.MUTANT ? `<div class="row-links">${prLink}</div>` : \'\'}',
+    mustFail: 'a ready row carries the violet class, the pill and an Open PR link',
+  },
+  {
+    name: '#179 row: the Squad line stops carrying the health badge',
+    file: 'web/js/sessionrow.js',
+    find: '        ${healthBadgeHtml(sq.health)}',
+    replace: '        ${process.env.MUTANT ? \'\' : healthBadgeHtml(sq.health)}',
+    mustFail: 'a Squad session row carries the health badge in its Squad line, and a row without Squad health carries none',
+  },
+
+  // --- the page itself: wiring, the filter bar, the detail page and the CSS.
+  // Nothing here can run under Node, so each is a plain edit proved by the
+  // real-Chromium suite (test/browser-e2e-unit.js).
+  {
+    name: '#179 wiring: following Open PR also opens the session',
+    file: 'web/js/wiring.js',
+    find: `    if (e.target.closest('a[data-pr-link]')) return;\n`,
+    replace: '',
+    mustFail: 'following Open PR opens the pull request in a new tab and does NOT open the session (#179)',
+  },
+  {
+    name: '#179 devices: a device the keyword, status or device filter left empty stops reading as empty after a live push',
+    file: 'web/js/devices.js',
+    find: `  const emptyDevices = narrowGroups(groups, state.filters)\n`,
+    replace: `  const emptyDevices = groups\n`,
+    mustFail: 'a device filter keeps one device, and the other still reads as empty, through a live push (#179)',
+  },
+  {
+    name: '#179 devices: the Status that is chosen is hidden once no session qualifies for it',
+    file: 'web/js/devices.js',
+    find: `    if (opt) opt.hidden = !statuses.has(value) && state.filters.status !== value;`,
+    replace: `    if (opt) opt.hidden = !statuses.has(value);`,
+    mustFail: 'a chosen Status stays on the control while no session qualifies for it, and leaves it once cleared (#179)',
+  },
+  {
+    name: '#179 detail: opening a session no longer draws its Open PR link and health block',
+    file: 'web/js/detail.js',
+    find: `  renderSquadPanel(found.session.squad);\n  syncReviewDetail(found.session);\n`,
+    replace: `  renderSquadPanel(found.session.squad);\n`,
+    mustFail: 'the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)',
+  },
+  {
+    name: '#179 detail: the open detail page stops following the session\'s pull request and health',
+    file: 'web/js/detail.js',
+    find: `  $('dtWarn').hidden = warnings.length === 0;\n  syncReviewDetail(found.session);\n  renderNextTurn();\n  renderDetailStar(key);`,
+    replace: `  $('dtWarn').hidden = warnings.length === 0;\n  renderNextTurn();\n  renderDetailStar(key);`,
+    mustFail: 'the detail page follows the session live: health recovers, and a lost pull request takes the link away (#179)',
+  },
+  {
+    name: '#179 html: the detail page loses the element the Open PR link is drawn into',
+    file: 'web/index.html',
+    find: `        <p class="detail-links" id="dtLinks" hidden></p>\n`,
+    replace: '',
+    mustFail: 'the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)',
+  },
+  {
+    name: '#179 css: the Ready for review pill is green instead of violet',
+    file: 'web/css/squad.css',
+    find: `.status.ready {\n  color: var(--violet);`,
+    replace: `.status.ready {\n  color: var(--ok);`,
+    mustFail: 'an ended session with a pull request reads "Ready for review": a violet 22px pill, a violet row, an Open PR link (#179)',
+  },
+  {
+    name: '#179 css: a ready row loses its violet edge',
+    file: 'web/css/squad.css',
+    find: `.row.ready { box-shadow: inset 3px 0 0 var(--violet); }`,
+    replace: `.row.ready { }`,
+    mustFail: 'an ended session with a pull request reads "Ready for review": a violet 22px pill, a violet row, an Open PR link (#179)',
+  },
+  {
+    name: '#179 css: the detail header pill stays plain for a ready session',
+    file: 'web/css/squad.css',
+    find: `.dt-pill.ready { color: var(--violet); background: color-mix(in srgb, var(--violet) 10%, var(--panel-2)); }`,
+    replace: `.dt-pill.ready { }`,
+    mustFail: 'the detail page shows the violet pill, the Open PR link and the per-check health list in the Squad panel (#179)',
+  },
+  {
+    name: '#179 css: the failing health badge stops reading as a warning',
+    file: 'web/css/squad.css',
+    find: `.health.failing { color: color-mix(in srgb, var(--bad) 80%, var(--text)); }`,
+    replace: `.health.failing { color: var(--dim); }`,
+    mustFail: 'the health badge is an indicator, not a pill or a button, and it reads red when failing and green when healthy (#179)',
+  },
+  {
+    name: '#179 css: the sessions column stops wrapping its tabs on a phone, so the Ready for review row runs off the screen',
+    file: 'web/css/list.css',
+    find: `@media (max-width: 600px) {\n  .scopetabs { flex-wrap: wrap;`,
+    replace: `@media (max-width: 6px) {\n  .scopetabs { flex-wrap: wrap;`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  // The filter bar, measured at thirteen widths from 390 to 1280px with and
+  // without the longest labels the dropdowns can show. The three below are the
+  // single CSS defects that check finds on its own. Not added, because the
+  // check stays green with them: the bar's own `flex-wrap` removed while the
+  // dropdown group still wraps, `1fr` in place of `minmax(0, 1fr)` in either
+  // grid, and the pill's `white-space: nowrap` removed. Each is held up by a
+  // neighbouring rule, so a mutant for it would only be an ESCAPED one.
+  {
+    name: '#179 css: the dropdown group no longer wraps inside the filter bar, so its pills run past the bar\'s edge',
+    file: 'web/css/list.css',
+    find: `.filterbar-end {\n  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;`,
+    replace: `.filterbar-end {\n  display: flex; align-items: center; justify-content: flex-end;`,
+    mustFail: 'the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)',
+  },
+  {
+    name: '#179 css: the filter bar is a fixed 48px tall, so its wrapped second row spills out of it',
+    file: 'web/css/list.css',
+    find: `  min-height: 48px; margin: 0;\n  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;`,
+    replace: `  height: 48px; margin: 0;\n  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;`,
+    mustFail: 'the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)',
+  },
+  {
+    name: '#179 css: the keyword box may squeeze to nothing, so a wide filter bar leaves it unusable',
+    file: 'web/css/list.css',
+    find: `  flex: 1; min-width: 160px;\n}\n.filterbar input:focus-visible`,
+    replace: `  flex: 1; min-width: 0;\n}\n.filterbar input:focus-visible`,
+    mustFail: 'the session list fits every width from 390 to 1280px, and the filter bar wraps rather than pushing the page sideways (#179)',
+  },
+  {
+    name: '#179 css: the detail header keeps every action on one line on a phone',
+    file: 'web/css/detail.css',
+    // #243's two-row column header (the `max-width: 900px` block) is what gives
+    // the actions their own line on a phone now; #179's own 600px rule it
+    // replaced is gone, so this puts the title and the actions back on one row.
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }`,
+    replace: `  .detail-head-line { flex-direction: row; align-items: center; height: 32px; } /* MUTATION: the actions share the title's line again */`,
+    mustFail: 'a stale session shows every header action at once and still fits a phone, because the actions take their own line (#179)',
+  },
+  {
+    name: '#179 css: the light theme chosen in the settings has a violet too pale to read',
+    file: 'web/css/tokens.css',
+    find: `  --violet: #6d3fd1;\n  --bad-solid: #b8332f;`,
+    replace: `  --violet: #c4b5fd;\n  --bad-solid: #b8332f;`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the light theme followed from the system has a violet too pale to read',
+    file: 'web/css/tokens.css',
+    find: `    --violet: #6d3fd1;\n    --bad-solid: #b8332f;`,
+    replace: `    --violet: #c4b5fd;\n    --bad-solid: #b8332f;`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the dark theme\'s violet is too dark to read',
+    file: 'web/css/tokens.css',
+    find: `  --violet: #a78bfa;\n  /* A DEEPER red`,
+    replace: `  --violet: #3b2a6b;\n  /* A DEEPER red`,
+    mustFail: 'at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)',
+  },
+  {
+    name: '#179 css: the healthy badge stops reading as green',
+    file: 'web/css/squad.css',
+    find: `.health.healthy { color: color-mix(in srgb, var(--ok) 80%, var(--text)); }`,
+    replace: `.health.healthy { color: var(--dim); }`,
+    mustFail: 'the health badge is an indicator, not a pill or a button, and it reads red when failing and green when healthy (#179)',
+  },
+
+  // ---- #179 + #237 integration: the keyword, status and device through a held
+  // GET and a live push. The anchors are plain JS (no process.env guard), so a
+  // mutant that reaches a real browser still parses and runs; each fails by the
+  // named assertion in test/review-health-unit.js, not by a ReferenceError.
+  {
+    name: '#179+#237 ws: refresh() stops sending the keyword the page holds',
+    file: 'web/js/ws.js',
+    find: `  if (state.filters.q) params.set('q', state.filters.q);`,
+    replace: `  // MUTATION: the keyword is no longer sent with the overview GET`,
+    mustFail: 'a held filtered GET asks the hub for exactly the keyword, status and device the page holds (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: refresh() stops sending the device the page holds',
+    file: 'web/js/ws.js',
+    find: `  if (state.filters.device) params.set('device', state.filters.device);`,
+    replace: `  // MUTATION: the device is no longer sent with the overview GET`,
+    mustFail: 'a held filtered GET asks the hub for exactly the keyword, status and device the page holds (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: a pinned session escapes the filters once the hub has not applied them to a push',
+    file: 'web/js/list.js',
+    find: `      if (!matchesHubFilters(s, filters, g.device)) continue;\n      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    replace: `      // MUTATION: the pre-filter is skipped\n      if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: the keyword after a push looks at the prompt alone',
+    file: 'web/js/list.js',
+    find: `  if (f.q && !matchesText(\`\${s.prompt || ''} \${s.cwd || ''} \${s.id || ''}\`, f.q)) return false;`,
+    replace: `  if (f.q && !matchesText(s.prompt || '', f.q)) return false; // MUTATION`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: the status after a push is left to the hub',
+    file: 'web/js/list.js',
+    find: `  if (f.status && f.status !== 'action' && s.status !== f.status) return false;`,
+    replace: `  // MUTATION: the status is left to the hub, which did not filter the push`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 list: the device after a push is left to the hub',
+    file: 'web/js/list.js',
+    find: `  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;`,
+    replace: `  // MUTATION: the device is left to the hub, which did not filter the push`,
+    mustFail: 'an unfiltered live push over that held GET draws only the sessions matching keyword, status and device, pinned ones included, and keeps the push whole (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: a live push no longer advances the counter an older GET is checked against',
+    file: 'web/js/ws.js',
+    find: `      refreshSeq += 1;`,
+    replace: `      refreshSeq += 0; // MUTATION: the push does not outrank a held GET`,
+    mustFail: 'completing the older filtered GET after the unfiltered push keeps the matching list and the pushed snapshot with the newly attached session (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: refresh() takes the reply of any request that is not newer than the latest',
+    file: 'web/js/ws.js',
+    find: `  if (seq === refreshSeq) state.overview = overview;`,
+    replace: `  if (seq <= refreshSeq) state.overview = overview; // MUTATION`,
+    mustFail: 'completing the older filtered GET after the unfiltered push keeps the matching list and the pushed snapshot with the newly attached session (#179 with #237)',
+  },
+  {
+    name: '#179+#237 ws: a live push is ignored while a keyword is held',
+    file: 'web/js/ws.js',
+    find: `      state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };`,
+    replace: `      state.overview = state.filters.q ? state.overview : { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion }; // MUTATION`,
+    mustFail: 'a filtered GET that lands first and the unfiltered push after it leave the same matching list, with the newly attached session (#179 with #237)',
+  },
+  {
+    name: '#179+#237 devices: the list is drawn without the filters the page holds',
+    file: 'web/js/devices.js',
+    find: `    groups,\n    filters: state.filters,\n    favorites: [...state.favorites],`,
+    replace: `    groups,\n    filters: {}, // MUTATION: the page's filters are not handed to buildView\n    favorites: [...state.favorites],`,
+    mustFail: 'devices.js draws the list through buildView with the overview and filters the page holds, which is what the held-GET checks stand in for (#179 with #237)',
+  },
+  {
+    // #243/#181: reverts the phone-width header fix to its pre-fix shape --
+    // the right-side actions get no line box of their own, and lose the
+    // `justify-content: flex-end` that right-aligns them -- reproducing the
+    // exact regression the real CI screenshots on this PR caught: at 390px,
+    // "Run on ACA…" wraps its label across lines inside a 32px button and
+    // Stop/⋯ are pushed past the right edge of the viewport.
+    name: 'at 390px, the detail header right-side actions wrap onto multiple lines and are pushed off the right edge of the viewport',
+    file: 'web/css/detail.css',
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }
+  .detail-head-line .spacer { display: none; }
+  .detail-head-titlerow { flex-wrap: nowrap; }
+  .detail-head-line .detail-actions { flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px; }
+}`,
+    replace: `  /* MUTATION: phone-width second-line-box fix removed */
+}`,
+    mustFail: 'at 390px, the detail header title and right-side actions stay inside the viewport, unclipped and on one line (#243)',
+  },
+  {
+    name: 'a filtered-out detail session is mistaken for a removed session',
+    file: 'web/js/detail.js',
+    find: "  const found = findSession(key) || retainedSelection(key);\n  state.currentSession = found;",
+    replace: "  const found = findSession(key);\n  if (!found) { closeDetail({ nav: NAV.REPLACE }); return; } // MUTATION\n  state.currentSession = found;",
+    mustFail: 'an open detail session survives leaving the active list filter',
+  },
+  {
+    name: 'detail menu compares serialized DOM instead of its generated markup',
+    file: 'web/js/wiring.js',
+    find: '  if (rowMenuMarkup !== html) {',
+    replace: '  if (menu.innerHTML !== html) { // MUTATION',
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'unreachable detail cleanup buttons cannot wrap inside the phone viewport',
+    file: 'web/css/detail.css',
+    find: 'justify-content: flex-end; flex-wrap: wrap; height: auto; row-gap: 6px;',
+    replace: 'justify-content: flex-end; flex-wrap: nowrap; height: 32px; row-gap: 6px;',
+    mustFail: 'at 390px, unreachable-session cleanup actions remain in bounds without overlapping metadata',
+  },
+  {
+    name: 'an overview refresh closes the persistent detail menu',
+    file: 'web/js/wiring.js',
+    find: "  const focused = document.activeElement;\n  const action = menu.contains(focused) ? focused.dataset.rowAction : null;",
+    replace: "  closeRowMenu(); return; // MUTATION\n  const focused = document.activeElement;\n  const action = menu.contains(focused) ? focused.dataset.rowAction : null;",
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'Open in the current detail menu pushes duplicate navigation',
+    file: 'web/js/rowmenu.js',
+    find: "    if (!state.currentSession || (state.currentSession.session.key || state.currentSession.session.id) !== key) openDetail(key);",
+    replace: "    openDetail(key); // MUTATION",
+    mustFail: 'the detail header menu survives overview refresh with focus intact, and Open does not duplicate history',
+  },
+  {
+    name: 'removing the selected session leaves stale detail controls',
+    file: 'web/js/rowmenu.js',
+    find: "      if (state.currentSession && (state.currentSession.session.key || state.currentSession.session.id) === key) closeDetail({ nav: 'replace' });",
+    replace: "      // MUTATION: leave the deleted session selected",
+    mustFail: 'removing the open ended session returns to the list without stale detail controls',
+  },
+  {
+    // The button-label guard on its own. At 1200px and below the actions take
+    // their own wrapping line, so a label has all the room it needs and the
+    // guard is not what holds it on one line there -- removing it at 390px
+    // changes nothing. Above 1200px the title row and the actions share ONE
+    // 32px line, and the label then wraps unless `white-space: nowrap` and
+    // `flex-shrink: 0` stop the button shrinking below its content: that is the
+    // width this guard is load-bearing at, and the width the #182 check measures
+    // it at (1280px, an unreachable session, light theme).
+    name: 'at 1280px, "Run on ACA…" wraps its label across two lines when the actions share the title\'s single row',
+    file: 'web/css/detail.css',
+    find: `.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;
+}`,
+    replace: `.detail-head-line .detail-actions button {
+  height: 32px; box-sizing: border-box; /* MUTATION: white-space/flex-shrink guard removed */
+}`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    // #243 real regression (CI run 37998832767): the whole `.detail-head-line`
+    // wrapping (rather than just the actions getting their own row) let the
+    // title row's OWN items split across two lines at 390px -- this restores
+    // that exact shape by deleting the atomic, `nowrap` title-row grouping and
+    // letting the line wrap as a single flex row again, which must make the
+    // shared-line-box assertion (checked at 1280/900/390px) fail at 390px,
+    // the same width and the same way the real run did.
+    name: 'at 390px, the title row wraps internally instead of staying an atomic non-wrapping line box (#243 real regression)',
+    file: 'web/css/detail.css',
+    find: `.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }`,
+    replace: `.detail-head-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; } @media (max-width: 900px) { .detail-head-line { flex-wrap: wrap !important; } .detail-head-titlerow { flex-wrap: wrap !important; } } /* MUTATION: title row allowed to wrap internally again */`,
+    mustFail: 'the header items share one vertical line box at 1280, 900 and 390px',
+  },
+  {
+    // The phone layout's `height: auto` override is what lets the actions'
+    // real second row take up real space instead of being clipped by (or
+    // overlapping) the metadata line underneath a header still pinned to the
+    // desktop 32px. Reverting to the fixed height must reproduce that
+    // overlap, which the new no-spatial-overlap assertion below exists to
+    // catch.
+    name: 'at 390px, the header stays clipped to a fixed 32px line box instead of growing for the actions\' second row, risking metadata overlap',
+    file: 'web/css/detail.css',
+    find: `  .detail-head-line { flex-direction: column; align-items: stretch; height: auto; row-gap: 6px; }`,
+    replace: `  .detail-head-line { flex-direction: column; align-items: stretch; height: 32px; overflow: hidden; row-gap: 6px; } /* MUTATION: height pinned back to 32px */`,
+    mustFail: 'at 390px, the detail header controls do not spatially overlap the metadata line underneath them',
+  },
+
+  // ---- #182: detail tabs, the inline approval card, the Info tab ------------
+  // Unit-level mutations are caught by test/detail-tabs-unit.js; the ones that
+  // need a real page are caught by the browser suite.
+  {
+    name: '#182: the Files spike becomes a selectable tab',
+    file: 'web/js/detail-tabs.js',
+    find: `export const DETAIL_TABS = ['chat', 'squad', 'info'];`,
+    replace: `export const DETAIL_TABS = ['chat', 'squad', 'info', 'files']; // MUTATION`,
+    mustFail: 'Files is never a selectable tab',
+  },
+  {
+    name: '#182: the arrow keys stop wrapping at the last tab',
+    file: 'web/js/detail-tabs.js',
+    find: `if (key === 'ArrowRight') return DETAIL_TABS[at === last ? 0 : at + 1];`,
+    replace: `if (key === 'ArrowRight') return DETAIL_TABS[at === last ? last : at + 1]; // MUTATION`,
+    mustFail: 'the tab keys wrap around the three real tabs and never land on Files',
+  },
+  {
+    name: '#182: a compound command is chipped as one program, not every program in it',
+    file: 'web/js/approval-card.js',
+    find: `String(line).split(/&&|\\|\\||[;|]/)`,
+    replace: `String(line).split(/\\|\\||[;|]/)`,
+    mustFail: 'tool chips name every program in a compound command once, from reported data only',
+  },
+  {
+    name: '#182: the same program is chipped every time it appears',
+    file: 'web/js/approval-card.js',
+    find: `if (head && !out.includes(head)) out.push(head);`,
+    replace: `if (head) out.push(head); // MUTATION`,
+    mustFail: 'tool chips name every program in a compound command once, from reported data only',
+  },
+  {
+    name: '#182: the inline card drops the read-only badges and paths',
+    file: 'web/js/approval-card.js',
+    find: `    <div class="dt-appr-paths">\${approvalChipsHtml(approval)}</div>`,
+    replace: `    <div class="dt-appr-paths"></div> <!-- MUTATION -->`,
+    mustFail: 'the inline card shows the command, tool chips, read-only badges, paths and the offered buttons',
+  },
+  {
+    name: '#182: the inline card always offers Always allow, even when the agent did not',
+    file: 'web/js/approval-card.js',
+    find: `    <div class="dt-appr-actions">\${approvalButtonsHtml(approval)}</div>`,
+    replace: `    <div class="dt-appr-actions">\${approvalButtonsHtml(approval)}<button type="button" class="ghost" data-answer="allow_always">Always allow</button></div>`,
+    mustFail: 'the inline card offers Always allow only when the agent offered it',
+  },
+  {
+    name: '#182: the inline card shows the agent\'s command unescaped',
+    file: 'web/js/approval-card.js',
+    find: `<pre class="dt-appr-cmd">\${esc(approval.command || approval.title || '(no command reported)')}</pre>`,
+    replace: `<pre class="dt-appr-cmd">\${approval.command || approval.title || '(no command reported)'}</pre>`,
+    mustFail: 'the inline card escapes everything the agent sent',
+  },
+  {
+    name: '#182: the inline card\'s explainer loses its accessible name',
+    file: 'web/js/approval-card.js',
+    find: ` aria-label="About this permission request"`,
+    replace: ``,
+    mustFail: 'the inline card carries a labelled explainer hint button',
+  },
+  {
+    name: '#182: the inline card gains an inline style, which the page CSP forbids',
+    file: 'web/js/approval-card.js',
+    find: `<section class="dt-appr" data-approval="\${esc(approval.approvalId)}" aria-label="Permission needed">`,
+    replace: `<section class="dt-appr" style="margin:0" data-approval="\${esc(approval.approvalId)}" aria-label="Permission needed">`,
+    mustFail: 'the inline card never invents an expiry, a Teams control or an inline style',
+  },
+  {
+    name: '#182: the Info tab invents a default branch',
+    file: 'web/js/session-info.js',
+    find: `{ key: 'branch', label: 'Branch', html: orGap(git.branch) },`,
+    replace: `{ key: 'branch', label: 'Branch', html: orGap(git.branch || 'main') }, // MUTATION`,
+    mustFail: 'Info says not reported for every field the device did not send, and invents nothing',
+  },
+  {
+    name: '#182: the Info tab shows what was asked for over what the device applied',
+    file: 'web/js/session-info.js',
+    find: `  const got = session.applied && session.applied[field];`,
+    replace: `  const got = session.agentSelection && session.agentSelection[field] ? null : (session.applied && session.applied[field]); // MUTATION`,
+    mustFail: 'Info prefers what the device applied and labels a mere request as one',
+  },
+  {
+    name: '#182: the Info tab prints the working directory unescaped',
+    file: 'web/js/session-info.js',
+    find: `html: s.cwd ? \`<code>\${esc(s.cwd)}</code>\` : dim('not reported')`,
+    replace: `html: s.cwd ? \`<code>\${s.cwd}</code>\` : dim('not reported')`,
+    mustFail: 'Info escapes hostile device and session text',
+  },
+  {
+    name: '#182: the Info tab links any address the device sent, not only http and https',
+    file: 'web/js/session-info.js',
+    find: `    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null;`,
+    replace: `    return u.href; // MUTATION`,
+    mustFail: 'Info only links http and https addresses',
+  },
+  {
+    name: '#182: Squad health shows the overall verdict but not each check',
+    file: 'web/js/session-info.js',
+    find: `\${[pillHtml(tone, v.text), ...checks].join('')}`,
+    replace: `\${[pillHtml(tone, v.text)].join('')}`,
+    mustFail: 'Squad health shows each check with its own word, not only a color',
+  },
+  {
+    name: '#182: Squad health calls a device that did not report health passing',
+    file: 'web/js/session-info.js',
+    find: `    return { state: 'unreported', text: 'Not reported by this device', checks: [] };`,
+    replace: `    return { state: 'pass', text: 'All checks pass', checks: [] }; // MUTATION`,
+    mustFail: 'Squad health is honest when the device cannot or has not checked',
+  },
+  {
+    name: '#182: the ACA row invents an Aspire dashboard link the device never reported',
+    file: 'web/js/session-info.js',
+    find: `  const aspire = safeHttpUrl(session.aspireUrl);`,
+    replace: `  const aspire = safeHttpUrl(session.aspireUrl || 'http://localhost:18888'); // MUTATION`,
+    mustFail: 'the ACA row lists only links the device reported, and never a lease',
+  },
+  {
+    name: '#182: the approval history lists the oldest request first',
+    file: 'web/js/session-info.js',
+    find: `.sort((a, b) => b.at - a.at);`,
+    replace: `.sort((a, b) => a.at - b.at); // MUTATION`,
+    mustFail: 'approval history merges answered and expired requests, newest first, with who, what, when and where',
+  },
+  {
+    name: '#182: the approval history says an answer from the terminal came from the hub',
+    file: 'web/js/session-info.js',
+    find: `    from: a.answeredVia === 'terminal' ? \`at the terminal on \${where}\` : 'from the hub',`,
+    replace: `    from: 'from the hub', // MUTATION`,
+    mustFail: 'approval history merges answered and expired requests, newest first, with who, what, when and where',
+  },
+  {
+    name: '#182: the approval history attributes an expired request to someone',
+    file: 'web/js/session-info.js',
+    find: `    who: null,`,
+    replace: `    who: 'someone', // MUTATION`,
+    mustFail: 'an expired request is shown as not answered, never attributed to anyone',
+  },
+  {
+    name: '#182: the tab module makes a request of its own',
+    file: 'web/js/detail-tabs.js',
+    find: `export function initDetailTabs() {`,
+    replace: `export function initDetailTabs() {
+  fetch('/api/devices/x/transcript'); // MUTATION`,
+    mustFail: 'the tab, card and Info modules make no requests of their own',
+  },
+  {
+    name: '#182: the bell inbox posts its own approval answer instead of the shared one',
+    file: 'web/js/wiring.js',
+    find: `    await answerApproval({ deviceId: device }, { id: sessionId }, { approvalId: approval }, answer);`,
+    replace: `    await api(\`/api/devices/\${encodeURIComponent(device)}/approve\`, { method: 'POST', body: { sessionId, approvalId: approval, optionId: answer } }); // MUTATION`,
+    mustFail: 'only the shared helper posts an approval answer',
+  },
+  {
+    name: '#182: the Files tab becomes clickable',
+    file: 'web/index.html',
+    find: ` aria-disabled="true" disabled title="Spike only: appears when the device allows file access">Files</button>`,
+    replace: ` aria-disabled="true" title="Spike only: appears when the device allows file access">Files</button>`,
+    mustFail: 'the markup has Chat, Squad and Info tabs and a disabled Files tab with its tooltip',
+  },
+  {
+    name: '#182: the Info tab loses its click handler',
+    file: 'web/js/detail-tabs.js',
+    find: `  $('dtTab-info').onclick = () => selectDetailTab('info');`,
+    replace: `  // MUTATION`,
+    mustFail: 'every control in the markup is wired to a handler',
+  },
+  {
+    name: '#182: the inline card\'s buttons shrink away from the product\'s 32px',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-appr-actions button { height: 32px; padding: 0 14px;`,
+    replace: `.dt-appr-actions button { height: 28px; padding: 0 14px;`,
+    mustFail: 'the new styles keep the product sizes: 22px status pills and 32px buttons',
+  },
+  {
+    name: '#182: the tab bar loses its height',
+    file: 'web/css/detail-tabs.css',
+    find: `  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `  height: 36px; padding: 0 14px; margin: 0; /* MUTATION */`,
+    mustFail: 'the tabs, the card and its buttons keep their sizes and stay inside the page at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: the tool chips drift away from the 22px pill height',
+    file: 'web/css/detail-tabs.css',
+    find: `  padding: 0 8px; height: 22px; border-radius: 6px;`,
+    replace: `  padding: 0 8px; height: 26px; border-radius: 6px; /* MUTATION */`,
+    mustFail: 'the tabs, the card and its buttons keep their sizes and stay inside the page at 1280, 900 and 390px (#182)',
+  },
+  // The rest need a real page: a clicked button, a switched tab, a live update.
+  {
+    name: '#182: every inline card button answers allow once, whatever it says',
+    file: 'web/js/approval-card.js',
+    find: `    const optionId = btn.dataset.answer;`,
+    replace: `    const optionId = 'allow_once'; // MUTATION`,
+    mustFail: 'denying from the inline card runs nothing, and the history records the denial (#182)',
+  },
+  {
+    name: '#182: selecting a tab leaves the other panes showing',
+    file: 'web/js/detail-tabs.js',
+    find: `    $(\`dtPane-\${t}\`).hidden = !on;`,
+    replace: `    $(\`dtPane-\${t}\`).hidden = false; // MUTATION`,
+    mustFail: 'the session detail has Chat, Squad and Info tabs that each show only their own pane, and a disabled Files tab (#182)',
+  },
+  {
+    name: '#182: switching tabs clears the half-typed message',
+    file: 'web/js/detail-tabs.js',
+    find: `  activeDetailTab = id;`,
+    replace: `  activeDetailTab = id; $('dtInput').value = ''; // MUTATION`,
+    mustFail: 'moving between tabs keeps a half-typed message and the transcript, because the composer sits outside every pane (#182)',
+  },
+  {
+    name: '#182: every live refresh rebuilds the inline card',
+    file: 'web/js/approval-card.js',
+    find: `    if (live.has(card.dataset.approval)) have.set(card.dataset.approval, card);
+    else card.remove();`,
+    replace: `    card.remove(); // MUTATION`,
+    mustFail: 'the card survives tab switches and live refreshes without being rebuilt, and the Chat dot stays (#182)',
+  },
+  {
+    name: '#182: the Chat tab never signals a waiting request',
+    file: 'web/js/detail-tabs.js',
+    find: `  $('dtTabChatDot').hidden = !waiting;`,
+    replace: `  $('dtTabChatDot').hidden = true; // MUTATION`,
+    mustFail: 'a pending request shows as an inline card on the Chat tab, and the pop-up and the bell still raise it (#182)',
+  },
+  {
+    name: '#182: an open Info tab does not follow the live feed',
+    file: 'web/js/detail-tabs.js',
+    find: `  if (activeDetailTab === 'info') renderInfoPane(found);`,
+    replace: `  // MUTATION: Info is painted only when selected`,
+    mustFail: 'a request answered at the terminal, and one that expired, show in the history with who, what and where (#182)',
+  },
+  {
+    name: '#182: opening another session keeps the last session\'s tab',
+    file: 'web/js/detail.js',
+    find: `  resetDetailTabs(found);`,
+    replace: `  // MUTATION: the tab is not reset`,
+    mustFail: 'a session opened from the sidebar starts on the Chat tab, not on the tab the previous session left open (#182)',
+  },
+  {
+    name: '#182: the buttons stay live while an answer is in flight',
+    file: 'web/js/approvals.js',
+    find: `  for (const b of buttons) b.disabled = true;
+  try {
+    await answerApproval(`,
+    replace: `  try { // MUTATION
+    await answerApproval(`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: a refused answer leaves the card\'s buttons dead',
+    file: 'web/js/approvals.js',
+    find: `    onError(e);
+    for (const b of buttons) b.disabled = false;
+    return false;`,
+    replace: `    onError(e);
+    return false; // MUTATION`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: a refused answer is treated as an accepted one',
+    file: 'web/js/approvals.js',
+    find: `    onError(e);
+    for (const b of buttons) b.disabled = false;
+    return false;`,
+    replace: `    onError(e);
+    return true; // MUTATION`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: the card removes itself before the hub has answered',
+    file: 'web/js/approval-card.js',
+    find: `    note.textContent = '';
+    const optionId = btn.dataset.answer;`,
+    replace: `    note.textContent = ''; card.remove(); // MUTATION
+    const optionId = btn.dataset.answer;`,
+    mustFail: 'the card waits for the hub: nothing goes while the answer is in flight, and a refused answer leaves the request answerable (#182)',
+  },
+  {
+    name: '#182: history row parts sit at different heights on one line',
+    file: 'web/css/detail-tabs.css',
+    find: `  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 22px;`,
+    replace: `  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 1;`,
+    mustFail: 'the Info tab, its history rows and the space above the composer stay aligned and inside the page at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: a long path in the details table pushes the page sideways',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-kv td { overflow-wrap: anywhere; }`,
+    replace: `.dt-kv td { /* MUTATION */ }`,
+    mustFail: 'a very long working directory wraps in the session header and in Info instead of pushing the page sideways at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: a long working directory in the session header pushes the page sideways',
+    file: 'web/css/detail-tabs.css',
+    find: `#dtMeta { overflow-wrap: anywhere; }`,
+    replace: `#dtMeta { /* MUTATION */ }`,
+    mustFail: 'a very long working directory wraps in the session header and in Info instead of pushing the page sideways at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: the Info tab sits flush against the composer',
+    file: 'web/css/detail-tabs.css',
+    find: `#dtPane-info { margin-bottom: 12px; }`,
+    replace: `#dtPane-info { /* MUTATION */ }`,
+    mustFail: 'the Info tab, its history rows and the space above the composer stay aligned and inside the page at 1280, 900 and 390px (#182)',
+  },
+  {
+    name: '#182: the Squad tab sits flush against the composer',
+    file: 'web/css/squad.css',
+    find: `  background: var(--panel-2); padding: 12px; margin-bottom: 12px;`,
+    replace: `  background: var(--panel-2); padding: 12px; /* MUTATION */`,
+    mustFail: 'the Squad tab shows the existing Squad panel, with its members and documents, above the composer (#182)',
+  },
+  {
+    name: '#182: the Squad panel loses its roster',
+    file: 'web/js/squad-panel.js',
+    find: `  const members = Array.isArray(sq.members) ? sq.members : [];`,
+    replace: `  const members = []; // MUTATION`,
+    mustFail: 'the Squad tab shows the existing Squad panel, with its members and documents, above the composer (#182)',
+  },
+  {
+    name: '#182: the system light theme leaves the near-black code surfaces',
+    file: 'web/css/tokens.css',
+    find: `    --code-bg: #f2f4f8;
+    --code-line: #dfe4ec;`,
+    replace: `    /* MUTATION */`,
+    mustFail: 'a system that prefers light, with no saved choice, still flips the code surfaces',
+  },
+  {
+    name: '#182: the status pill no longer gives way, so a long status leaves the title a sliver on a phone',
+    file: 'web/css/detail.css',
+    find: `    display: block; max-width: 150px; line-height: 22px;`,
+    replace: `    display: block; line-height: 22px; /* MUTATION */`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    name: '#182: the header actions are pushed off the page in the dark theme only',
+    file: 'web/css/detail-tabs.css',
+    find: `  .dt-appr { padding: 10px 12px; }`,
+    replace: `  .dt-appr { padding: 10px 12px; }
+  @media (prefers-color-scheme: dark) { .detail-actions button { position: relative; left: 300px; } } /* MUTATION */`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  {
+    name: '#182: the tab bar outgrows a phone while a permission request waits',
+    file: 'web/css/detail-tabs.css',
+    find: `  .dt-tab { padding: 0 10px; }`,
+    replace: `  .dt-tab { padding: 0 40px; } /* MUTATION */`,
+    mustFail: 'the session header still fits, with the tabs, while a permission request waits, at 1280, 900 and 390px, light and dark (#182)',
+  },
+  // The tab bar's own box: the tab used to overlap a real border of an
+  // overflow-x:auto bar, which is vertical overflow (a 15px scrollbar and a cut
+  // underline on classic-scrollbar browsers; invisible in the headless shell).
+  {
+    name: '#182: the tab bar overlaps its own border again and grows a vertical scrollbar',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `.dt-tabs {
+  display: flex; gap: 4px; height: 40px; margin-top: 12px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; /* MUTATION */
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
+    mustFail: 'the tab bar draws no scrollbar of its own and keeps its whole underline when the browser shows classic scrollbars, at 1280, 900, 390 and 200px, light and dark (#182)',
+  },
+  // Hiding the scrollbar is not the fix: the content is still taller than its box.
+  {
+    name: '#182: the vertical scrollbar of the overlapping tab bar is only hidden, not removed',
+    file: 'web/css/detail-tabs.css',
+    find: `.dt-tabs {
+  display: flex; gap: 4px; margin-top: 12px;
+  box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0;`,
+    replace: `.dt-tabs {
+  display: flex; gap: 4px; height: 40px; margin-top: 12px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; /* MUTATION */
+}
+.dt-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 40px; padding: 0 14px; margin: 0 0 -1px;`,
+    mustFail: 'the session header fits Run on ACA…, Forget, Stop and More, a long title and the status pill at 1280, 900 and 390px, light and dark (#182)',
+  },
+  // #179 with #182: both branches exported a `squadHealthView`. A browser
+  // keeps the two modules' names apart, but every DOM-free unit suite flattens
+  // the graph into one scope, so the later declaration answered for both.
+  {
+    name: '#179+#182 session-info.js declares squadHealthView again, shadowing the one in review.js in every flattened unit suite',
+    file: 'web/js/session-info.js',
+    find: `export function infoHealthView(session) {`,
+    replace: `export function squadHealthView(session) { // MUTATION: the same name review.js already declares`,
+    mustFail: 'no two modules in the graph declare the same top-level name, because the unit suites flatten the graph into one scope',
+  },
+  {
+    name: '#182+#183 detail-control.js: the control answer is guarded by the session key alone, so a reply from before a close-and-reopen is applied',
+    file: 'web/js/detail-control.js',
+    find: `  if (!stillSameSelection || token !== controlToken || generation !== selectionGeneration) return;`,
+    replace: `  if (!stillSameSelection) return; // MUTATION: the key-only guard, without #182's controlToken and selection generation`,
+    mustFail: '(real call sites, #182 with #183) the Mode and Model bar follows the open session on every live push and on the control answer that applies, never on one a reopen superseded',
+  },
+  {
+    name: '#182+#183 detail.js: renderControl stops repainting the Mode and Model bar from the control answer',
+    file: 'web/js/detail.js',
+    find: `    : 'Controls are disabled until this session is verified';\n  renderNextTurn();\n}`,
+    replace: `    : 'Controls are disabled until this session is verified'; // MUTATION: the bar is not repainted\n}`,
+    mustFail: '(real call sites, #182 with #183) the Mode and Model bar follows the open session on every live push and on the control answer that applies, never on one a reopen superseded',
+  },
+  {
+    name: '#182+#183 detail.js: a live push to the open session stops repainting the Mode and Model bar',
+    file: 'web/js/detail.js',
+    find: `  syncReviewDetail(found.session);\n  renderNextTurn();\n  renderDetailStar(key);`,
+    replace: `  syncReviewDetail(found.session);\n  renderDetailStar(key); // MUTATION: no repaint of the bar`,
+    mustFail: '(real call sites, #182 with #183) the Mode and Model bar follows the open session on every live push and on the control answer that applies, never on one a reopen superseded',
+  },
+  // ---------------------------------------------------------------------
+  // #183: Mode and Model for the next turn.
+  //
+  // Every mutation below breaks ONE decision the feature makes and names the
+  // test that must notice. Names carry a bracketed tag so one layer can be
+  // re-proven alone: `node test/mutate-probe.js next-turn-unit.js "[#183 acp]"`.
+  // ---------------------------------------------------------------------
+  {
+    // The prompt must run in the mode that was asked for. Sent first, it runs
+    // in the OLD mode -- a request to only plan, honored as a request to act.
+    name: '[#183 acp] the prompt goes out before the mode and model are applied',
+    file: 'src/acp-session.js',
+    find: `      for (const { field, hit } of plan) {
+        const from = nt.current[field];`,
+    replace: `      this._sendPrompt(text); sent = true; // MUTATION: prompt sent before the changes
+      for (const { field, hit } of plan) {
+        const from = nt.current[field];`,
+    mustFail: 'next turn: a mode and model are applied BEFORE the prompt, which then runs in them',
+  },
+  {
+    // set_mode takes a URI and answers {}; set_model answers {}. Neither says
+    // what the value is now, so neither can be confirmed.
+    name: '[#183 acp] a change goes over session/set_mode or set_model instead of set_config_option',
+    file: 'src/acp-session.js',
+    find: `      result = await this._requestWithin('session/set_config_option',`,
+    replace: `      result = await this._requestWithin(field === 'mode' ? 'session/set_mode' : 'session/set_model', // MUTATION`,
+    mustFail: 'next turn: the change goes over session/set_config_option with the advertised id, never session/set_mode or set_model',
+  },
+  {
+    name: '[#183 acp] a mode is no longer found by its label',
+    file: 'src/acp-session.js',
+    find: `    || choices.find((c) => norm(c.name) === a)
+`,
+    replace: `    // MUTATION: label matching removed
+`,
+    mustFail: 'next turn: a mode named by label, case or fragment is sent as the id the agent advertised',
+  },
+  {
+    name: '[#183 acp] a mode is no longer found by the fragment of its URI',
+    file: 'src/acp-session.js',
+    find: `    || choices.find((c) => norm(c.id).split('#').pop() === a)
+`,
+    replace: `    // MUTATION: fragment matching removed
+`,
+    mustFail: 'next turn: a mode named by label, case or fragment is sent as the id the agent advertised',
+  },
+  {
+    name: '[#183 acp] the transcript marker is written under a name the page does not read',
+    file: 'src/acp-session.js',
+    find: `          sessionUpdate: 'selection_change',`,
+    replace: `          sessionUpdate: 'selection_changed', // MUTATION`,
+    mustFail: 'next turn: each applied change lands in the transcript, before the message that needed it',
+  },
+  {
+    name: '[#183 acp] the transcript marker lands after the message it was needed for',
+    file: 'src/acp-session.js',
+    find: `        this._pushTranscript({
+          sessionUpdate: 'selection_change',`,
+    replace: `        ((u) => setImmediate(() => this._pushTranscript(u)))({ // MUTATION: marker deferred past the prompt
+          sessionUpdate: 'selection_change',`,
+    mustFail: 'next turn: each applied change lands in the transcript, before the message that needed it',
+  },
+  {
+    name: '[#183 acp] an unknown mode is sent to the agent as asked',
+    file: 'src/acp-session.js',
+    find: `      const hit = findChoice(choices, asked[field]);`,
+    replace: `      const hit = findChoice(choices, asked[field]) || (field === 'mode' ? { id: asked[field], name: asked[field] } : null); // MUTATION`,
+    mustFail: 'next turn: an unknown mode is refused, and nothing is sent, changed or announced',
+  },
+  {
+    name: '[#183 acp] an unknown model is sent to the agent as asked',
+    file: 'src/acp-session.js',
+    find: `      const hit = findChoice(choices, asked[field]);`,
+    replace: `      const hit = findChoice(choices, asked[field]) || (field === 'model' ? { id: asked[field], name: asked[field] } : null); // MUTATION`,
+    mustFail: 'next turn: an unknown model is refused, and nothing is sent or changed',
+  },
+  {
+    // The model is applied first; a bad MODE found afterwards must not leave
+    // that model change behind.
+    name: '[#183 acp] the model is applied while the values are still being checked',
+    file: 'src/acp-session.js',
+    find: `      if (norm(nt.current[field]) !== norm(hit.id)) plan.push({ field, hit });`,
+    replace: `      if (norm(nt.current[field]) !== norm(hit.id)) { plan.push({ field, hit }); if (field === 'model') await this._applyChoice(field, hit); } // MUTATION`,
+    mustFail: 'next turn: every value is validated BEFORE any change is made, so a good mode is not applied beside a bad model',
+  },
+  {
+    name: '[#183 acp] asking for the value the session already has still makes a change',
+    file: 'src/acp-session.js',
+    find: `      if (norm(nt.current[field]) !== norm(hit.id)) plan.push({ field, hit });`,
+    replace: `      plan.push({ field, hit }); // MUTATION: no-op change not skipped`,
+    mustFail: 'next turn: asking for the mode the session already has makes no change and no round trip',
+  },
+  {
+    name: '[#183 acp] a refused change still sends the message',
+    file: 'src/acp-session.js',
+    find: `          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, changes);`,
+    replace: `          this._sendPrompt(text); sent = true; // MUTATION: message sent although the change was refused
+          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, changes);`,
+    mustFail: 'next turn: an agent that refuses the change gets no prompt, and the session does not claim it applied',
+  },
+  {
+    name: '[#183 acp] the session claims the value before the agent has confirmed it',
+    file: 'src/acp-session.js',
+    find: `    let result;
+    try {
+      result = await this._requestWithin(`,
+    replace: `    let result;
+    nt.current[field] = hit.id; // MUTATION: claimed before confirmation
+    try {
+      result = await this._requestWithin(`,
+    mustFail: 'next turn: an agent that refuses the change gets no prompt, and the session does not claim it applied',
+  },
+  {
+    name: '[#183 acp] a refusal forgets the change that was already confirmed',
+    file: 'src/acp-session.js',
+    find: `          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, changes);`,
+    replace: `          return refuse(step.unsupported ? 'next-turn-unsupported' : 'selection-failed', reason, []); // MUTATION`,
+    mustFail: 'next turn: a refused second change leaves the first confirmed one reported, and the message unsent',
+  },
+  {
+    name: '[#183 acp] a refusal no longer says an earlier change stays in effect',
+    file: 'src/acp-session.js',
+    find: `          const prior = changes.length`,
+    replace: `          const prior = false && changes.length // MUTATION`,
+    mustFail: 'next turn: a refused second change leaves the first confirmed one reported, and the message unsent',
+  },
+  {
+    name: '[#183 acp] an agent that reports the old value is believed',
+    file: 'src/acp-session.js',
+    find: `    if (norm(reported.currentValue) !== norm(hit.id)) {`,
+    replace: `    if (false) { // MUTATION: read-back value not compared`,
+    mustFail: 'next turn: an agent that accepts a change but reports the OLD value is not believed',
+  },
+  {
+    name: '[#183 acp] an agent that says nothing about a change is believed',
+    file: 'src/acp-session.js',
+    find: `    if (!reported || reported.currentValue === undefined) {`,
+    replace: `    if (!reported || reported.currentValue === undefined) {
+      nt.current[field] = hit.id; return { ok: true }; // MUTATION: unconfirmed change believed
+    }
+    if (false) {`,
+    mustFail: 'next turn: an agent that accepts a change and says nothing about it is not believed either',
+  },
+  {
+    name: '[#183 acp] method not found no longer reads as unsupported',
+    file: 'src/acp-session.js',
+    find: `      if (rpc && rpc.code === -32601) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'next turn: "method not found" disables the selector with a reason, and is remembered',
+  },
+  {
+    name: '[#183 acp] an unsupported answer is not remembered, so the same change is tried again',
+    file: 'src/acp-session.js',
+    find: `        nt.unsupported.set(field, why);`,
+    replace: `        // MUTATION: not remembered`,
+    mustFail: 'next turn: "method not found" disables the selector with a reason, and is remembered',
+  },
+  {
+    name: '[#183 acp] a model list with no way to confirm a change is offered anyway',
+    file: 'src/acp-session.js',
+    find: `      if (!opt) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'next turn: a model list with nothing confirmable is shown disabled, and a change is refused',
+  },
+  {
+    name: '[#183 acp] every field is reported as supported whatever the agent advertised',
+    file: 'src/acp-session.js',
+    find: `        supported: reason === null,`,
+    replace: `        supported: true, // MUTATION`,
+    mustFail: 'next turn: an agent that advertises nothing is disabled with a plain reason, and an ordinary reply still works',
+  },
+  {
+    name: '[#183 acp] a change that never gets an answer leaves the session busy for ever',
+    file: 'src/acp-session.js',
+    find: `      nt.busy = false;
+      // Nothing was sent, so nothing is running`,
+    replace: `      // MUTATION: busy never cleared
+      // Nothing was sent, so nothing is running`,
+    mustFail: 'next turn: a change the agent never answers is reported as unconfirmed, sends nothing, and frees the session',
+  },
+  {
+    name: '[#183 acp] a change with no answer is reported as a plain failure, not as unconfirmed',
+    file: 'src/acp-session.js',
+    find: `      if (e && e.timedOut) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'next turn: a change the agent never answers is reported as unconfirmed, sends nothing, and frees the session',
+  },
+  {
+    name: '[#183 acp] a second change while one is in flight is let through',
+    file: 'src/acp-session.js',
+    find: `    if (nt.busy) {
+      return refuse('selection-busy',`,
+    replace: `    if (false) { // MUTATION
+      return refuse('selection-busy',`,
+    mustFail: 'next turn: a second change while one is being applied is refused as busy, and only one prompt is sent',
+  },
+  {
+    name: '[#183 acp] a plain reply slips in between a change and its prompt',
+    file: 'src/acp-session.js',
+    find: `    if (this._nt && this._nt.busy) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'next turn: a second change while one is being applied is refused as busy, and only one prompt is sent',
+  },
+  {
+    name: '[#183 acp] a change is applied while a turn is still running',
+    file: 'src/acp-session.js',
+    find: `    if (this.status !== STATUS.IDLE || this._pendingSteers > 0) {
+      return refuse('turn-in-progress',`,
+    replace: `    if (false) { // MUTATION
+      return refuse('turn-in-progress',`,
+    mustFail: 'next turn: a change asked for mid-turn is refused as in progress and touches nothing',
+  },
+  {
+    name: '[#183 acp] the mode shown does not follow the agent leaving plan mode',
+    file: 'src/acp-session.js',
+    find: `      this._noteCurrent('mode', u.currentModeId);`,
+    replace: `      // MUTATION: the agent's own mode change ignored`,
+    mustFail: 'next turn: the mode shown follows the agent when it leaves plan mode on its own',
+  },
+  {
+    name: '[#183 acp] an ended session still offers its selectors',
+    file: 'src/acp-session.js',
+    find: `    const live = !TERMINAL.includes(this.status);`,
+    replace: `    const live = true; // MUTATION`,
+    mustFail: 'next turn: an ended session offers nothing and refuses a change',
+  },
+  {
+    name: '[#183 acp] a change is applied to a session that has ended',
+    file: 'src/acp-session.js',
+    find: `    if (!text || TERMINAL.includes(this.status) || !this.acpSessionId || this.isAgentDead()) {`,
+    replace: `    if (!text) { // MUTATION`,
+    mustFail: 'next turn: an ended session offers nothing and refuses a change',
+  },
+  {
+    name: '[#183 acp] a session that ends mid-change is not noticed',
+    file: 'src/acp-session.js',
+    find: `          if (!this._canTakePrompt()) {
+            return refuse('session-changed', 'the session ended while the change was being applied', changes);
+          }
+          const prior`,
+    replace: `          const prior`,
+    mustFail: 'next turn: a session that ends while its change is being applied sends nothing and says the session changed',
+  },
+
+  // --- the daemon, the link, the watched terminal and the cloud device -------
+  {
+    name: '[#183 daemon] a one-shot job claims it can change the next turn',
+    file: 'src/daemon.js',
+    find: `capabilities: { narrowedForget: true, nextTurnSelection: this.nextTurnSelection },`,
+    replace: `capabilities: { narrowedForget: true, nextTurnSelection: true }, // MUTATION`,
+    mustFail: 'daemon: the capability is claimed at registration and withdrawn for a one-shot job',
+  },
+  {
+    name: '[#183 daemon] a one-shot device delivers the text without the change it was sent with',
+    file: 'src/daemon.js',
+    find: `    if (!this.nextTurnSelection || typeof s.steerWithSelection !== 'function') {`,
+    replace: `    if (typeof s.steerWithSelection !== 'function') { // MUTATION`,
+    mustFail: 'daemon: a one-shot device refuses a change and does not deliver the text',
+  },
+  {
+    name: '[#183 daemon] a one-shot device still publishes selectors that would work',
+    file: 'src/daemon.js',
+    find: `    if (!this.nextTurnSelection && view && view.nextTurn) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'daemon: a one-shot device refuses a change and does not deliver the text',
+  },
+  {
+    name: '[#183 daemon] a malformed mode or model is passed on instead of refused',
+    file: 'src/daemon.js',
+    find: `      if (typeof v !== 'string' || !v.trim() || v.length > 200) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'daemon: a refused selection throws the named code the hub maps, and a malformed one is a bad request',
+  },
+  {
+    name: '[#183 daemon] a session that cannot take input loses its code',
+    file: 'src/daemon.js',
+    find: `        code: r.code === 'not-steerable' ? 'NOT_STEERABLE' : r.code,`,
+    replace: `        code: r.code, // MUTATION`,
+    mustFail: 'daemon: a refused selection throws the named code the hub maps, and a malformed one is a bad request',
+  },
+  {
+    name: '[#183 daemon] a steer that changed something does not say what the agent confirmed',
+    file: 'src/daemon.js',
+    find: `    return { sent: true, changes: r.changes };`,
+    replace: `    return { sent: true }; // MUTATION`,
+    mustFail: 'daemon: a steer with a mode runs the prompt in that mode and reports the confirmed change',
+  },
+  {
+    name: '[#183 link] a refusal reaches the hub without its code',
+    file: 'src/hub-link.js',
+    find: `        ...(typeof code === 'string' && code ? { code } : {}),`,
+    replace: `        // MUTATION: the code is dropped`,
+    mustFail: 'hub link: a refusal carries its code on the reply, and a success never does',
+  },
+  {
+    name: '[#183 link] a success carries a code',
+    file: 'src/hub-link.js',
+    find: `      ? { type: 'reply', correlationId, ok: true, result: resultOrError }`,
+    replace: `      ? { type: 'reply', correlationId, ok: true, result: resultOrError, code: code || 'next-turn-unsupported' } // MUTATION`,
+    mustFail: 'hub link: a refusal carries its code on the reply, and a success never does',
+  },
+  {
+    name: '[#183 tui] a watched terminal session publishes selectors that would work',
+    file: 'src/tui-session.js',
+    find: `    supported: false, reason, mode: field(), model: field(),`,
+    replace: `    supported: true, reason, mode: field(), model: field(), // MUTATION`,
+    mustFail: 'daemon: a watched terminal session refuses a change and queues nothing',
+  },
+  {
+    name: '[#183 cloud] an ACA one-shot job claims next-turn support',
+    file: 'src/cloud-device.js',
+    find: `new Daemon({ nextTurnSelection: !ONESHOT })`,
+    replace: `new Daemon({ nextTurnSelection: true /* MUTATION */ })`,
+    mustFail: 'cloud device: a one-shot job claims no next-turn support and a change for it is refused before it reaches the job',
+  },
+  {
+    name: '[#183 cloud] a long-lived cloud worker does not claim next-turn support',
+    file: 'src/cloud-device.js',
+    find: `new Daemon({ nextTurnSelection: !ONESHOT })`,
+    replace: `new Daemon({ nextTurnSelection: false /* MUTATION */ })`,
+    mustFail: 'cloud device: a long-lived worker claims next-turn support',
+  },
+
+  // --- the hub ---------------------------------------------------------------
+  {
+    name: '[#183 hub] a change for a device that does not claim support is forwarded and silently dropped',
+    file: 'src/service/hub-service.js',
+    find: `          if (wantsNextTurn(body) && !(device.capabilities && device.capabilities.nextTurnSelection === true)) {`,
+    replace: `          if (false) { // MUTATION`,
+    mustFail: 'hub: a device that does not claim next-turn support is refused up front, and sent nothing',
+  },
+  {
+    name: '[#183 hub] a steer is relayed with whatever else the caller put in the body',
+    file: 'src/service/hub-service.js',
+    find: `: op === 'steer' ? steerForDevice(body)`,
+    replace: `: op === 'steer' ? { ...body } /* MUTATION */`,
+    mustFail: 'hub: a mode and model reach a capable device as strings, and nothing else rides along',
+  },
+  {
+    name: '[#183 hub] a mode or model reaches the device untrimmed',
+    file: 'src/service/hub-service.js',
+    find: `    if (typeof body[k] === 'string' && body[k].trim() !== '') out[k] = body[k].trim();`,
+    replace: `    if (typeof body[k] === 'string' && body[k].trim() !== '') out[k] = body[k]; // MUTATION`,
+    mustFail: 'hub: a mode and model reach a capable device as strings, and nothing else rides along',
+  },
+  {
+    name: '[#183 hub] a plain steer is relayed with an empty mode and model',
+    file: 'src/service/hub-service.js',
+    find: `  const out = { sessionId: body.sessionId, text: body.text };`,
+    replace: `  const out = { sessionId: body.sessionId, text: body.text, mode: null, model: null }; // MUTATION`,
+    mustFail: 'hub: a steer with no mode or model is relayed exactly as before, even to a device that predates this',
+  },
+  {
+    name: '[#183 hub] a mode or model of any kind is accepted at the API',
+    file: 'src/service/hub-service.js',
+    find: `            if (typeof v !== 'string' || !v.trim() || v.length > 200 || /[\\u0000-\\u001f\\u007f]/.test(v)) {`,
+    replace: `            if (false) { // MUTATION`,
+    mustFail: 'hub: a mode or model that is not a short string is refused before it reaches any device',
+  },
+  {
+    name: '[#183 hub] a mode or model with a control character is accepted at the API',
+    file: 'src/service/hub-service.js',
+    find: ` || v.length > 200 || /[\\u0000-\\u001f\\u007f]/.test(v)) {`,
+    replace: ` || v.length > 200) { // MUTATION`,
+    mustFail: 'hub: a mode or model that is not a short string is refused before it reaches any device',
+  },
+  {
+    name: '[#183 hub] the length bound on a mode or model is lifted',
+    file: 'src/service/hub-service.js',
+    find: ` || v.length > 200 || /[\\u0000-\\u001f\\u007f]/.test(v)) {`,
+    replace: ` || v.length > 200000 || /[\\u0000-\\u001f\\u007f]/.test(v)) { // MUTATION`,
+    mustFail: 'hub: a mode or model that is not a short string is refused before it reaches any device',
+  },
+  {
+    name: '[#183 hub] a refusal code the hub does not know is passed to the browser as a status',
+    file: 'src/service/hub-service.js',
+    find: `known ? { status: NEXT_TURN_REFUSALS[msg.code], code: msg.code } : { status: 400 },`,
+    replace: `known ? { status: NEXT_TURN_REFUSALS[msg.code], code: msg.code } : { status: 409, code: msg.code }, // MUTATION`,
+    mustFail: 'hub: a device refusal keeps its code and maps to its own status, and an unknown code stays a plain error',
+  },
+  {
+    name: '[#183 hub] a value that is not on offer is reported as a bad request',
+    file: 'src/service/hub-service.js',
+    find: `  'selection-not-offered': 422,`,
+    replace: `  'selection-not-offered': 400, // MUTATION`,
+    mustFail: 'hub: a device refusal keeps its code and maps to its own status, and an unknown code stays a plain error',
+  },
+  {
+    name: '[#183 hub] an agent that would not make the change is reported as a bad request',
+    file: 'src/service/hub-service.js',
+    find: `  'selection-failed': 502,`,
+    replace: `  'selection-failed': 400, // MUTATION`,
+    mustFail: 'hub: a device refusal keeps its code and maps to its own status, and an unknown code stays a plain error',
+  },
+
+  // --- the store -------------------------------------------------------------
+  {
+    name: '[#183 hub] any truthy capability earns next-turn support',
+    file: 'src/service/store.js',
+    find: `nextTurnSelection: v.nextTurnSelection === true };`,
+    replace: `nextTurnSelection: !!v.nextTurnSelection }; // MUTATION`,
+    mustFail: 'hub: a device that does not claim next-turn support is refused up front, and sent nothing',
+  },
+  {
+    name: '[#183 hub] a session may publish any number of choices',
+    file: 'src/service/store.js',
+    find: `(Array.isArray(f.choices) ? f.choices : []).slice(0, NEXT_TURN_CHOICE_MAX)`,
+    replace: `(Array.isArray(f.choices) ? f.choices : []) /* MUTATION */`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a choice id is not sanitised',
+    file: 'src/service/store.js',
+    find: `      const id = sanitizeShortString(c.id, 200);`,
+    replace: `      const id = typeof c.id === 'string' ? c.id : ''; // MUTATION`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a choice name is not sanitised',
+    file: 'src/service/store.js',
+    find: `      choices.push({ id, name: sanitizeShortString(c.name, 200) || id });`,
+    replace: `      choices.push({ id, name: typeof c.name === 'string' && c.name ? c.name : id }); // MUTATION`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a disabled field reason is not sanitised',
+    file: 'src/service/store.js',
+    find: `      reason: sanitizeShortString(f.reason, 300),`,
+    replace: `      reason: typeof f.reason === 'string' ? f.reason : null, // MUTATION`,
+    mustFail: 'hub: a hostile nextTurn is bounded and stripped of anything markup-shaped',
+  },
+  {
+    name: '[#183 hub] a field with no choices is published as supported',
+    file: 'src/service/store.js',
+    find: `      supported: f.supported === true && choices.length > 0,`,
+    replace: `      supported: f.supported === true, // MUTATION`,
+    mustFail: 'hub: a malformed nextTurn becomes a disabled one, never an enabled one',
+  },
+  {
+    name: '[#183 hub] a nextTurn with no supported field is published as supported',
+    file: 'src/service/store.js',
+    find: `    supported: v.supported === true && (mode.supported || model.supported),`,
+    replace: `    supported: v.supported === true, // MUTATION`,
+    mustFail: 'hub: a malformed nextTurn becomes a disabled one, never an enabled one',
+  },
+  {
+    name: '[#183 hub] a session from an older device is given a nextTurn',
+    file: 'src/service/store.js',
+    find: `  if ('nextTurn' in s) s.nextTurn = sanitizeNextTurn(s.nextTurn);`,
+    replace: `  s.nextTurn = sanitizeNextTurn(s.nextTurn); // MUTATION`,
+    mustFail: 'hub: a session from an older device carries no nextTurn at all',
+  },
+
+  // --- the page's own decisions ----------------------------------------------
+  {
+    name: '[#183 page] a selector is enabled before the session is synced',
+    file: 'web/js/next-turn.js',
+    find: `  if (controlState !== CONTROL.SYNCED) return off(NT_WAIT_SYNC, f);`,
+    replace: `  // MUTATION: sync not required`,
+    mustFail: 'page: a selector is enabled only when synced, idle, not mid-send and offered; each other state says why',
+  },
+  {
+    name: '[#183 page] a selector stays enabled while a message is being sent',
+    file: 'web/js/next-turn.js',
+    find: `  if (sending) return off(NT_SENDING, f);`,
+    replace: `  // MUTATION: sending not checked`,
+    mustFail: 'page: a selector is enabled only when synced, idle, not mid-send and offered; each other state says why',
+  },
+  {
+    name: '[#183 page] a selector is enabled while the agent is working',
+    file: 'web/js/next-turn.js',
+    find: `  if (session.status !== 'idle') return off(NT_WAIT_IDLE, f);`,
+    replace: `  // MUTATION: idle not required`,
+    mustFail: 'page: a selector is enabled only when synced, idle, not mid-send and offered; each other state says why',
+  },
+  {
+    name: '[#183 page] a field the device did not offer is enabled',
+    file: 'web/js/next-turn.js',
+    find: `  if (!f || f.supported !== true) {`,
+    replace: `  if (!f) { // MUTATION`,
+    mustFail: 'page: a field the device did not offer stays disabled with the reason the device gave, and never enabled by a guess',
+  },
+  {
+    name: '[#183 page] a session from an older device is given selectors',
+    file: 'web/js/next-turn.js',
+    find: `  if (!nt || typeof nt !== 'object') return off(NT_OLD_DEVICE, null);`,
+    replace: `  // MUTATION: an absent nextTurn is not refused`,
+    mustFail: 'page: a field the device did not offer stays disabled with the reason the device gave, and never enabled by a guess',
+  },
+  {
+    name: '[#183 page] a choice with no string id is offered',
+    file: 'web/js/next-turn.js',
+    find: `.filter((c) => c && typeof c.id === 'string');`,
+    replace: `.filter((c) => c); // MUTATION`,
+    mustFail: 'page: a field the device did not offer stays disabled with the reason the device gave, and never enabled by a guess',
+  },
+  {
+    name: '[#183 page] a pick that was never offered is sent',
+    file: 'web/js/next-turn.js',
+    find: `  const hit = pick && choices.some((c) => c.id === pick);`,
+    replace: `  const hit = !!pick; // MUTATION`,
+    mustFail: 'page: only a pick that is offered, differs from the session and sits in an enabled selector is sent',
+  },
+  {
+    name: '[#183 page] a pick that is not on offer counts as a change',
+    file: 'web/js/next-turn.js',
+    find: `changed: !!hit && pick !== f.current,`,
+    replace: `changed: !!pick && pick !== f.current, // MUTATION`,
+    mustFail: 'page: only a pick that is offered, differs from the session and sits in an enabled selector is sent',
+  },
+  {
+    name: '[#183 page] a selector that was not changed is sent anyway',
+    file: 'web/js/next-turn.js',
+    find: `    if (v.enabled && v.changed) body[field] = v.selected;`,
+    replace: `    if (v.enabled) body[field] = v.selected; // MUTATION`,
+    mustFail: 'page: only a pick that is offered, differs from the session and sits in an enabled selector is sent',
+  },
+  {
+    name: '[#183 page] the note speaks over the sync banner',
+    file: 'web/js/next-turn.js',
+    find: `  if (!off.length || controlState !== CONTROL.SYNCED) return '';`,
+    replace: `  if (!off.length) return ''; // MUTATION`,
+    mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
+  },
+  {
+    name: '[#183 page] two identical reasons are said twice',
+    file: 'web/js/next-turn.js',
+    find: `  if (off.length === 2 && off[0].reason === off[1].reason) {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
+  },
+  {
+    name: '[#183 page] a reason from the device is shown as it came, with no capital or stop',
+    file: 'web/js/next-turn.js',
+    find: `  const s = t.charAt(0).toUpperCase() + t.slice(1);`,
+    replace: `  const s = t; // MUTATION`,
+    mustFail: 'page: the note names what is unavailable, and leaves the sync banner to speak while the session is not synced',
+  },
+  {
+    name: '[#183 page] two devices that share a session id are taken for one session',
+    file: 'web/js/next-turn.js',
+    find: '(cur.session.key || `${cur.device.deviceId}:${cur.session.id}`)',
+    replace: '(cur.session.key || cur.session.id) /* MUTATION */',
+    mustFail: 'page: two devices that share a session id are two sessions for the one message guard',
+  },
+  {
+    name: '[#183 page] a second message is sent while the first is still being confirmed',
+    file: 'web/js/next-turn.js',
+    find: `  if (ntSending.has(key)) {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+  },
+  {
+    // One release site now: the hold is let go in the `finally`, so a finished
+    // send and a failed one are the same line. The two entries that pinned the
+    // old per-branch releases collapse into this one; the second slot below is
+    // a different hold regression, not a duplicate of it.
+    name: '[#183 page] a finished or failed send leaves the session held for ever',
+    file: 'web/js/next-turn.js',
+    find: `  } finally {
+    ntSending.delete(key);`,
+    replace: `  } finally {
+    // MUTATION: not released`,
+    mustFail: 'page: a second send for a session still being confirmed is refused outright, and a finished or failed one frees it again',
+  },
+  {
+    // The old duplicate-send bug itself: the hold let go the moment the agent
+    // has the message, instead of once the session list has answered.
+    name: '[#183 page] the session is released when the message lands, before the list has been refreshed',
+    file: 'web/js/next-turn.js',
+    find: `    if (onLanded) onLanded(r);`,
+    replace: `    ntSending.delete(key); // MUTATION
+    if (onLanded) onLanded(r);`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+
+  // --- a send belongs to the page it began on (#183 follow-up) -----------------
+  // Each names the plain behaviour one guard protects; the check it must fail is
+  // in test/detail-control-unit.js and drives the real Send, Mode and draft
+  // handlers, `ntSteer`, `openDetail`/`closeDetail` and the store.
+  {
+    name: '[#183 send] a key alone is taken for the page a send began on',
+    file: 'web/js/next-turn.js',
+    find: `  return !!view && selectionStillActive(view.key, view.generation);`,
+    replace: `  return !!view && !!state.currentSession && sessionKey(state.currentSession.session) === view.key; // MUTATION: the reopened session passes`,
+    mustFail: '(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed',
+  },
+  {
+    name: '[#183 send] a send is never taken for the page it began on',
+    file: 'web/js/next-turn.js',
+    find: `  return !!view && selectionStillActive(view.key, view.generation);`,
+    replace: `  return false; // MUTATION: every send looks like it outlived its page`,
+    mustFail: '(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept',
+  },
+  {
+    name: '[#183 send] sending a message counts as leaving the page',
+    file: 'web/js/next-turn.js',
+    find: `  ntHintOpen = null;
+  const body = { sessionId: session.id`,
+    replace: `  ntHintOpen = null;
+  invalidateSelection(); // MUTATION: an ordinary send moves the selection on
+  const body = { sessionId: session.id`,
+    mustFail: '(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept',
+  },
+  {
+    name: '[#183 send] a live rebuild of the open record counts as leaving the page',
+    file: 'web/js/detail.js',
+    find: `  const found = findSession(key) || retainedSelection(key);
+  state.currentSession = found;`,
+    replace: `  const found = findSession(key) || retainedSelection(key);
+  state.currentSession = found; invalidateSelection(); // MUTATION: the page is told apart by its record, which every push rebuilds`,
+    mustFail: '(send ownership) on the same page a send that fails says so, and a refused change is a note under the bar with the pick kept',
+  },
+  {
+    name: '[#183 send] the draft and the queued note go to whichever page holds the same words',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && !batch.failed.size && $('dtInput').value.trim() === text /* MUTATION: the words, not the revision */`,
+    mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
+  },
+  {
+    name: '[#183 send] a failure marks the composer of a page the send did not begin on',
+    file: 'web/js/composer-wire.js',
+    find: `      if (here) state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message });`,
+    replace: `      state.composer = composerReduce(state.composer, { type: 'send-failed', error: e.message }); // MUTATION`,
+    mustFail: '(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed',
+  },
+  {
+    name: '[#183 send] an error that outlived its page is dropped without a word',
+    file: 'web/js/composer-wire.js',
+    find: `      if (!e.ntHandled) alert(`,
+    replace: `      if (!e.ntHandled && here /* MUTATION: nobody is told once the page is gone */) alert(`,
+    mustFail: '(send ownership) a plain send error that outlives its page is shown in a dialog and does not mark the reopened composer as failed',
+  },
+  {
+    name: '[#183 send] a refusal that outlived its page is written under the bar of the page now open',
+    file: 'web/js/next-turn.js',
+    find: `      if (carried.length && ntViewActive(sentFrom)) {
+        ntOutcome = {`,
+    replace: `      if (carried.length) { // MUTATION: no page check
+        ntOutcome = {`,
+    mustFail: '(send ownership) a refusal that outlives its page is shown in a dialog and leaves the reopened page note, composer and pick alone',
+  },
+  {
+    name: '[#183 send] a confirmation that outlived its page spends the pick of the page now open',
+    file: 'web/js/next-turn.js',
+    find: `      if (ntViewActive(sentFrom)) {
+        ntPicked.delete(key);`,
+    replace: `      if (true /* MUTATION: no page check */) {
+        ntPicked.delete(key);`,
+    mustFail: '(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one',
+  },
+  {
+    name: '[#183 send] a send that outlived its page takes a choice it did not carry',
+    file: 'web/js/next-turn.js',
+    find: `for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];`,
+    replace: `for (const c of confirmed) delete left[c.field]; // MUTATION: whatever is picked now goes`,
+    mustFail: '(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one',
+  },
+  {
+    name: '[#183 send] a send that outlived its page leaves the choice it confirmed pending',
+    file: 'web/js/next-turn.js',
+    find: `for (const c of confirmed) if (left[c.field] === c.to) delete left[c.field];`,
+    replace: `for (const c of confirmed) if (false /* MUTATION */) delete left[c.field];`,
+    mustFail: '(send ownership) a confirmed choice from a send that outlived its page is still spent and does not return as a pending pick',
+  },
+  {
+    name: '[#183 send] a send that outlived its page stops refreshing the session it changed',
+    file: 'web/js/next-turn.js',
+    find: `    const stale = await ntRefreshed(refreshNow);
+    if (carried.length) {`,
+    replace: `    const stale = ntViewActive(sentFrom) ? await ntRefreshed(refreshNow) : null; // MUTATION
+    if (carried.length) {`,
+    mustFail: '(send ownership) a send held while another session is opened cannot clear that session draft or composer, even when it holds the same words',
+  },
+  {
+    name: '[#183 send] a refused pick no longer refreshes the session from the device',
+    file: 'web/js/next-turn.js',
+    find: `      const stale = carried.length ? await ntRefreshed(refreshNow) : null;`,
+    replace: `      const stale = null; // MUTATION: the refusal path never asks the device for what it did confirm`,
+    mustFail: '(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left',
+  },
+  {
+    name: '[#183 send] a refusal that outlived its page stops refreshing the session it changed',
+    file: 'web/js/next-turn.js',
+    find: `      const stale = carried.length ? await ntRefreshed(refreshNow) : null;`,
+    replace: `      const stale = carried.length && ntViewActive(sentFrom) ? await ntRefreshed(refreshNow) : null; // MUTATION`,
+    mustFail: '(send ownership) a refused pick refreshes the session from the device once, whether or not the page it was sent from was left',
+  },
+
+  // --- the page in a real browser --------------------------------------------
+  {
+    name: '[#183 browser] Send stays enabled while a change is being confirmed',
+    file: 'web/js/next-turn.js',
+    find: `  if (send && key) send.disabled = !controlsEnabled(control) || ntSending.has(key);`,
+    replace: `  if (send && key) send.disabled = !controlsEnabled(control); // MUTATION`,
+    mustFail: 'composer: while a change is confirmed Send and the selectors are held, and a send that lands after the person moved on leaves the box of the session they are in alone',
+  },
+  {
+    name: '[#183 browser] a disabled selector can be opened by a click',
+    file: 'web/js/next-turn.js',
+    find: `    bar.addEventListener('click', refuse, true);`,
+    replace: `    // MUTATION: a click on a disabled selector is not refused`,
+    mustFail: 'composer: a disabled selector cannot be opened by pointer or script',
+  },
+  {
+    name: '[#183 browser] a disabled selector can be opened from the keyboard',
+    file: 'web/js/next-turn.js',
+    find: `    bar.addEventListener('keydown', refuse, true);`,
+    replace: `    // MUTATION: a key on a disabled selector is not refused`,
+    mustFail: 'composer: a disabled selector cannot be opened by pointer or script',
+  },
+  {
+    name: '[#183 browser] a pick lingers after the message that carried it',
+    file: 'web/js/next-turn.js',
+    find: `        ntPicked.delete(key);
+      } else {`,
+    replace: `        // MUTATION: the pick is kept
+      } else {`,
+    mustFail: 'composer: a pick does not outlive its message, and choosing what the session already has sends no change request',
+  },
+  {
+    name: '[#183 browser] the draft is cleared even when something else was typed meanwhile',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && !batch.failed.size /* MUTATION: typing since the send is ignored */`,
+    mustFail: 'composer: something typed in the same session while a change is confirmed is kept when it lands',
+  },
+  {
+    name: '[#183 browser] a queued note is shown after the person has moved to another session',
+    file: 'web/js/composer-wire.js',
+    find: `now && sentFrom && now.key === sentFrom.key`,
+    replace: `true /* MUTATION: every session is told */`,
+    mustFail: 'composer: a queued note is not shown on a session the message was not sent to',
+  },
+  {
+    name: '[#183 browser] a refused change is reported again in a dialog',
+    file: 'web/js/composer-wire.js',
+    find: `      if (!e.ntHandled) alert(`,
+    replace: `      /* MUTATION: a dialog for a refusal the page already explained */ alert(\`Could not send: \${e.message}\`); if (false) alert(`,
+    mustFail: 'composer: a refused change keeps the draft and the pick, names the reason, and claims nothing applied',
+  },
+  {
+    name: '[#183 browser] Escape closes the whole session instead of an open list',
+    file: 'web/js/wiring.js',
+    find: `    if (e.defaultPrevented) return;\n    if (!dismissTopmostEscapeTarget() && !$('detailScrim').hidden) closeDetail();`,
+    replace: `    if (!dismissTopmostEscapeTarget() && !$('detailScrim').hidden) closeDetail(); // MUTATION: an Escape the open list already took also leaves the session`,
+    mustFail: 'composer: Escape closes an open list first and only then leaves the session',
+  },
+  // The browser-level twin of "verifyControl compares by object reference
+  // again" is not kept. That mutant leaves every page at "Checking control…",
+  // so each of the browser checks waits out its own limit (12 s or more, 27 of
+  // them) and the run is always cut at the 300 s bound with no verdict: it can
+  // only ever be an ERROR, never a kill. The same mutation is proven by the
+  // exact unit check above, which finishes in seconds.
+  {
+    name: '[#183 browser] a confirmed change is not drawn in the transcript',
+    file: 'web/js/transcript.js',
+    find: `    if (kind === 'selection_change') {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'composer: the transcript shows each confirmed change, and the bar reports only what the agent confirmed',
+  },
+  {
+    name: '[#183 browser] the bar is not a row on one center line',
+    file: 'web/css/composer-next-turn.css',
+    find: `.composer-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.composer-bar .primary { flex: 0 0 auto; height: 32px; padding: 0 18px; line-height: 20px; }`,
+    replace: `.composer-bar { display: flex; align-items: flex-start; gap: 8px; min-width: 0; } /* MUTATION */
+.composer-bar .primary { flex: 0 0 auto; height: 44px; padding: 0 18px; line-height: 20px; }`,
+    mustFail: 'composer: Mode, Model and Send share one vertical center line at 1280, 900 and 390px in dark and light',
+  },
+  {
+    name: '[#183 browser] the selectors keep their words on a phone and push Send off the line',
+    file: 'web/css/composer-next-turn.css',
+    find: `  .nt-lab { display: none; }`,
+    replace: `  .nt-lab { display: inline; } /* MUTATION */`,
+    mustFail: 'composer: Mode, Model and Send share one vertical center line at 1280, 900 and 390px in dark and light',
+  },
+  {
+    name: '[#183 browser] pressing the Mode i does nothing',
+    file: 'web/js/composer-wire.js',
+    find: `  $('dtNtModeHint').onclick = () => ntOnHint('mode');`,
+    replace: `  $('dtNtModeHint').onclick = () => {}; // MUTATION`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+  {
+    name: '[#183 browser] pressing the Model i explains Mode',
+    file: 'web/js/composer-wire.js',
+    find: `  $('dtNtModelHint').onclick = () => ntOnHint('model');`,
+    replace: `  $('dtNtModelHint').onclick = () => ntOnHint('mode'); // MUTATION`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+  {
+    name: '[#183 browser] pressing the i again keeps the explanation open',
+    file: 'web/js/next-turn.js',
+    find: `  ntHintOpen = ntHintOpen && ntHintOpen.key === key && ntHintOpen.field === field ? null : { key, field };`,
+    replace: `  ntHintOpen = { key, field }; // MUTATION`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+  {
+    name: '[#183 browser] typing leaves an explanation open',
+    file: 'web/js/next-turn.js',
+    find: `  if (!ntOutcome && !ntHintOpen) return;
+  ntOutcome = null;
+  ntHintOpen = null;`,
+    replace: `  if (!ntOutcome) return; // MUTATION
+  ntOutcome = null;`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },  {
+    name: '[#183 browser] the Model i is not a hint button',
+    file: 'web/index.html',
+    find: `class="hint-btn" id="dtNtModelHint"`,
+    replace: `class="hint" id="dtNtModelHint"`,
+    mustFail: 'composer: Mode and Model each have an i explainer with a title, and pressing it says the same under the bar',
+  },
+
+  // --- one send, one message, and who is told (#183 follow-up) -----------------
+  // The hold, the bounded refresh and the claims on a draft revision each have
+  // their own line. Every entry below breaks ONE of them and names the check in
+  // test/detail-control-unit.js (or the browser file) that must notice.
+  {
+    name: '[#183 send] the sent draft waits for the session list before it leaves the box',
+    file: 'web/js/composer-wire.js',
+    find: `      await ntSteer(device, session, text, refresh, sentFrom, landed);
+      renderControl();`,
+    replace: `      await ntSteer(device, session, text, refresh, sentFrom, null);
+      landed(null); // MUTATION: cleared after the refresh, not at landing`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+  {
+    name: '[#183 send] the page is never told that the agent has the message',
+    file: 'web/js/next-turn.js',
+    find: `    if (onLanded) onLanded(r);`,
+    replace: `    // MUTATION: no landing callback`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+  {
+    name: '[#183 send] turning away a repeat press lets go of the message that is being sent',
+    file: 'web/js/next-turn.js',
+    find: `  if (ntSending.has(key)) {
+    throw Object.assign(new Error('The previous message is still being sent.'), { ntHandled: true });
+  }
+  const control = state.composer && state.composer.control;
+  ntHintOpen = null;
+  const body = { sessionId: session.id, text, ...ntSelectionBody(session, control, ntPicked.get(key)) };
+  const carried = Object.keys(body).filter((k) => NT_FIELDS.includes(k));
+  ntSending.set(key, carried.length > 0);
+  if (carried.length) ntOutcome = null;
+  renderNextTurn();
+  try {
+    let r;`,
+    replace: `  const repeat = ntSending.has(key); // MUTATION: the repeat is refused inside the try, so its finally frees the first press's hold
+  const control = state.composer && state.composer.control;
+  ntHintOpen = null;
+  const body = { sessionId: session.id, text, ...ntSelectionBody(session, control, ntPicked.get(key)) };
+  const carried = Object.keys(body).filter((k) => NT_FIELDS.includes(k));
+  ntSending.set(key, carried.length > 0);
+  if (carried.length) ntOutcome = null;
+  renderNextTurn();
+  try {
+    if (repeat) throw Object.assign(new Error('The previous message is still being sent.'), { ntHandled: true });
+    let r;`,
+    mustFail: '(send held) a landed send clears its unchanged draft at once and holds the session through live pushes and repeated presses until the refresh settles',
+  },
+  {
+    name: '[#183 send] a session list that cannot be refreshed is swallowed without a word',
+    file: 'web/js/next-turn.js',
+    find: `.then(() => null, (e) => e || new Error('the session list could not be refreshed')),`,
+    replace: `.then(() => null, () => null), // MUTATION`,
+    mustFail: '(send held) a landed send is not undone by a refresh that fails: the draft is gone, the failure is said under the bar, and the session is released',
+  },
+  {
+    name: '[#183 send] a session list that cannot be refreshed turns a landed message into a failed one',
+    file: 'web/js/next-turn.js',
+    find: `    const stale = await ntRefreshed(refreshNow);
+    if (carried.length) {`,
+    replace: `    const stale = await ntRefreshed(refreshNow);
+    if (stale) throw stale; // MUTATION
+    if (carried.length) {`,
+    mustFail: '(send held) a landed send is not undone by a refresh that fails: the draft is gone, the failure is said under the bar, and the session is released',
+  },
+  {
+    name: '[#183 send] a refusal does not say that the session list could not be refreshed either',
+    file: 'web/js/next-turn.js',
+    find: 'Your message and choices are kept.${ntBehind(stale)}',
+    replace: 'Your message and choices are kept.',
+    mustFail: '(send held) a refusal whose refresh also fails keeps the draft and the pick, says both, and releases the session',
+  },
+  {
+    name: '[#183 send] a refresh failure of a page that was left is written under the page now open',
+    file: 'web/js/next-turn.js',
+    find: `    if (stale && ntViewActive(sentFrom)) {`,
+    replace: `    if (stale) { // MUTATION`,
+    mustFail: '(send held) a session reopened while its earlier message is still being folded in stays held, keeps what was typed, and hears nothing of the earlier send',
+  },
+  {
+    name: '[#183 send] a send that outlived its page wipes the pick made on the page now open',
+    file: 'web/js/next-turn.js',
+    find: `        ntPicked.set(key, left);`,
+    replace: `        ntPicked.delete(key); // MUTATION`,
+    mustFail: '(send ownership) a choice made on the reopened page survives the landing of an earlier send that confirmed a different one',
+  },
+  {
+    name: '[#183 send] a draft whose page was left is never spent when its message lands',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && !batch.failed.size && draftRev() === rev && ntViewActive(sentFrom) /* MUTATION */`,
+    mustFail: '(send restored) a message that lands after its page was left and nothing was opened is spent, so no session is later handed it back',
+  },
+  {
+    name: '[#183 send] the first press to land spends a draft that another press still carries',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `(letGo(), true) && !batch.failed.size && draftRev() === rev /* MUTATION */`,
+    mustFail: '(send restored) one untouched draft sent to two sessions is spent by the last to land, and is still there for the other if it fails',
+  },
+  {
+    name: '[#183 send] a failed press keeps its claim on the draft for ever',
+    file: 'web/js/composer-wire.js',
+    find: `    } finally {
+      letGo();
+      if (!turnedAway) pressing.delete(id);
+    }`,
+    replace: `    } finally {
+      if (!turnedAway) pressing.delete(id); // MUTATION: no release on failure
+    }`,
+    mustFail: '(send restored) a send that fails keeps the reopened draft, a retry goes once, and a claim from the failed press does not stop that retry being spent',
+  },
+  {
+    name: '[#183 send] the session a message was queued for is never told so',
+    file: 'web/js/composer-wire.js',
+    find: `now && sentFrom && now.key === sentFrom.key`,
+    replace: `false /* MUTATION */`,
+    mustFail: '(send restored) the session a message was queued for is told so when it is reopened before the reply, and another session is told nothing',
+  },
+  {
+    name: '[#183 send] pressing Send takes the draft out of the box before anything is confirmed',
+    file: 'web/js/composer-wire.js',
+    find: `    batch.open += 1;`,
+    replace: `    batch.open += 1;
+    state.composer = composerReduce(state.composer, { type: 'type', text: '' }); $('dtInput').value = ''; // MUTATION`,
+    mustFail: '(send held) a refusal whose refresh also fails keeps the draft and the pick, says both, and releases the session',
+  },
+  {
+    name: '[#183 send] typing no longer counts as a new draft revision',
+    file: 'web/js/composer.js',
+    find: `        rev: (s.rev || 0) + 1,`,
+    replace: `        /* MUTATION: typing is not a new revision */`,
+    mustFail: 'composer: new words typed on the page reopened before the message landed stay, and go once when sent on purpose',
+  },
+  {
+    name: '[#183 send] putting the draft back in the box on open counts as typing',
+    file: 'web/js/detail.js',
+    find: `  $('dtInput').value = state.composer.draft || '';`,
+    replace: `  $('dtInput').value = state.composer.draft || '';
+  state.composer = composerReduce(state.composer, { type: 'type', text: state.composer.draft }); // MUTATION`,
+    mustFail: '(send restored) a draft put back in the box by reopening the session is kept until the send lands, spent by it, and cannot be sent again',
+  },
+  {
+    name: '[#183 send] a press that was turned away marks the draft refused',
+    file: 'web/js/composer-wire.js',
+    find: `if (held && !turnedAway) batch.failed.add(id);`,
+    replace: `if (held) batch.failed.add(id); // MUTATION`,
+    mustFail: '(send restored) presses turned away after the send they repeat has landed do not mark the draft refused for the send that still carries it',
+  },
+  {
+    name: '[#183 send] a press that was turned away lets go of the hold of the press that is sending',
+    file: 'web/js/composer-wire.js',
+    find: `if (!turnedAway) pressing.delete(id);`,
+    replace: `pressing.delete(id); // MUTATION`,
+    mustFail: '(send restored) presses turned away after the send they repeat has landed do not mark the draft refused for the send that still carries it',
+  },
+  {
+    name: '[#183 send] a refusal is remembered after every press of that draft is over',
+    file: 'web/js/composer-wire.js',
+    find: `if (!batch.open) carrying.delete(rev);`,
+    replace: `// MUTATION: the batch is never dropped`,
+    mustFail: '(send restored) one untouched draft sent to two sessions stays for the one that was refused, whichever lands last, and its retry spends it once',
+  },
+  {
+    name: '[#183 send] the last send to land spends a draft that another send was refused',
+    file: 'web/js/composer-wire.js',
+    find: `letGo() === 0 && !batch.failed.size && draftRev() === rev`,
+    replace: `letGo() === 0 && draftRev() === rev /* MUTATION */`,
+    mustFail: '(send restored) one untouched draft sent to two sessions stays for the one that was refused, whichever lands last, and its retry spends it once',
+  },
+  {
+    name: '[#183 send] a send that landed and then threw reading its reply counts as refused',
+    file: 'web/js/composer-wire.js',
+    find: `if (held && !turnedAway) batch.failed.add(id);`,
+    replace: `if (!turnedAway) batch.failed.add(id); // MUTATION`,
+    mustFail: '(send restored) a send that landed and then threw reading its reply is not a refusal, so the last to land still spends the draft',
+  },
+  {
+    name: '[#183 send] a landing settles every session that refused the draft, not only its own',
+    file: 'web/js/composer-wire.js',
+    find: `batch.failed.delete(id);`,
+    replace: `batch.failed.clear(); // MUTATION: one landing forgives every refusal`,
+    mustFail: '(send retried) the draft stays until every session that refused it has been retried, a retry that fails again keeps its refusal, and the last retry spends it',
+  },
+  {
+    name: '[#183 send] a retry that lands never settles its own refusal, so the draft stays for ever',
+    file: 'web/js/composer-wire.js',
+    find: `      batch.failed.delete(id);
+`,
+    replace: `      // MUTATION: a landing does not settle the session that landed
+`,
+    mustFail: '(send retried) a refused press retried while the other press of the same draft is in flight leaves no draft once both have landed, the retry landing last',
+  },
+  {
+    name: '[#183 send] a landing settles the oldest refusal instead of its own session',
+    file: 'web/js/composer-wire.js',
+    find: `batch.failed.delete(id);`,
+    replace: `batch.failed.delete([...batch.failed][0]); // MUTATION: the first refusal is forgiven, whoever landed`,
+    mustFail: '(send retried) the draft stays until every session that refused it has been retried, a retry that fails again keeps its refusal, and the last retry spends it',
+  },
+  // ---------------------------------------------------------------------
+  // A model a supervisor REQUIRES: confirmed by the agent before the first
+  // prompt, or refused with a code and nothing sent.
+  //
+  // Each breaks ONE decision and names the check that must notice. Tagged by
+  // layer so one can be re-proven alone:
+  //   node test/mutate-probe.js required-model-unit.js "[required-model acp]"
+  // ---------------------------------------------------------------------
+  {
+    // The probe is the worker's only way to learn this build refuses instead of
+    // defaulting. A false here sends it back to a runtime that cannot.
+    name: '[required-model cli] the capability probe says required models are not understood',
+    file: 'src/cli.js',
+    find: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: true });`,
+    replace: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: false }); // MUTATION`,
+    mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
+  },
+  {
+    name: '[required-model cli] the capability probe reports another protocol version',
+    file: 'src/cli.js',
+    find: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 1, requiredModel: true });`,
+    replace: `const ONESHOT_CAPABILITIES = Object.freeze({ protocolVersion: 2, requiredModel: true }); // MUTATION`,
+    mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
+  },
+  {
+    // An unknown flag next to --capabilities is a question this build was not
+    // asked; answering "yes" to it is the false positive the probe must not give.
+    name: '[required-model cli] the probe answers a command line with other arguments on it',
+    file: 'src/cli.js',
+    find: `    if (argv.length !== 1) {
+      err('usage: squad-hub oneshot --capabilities`,
+    replace: `    if (false) { // MUTATION: any other argument is ignored
+      err('usage: squad-hub oneshot --capabilities`,
+    mustFail: 'required model: a probe with any other argument is refused with no answer, not read as capable',
+  },
+  {
+    name: '[required-model cli] the probe waits for the environment to be applied, so an unconfigured --env stops it',
+    file: 'src/cli.js',
+    find: `const needsEnvironment = cmd !== undefined && !isProbe && !['help'`,
+    replace: `const needsEnvironment = cmd !== undefined && !['help'`,
+    mustFail: 'required model: a global --env naming an environment that is not configured does not stop the probe',
+  },
+  {
+    name: '[required-model cli] the probe goes on to start the one-shot device after answering',
+    file: 'src/cli.js',
+    find: `    out(JSON.stringify(ONESHOT_CAPABILITIES));
+    return 0;
+  }`,
+    replace: `    out(JSON.stringify(ONESHOT_CAPABILITIES)); // MUTATION: no return, so the run below starts
+  }`,
+    mustFail: 'required model: the probe answers with no configuration, and with every configuration hostile, and touches nothing',
+  },
+  {
+    // The flag was dropped on the way to the daemon: the job runs optional and
+    // exits 0 on whatever model answered.
+    name: '[required-model cloud] the one-shot never sends the required intent to the daemon',
+    file: 'src/cloud-device.js',
+    find: `        ...(REQUIRE_MODEL ? { requiredModel: true } : {}),`,
+    replace: `        ...({}), // MUTATION: the intent is dropped`,
+    mustFail: 'required model: a one-shot whose required model is unavailable exits 78 with the code, runs no prompt, and leaves nothing hanging',
+  },
+  {
+    name: '[required-model cloud] a one-shot that refused the model exits with the session\'s plain success code',
+    file: 'src/cloud-device.js',
+    find: `      try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
+      d.shutdown(REQUIRED_MODEL_EXIT);`,
+    replace: `      try { if (d.link && d.link.stop) d.link.stop(); } catch { /* leaving anyway */ }
+      d.shutdown(0); // MUTATION`,
+    mustFail: 'required model: a one-shot whose required model is unavailable exits 78 with the code, runs no prompt, and leaves nothing hanging',
+  },
+  {
+    // Without the verdict, a session that finished without ever confirming the
+    // model is judged by its status alone.
+    name: '[required-model cloud] the one-shot judges a required model by the session status alone',
+    file: 'src/cloud-device.js',
+    find: `    if (REQUIRE_MODEL && !(rm && rm.confirmed === true)) {`,
+    replace: `    if (false && REQUIRE_MODEL && !(rm && rm.confirmed === true)) { // MUTATION`,
+    mustFail: 'required model: a one-shot refuses with 78 when the agent ignores the change, cannot read it back, never answers, or advertises nothing',
+  },
+  {
+    name: '[required-model cloud] SQUAD_HUB_REQUIRE_MODEL is read leniently, so a typo means not required',
+    file: 'src/cloud-device.js',
+    find: `  REQUIRE_MODEL = parseRequireModel(process.env.SQUAD_HUB_REQUIRE_MODEL);`,
+    replace: `  REQUIRE_MODEL = process.env.SQUAD_HUB_REQUIRE_MODEL === '1'; // MUTATION`,
+    mustFail: 'required model: a one-shot with a missing, invalid or unparseable requirement refuses before any agent or hub work',
+  },
+  {
+    name: '[required-model cloud] a required one-shot with no model starts the device anyway',
+    file: 'src/cloud-device.js',
+    find: `    requireModelName(MODEL);`,
+    replace: `    // MUTATION: the model is not checked before the device starts`,
+    mustFail: 'required model: a one-shot with a missing, invalid or unparseable requirement refuses before any agent or hub work',
+  },
+  {
+    name: '[required-model cloud] a required model outside one-shot mode requires nothing and says nothing',
+    file: 'src/cloud-device.js',
+    find: `    if (!ONESHOT) {
+      throw new RequiredModelError('REQUIRED_MODEL_ONESHOT_ONLY'`,
+    replace: `    if (false) { // MUTATION
+      throw new RequiredModelError('REQUIRED_MODEL_ONESHOT_ONLY'`,
+    mustFail: 'required model: a one-shot with a missing, invalid or unparseable requirement refuses before any agent or hub work',
+  },
+  {
+    // A failed session must stay failed on the hub. Stopping it overwrites the
+    // status the hub is shown with "stopped".
+    name: '[required-model cloud] a refused session that already failed is stopped, overwriting its status',
+    file: 'src/cloud-device.js',
+    find: `      if (!last || !['failed', 'stopped', 'done'].includes(last.status)) {`,
+    replace: `      if (true) { // MUTATION`,
+    mustFail: 'required model: a one-shot whose required model is unavailable exits 78 with the code, runs no prompt, and leaves nothing hanging',
+  },
+  {
+    name: '[required-model cloud] the one-shot announces a confirmed model the agent never confirmed',
+    file: 'src/cloud-device.js',
+    find: `      if (!REQUIRE_MODEL || confirmationLogged || !rm || rm.confirmed !== true) return;`,
+    replace: `      if (!REQUIRE_MODEL || confirmationLogged || !rm) return; // MUTATION`,
+    mustFail: 'required model: a one-shot refuses with 78 when the agent ignores the change, cannot read it back, never answers, or advertises nothing',
+  },
+  {
+    name: '[required-model daemon] start-session drops the required intent at the door',
+    file: 'src/daemon.js',
+    find: `          requiredModel: req.requiredModel,
+`,
+    replace: `          // MUTATION: the intent is dropped
+`,
+    mustFail: 'required model: the daemon carries the required intent into the session, which confirms the requested model before its first prompt',
+  },
+  {
+    name: '[required-model daemon] the selection is made without the required flag, so a bad model falls back',
+    file: 'src/daemon.js',
+    find: `explicitMode: mode, requireModel: requiredModel === true,`,
+    replace: `explicitMode: mode, requireModel: false, // MUTATION`,
+    mustFail: 'required model: the daemon refuses a bad required request before any agent starts or session exists',
+  },
+  {
+    name: '[required-model daemon] a requiredModel that is not a boolean is accepted',
+    file: 'src/daemon.js',
+    find: `    if (requiredModel !== undefined && typeof requiredModel !== 'boolean') {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: the daemon refuses a bad required request before any agent starts or session exists',
+  },
+  {
+    name: '[required-model select] a required model that is missing or invalid falls back instead of refusing',
+    file: 'src/agent-select.js',
+    find: `  const required = requireModel === true ? requireModelName(explicitModel) : null;`,
+    replace: `  let required = null; // MUTATION: a refusal is swallowed and the optional rungs take over
+  try { required = requireModel === true ? requireModelName(explicitModel) : null; } catch { required = null; }`,
+    mustFail: 'required model: a required selection has no fallback: a missing or invalid model refuses, and the project model is never used',
+  },
+  {
+    name: '[required-model select] the project model outranks the required one',
+    file: 'src/agent-select.js',
+    find: `    model = required;`,
+    replace: `    model = proj.model || required; // MUTATION`,
+    mustFail: 'required model: a required selection has no fallback: a missing or invalid model refuses, and the project model is never used',
+  },
+  {
+    name: '[required-model select] an unparseable SQUAD_HUB_REQUIRE_MODEL is read as off',
+    file: 'src/agent-select.js',
+    find: `  throw new RequiredModelError('REQUIRED_MODEL_FLAG_INVALID', 'SQUAD_HUB_REQUIRE_MODEL must be 1 or 0 (or unset)');`,
+    replace: `  return false; // MUTATION`,
+    mustFail: 'required model: SQUAD_HUB_REQUIRE_MODEL is strict: 1 is on, 0 and unset are off, anything else is refused',
+  },
+  {
+    name: '[required-model select] an optional selection is marked as required',
+    file: 'src/agent-select.js',
+    find: `  const pinned = required ? { requiredModel: true } : {};`,
+    replace: `  const pinned = { requiredModel: true }; // MUTATION`,
+    mustFail: 'required model: an optional selection still falls back to the project model and carries no required flag',
+  },
+  {
+    // The model is never applied: the prompt runs on whatever the agent started with.
+    name: '[required-model acp] a required model is never applied before the prompt',
+    file: 'src/acp-session.js',
+    find: `      await this._applyRequiredModel(want.model);`,
+    replace: `      // MUTATION: nothing is applied`,
+    mustFail: 'required model: an advertised model is confirmed over the protocol, then exactly one prompt runs on it',
+  },
+  {
+    name: '[required-model acp] the first prompt goes out before the model is confirmed',
+    file: 'src/acp-session.js',
+    find: `    await this._applySelection(s);
+
+    this._setStatus(STATUS.ACTIVE, 'Processing...');
+
+    const stop = await this._request('session/prompt', {
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text: this.prompt }],
+    });`,
+    replace: `    const early = this._request('session/prompt', { // MUTATION: sent before the selection
+      sessionId: this.acpSessionId,
+      prompt: [{ type: 'text', text: this.prompt }],
+    });
+    early.catch(() => {});
+    await this._applySelection(s);
+
+    this._setStatus(STATUS.ACTIVE, 'Processing...');
+
+    const stop = await early;`,
+    mustFail: 'required model: an advertised model is confirmed over the protocol, then exactly one prompt runs on it',
+  },
+  {
+    // The agent's answer is the confirmation. Ignoring it turns an "ignores" or
+    // "{}" reply into a model that is running.
+    name: '[required-model acp] the agent\'s answer to the change is not read',
+    file: 'src/acp-session.js',
+    find: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {`,
+    replace: `    const step = await this._applyChoice('model', hit);
+    if (false) { // MUTATION: the answer is not read`,
+    mustFail: 'required model: an agent that answers with the OLD current model has not confirmed the new one',
+  },
+  {
+    name: '[required-model acp] a model that is already current is assumed, not confirmed',
+    file: 'src/acp-session.js',
+    find: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {`,
+    replace: `    const step = (nt.current.model && norm(nt.current.model) === norm(hit.id)) ? { ok: true } : await this._applyChoice('model', hit); // MUTATION
+    if (!step.ok) {`,
+    mustFail: 'required model: a model that is already the current one is still confirmed by the agent, not assumed',
+  },
+  {
+    name: '[required-model acp] a model the agent does not offer falls back to the default with a warning',
+    file: 'src/acp-session.js',
+    find: `    if (!hit) {
+      const offered = choices.slice(0, 20).map((c) => c.id).join(', ');`,
+    replace: `    if (!hit) {
+      this.applied.warnings.push('falling back to the default model'); // MUTATION
+      return;
+      const offered = choices.slice(0, 20).map((c) => c.id).join(', ');`,
+    mustFail: 'required model: a model the agent does not offer is refused before any request or prompt',
+  },
+  {
+    name: '[required-model acp] an agent that lists models with nothing to confirm them is called unavailable, not unadvertised',
+    file: 'src/acp-session.js',
+    find: `    if (nt.unsupported.has('model') || !choices.length) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: an agent that lists models but cannot switch them is refused',
+  },
+  {
+    name: '[required-model acp] a model the agent only mentions is reported applied before it answers',
+    file: 'src/acp-session.js',
+    find: `    const rm = this._requiredModel();
+    const name = requireModelName(asked);`,
+    replace: `    const rm = this._requiredModel();
+    const name = requireModelName(asked);
+    this.applied.model = name; // MUTATION: the request is reported as the result`,
+    mustFail: 'required model: an agent that answers with the OLD current model has not confirmed the new one',
+  },
+  {
+    name: '[required-model acp] an agent that never answers is not told apart from one that refused',
+    file: 'src/acp-session.js',
+    find: `      else if (step.timedOut) code = 'REQUIRED_MODEL_TIMEOUT';`,
+    replace: `      // MUTATION: the timeout is no longer named`,
+    mustFail: 'required model: an agent that never answers times out as a refusal and its process is killed',
+  },
+  {
+    name: '[required-model acp] an agent that died is not told apart from one that refused',
+    file: 'src/acp-session.js',
+    find: `      if (this._agentGone()) code = 'REQUIRED_MODEL_AGENT_EXITED';
+      else if (step.unsupported) code = 'REQUIRED_MODEL_NOT_ADVERTISED';`,
+    replace: `      if (step.unsupported) code = 'REQUIRED_MODEL_NOT_ADVERTISED'; // MUTATION: the exit is no longer named`,
+    mustFail: 'required model: an agent that dies while the model is being confirmed is a refusal with its own code',
+  },
+  {
+    name: '[required-model acp] a failure before the first prompt is thrown as it came, with no code',
+    file: 'src/acp-session.js',
+    find: `      throw this._requiredModel() ? this._refuseRequiredModel(e) : e;`,
+    replace: `      throw e; // MUTATION`,
+    mustFail: 'required model: an agent that exits before it answers the handshake is a refusal',
+  },
+  {
+    name: '[required-model acp] a failure after the model was confirmed is reported as a model refusal',
+    file: 'src/acp-session.js',
+    find: `    if (rm.confirmed) return e;
+`,
+    replace: `    // MUTATION: a confirmed model is no longer excused
+`,
+    mustFail: 'required model: a failure AFTER the model was confirmed is an ordinary failure, not a refusal',
+  },
+  {
+    name: '[required-model acp] a refused session leaves its agent running',
+    file: 'src/acp-session.js',
+    find: `    if (this.status !== STATUS.STOPPED) this._fail(err.message);
+    this.shutdown();`,
+    replace: `    if (this.status !== STATUS.STOPPED) this._fail(err.message);
+    // MUTATION: the agent is not stopped`,
+    mustFail: 'required model: an agent that never answers times out as a refusal and its process is killed',
+  },
+  {
+    name: '[required-model acp] a refused session is not marked failed',
+    file: 'src/acp-session.js',
+    find: `    if (this.status !== STATUS.STOPPED) this._fail(err.message);`,
+    replace: `    // MUTATION: the session is not failed`,
+    mustFail: 'required model: a model the agent does not offer is refused before any request or prompt',
+  },
+  {
+    name: '[required-model acp] the session JSON hides the required-model record',
+    file: 'src/acp-session.js',
+    find: `      requiredModel: this._requiredModel() ? this._requiredModelView() : undefined,`,
+    replace: `      requiredModel: undefined, // MUTATION`,
+    mustFail: 'required model: an advertised model is confirmed over the protocol, then exactly one prompt runs on it',
+  },
+  {
+    // The optional path is a different promise: a person at a terminal wants the
+    // session to run. Making it strict would make every unavailable model fatal.
+    name: '[required-model acp] an optional model is held to the required standard',
+    file: 'src/acp-session.js',
+    find: `    if (want.requiredModel === true) {
+      // No warning, no default`,
+    replace: `    if (want.model) { // MUTATION
+      // No warning, no default`,
+    mustFail: 'required model: an optional model the agent does not offer still warns, defaults, and runs the prompt',
+  },
+  {
+    name: '[required-model acp] an optional model is applied the new way instead of the one it always used',
+    file: 'src/acp-session.js',
+    find: `          await this._request('session/set_model', { sessionId: this.acpSessionId, modelId: hit });`,
+    replace: `          await this._request('session/set_config_option', { sessionId: this.acpSessionId, configId: 'model', value: hit }); // MUTATION`,
+    mustFail: 'required model: an optional model the agent offers is still applied the way it always was',
+  },
+  {
+    name: '[required-model acp] an optional model the account lacks stops being reported',
+    file: 'src/acp-session.js',
+    find: `      if (!hit) {
+        this.applied.warnings.push(
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    replace: `      if (!hit) {
+        [].push( // MUTATION: the warning is dropped
+          \`the model "\${want.model}" is not available to this account; using the default\``,
+    mustFail: 'required model: an optional model the agent does not offer still warns, defaults, and runs the prompt',
+  },
+  {
+    // The reply to the request is the confirmation, and an empty one says
+    // nothing. Treating it as a yes starts the prompt on whatever model the
+    // agent happened to have.
+    name: '[required-model acp] an empty answer to the model change counts as the confirmation',
+    file: 'src/acp-session.js',
+    find: `      return { ok: false, reason: \`the agent accepted it but did not say what the \${field} is now, so it may or may not have applied\` };`,
+    replace: `      nt.current[field] = hit.id; return { ok: true }; // MUTATION`,
+    mustFail: 'required model: an agent that answers an empty result has not confirmed anything',
+  },
+  {
+    // An announcement is the agent talking about itself; the answer to OUR
+    // request is the only thing that says this change took effect.
+    name: '[required-model acp] a model the agent only announced is taken as confirmed',
+    file: 'src/acp-session.js',
+    find: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok) {`,
+    replace: `    const step = await this._applyChoice('model', hit);
+    if (!step.ok && norm(nt.current.model) !== norm(hit.id)) { // MUTATION`,
+    mustFail: 'required model: a model the agent only ANNOUNCED, while its reply to the request says nothing, is not confirmed',
+  },
+  {
+    name: '[required-model acp] a required model is also matched by its display name or a fragment of its id',
+    file: 'src/acp-session.js',
+    find: `    const hit = findChoice(choices, name, { idOnly: true });`,
+    replace: `    const hit = findChoice(choices, name); // MUTATION`,
+    mustFail: 'required model: a model is found by its id only: a display name that is itself a valid model name is a different thing',
+  },
+  {
+    // A resync replays the prompt on a new agent. If the requirement is
+    // forgotten there, the replay runs on whatever model that agent starts with.
+    name: '[required-model daemon] a resynced session forgets that its model was required',
+    file: 'src/daemon.js',
+    find: `    s.agentSelection = old.agentSelection;`,
+    replace: `    s.agentSelection = { ...old.agentSelection, requiredModel: undefined }; // MUTATION`,
+    mustFail: 'required model: a session the daemon resyncs is still required, and confirms its model again before the replayed prompt',
+  },
+  {
+    name: '[required-model cloud] a one-shot cut off at the ceiling while waiting for its model is left running',
+    file: 'src/cloud-device.js',
+    find: `      if (!last || !['failed', 'stopped', 'done'].includes(last.status)) {`,
+    replace: `      if (false) { // MUTATION`,
+    mustFail: 'required model: a one-shot whose agent never confirms stops at the session ceiling with 78, and the hub is told it was stopped',
+  },
+  {
+    name: '[required-model cloud] a one-shot cut off at the ceiling reports the model as unconfirmed rather than timed out',
+    file: 'src/cloud-device.js',
+    find: `{ code: 'REQUIRED_MODEL_TIMEOUT', reason: \`the agent had not confirmed`,
+    replace: `{ code: 'REQUIRED_MODEL_UNCONFIRMED', reason: \`the agent had not confirmed`,
+    mustFail: 'required model: a one-shot whose agent never confirms stops at the session ceiling with 78, and the hub is told it was stopped',
+  },
+  {
+    // The probe has to answer BEFORE anything that reads the environment. Here
+    // it loads the cloud device first, so a missing or hostile environment gets
+    // there before the answer does.
+    name: '[required-model cli] the probe loads the cloud device first, so a missing or bad environment stops it',
+    file: 'src/cli.js',
+    find: `  if (argv.includes('--capabilities')) {
+    if (argv.length !== 1) {`,
+    replace: `  if (argv.includes('--capabilities') && (require('./cloud-device'), true)) { // MUTATION
+    if (argv.length !== 1) {`,
+    mustFail: 'required model: the capability probe prints exactly the contract JSON and exits 0',
+  },
+  {
+    // A plain steer is a second session/prompt. With the gate gone it goes out
+    // while the agent is still confirming the model and runs on the old one.
+    name: '[required-model acp] a plain steer is not held while the required model is being confirmed',
+    file: 'src/acp-session.js',
+    find: `    const blocked = text ? this._requiredModelBlock() : null;`,
+    replace: `    const blocked = null; // MUTATION`,
+    mustFail: 'required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted',
+  },
+  {
+    name: '[required-model acp] a held steer is answered as sent, so the caller sees success for a prompt that never went out',
+    file: 'src/acp-session.js',
+    find: `    if (blocked) return { ok: false, reason: blocked };`,
+    replace: `    if (blocked) return true; // MUTATION`,
+    mustFail: 'required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted',
+  },
+  {
+    name: '[required-model acp] an unconfirmed model no longer says why a steer is held',
+    file: 'src/acp-session.js',
+    find: `    if (!rm.confirmed) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: a steer while the agent is still confirming the model is refused and sends no prompt; the first prompt then runs on the confirmed model and a later steer is accepted',
+  },
+  {
+    // Confirmed is not the same as ready: the mode is applied after the model,
+    // and the first prompt follows it.
+    name: '[required-model acp] a steer is let through once the model is confirmed, while the mode is still being applied',
+    file: 'src/acp-session.js',
+    find: `    if (this.status === STATUS.STARTING) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: a steer after the model is confirmed but before the first prompt, while the mode is still being applied, is refused',
+  },
+  {
+    name: '[required-model acp] a refused required-model session is not reported as refused to a later steer',
+    file: 'src/acp-session.js',
+    find: `    if (rm.failure) {`,
+    replace: `    if (false) { // MUTATION`,
+    mustFail: 'required model: a steer while the model request is stuck is refused, and after the timeout the refusal stands and still sends nothing',
+  },
+  {
+    // The gate belongs to the requirement, not to the session type: an
+    // optional session is steered exactly as it always was.
+    name: '[required-model acp] an optional session is held at startup as if its model were required',
+    file: 'src/acp-session.js',
+    find: `    if (!rm) return null;`,
+    replace: `    if (!rm) return this.status === STATUS.STARTING ? 'held' : null; // MUTATION`,
+    mustFail: 'required model: a session with no required model takes a steer as before, even while it is applying its model',
+  },
+  {
+    name: '[required-model daemon] the daemon steer op does not carry the refusal to the caller',
+    file: 'src/daemon.js',
+    find: `        const r = normaliseControl(s.steer(req.text));
+        if (!r.ok) {`,
+    replace: `        const r = normaliseControl(s.steer(req.text));
+        if (false) { // MUTATION`,
+    mustFail: 'required model: the daemon refuses a plain steer with NOT_STEERABLE while a session, started or resynced, is still confirming its model',
+  },
+
+  // --- the device rail's pending ACA rows (web/js/aca-rail.js) ---------------
+  // Unit-level: test/aca-rail-unit.js runs the real tracking flow and the real
+  // render(). Probe: node test/mutate-probe.js aca-rail-unit.js "[aca rail]"
+  {
+    name: '[aca rail] the rail draws no pending dispatch rows',
+    file: 'web/js/devices.js',
+    find: `acaRailRowsHtml(state.acaPending, devices))}`,
+    replace: `'' /* MUTATION: the rail draws no pending rows */)}`,
+    mustFail: 'rail flow: a dispatch from this tab appears in the ACA section the moment it is tracked',
+  },
+  {
+    name: '[aca rail] a finished or failed dispatch still pulses',
+    file: 'web/js/aca-rail.js',
+    find: `  if (view.resolved) {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'rail view: it pulses exactly when the shared entry view says the outcome is still open',
+  },
+  {
+    name: '[aca rail] an unknown outcome is painted as a failure',
+    file: 'web/js/aca-rail.js',
+    find: `dot: view.failed ? 'failed' : 'stale',`,
+    replace: `dot: 'failed' /* MUTATION */,`,
+    mustFail: 'rail view: an unknown outcome stops pulsing and is not painted as a failure',
+  },
+  {
+    name: '[aca rail] a bare queued run is called Starting with a lease claimed',
+    file: 'web/js/aca-rail.js',
+    find: `'Lease claimed': ['Queued', 'waiting to claim its lease'],`,
+    replace: `'Lease claimed': ['Starting', 'lease claimed'], // MUTATION`,
+    mustFail: 'rail view: a run that is only queued on Actions never says Starting or lease claimed',
+  },
+  {
+    name: '[aca rail] a run in progress with no receipt claims a lease',
+    file: 'web/js/aca-rail.js',
+    find: `'Starting job': ['Starting', 'the run is in progress'],`,
+    replace: `'Starting job': ['Starting', 'lease claimed'], // MUTATION`,
+    mustFail: 'rail view: a run in progress with no receipt says Starting, from the run, not from a lease',
+  },
+  {
+    name: '[aca rail] a finished run with no receipt is still described as queued',
+    file: 'web/js/aca-rail.js',
+    find: `  if (current && current.label === 'Lease claimed' && entry.status && entry.status.state === 'completed') {`,
+    replace: `  if (false) { // MUTATION`,
+    mustFail: 'rail view: a finished run with no receipt keeps waiting, honestly, and does not say Starting',
+  },
+  {
+    name: '[aca rail] the matched device is drawn beside its own pending row',
+    file: 'web/js/aca-rail.js',
+    find: `  return all.filter((e) => e && !e.attached && !acaPendingAttached(e, devices, all));`,
+    replace: `  return all.filter((e) => e && !e.attached); // MUTATION`,
+    mustFail: 'rail entries: the exact aca- device for the confirmed execution replaces the row',
+  },
+  {
+    name: '[aca rail] any device of the same repository takes over a pending row',
+    file: 'web/js/aca-rail.js',
+    find: `!acaPendingAttached(e, devices, all));`,
+    replace: `!(devices || []).some((d) => d && d.meta && d.meta.repo === e.repo)); // MUTATION`,
+    mustFail: 'rail entries: an older job on the same repository never replaces a newer dispatch',
+  },
+  {
+    name: '[aca rail] pending rows are one per repository, not one per dispatch',
+    file: 'web/js/aca-rail.js',
+    find: `  return all.filter((e) => e && !e.attached && !acaPendingAttached(e, devices, all));`,
+    replace: `  return all.filter((e, i) => e && !e.attached && !acaPendingAttached(e, devices, all) && all.findIndex((x) => x.repo === e.repo) === i); // MUTATION`,
+    mustFail: 'rail rows: two dispatches to one repository are two rows, each its own localId',
+  },
+  {
+    name: '[aca rail] a failed dispatch loses its Check again',
+    file: 'web/js/aca-rail.js',
+    find: `  const retry = v.active ? '' : `,
+    replace: `  const retry = true /* MUTATION */ ? '' : `,
+    mustFail: 'rail rows: an open row has no retry, a resolved one has Check again and the reason',
+  },
+  {
+    name: '[aca rail] the ACA section header counts pending dispatches as devices',
+    file: 'web/js/devices.js',
+    find: `<span class="sec-label">\${esc(label)} (\${list.length})</span>`,
+    replace: `<span class="sec-label">\${esc(label)} (\${list.length + (pendingHtml.match(/aca-rail/g) || []).length})</span>`,
+    mustFail: 'rail section: pending rows follow the devices and are not counted as devices',
+  },
+  {
+    name: '[aca rail] the device count in the rail header includes pending dispatches',
+    file: 'web/js/aca-status.js',
+    find: `    badge.textContent = counts.devices;`,
+    replace: `    badge.textContent = counts.devices + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
+    mustFail: 'rail flow: counts, summary and the pending main list ignore the rail row',
+  },
+  // Real Chromium (test/browser-e2e-unit.js): the pulse is a computed style
+  // and a running animation, and Check again is a click on the rail itself.
+  {
+    name: '[aca rail browser] the Starting dot does not pulse',
+    file: 'web/css/devices.css',
+    find: `.dot.dispatching { background: var(--accent); animation: dot-pulse 1.4s ease-in-out infinite; }`,
+    replace: `.dot.dispatching { background: var(--accent); animation: none; } /* MUTATION */`,
+    mustFail: 'a dispatched ACA job pulses a Starting dot in the rail, uncounted, until its own device replaces the row (#172, #178)',
+  },
+  {
+    name: '[aca rail browser] the Starting dot pulses under prefers-reduced-motion',
+    file: 'web/css/devices.css',
+    find: `@media (prefers-reduced-motion: reduce) {
+  .dot.dispatching { animation: none; }
+}`,
+    replace: `@media (prefers-reduced-motion: reduce) {
+  .dot.dispatching { animation: dot-pulse 1.4s ease-in-out infinite; } /* MUTATION */
+}`,
+    mustFail: 'a dispatched ACA job pulses a Starting dot in the rail, uncounted, until its own device replaces the row (#172, #178)',
+  },
+  {
+    name: '[aca rail browser] Check again in the rail does nothing',
+    file: 'web/js/connect.js',
+    find: `    if (retry) { retryAcaPending(retry.dataset.acaRetry).then(render); return; }`,
+    replace: `    if (retry) return; // MUTATION: the rail's Check again is a dead button`,
+    mustFail: 'a failed or unknown ACA dispatch stops pulsing in the rail, says why, and Check again re-reads it (#172, #178)',
+  },
+
+  // The 0.7.0 changelog is the feature list a reader trusts, and the audit
+  // found it silent about landed features and wrong about the pulse.
+  {
+    name: '[0.7 changelog] the Web Push feature (#175) is dropped from the list',
+    file: 'CHANGELOG.md',
+    find: `- **Web Push for "a session needs you"** (issue #175).`,
+    replace: `- **Web Push for "a session needs you"**.`,
+    mustFail: 'the 0.7.0 changelog names every feature that landed in it',
+  },
+  {
+    name: '[0.7 changelog] a link lands on a heading that does not exist',
+    file: 'CHANGELOG.md',
+    find: `[docs/aca.md](docs/aca.md#queued-on-aca-issue-178).`,
+    replace: `[docs/aca.md](docs/aca.md#queued-on-aca).`,
+    mustFail: 'every docs link in the 0.7.0 changelog lands on a file and heading that exist',
+  },
+  {
+    name: '[0.7 changelog] the rail goes back to promising a pulse for a dispatching presence',
+    file: 'docs/commands.md',
+    find: `   text. A dispatch you made from this tab whose job has not attached yet is
+   drawn here too, as \`#issue · repo\` with a pulsing dot (see
+   [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
+   Those rows are not devices and are not in the count.`,
+    replace: `   text. A dispatching execution that has not reported in yet is drawn with a
+   pulsing dot rather than the plain offline one.`,
+    mustFail: 'docs describe the rail pending ACA rows, and promise no presence that nothing produces',
+  },
+
+  // The harness's own suite index (test/helpers/suite-index.js, covered by
+  // test/suite-index-unit.js). It decides which suite a mutation runs in, so a
+  // title it mis-reads either costs a 500s full run or, worse, runs a suite that
+  // cannot hold the test and reports a false escape.
+  {
+    name: '[suite index] an escaped apostrophe is indexed with its backslash',
+    file: 'test/helpers/suite-index.js',
+    find: `    default: return { text: c, next: i + 1 };`,
+    replace: `    default: return { text: process.env.MUTANT ? String.fromCharCode(92) + c : c, next: i + 1 }; // MUTATION`,
+    mustFail: 'an escaped apostrophe is indexed as the apostrophe the suite prints',
+  },
+  {
+    name: '[suite index] a newline escape is indexed as the letter n',
+    file: 'test/helpers/suite-index.js',
+    find: `    case 'n': return { text: '\\n', next: i + 1 };`,
+    replace: `    case 'n': return { text: process.env.MUTANT ? 'n' : '\\n', next: i + 1 }; // MUTATION`,
+    mustFail: 'escaped double quotes, a backtick, a backslash, a tab and a newline are indexed as the characters they stand for',
+  },
+  {
+    name: '[suite index] a four-digit unicode escape leaves its title unindexed',
+    file: 'test/helpers/suite-index.js',
+    find: `      return /^[0-9a-fA-F]{4}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 5 } : null;`,
+    replace: `      return !process.env.MUTANT && /^[0-9a-fA-F]{4}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 5 } : null; // MUTATION`,
+    mustFail: 'a four-digit unicode escape is indexed as the character it stands for',
+  },
+  {
+    name: '[suite index] a braced code point escape leaves its title unindexed',
+    file: 'test/helpers/suite-index.js',
+    find: `        if (!/^[0-9a-fA-F]+$/.test(hex) || parseInt(hex, 16) > 0x10ffff) return null;`,
+    replace: `        if (process.env.MUTANT || !/^[0-9a-fA-F]+$/.test(hex) || parseInt(hex, 16) > 0x10ffff) return null; // MUTATION`,
+    mustFail: 'a braced code point escape is indexed as the character it stands for',
+  },
+  {
+    name: '[suite index] a code point past U+10FFFF is decoded instead of refused',
+    file: 'test/helpers/suite-index.js',
+    find: `        if (!/^[0-9a-fA-F]+$/.test(hex) || parseInt(hex, 16) > 0x10ffff) return null;`,
+    replace: `        if (!/^[0-9a-fA-F]+$/.test(hex) || (!process.env.MUTANT && parseInt(hex, 16) > 0x10ffff)) return null; // MUTATION`,
+    mustFail: 'a legacy octal escape or a malformed hex or unicode escape is left out, and the calls after it are still read',
+  },
+  {
+    name: '[suite index] a hex escape leaves its title unindexed',
+    file: 'test/helpers/suite-index.js',
+    find: `      return /^[0-9a-fA-F]{2}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 3 } : null;`,
+    replace: `      return !process.env.MUTANT && /^[0-9a-fA-F]{2}$/.test(hex) ? { text: String.fromCharCode(parseInt(hex, 16)), next: i + 3 } : null; // MUTATION`,
+    mustFail: 'a hex escape is indexed as the character it stands for',
+  },
+  {
+    name: '[suite index] a legacy octal escape is decoded as its digit',
+    file: 'test/helpers/suite-index.js',
+    find: `    case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+      return null;`,
+    replace: `    case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+      return process.env.MUTANT ? { text: c, next: i + 1 } : null; // MUTATION`,
+    mustFail: 'a legacy octal escape or a malformed hex or unicode escape is left out, and the calls after it are still read',
+  },
+  {
+    name: '[suite index] a NUL escape before a digit is decoded as a NUL',
+    file: 'test/helpers/suite-index.js',
+    find: `    case '0': return /[0-9]/.test(src[i + 1] || '') ? null : { text: '\\0', next: i + 1 };`,
+    replace: `    case '0': return !process.env.MUTANT && /[0-9]/.test(src[i + 1] || '') ? null : { text: '\\0', next: i + 1 }; // MUTATION`,
+    mustFail: 'a legacy octal escape or a malformed hex or unicode escape is left out, and the calls after it are still read',
+  },
+  {
+    name: '[suite index] a CRLF line continuation leaves the line feed in the title',
+    file: 'test/helpers/suite-index.js',
+    find: `    case '\\r': return { text: '', next: src[i + 1] === '\\n' ? i + 2 : i + 1 };`,
+    replace: `    case '\\r': return { text: '', next: src[i + 1] === '\\n' && !process.env.MUTANT ? i + 2 : i + 1 }; // MUTATION`,
+    mustFail: 'line breaks inside a literal read as the language reads them',
+  },
+  {
+    name: '[suite index] a CRLF inside a template reads as two newlines',
+    file: 'test/helpers/suite-index.js',
+    find: `      i += c === '\\r' && src[i + 1] === '\\n' ? 2 : 1;`,
+    replace: `      i += c === '\\r' && src[i + 1] === '\\n' && !process.env.MUTANT ? 2 : 1; // MUTATION`,
+    mustFail: 'line breaks inside a literal read as the language reads them',
+  },
+  {
+    name: '[suite index] a plain string may run onto a second line',
+    file: 'test/helpers/suite-index.js',
+    find: `      if (!template) return null;`,
+    replace: `      if (!template && !process.env.MUTANT) return null; // MUTATION`,
+    mustFail: 'a plain string that runs onto a second line never closed, so it is not a title',
+  },
+  {
+    name: '[suite index] a template with a substitution is indexed as a fixed title',
+    file: 'test/helpers/suite-index.js',
+    find: `    } else if (template && c === '$' && src[i + 1] === '{') {`,
+    // The replacement spells the dollar sign in double quotes: String.replace
+    // reads a quote after a dollar sign as "the text after the match".
+    replace: `    } else if (!process.env.MUTANT && template && c === "$" && src[i + 1] === '{') { // MUTATION`,
+    mustFail: 'a title with a substitution, a concatenation or a variable is never indexed',
+  },
+  {
+    name: '[suite index] a literal that starts a concatenation is indexed as the whole title',
+    file: 'test/helpers/suite-index.js',
+    find: `    if (!THEN_COMMA.test(source)) continue;`,
+    replace: `    if (!process.env.MUTANT && !THEN_COMMA.test(source)) continue; // MUTATION`,
+    mustFail: 'a title with a substitution, a concatenation or a variable is never indexed',
+  },
+  {
+    name: '[suite index] a limiter.check(...) member call is read as a test',
+    file: 'test/helpers/suite-index.js',
+    find: `const CALL = /(?<![\\w$.])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g;`,
+    replace: `const CALL = /(?<![\\w$])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g; // MUTATION`,
+    mustFail: 'a member call or a helper whose name ends in check is not a declaration',
+  },
+  {
+    name: '[suite index] precheck(...) is read as a test',
+    file: 'test/helpers/suite-index.js',
+    find: `const CALL = /(?<![\\w$.])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g;`,
+    replace: `const CALL = /(?<![$.])check(?:Async)?\\s*\\(\\s*(?=['"\`])/g; // MUTATION`,
+    mustFail: 'a member call or a helper whose name ends in check is not a declaration',
+  },
+  {
+    name: '[suite index] a call written in a comment is read as a test',
+    file: 'test/helpers/suite-index.js',
+    find: `    if (COMMENT_LINE.test(source.slice(source.lastIndexOf('\\n', m.index - 1) + 1, m.index))) continue;`,
+    replace: `    if (!process.env.MUTANT && COMMENT_LINE.test(source.slice(source.lastIndexOf('\\n', m.index - 1) + 1, m.index))) continue; // MUTATION`,
+    mustFail: 'a call written on a comment line is prose, not a declaration',
+  },
+  {
+    name: '[suite index] an empty title is indexed',
+    file: 'test/helpers/suite-index.js',
+    find: `    if (!lit || !lit.value) continue;`,
+    replace: `    if (!lit || (!process.env.MUTANT && !lit.value)) continue; // MUTATION`,
+    mustFail: 'an empty title is not indexed',
+  },
+  {
+    name: '[suite index] every file in the directory is read as a suite',
+    file: 'test/helpers/suite-index.js',
+    find: `filter((x) => x.endsWith('-unit.js'))`,
+    replace: `filter((x) => x.endsWith(process.env.MUTANT ? '.js' : '-unit.js')) /* MUTATION */`,
+    mustFail: 'only the -unit.js suites in the directory are read',
+  },
+  {
+    name: '[suite index] a title two suites declare is placed in the first',
+    file: 'test/helpers/suite-index.js',
+    find: `  if (exact) return exact.size === 1 ? [...exact][0] : null;`,
+    replace: `  if (exact) return exact.size === 1 || process.env.MUTANT ? [...exact][0] : null; // MUTATION`,
+    mustFail: 'a title two suites both declare is kept for both and placed in neither',
+  },
+  {
+    name: '[suite index] a name contained in titles of two suites is placed in the first',
+    file: 'test/helpers/suite-index.js',
+    find: `  return hits.size === 1 ? [...hits][0] : null;`,
+    replace: `  return hits.size === 1 || (process.env.MUTANT && hits.size > 1) ? [...hits][0] : null; // MUTATION`,
+    mustFail: 'a name contained in the titles of one suite is placed there, and in the titles of two suites is placed nowhere',
+  },
+  {
+    name: '[mutate shard] shard N starts one ordinal late',
+    file: 'test/helpers/shard.js',
+    find: `index: n - 1, count: k,`,
+    replace: `index: process.env.MUTANT ? n : n - 1, /* MUTATION */ count: k,`,
+    mustFail: 'a valid shard is read as its zero-based index and its count',
+  },
+  {
+    name: '[mutate shard] a shard takes every ordinal up to its own, so shards overlap',
+    file: 'test/helpers/shard.js',
+    find: `runnable.filter((_, i) => i % shard.count === shard.index)`,
+    replace: `runnable.filter((_, i) => (process.env.MUTANT ? i % shard.count <= shard.index : i % shard.count === shard.index)) /* MUTATION */`,
+    mustFail: 'every shard count splits the runnable fixture catalogue into disjoint shards that cover it exactly',
+  },
+  {
+    name: '[mutate shard] skipped mutations are selected',
+    file: 'test/helpers/shard.js',
+    find: `const runnable = mutations.filter((m) => !m.skip && (!only || m.name.includes(only)));`,
+    replace: `const runnable = mutations.filter((m) => (process.env.MUTANT || !m.skip) && (!only || m.name.includes(only))); // MUTATION`,
+    mustFail: 'a skipped mutation is in no shard',
+  },
+  {
+    name: '[mutate shard] the --only filter is ignored when selecting',
+    file: 'test/helpers/shard.js',
+    find: `(!only || m.name.includes(only))`,
+    replace: `(!only || process.env.MUTANT || m.name.includes(only)) /* MUTATION */`,
+    mustFail: 'only narrows first, so the ordinal is taken over the filtered list and the shards stay even',
+  },
+  {
+    name: '[mutate shard] the ordinal is taken over the whole catalogue instead of the filtered list',
+    file: 'test/helpers/shard.js',
+    find: `runnable.filter((_, i) => i % shard.count === shard.index)`,
+    replace: `runnable.filter((m, i) => (process.env.MUTANT ? mutations.indexOf(m) : i) % shard.count === shard.index) /* MUTATION */`,
+    mustFail: 'only narrows first, so the ordinal is taken over the filtered list and the shards stay even',
+  },
+  {
+    name: '[mutate shard] a shard number above the shard count is accepted',
+    file: 'test/helpers/shard.js',
+    find: `if (n > k) throw`,
+    replace: `if (!process.env.MUTANT && n > k /* MUTATION */) throw`,
+    mustFail: 'a missing, malformed or out-of-range shard is rejected',
+  },
+  {
+    name: '[mutate shard] a zero or zero-padded shard number is accepted',
+    file: 'test/helpers/shard.js',
+    find: `const SHARD = /^([1-9]\\d*)\\/([1-9]\\d*)$/;`,
+    replace: `const SHARD = process.env.MUTANT ? /^(\\d+)\\/(\\d+)$/ : /^([1-9]\\d*)\\/([1-9]\\d*)$/; // MUTATION`,
+    mustFail: 'a missing, malformed or out-of-range shard is rejected',
+  },
+  {
+    name: '[mutate shard] a shard that selects nothing is a clean run',
+    file: 'test/helpers/shard.js',
+    find: `if (shard && !selected.length) {`,
+    replace: `if (!process.env.MUTANT && shard && !selected.length) { // MUTATION`,
+    mustFail: 'a shard with nothing to run is an error, not a clean sweep',
+  },
+  {
+    name: '[mutate shard] a repeated --shard flag silently uses the first',
+    file: 'test/helpers/shard.js',
+    find: `if (argv.indexOf('--shard', at + 1) !== -1) throw`,
+    replace: `if (!process.env.MUTANT && argv.indexOf('--shard', at + 1) !== -1 /* MUTATION */) throw`,
+    mustFail: 'the flag is read from the command line: absent means none, its value must follow it, a repeat is refused',
+  },
+  {
+    name: '[mutate shard] the run total is the size of the shard instead of the runnable count',
+    file: 'test/helpers/shard.js',
+    find: `const total = selectMutations(mutations, { only }).length;`,
+    replace: `const total = process.env.MUTANT ? selected.length : selectMutations(mutations, { only }).length; // MUTATION`,
+    mustFail: 'planRun reports the shard, what it selected and the runnable total it was cut from',
+  },
+  {
+    name: '[mutate shard] planRun does not pass --only on to the selection',
+    file: 'test/helpers/shard.js',
+    find: `const selected = selectMutations(mutations, { only, shard });`,
+    replace: `const selected = selectMutations(mutations, { only: process.env.MUTANT ? null : only, shard }); // MUTATION`,
+    mustFail: 'planRun reports the shard, what it selected and the runnable total it was cut from',
+  },
+  {
+    // test/helpers/verdict.js decides what the harness counts as caught. These
+    // break each decision it makes; its own unit test must notice every one.
+    name: '[mutate verdict] a suite that failed on some other test is counted as caught',
+    file: 'test/helpers/verdict.js',
+    find: `  if (failed.some((f) => f.includes(mustFail))) return { verdict: 'caught', reason: '' };`,
+    replace: `  if (process.env.MUTANT || failed.some((f) => f.includes(mustFail))) return { verdict: 'caught', reason: '' }; /* MUTATION */`,
+    mustFail: 'a run that fails but not on the named test is imprecise, never caught',
+  },
+  {
+    name: '[mutate verdict] a crash with no failing test is not told apart from a wrong-test failure',
+    file: 'test/helpers/verdict.js',
+    find: `  if (!failed.length) {`,
+    replace: `  if (!process.env.MUTANT && !failed.length) { /* MUTATION */`,
+    mustFail: 'a nonzero exit with no failing test is a crash, never caught',
+  },
+  {
+    name: '[mutate verdict] a timeout or a kill is read as a finished run',
+    file: 'test/helpers/verdict.js',
+    find: `  if (Number.isInteger(run && run.code)) return null;`,
+    replace: `  if (process.env.MUTANT || Number.isInteger(run && run.code)) return null; /* MUTATION */`,
+    mustFail: 'a timeout, a kill or a missing status is an error even when the named failure was printed',
+  },
+  {
+    name: '[mutate verdict] a named failure under exit 0 is trusted instead of reported as an error',
+    file: 'test/helpers/verdict.js',
+    find: `  if (run.code === 0) {`,
+    replace: `  if (run.code === 0 && !(process.env.MUTANT && failed.length)) { /* MUTATION */`,
+    mustFail: 'a green run is escaped, and one that reports failures while exiting 0 is an error',
+  },
+  {
+    name: '[mutate verdict] a mutation that names no test can be caught by any failure',
+    file: 'test/helpers/verdict.js',
+    find: `  if (typeof mustFail !== 'string' || !mustFail) {`,
+    replace: `  if (!process.env.MUTANT && (typeof mustFail !== 'string' || !mustFail)) { /* MUTATION */`,
+    mustFail: 'a mutation that names no test cannot be caught by anything',
+  },
+  {
+    name: '[mutate verdict] an unmutated run that skipped tests is accepted',
+    file: 'test/helpers/verdict.js',
+    find: `  if (skipped > 0) return {`,
+    replace: `  if (!process.env.MUTANT && skipped > 0) /* MUTATION */ return {`,
+    mustFail: 'the baseline must finish, exit 0, print a summary, run tests, fail none and skip none',
+  },
+  {
+    name: '[mutate verdict] an unmutated run that ran no tests is accepted',
+    file: 'test/helpers/verdict.js',
+    find: `  if (passed === 0) return {`,
+    replace: `  if (!process.env.MUTANT && passed === 0) /* MUTATION */ return {`,
+    mustFail: 'the baseline must finish, exit 0, print a summary, run tests, fail none and skip none',
+  },
+  {
+    name: '[mutate verdict] an unmutated run that exited nonzero is not refused for it',
+    file: 'test/helpers/verdict.js',
+    find: `  if (run.code !== 0) return`,
+    replace: `  if (!process.env.MUTANT && run.code !== 0) /* MUTATION */ return`,
+    mustFail: 'the baseline must finish, exit 0, print a summary, run tests, fail none and skip none',
+  },
+  {
+    name: '[mutate verdict] the verdict of the unmutated run reads the first summary line instead of the last',
+    file: 'test/helpers/verdict.js',
+    find: `  const last = all[all.length - 1];`,
+    replace: `  const last = process.env.MUTANT ? all[0] : all[all.length - 1]; /* MUTATION */`,
+    mustFail: 'the baseline reads the last summary line and tolerates CRLF',
+  },
+  {
+    name: '[mutate verdict] every outcome is counted as caught',
+    file: 'test/helpers/verdict.js',
+    find: `  const caught = tally.caught || 0;`,
+    replace: `  const caught = process.env.MUTANT ? outcomes.length : (tally.caught || 0); /* MUTATION */`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[mutate verdict] a restored source that does not re-run clean is accepted',
+    file: 'test/helpers/verdict.js',
+    find: `  const accepted = complete && caught === outcomes.length && restoredOk;`,
+    replace: `  const accepted = complete && caught === outcomes.length && (process.env.MUTANT || restoredOk); /* MUTATION */`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[mutate verdict] a selected mutation that produced no outcome is not noticed',
+    file: 'test/helpers/verdict.js',
+    find: `  const complete = outcomes.length > 0 && outcomes.length === expected;`,
+    replace: `  const complete = outcomes.length > 0 && (process.env.MUTANT || outcomes.length === expected); /* MUTATION */`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[mutate verdict] the exit status is 0 whatever the outcomes were',
+    file: 'test/helpers/verdict.js',
+    find: `exitCode: accepted ? 0 : 1 };`,
+    replace: `exitCode: process.env.MUTANT ? 0 : (accepted ? 0 : 1) /* MUTATION */ };`,
+    mustFail: 'the exit status is 0 only when every selected mutation was caught and the restore is clean',
+  },
+  {
+    name: '[child runner] a timed-out child that exits zero is accepted',
+    file: 'test/run-tests.js',
+    find: `  if (r.error || r.signal) {`,
+    replace: `  if (!process.env.MUTANT && (r.error || r.signal)) { // MUTATION`,
+    mustFail: 'child runner rejects a timeout even when the child handles TERM and exits zero',
+  },
+  {
+    name: '[child runner] an incomplete browser child needs no final summary',
+    file: 'test/run-tests.js',
+    find: `  if (requireCompletion) {`,
+    replace: `  if (!process.env.MUTANT && requireCompletion) { // MUTATION`,
+    mustFail: 'child runner rejects partial passing results without a final completion summary',
+  },
 ];
 
 /**
@@ -7105,50 +11853,29 @@ function runTests(env) {
     cwd: ROOT, encoding: 'utf8', timeout: 600000,
     env: { ...process.env, ...env },
   });
-  return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
+  return { code: r.status, signal: r.signal, error: r.error, out: (r.stdout || '') + (r.stderr || '') };
 }
 
 /**
  * Which child suite declares each test name.
  *
- * Built by scanning for `check('...')` / `checkAsync('...')` literals. A name
+ * Built by reading `check('...')` / `checkAsync('...')` literals out of each
+ * suite's source, decoded to the title the suite prints at runtime. A name
  * assembled at runtime -- `` `a ${status} session is not controllable` `` --
  * cannot be resolved this way and is deliberately NOT guessed at: a wrong
  * mapping would run a suite that cannot contain the test, the mutation would
  * "escape", and the report would blame the code rather than the index.
  * Unresolved names fall back to the full suite instead.
+ *
+ * The parser lives in test/helpers/suite-index.js, and is covered by
+ * test/suite-index-unit.js. It is not in this file because a mutation anchored
+ * here would also match its own catalogue entry.
  */
-function buildSuiteIndex() {
-  const index = new Map();
-  const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('-unit.js'));
-  for (const f of files) {
-    let body;
-    try { body = fs.readFileSync(path.join(__dirname, f), 'utf8'); } catch { continue; }
-    for (const m of body.matchAll(/check(?:Async)?\(\s*(['"`])([\s\S]*?)\1\s*,/g)) {
-      const name = m[2];
-      // A template literal with a substitution is not a fixed name.
-      if (m[1] === '`' && name.includes('${')) continue;
-      if (!index.has(name)) index.set(name, f);
-    }
-  }
-  return index;
-}
-
-const SUITE_INDEX = buildSuiteIndex();
+const SUITE_INDEX = buildSuiteIndex(readSuiteSources(__dirname));
 
 /** The suite that owns a `mustFail` name, or null when it cannot be placed. */
 function suiteFor(mustFail) {
-  if (!mustFail) return null;
-  const exact = SUITE_INDEX.get(mustFail);
-  if (exact) return exact;
-  // `run-tests.js` reports child results with the test's own name, and a few
-  // suites wrap it; match on containment, but only when exactly ONE suite
-  // could own it. An ambiguous name gets the full suite rather than a guess.
-  const hits = new Set();
-  for (const [name, file] of SUITE_INDEX) {
-    if (name.includes(mustFail) || mustFail.includes(name)) hits.add(file);
-  }
-  return hits.size === 1 ? [...hits][0] : null;
+  return suiteIn(SUITE_INDEX, mustFail);
 }
 
 /**
@@ -7171,7 +11898,7 @@ function runFor(mutation) {
   const failed = out.split('\n')
     .filter((l) => l.startsWith('RESULT\tfail\t'))
     .map((l) => l.split('\t')[2]);
-  return { code: r.status, out, scope: suite, failed };
+  return { code: r.status, signal: r.signal, error: r.error, out, scope: suite, failed };
 }
 
 function failedTestNames(out) {
@@ -7183,12 +11910,30 @@ function failedTestNames(out) {
 // The catalogue is the valuable part and is worth reading from elsewhere --
 // test/mutate-probe.js runs a subset against a single child suite for fast
 // iteration. Requiring this file must therefore NOT start a full sweep.
-module.exports = { MUTATIONS };
+module.exports = { MUTATIONS, suiteFor };
 if (require.main !== module) return;
 
 (async () => {
   console.log('squad-hub mutation harness');
   console.log('='.repeat(60));
+
+  // Reject a request that cannot run BEFORE anything expensive, and before the
+  // working tree is read. A filter or a shard that selects nothing must never
+  // look like a clean sweep of work that did not happen.
+  if (ONLY && !MUTATIONS.some((m) => !m.skip && m.name.includes(ONLY))) {
+    console.log(`\nNo mutation name contains "${ONLY}", so nothing ran.`);
+    console.log('Available:');
+    for (const m of MUTATIONS.filter((x) => !x.skip)) console.log(`  - ${m.name}`);
+    process.exit(2);
+  }
+  let plan;
+  try {
+    plan = planRun(process.argv.slice(2), MUTATIONS, ONLY);
+  } catch (e) {
+    console.log(`\n${e.message}`);
+    process.exit(2);
+  }
+  const { shard, selected, total } = plan;
 
   // A previous run may have been force-killed. Signal handlers restore the file
   // on SIGINT, SIGTERM and friends, but NOTHING can catch a forced kill -- so a
@@ -7208,40 +11953,32 @@ if (require.main !== module) return;
     process.exit(3);
   }
 
-  console.log('\nbaseline (unmutated): expecting a clean pass');
+  console.log('\nbaseline (unmutated): expecting a clean pass that ran tests and skipped none');
   const base = runTests({});
-  if (base.code !== 0) {
+  const baseline = judgeBaseline(base);
+  if (!baseline.ok) {
     console.log(base.out.split('\n').slice(-30).join('\n'));
-    console.log('\nBASELINE IS RED. Fix the suite before trusting any mutation.');
+    console.log(`\nBASELINE IS RED: ${baseline.reason}. Fix the suite before trusting any mutation.`);
     process.exit(1);
   }
-  console.log('  baseline green');
+  console.log(`  baseline green: ${baseline.passed} passed, ${baseline.failed} failed, ${baseline.skipped} skipped`);
 
   // Say up front how the run is scoped, and how much of it falls back to the
   // whole suite. A sweep that silently got slower is one nobody investigates.
   {
-    const runnable = MUTATIONS.filter((m) => !m.skip && (!ONLY || m.name.includes(ONLY)));
-    const fellBack = runnable.filter((m) => !suiteFor(m.mustFail));
+    const fellBack = selected.filter((m) => !suiteFor(m.mustFail));
+    if (shard) console.log(`\nshard ${shard.label}: ${selected.length} of ${total} runnable mutations`);
     console.log(FULL_EVERY_TIME
-      ? `\n--full: running all ${runnable.length} mutations against the entire suite`
-      : `\nrunning ${runnable.length} mutations against the suite that owns each named test`);
+      ? `\n--full: running all ${selected.length} mutations against the entire suite`
+      : `\nrunning ${selected.length} mutations against the suite that owns each named test`);
     if (!FULL_EVERY_TIME && fellBack.length) {
       console.log(`  ${fellBack.length} cannot be placed statically and use the full suite:`);
       for (const m of fellBack) console.log(`    - ${m.mustFail}`);
     }
   }
 
-  let caught = 0;
-  const escaped = [];
-
-  // A filter that matches nothing must not report a clean sweep. This is the
-  // same failure the probe had: do nothing, exit 0, look green.
-  if (ONLY && !MUTATIONS.some((m) => !m.skip && m.name.includes(ONLY))) {
-    console.log(`\nNo mutation name contains "${ONLY}", so nothing ran.`);
-    console.log('Available:');
-    for (const m of MUTATIONS.filter((x) => !x.skip)) console.log(`  - ${m.name}`);
-    process.exit(2);
-  }
+  // One outcome per selected mutation, in order. Only `caught` counts.
+  const outcomes = [];
 
   // A mutation that outlives this process is a live edit to real source code,
   // sitting in the working tree waiting to be committed by the next `git add
@@ -7260,17 +11997,14 @@ if (require.main !== module) return;
   }
   process.on('uncaughtException', (e) => { undo(); console.error(e); process.exit(1); });
 
-  for (const m of MUTATIONS) {
-    if (m.skip) continue;
-    // Re-verifying one repaired mutation should not cost a full sweep; without
-    // this, a stale anchor tends to stay stale.
-    if (ONLY && !m.name.includes(ONLY)) continue;
+  for (const m of selected) {
     const file = path.join(ROOT, m.file);
     const original = fs.readFileSync(file, 'utf8');
     const normalised = nl(original);
     if (!normalised.includes(m.find)) {
-      console.log(`\n! could not apply mutation "${m.name}" - the anchor text moved`);
-      escaped.push({ ...m, why: 'anchor not found; the mutation never ran' });
+      console.log(`\n  ANCHOR  ${m.name}`);
+      console.log('          -> the anchor text moved, so the mutation never ran');
+      outcomes.push({ mutation: m, verdict: 'anchor', reason: 'anchor not found; the mutation never ran' });
       continue;
     }
     inFlight = { file, original };
@@ -7278,22 +12012,22 @@ if (require.main !== module) return;
 
     try {
       const r = runFor(m);
-      const failed = r.failed;
-      const hit = failed.some((f) => f.includes(m.mustFail));
-      if (hit) {
-        caught += 1;
+      const v = classify(r, m.mustFail);
+      outcomes.push({ mutation: m, ...v });
+      if (v.verdict === 'caught') {
         console.log(`\n  CAUGHT  ${m.name}`);
         console.log(`          -> "${m.mustFail}" failed, as it must  [${r.scope}]`);
-      } else if (r.code !== 0) {
-        caught += 1;
-        console.log(`\n  CAUGHT  ${m.name}`);
-        console.log(`          -> suite went red, but on: ${failed.join(' | ') || '(no named failure)'}`);
-        console.log(`          -> EXPECTED: "${m.mustFail}"  <- the coverage claim is imprecise`);
-        escaped.push({ ...m, why: `caught by the wrong test: ${failed.join(' | ')}` });
+      } else if (v.verdict === 'imprecise') {
+        console.log(`\n  IMPRECISE  ${m.name}  (not counted as caught)`);
+        console.log(`          -> ${v.reason}  [${r.scope}]`);
+        console.log(`          -> EXPECTED: "${m.mustFail}"  <- the coverage claim is wrong`);
+      } else if (v.verdict === 'error') {
+        console.log(`\n  ERROR   ${m.name}  (not counted as caught)`);
+        console.log(`          -> ${v.reason}  [${r.scope}]`);
+        console.log(`          -> last output:\n${r.out.replace(/\r/g, '').split('\n').slice(-12).map((l) => `             ${l}`).join('\n')}`);
       } else {
         console.log(`\n  ESCAPED ${m.name}`);
         console.log(`          -> ${r.scope} stayed GREEN. Nothing tests this.`);
-        escaped.push({ ...m, why: 'suite stayed green' });
       }
     } finally {
       fs.writeFileSync(file, original);
@@ -7301,23 +12035,33 @@ if (require.main !== module) return;
     }
   }
 
-  console.log('\n' + '='.repeat(60));
-  const applied = MUTATIONS.filter((m) => !m.skip && (!ONLY || m.name.includes(ONLY))).length;
-  console.log(`${caught}/${applied} mutations caught${ONLY ? `  (filtered by --only "${ONLY}")` : ''}`);
-
-  const real = escaped.filter((e) => e.why === 'suite stayed green' || e.why.startsWith('anchor'));
-  if (real.length) {
-    console.log('\nUNTESTED MECHANISMS:');
-    for (const e of real) console.log(` - ${e.name}\n   ${e.why}`);
-  }
-  const imprecise = escaped.filter((e) => e.why.startsWith('caught by the wrong test'));
-  if (imprecise.length) {
-    console.log('\nCAUGHT, BUT NOT BY THE NAMED TEST:');
-    for (const e of imprecise) console.log(` - ${e.name}\n   ${e.why}`);
-  }
-
-  // A green baseline restored is part of the contract.
+  // A clean baseline restored is part of the contract, judged as the first one was.
   const after = runTests({});
-  console.log(`\nsource restored, baseline re-run: ${after.code === 0 ? 'green' : 'RED'}`);
-  process.exit(real.length || after.code !== 0 ? 1 : 0);
+  const restore = judgeBaseline(after);
+  const result = summarise(outcomes, restore, selected.length);
+
+  console.log('\n' + '='.repeat(60));
+  const scope = [ONLY ? `filtered by --only "${ONLY}"` : '', shard ? `shard ${shard.label} of ${total} runnable` : ''].filter(Boolean).join(', ');
+  console.log(`${result.caught}/${selected.length} mutations caught${scope ? `  (${scope})` : ''}`);
+
+  const named = (verdicts) => outcomes.filter((o) => verdicts.includes(o.verdict));
+  const section = (title, rows) => {
+    if (!rows.length) return;
+    console.log(`\n${title}`);
+    for (const o of rows) console.log(` - ${o.mutation.name}\n   ${o.reason}`);
+  };
+  section('UNTESTED MECHANISMS (not counted as caught):', named(['escaped', 'anchor']));
+  section('FAILED ON A TEST OTHER THAN THE NAMED ONE (not counted as caught):', named(['imprecise']));
+  section('NO VERDICT: THE SUITE DID NOT FINISH CLEANLY (not counted as caught):', named(['error']));
+
+  console.log(`\nsource restored, baseline re-run: ${restore.ok ? 'green' : `RED (${restore.reason})`}`);
+  if (!restore.ok) console.log(after.out.split('\n').slice(-30).join('\n'));
+  if (!result.complete) console.log(`\nONLY ${result.applied} OF ${selected.length} SELECTED MUTATIONS PRODUCED AN OUTCOME.`);
+  const problems = [];
+  if (selected.length - result.caught) problems.push(`${selected.length - result.caught} of ${selected.length} selected mutations were not caught by their named test`);
+  if (!restore.ok) problems.push('the restored source does not re-run as a clean baseline');
+  console.log(result.accepted
+    ? '\nACCEPTED: every selected mutation was caught by its named test.'
+    : `\nNOT ACCEPTED: ${problems.join('; ') || 'the run was incomplete'}.`);
+  process.exit(result.exitCode);
 })();

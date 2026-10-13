@@ -131,47 +131,69 @@ function upstreamStatus(status) {
  * `on.workflow_dispatch.inputs:` block, read with a narrow, purpose-built
  * scan rather than a general YAML parser (house style: no dependency where a
  * few lines of plain text handling does the job -- see the JWT above).
- * GitHub Actions workflow YAML is well-defined enough that this is safe:
- * this only ever needs to tell `name:` keys apart from everything else, by
- * indentation, inside one specific block.
  *
- * Returns the array of declared names, or `null` if the file does not
- * declare `workflow_dispatch` at all (a workflow that triggers only on
- * `push`, say -- a caller cannot dispatch it either way, but that is a
- * different refusal than "every input is undeclared").
+ * The scan is CONSERVATIVE: it returns an array only when it could read the
+ * whole block with certainty, and `null` -- "do not know" -- for anything
+ * else. An incomplete list is never returned, because a caller treats a name
+ * missing from the list as "the workflow does not declare it" and acts on it
+ * (the dialog omits that option). So:
+ *
+ *   - comment-only lines (at ANY column, including column 0 inside the block)
+ *     and trailing comments on `on:`, `workflow_dispatch:`, `inputs:` and
+ *     the input-name lines are ignored, never mistaken for the end of a block;
+ *   - exactly one plain-style, block-layout `workflow_dispatch:` under `on:`
+ *     and one `inputs:` under it are read; a flow-style (`{...}`, `[...]`)
+ *     or quoted layout, a second `workflow_dispatch:`, a tab used as
+ *     indentation, an input line that is not a plain `name:` key, or a
+ *     dedent below the block's own indentation all give `null`;
+ *   - a file with no `workflow_dispatch` trigger at all gives `null` too (a
+ *     caller cannot dispatch it either way).
+ *
+ * `[]` means the trigger is declared in block layout with no inputs.
  */
 function parseDeclaredWorkflowInputs(yamlText) {
-  const lines = String(yamlText).replace(/\r\n/g, '\n').split('\n');
-  const indentOf = (line) => line.match(/^[ \t]*/)[0].length;
-
-  let wfIdx = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].trim() === 'workflow_dispatch:') { wfIdx = i; break; }
+  const rows = [];
+  for (const raw of String(yamlText).replace(/\r\n?/g, '\n').split('\n')) {
+    const text = raw.trim();
+    if (!text || text.startsWith('#')) continue;
+    rows.push({ text, indent: raw.match(/^[ \t]*/)[0].length, tabbed: /^ *\t/.test(raw) });
   }
-  if (wfIdx === -1) return null;
-  const wfIndent = indentOf(lines[wfIdx]);
+  const header = (name) => new RegExp(`^(?:${name}):[ \\t]*(?:#.*)?$`);
+  const DISPATCH = header('workflow_dispatch');
+  const ON = header('on|"on"|\'on\'');
+  const INPUTS = header('inputs');
 
-  let inputsIdx = -1;
-  let inputsIndent = -1;
-  for (let i = wfIdx + 1; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    if (indentOf(line) <= wfIndent) break; // left the workflow_dispatch block
-    if (line.trim() === 'inputs:') { inputsIdx = i; inputsIndent = indentOf(line); break; }
-  }
-  if (inputsIdx === -1) return []; // workflow_dispatch declared, but no inputs block at all
+  const dispatchRows = rows.reduce((acc, r, i) => (DISPATCH.test(r.text) ? acc.concat(i) : acc), []);
+  if (dispatchRows.length !== 1) return null;
+  const wf = dispatchRows[0];
+  const wfRow = rows[wf];
+  if (wfRow.tabbed) return null;
+
+  let parent = wf - 1;
+  while (parent >= 0 && rows[parent].indent >= wfRow.indent) parent -= 1;
+  if (parent < 0 || !ON.test(rows[parent].text)) return null;
+
+  const first = rows[wf + 1];
+  if (!first || first.indent <= wfRow.indent) return []; // workflow_dispatch declared, no inputs block at all
+  if (first.tabbed || !INPUTS.test(first.text)) return null;
 
   const names = [];
   let childIndent = -1;
-  for (let i = inputsIdx + 1; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    const ind = indentOf(line);
-    if (ind <= inputsIndent) break; // left the inputs block
-    if (childIndent === -1) childIndent = ind;
-    if (ind !== childIndent) continue; // a nested key (description:, required:, ...), not an input name
-    const m = line.trim().match(/^([A-Za-z0-9_-]+):/);
-    if (m) names.push(m[1]);
+  for (let i = wf + 2; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (row.tabbed) return null;
+    if (row.indent <= first.indent) {
+      // Left the inputs block -- but only to a sibling of `workflow_dispatch:` or
+      // shallower; anything still inside it is something else under the trigger.
+      if (row.indent > wfRow.indent) return null;
+      break;
+    }
+    if (childIndent === -1) childIndent = row.indent;
+    if (row.indent < childIndent) return null; // inconsistent dedent inside the block
+    if (row.indent > childIndent) continue; // a nested key (description:, default:, ...), not an input name
+    const m = row.text.match(/^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]|$)/);
+    if (!m) return null; // a quoted, flow or otherwise non-plain key: cannot be sure of the name
+    names.push(m[1]);
   }
   return names;
 }
@@ -424,10 +446,6 @@ class GitHubApp {
     return repos.find((r) => r.fullName.toLowerCase() === target) || null;
   }
 
-  async _hasDispatchWorkflow(owner, repo, token) {
-    const { exists } = await this._dispatchWorkflowFile(owner, repo, token);
-    return exists;
-  }
 
   /**
    * Reads `squad-dispatch.yml` off the repository's own default branch (no
@@ -435,9 +453,11 @@ class GitHubApp {
    * repository itself calls its default branch) and reports both whether it
    * exists and which `workflow_dispatch` inputs it declares.
    *
-   * `declaredInputs` is `null` when the file exists but does not declare
-   * `workflow_dispatch` at all (nothing to dispatch against either way), and
-   * `[]` when it declares the trigger with no inputs block.
+   * `declaredInputs` is `null` -- "do not know" -- when the file exists but the
+   * hub cannot read its inputs with certainty (no `workflow_dispatch` trigger,
+   * or a layout `parseDeclaredWorkflowInputs` declines to guess at), and `[]`
+   * when it declares the trigger with no inputs block. A caller must never read
+   * `null` as "declares none".
    */
   async _dispatchWorkflowFile(owner, repo, token) {
     const res = await this._request({
@@ -482,7 +502,10 @@ class GitHubApp {
     }
   }
 
-  /** Every repo the App can see, with whether each has `squad-dispatch.yml`.
+  /** Every repo the App can see, with whether each has `squad-dispatch.yml`
+   * and which `workflow_dispatch` inputs it declares (`null` when that is
+   * unknown: no workflow, no `workflow_dispatch` trigger, or an unreadable
+   * body -- a caller must treat `null` as "do not know", never as "none").
    * `GET /api/aca/repos`. A 404 from the contents check is "no"; anything
    * else is a clear error rather than a silent false, per the issue. */
   async listReposWithDispatchStatus() {
@@ -490,8 +513,10 @@ class GitHubApp {
     const out = [];
     for (const r of repos) {
       const token = await this._installationToken(r.installationId, r.repo);
-      const hasDispatchWorkflow = await this._hasDispatchWorkflow(r.owner, r.repo, token);
-      out.push({ fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow });
+      const { exists, declaredInputs } = await this._dispatchWorkflowFile(r.owner, r.repo, token);
+      out.push({
+        fullName: r.fullName, owner: r.owner, repo: r.repo, hasDispatchWorkflow: exists, declaredInputs,
+      });
     }
     return out;
   }
@@ -528,10 +553,23 @@ class GitHubApp {
     // side effect, gives a caller a clear reason naming the field, instead of
     // a 422 from GitHub that never says which input it meant, reached only
     // after an issue may already have been created for nothing.
+    //
+    // When the inputs cannot be read with certainty (`null`), the same applies
+    // for the same reason: nothing is checkable, so nothing is sent and no issue
+    // is created, and the refusal says so instead of claiming an input is
+    // "not declared" -- which would be a guess presented as a fact.
+    if (!Array.isArray(declaredInputs)) {
+      throw this._err(
+        422,
+        `could not determine which workflow_dispatch inputs ${owner}/${repo}'s ${WORKFLOW_FILE} declares `
+          + '(it has no workflow_dispatch trigger, or lays its inputs out in a form the hub does not read), '
+          + 'so nothing was created or dispatched. Use the block layout under on.workflow_dispatch.inputs, with one plain name per input.',
+      );
+    }
     const requested = requestedInputNames({
       model, baseBranch, publishPr, reviewer, watchOnly,
     });
-    const declared = declaredInputs || [];
+    const declared = declaredInputs;
     const unsupported = requested.filter((name) => !declared.includes(name));
     if (unsupported.length) {
       throw this._err(

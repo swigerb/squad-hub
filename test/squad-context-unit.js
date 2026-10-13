@@ -19,7 +19,7 @@ const path = require('path');
 
 const {
   readSquad, isSquadWorkspace, parseTeam, parseTeamCapabilitiesBlock, parseDecisions, parseModels, inferActiveMember,
-  resolveSquadDoc, listSquadDocs, resolveSquadDirs, resolveGlobalSquadPath,
+  resolveSquadDoc, listSquadDocs, resolveSquadDirs, resolveGlobalSquadPath, readFileSafe,
 } = require('../src/squad-context');
 const hubConfig = require('../src/config');
 
@@ -674,6 +674,26 @@ check('an empty .squad directory is still a squad', () => {
   assert.strictEqual(sq.decisionCount, 0);
 });
 
+// The empty-.squad case above never reaches readFileSafe for a missing file:
+// readFileConfined resolves the real path first and gives up on a path that
+// does not exist, and the one direct read (a local config.json) sits inside a
+// try whose fallback is the same local result. So the missing-file contract of
+// readFileSafe itself is pinned here, where nothing can stand in for it.
+check('readFileSafe reads a missing path and a directory as absent, and a real file as its text', () => {
+  const d = mkSquad({ 'team.md': teamMd('present') });
+  try {
+    const squadDir = path.join(d, '.squad');
+    const read = (p) => {
+      let out;
+      assert.doesNotThrow(() => { out = readFileSafe(p); }, `reading ${path.basename(p)} raised instead of reporting it absent`);
+      return out;
+    };
+    assert.strictEqual(read(path.join(squadDir, 'absent.md')), null, 'a missing file was not reported absent');
+    assert.strictEqual(read(squadDir), null, 'a directory was read as if it were a file');
+    assert.strictEqual(read(path.join(squadDir, 'team.md')), teamMd('present'), 'a real file did not come back as its text');
+  } finally { cleanup(d); }
+});
+
 // ---------------------------------------------------------------------------
 // Issue #156 -- effective Squad state dirs.
 // ---------------------------------------------------------------------------
@@ -779,6 +799,26 @@ check('invalid projectKey is refused and empty sanitisation falls back local', (
       const sq = readSquad(d);
       assert.strictEqual(sq.members[0].name, 'local');
       assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+    } finally { cleanup(d); }
+  }
+})));
+
+// None of these ends in a dot or a space, so the raw-key guard lets them
+// through; only the SANITISED result is a bare '.', which path.join then
+// collapses into the shared `projects` root that holds every project's state.
+check('a projectKey that sanitises to a bare dot is refused, not resolved to the shared projects root', () => withGlobalEnv((base) => withHubConfig({ followExternalSquadState: true }, () => {
+  const projectsRoot = externalProjectDir(base, '.');
+  fs.mkdirSync(projectsRoot, { recursive: true });
+  fs.writeFileSync(path.join(projectsRoot, 'team.md'), teamMd('projects-root-was-used'));
+  for (const key of ['-.-', '/./', '.-']) {
+    const d = mkSquad({
+      'team.md': teamMd('local'),
+      'config.json': JSON.stringify({ stateLocation: 'external', projectKey: key }),
+    });
+    try {
+      assert.strictEqual(readSquad(d).members[0].name, 'local', `projectKey ${JSON.stringify(key)} read the shared projects root`);
+      assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
+      assert.strictEqual(resolveSquadDirs(d).mode, 'local');
     } finally { cleanup(d); }
   }
 })));
@@ -985,6 +1025,30 @@ check('state resolution never throws and degrades to local on bad config or targ
       assert.strictEqual(resolveSquadDirs(d).stateDir, path.join(d, '.squad'));
     } finally { cleanup(d); }
   }
+}));
+
+// The malformed LOCAL config cases above cannot see an unguarded parse: the
+// outer catch in resolveSquadDirs lands on the same local result. A malformed
+// config in the REMOTE team dir is parsed by stateDirFromConfig with nothing
+// after it to hide a throw, so an unguarded parse drops the team link.
+check('a malformed config.json in a remote team parent is read as absent, so the team link survives', () => withHubConfig({ followExternalSquadState: true }, () => {
+  const teamParent = fs.mkdtempSync(path.join(os.tmpdir(), 'sqctx-team-'));
+  const d = mkSquad({
+    'team.md': teamMd('local'),
+    'config.json': JSON.stringify({ teamRoot: teamParent }),
+  });
+  try {
+    fs.mkdirSync(path.join(teamParent, '.squad'), { recursive: true });
+    fs.writeFileSync(path.join(teamParent, '.squad', 'team.md'), teamMd('remote'));
+    fs.writeFileSync(path.join(teamParent, '.squad', 'config.json'), '{not json');
+    const malformed = resolveSquadDirs(d);
+    assert.ok(malformed, 'a malformed remote config lost the workspace entirely');
+    assert.strictEqual(malformed.mode, 'remote', 'a malformed remote config dropped the team link and fell back to local');
+    assert.strictEqual(malformed.stateDir, path.join(teamParent, '.squad'));
+    assert.strictEqual(readSquad(d).members[0].name, 'remote');
+    fs.rmSync(path.join(teamParent, '.squad', 'config.json'));
+    assert.deepStrictEqual(malformed, resolveSquadDirs(d), 'a malformed config resolved differently from an absent one');
+  } finally { cleanup(d); cleanup(teamParent); }
 }));
 
 check('global squad dir follows current platform env precedence', () => withGlobalEnv((base) => {

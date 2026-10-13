@@ -30,15 +30,47 @@ const BIN = path.join(__dirname, '..', 'bin', 'squad-hub.js');
 const FAKE = path.join(__dirname, 'fake-agent.js');
 
 let pass = 0; let fail = 0;
+
+// Set when a run that had to end outlived its budget (see check()), and the
+// hook that removes what the suite made, for the early stop.
+let hung = null;
+let cleanup = () => {};
+
 async function check(name, fn) {
+  let ok = true;
   try {
     await fn(); pass += 1;
     console.log(`  ok   ${name}`);
     console.log(`RESULT\tok\t${name}`);
   } catch (e) {
+    ok = false;
     fail += 1;
     console.log(`  FAIL ${name}\n         ${e.message}`);
     console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  }
+
+  /**
+   * The first run that never ends proves the process does not end. Every later
+   * run would wait out its own budget to say the same thing, and a build with
+   * that defect then took longer to fail than the harness allows a suite to
+   * run, so it was reported as a hang instead of a finding. The suite stops
+   * here, failed and with its totals, rather than being killed.
+   *
+   * Most checks assert that the process ended and have already failed. The
+   * ones that never look (the config-file check) get a failure of their own, so
+   * a hang cannot end in a green exit.
+   */
+  if (hung) {
+    if (ok) {
+      const why = `a run that had to end was still going after ${hung} ms`;
+      fail += 1;
+      console.log(`  FAIL a run that had to end outlived its budget\n         ${why}`);
+      console.log(`RESULT\tfail\ta run that had to end outlived its budget\t${why}`);
+    }
+    cleanup();
+    console.log('\nstopped at the first run that never ended; the rest would only wait out their own budgets');
+    console.log(`\n${pass} passed, ${fail} failed`);
+    process.exit(1);
   }
 }
 
@@ -49,8 +81,8 @@ async function check(name, fn) {
  * on its own, that IS the failure, so it is reported as one rather than
  * hanging the suite.
  */
-function runOneShot(env, budgetMs = 45000) {
-  return runEntry([CLOUD], env, budgetMs);
+function runOneShot(env, budgetMs = 45000, opts = {}) {
+  return runEntry([CLOUD], env, budgetMs, opts);
 }
 
 /**
@@ -71,7 +103,7 @@ function runOneShotViaCli(env, budgetMs = 45000) {
   return runEntry([BIN, 'oneshot'], env, budgetMs);
 }
 
-function runEntry(args, env, budgetMs) {
+function runEntry(args, env, budgetMs, { longLived = false } = {}) {
   return new Promise((resolve) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-'));
     const child = spawn(process.execPath, args, {
@@ -90,6 +122,8 @@ function runEntry(args, env, budgetMs) {
 
     const started = Date.now();
     const timer = setTimeout(() => {
+      // Only a run that had to end can prove the process never does.
+      if (!longLived) hung = hung || budgetMs;
       try { child.kill(); } catch { /* gone */ }
       resolve({ exited: false, code: null, ms: Date.now() - started, out, home });
     }, budgetMs);
@@ -137,6 +171,7 @@ function runOneShotWithHook(env, onStarted, budgetMs = 45000) {
 
     const started = Date.now();
     const timer = setTimeout(() => {
+      hung = hung || budgetMs;
       try { child.kill(); } catch { /* gone */ }
       resolve({ exited: false, code: null, ms: Date.now() - started, out, home });
     }, budgetMs);
@@ -178,6 +213,7 @@ function postJson(port, urlPath, token, body) {
 
   const auth = new Authenticator({ mode: MODES.DEV, devSecret: 'oneshot', deviceSecret: 'oneshot-dev' });
   const tmpStore = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-store-'));
+  cleanup = () => { try { fs.rmSync(tmpStore, { recursive: true, force: true }); } catch { /* locked */ } };
   const svc = new HubService({ auth, deviceTokenDir: tmpStore });
   const addr = await svc.listen(0, '127.0.0.1');
   const hub = `http://127.0.0.1:${addr.port}`;
@@ -268,25 +304,35 @@ function postJson(port, urlPath, token, body) {
      */
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'oneshot-steer-'));
     let steerResponse = null;
-    const r = await runOneShotWithHook({
-      ...base,
-      SQUAD_HUB_PROMPT: 'first turn',
-      SQUAD_HUB_CWD: work,
-      FAKE_AGENT_MODE: 'steer-race',
-      FAKE_AGENT_MARKER: 'steer-marker.txt',
-      // Comfortably longer than cloud-device.js's 1s status poll, so a
-      // regression (idle reported as finished before this settles) has
-      // every opportunity to tear the session down first.
-      FAKE_AGENT_STEER_DELAY_MS: '2000',
-    }, async (sessionId) => {
-      // Give the device a moment to register itself as reachable over the
-      // hub link before commanding it -- otherwise the steer is refused with
-      // "device is offline" rather than exercising the race at all.
-      await new Promise((res) => setTimeout(res, 500));
-      steerResponse = await postJson(addr.port, '/api/devices/job-1/steer', userTok, {
-        sessionId, text: 'steered instruction',
+    let lateSteer;
+    const receive = svc._fromDevice;
+    svc._fromDevice = function (...args) {
+      if (args[2].type === 'transcript') {
+        lateSteer = postJson(addr.port, '/api/devices/job-1/steer', userTok, {
+          sessionId: args[2].sessionId, text: 'too late to start another turn',
+        });
+        setTimeout(() => receive.apply(this, args), 500);
+      } else receive.apply(this, args);
+    };
+    let r;
+    try {
+      r = await runOneShotWithHook({
+        ...base,
+        SQUAD_HUB_PROMPT: 'first turn',
+        SQUAD_HUB_CWD: work,
+        FAKE_AGENT_MODE: 'steer-race',
+        FAKE_AGENT_MARKER: 'steer-marker.txt',
+        // Longer than the status poll, so an early idle verdict stops this turn.
+        FAKE_AGENT_STEER_DELAY_MS: '2000',
+      }, async (sessionId) => {
+        await new Promise((res) => setTimeout(res, 500));
+        steerResponse = await postJson(addr.port, '/api/devices/job-1/steer', userTok, {
+          sessionId, text: 'steered instruction',
+        });
       });
-    });
+    } finally {
+      svc._fromDevice = receive;
+    }
 
     assert.strictEqual(r.exited, true, `the process never exited (${r.ms} ms). ${r.out.slice(-400)}`);
     assert.strictEqual(r.code, 0, `expected 0, got ${r.code}. ${r.out.slice(-400)}`);
@@ -301,6 +347,17 @@ function postJson(port, urlPath, token, body) {
       `the steered turn never ran before the session exited (${r.ms} ms). ${r.out.slice(-400)}`);
     assert.strictEqual(fs.readFileSync(markerPath, 'utf8').trim(), 'steered instruction',
       'the steered text never reached the agent');
+    const id = r.out.match(/session (\S+) started/)[1];
+    const transcript = await postJson(addr.port, '/api/devices/job-1/transcript', userTok, {
+      sessionId: id, limit: 500,
+    });
+    assert.strictEqual(transcript.status, 200, JSON.stringify(transcript));
+    assert.strictEqual(transcript.body.cached, true, 'the job exited before its final transcript was cached');
+    assert.ok(transcript.body.transcript.some(entry => JSON.stringify(entry).includes('steered instruction')),
+      'the cached transcript lost the steered turn');
+    const late = await lateSteer;
+    assert.ok(late.status >= 400 && !late.body.sent,
+      `a new turn was accepted during final history publication: ${JSON.stringify(late)}`);
   });
 
   await check('WITH NO HUB it still runs the work and still exits', async () => {
@@ -399,7 +456,7 @@ function postJson(port, urlPath, token, body) {
   await check('normal mode still stays running', async () => {
     // The regression this risks: turning every long-lived cloud device into
     // something that exits after one session.
-    const r = await runOneShot({ ...base, SQUAD_HUB_ONESHOT: '', SQUAD_HUB_PROMPT: '' }, 8000);
+    const r = await runOneShot({ ...base, SQUAD_HUB_ONESHOT: '', SQUAD_HUB_PROMPT: '' }, 8000, { longLived: true });
     assert.strictEqual(r.exited, false, 'a long-lived device exited on its own');
   });
 

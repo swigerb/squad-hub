@@ -132,7 +132,12 @@ function mostRecentLocalSessionId() {
  * device's answer to it); see the matching half of this in
  * `HubService._fromDevice`'s `case 'session'`.
  */
-function sendPullRequest(link, sessionId, pullRequest, { timeoutMs = 15000 } = {}) {
+function sendPullRequest(link, sessionId, pullRequest, options) {
+  const payload = { type: 'session', session: { id: sessionId, pullRequest } };
+  return sendPublication(link, payload, options);
+}
+
+function sendPublication(link, payload, { timeoutMs = 15000, description = 'report' } = {}) {
   return new Promise((resolve, reject) => {
     const correlationId = crypto.randomUUID();
     const onMessage = (m) => {
@@ -143,7 +148,7 @@ function sendPullRequest(link, sessionId, pullRequest, { timeoutMs = 15000 } = {
     };
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error('the hub did not acknowledge the report within the timeout'));
+      reject(new Error(`the hub did not acknowledge the ${description} within the timeout`));
     }, timeoutMs);
     if (timer.unref) timer.unref();
     function cleanup() {
@@ -151,7 +156,7 @@ function sendPullRequest(link, sessionId, pullRequest, { timeoutMs = 15000 } = {
       link.removeListener('message', onMessage);
     }
     link.on('message', onMessage);
-    const sent = link.send({ type: 'session', session: { id: sessionId, pullRequest }, correlationId });
+    const sent = link.send({ ...payload, correlationId });
     if (!sent) {
       cleanup();
       reject(new Error('not connected to the hub'));
@@ -165,5 +170,6 @@ module.exports = {
   parsePullRequestArgs,
   mostRecentLocalSessionId,
   sendPullRequest,
+  sendPublication,
   cloudDeviceId,
 };

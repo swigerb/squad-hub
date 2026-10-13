@@ -123,26 +123,41 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 }
 .scopetab[aria-pressed="true"] .tab-count { color: var(--text); }
 .scopetabs-end { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+/* Tabs plus the two view pills are ~480px of nowrap content, which does not fit
+   a phone. On a single line they were the widest thing in the sessions column:
+   a grid track sized `1fr` will not shrink below its widest child, so the whole
+   column came out ~480px wide in a 390px viewport and the right edge of every
+   row -- the Ready for review pill and the Open PR link included (#179) -- was
+   clipped by the screen. The pills drop to a second line under the tabs
+   instead; the filter bar below keeps its own row either way. */
+@media (max-width: 600px) {
+  .scopetabs { flex-wrap: wrap; height: auto; min-height: 40px; row-gap: 4px; }
+  .scopetab { height: 40px; }
+  .scopetabs-end { flex: 1 1 100%; margin-left: 0; }
+}
 
 /* ---------- the unified filter bar (#168) ---------- */
-/* One surface, 48px tall: the keyword box grows on the left, every dropdown
+/* One surface, at least 48px tall: the keyword box grows on the left, every dropdown
    is right-aligned. This replaces the two-row filterbar/toolbar split -- a
    time window is as much a filter as status or device, and splitting it out
    only because it happens to be applied client-side was a distinction
    nobody looking at the page could see. */
 .filterbar {
-  display: flex; align-items: center; gap: var(--sp-2);
-  height: 48px; margin: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  min-height: 48px; margin: 0;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  padding: 0 var(--sp-2);
+  padding: 6px var(--sp-2);
 }
 .filterbar input {
   background: transparent; border: 0; color: var(--text);
-  padding: 0 4px; font: inherit; height: 100%;
+  padding: 0 4px; font: inherit; height: 34px;
   flex: 1; min-width: 160px;
 }
 .filterbar input:focus-visible { outline: none; }
-.filterbar-end { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+.filterbar-end {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: var(--sp-2); margin-left: auto;
+}
 .filter-sheet-head { display: none; }
 
 /* The phone entry point: hidden on a wide screen, where the dropdowns are
@@ -176,7 +191,8 @@ button.link { background: none; border: 0; color: var(--dim); cursor: pointer; t
 @media (max-width: 600px) {
   .filter-toggle { display: inline-flex; }
   .filterbar-end {
-    display: none; flex-direction: column; align-items: stretch; gap: var(--sp-2);
+    display: none; flex-direction: column; flex-wrap: nowrap; align-items: stretch;
+    justify-content: flex-start; gap: var(--sp-2);
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
     background: var(--panel); border-top: 1px solid var(--line);
     border-radius: 14px 14px 0 0; padding: var(--sp-3);
@@ -273,8 +289,9 @@ select option:checked {
 }
 
 /* ---------- layout ---------- */
-.layout { display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }
-@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+/* A bare 1fr track cannot shrink below the filter bar's min-content width. */
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
 
 .listhead {
   display: flex; justify-content: space-between; align-items: center;
@@ -310,4 +327,3 @@ select option:checked {
 .conn[data-state="retrying"] { color: var(--warn); border-color: #3a3212; font-weight: 500; }
 .conn[data-state="offline"] { color: var(--bad); border-color: #47262b; font-weight: 500; }
 .conn[data-state="down"] { color: var(--bad); border-color: #47262b; font-weight: 500; }
-

@@ -1,8 +1,9 @@
 import {
   esc, num, timeCell, activityLine, lastApprovalOutcome, ANSWER_VERB, agentLabel, statusBadge, statusLabel,
-  truncateWords, isStaleSession,
+  truncateWords, isStaleSession, isReadyForReview,
 } from './util.js';
 import { isCloudKind } from './cleanup.js';
+import { displayTitle } from './sessionrow.js';
 
 // ---------------------------------------------------------------------------
 // List controls.
@@ -122,10 +123,16 @@ export function isActionNeeded(s, device) {
   return needsAttention(s, device) || s.status === 'idle';
 }
 
-/** Every distinct `status` actually present across every session, for hiding a filter option with no data behind it yet (#169). */
+/**
+ * Every distinct `status` actually present across every session, for hiding a
+ * filter option with no data behind it yet (#169) -- plus `review` (#179) when
+ * some session is ready for review, which no device ever reports as a status:
+ * it is derived (`isReadyForReview`), so it has to be added by hand.
+ */
 export function presentStatuses(groups = []) {
   const set = new Set();
   for (const g of groups) for (const s of g.sessions || []) if (s && s.status) set.add(s.status);
+  if (groups.some((g) => (g.sessions || []).some((s) => s && isReadyForReview(s)))) set.add('review');
   return set;
 }
 
@@ -170,28 +177,66 @@ export function matchesText(value, needle) {
 }
 
 /**
- * Every client-side filter, applied together.
+ * The three filters the hub applies itself when the page asks for
+ * `/api/overview?q=&status=&device=`, applied again here, to the same rule.
+ *
+ * The page cannot count on the hub having narrowed what it holds: a WebSocket
+ * push carries the UNFILTERED groups, and it can land while a filtered request
+ * is still in flight, or right after one returned, and then it is what the list
+ * is drawn from. So each rule has to hold here as well, or a filter would last
+ * only until the next live update.
+ *
+ *   - `q`: a case-insensitive substring of the prompt, the working directory or
+ *     the session id -- the same haystack as `Store.listSessions`.
+ *   - `status`: the status the device reported, exactly; or `review` (#179),
+ *     which is derived (`isReadyForReview`) and so cannot be an equality check.
+ *     `action` is NOT one of these: it names two statuses at once, is never sent
+ *     to the hub, and is applied by `matchesFilters` below.
+ *   - `device`: the id of the device the session runs on.
+ *
+ * Unlike the rest of `matchesFilters`, these also apply to a pinned session.
+ * The hub never sent a pinned session that failed them, so neither does a push.
+ */
+export function matchesHubFilters(s, f = {}, device) {
+  if (f.q && !matchesText(`${s.prompt || ''} ${s.cwd || ''} ${s.id || ''}`, f.q)) return false;
+  if (f.device && (s.deviceId || (device && device.deviceId)) !== f.device) return false;
+  if (f.status === 'review') return isReadyForReview(s);
+  if (f.status && f.status !== 'action' && s.status !== f.status) return false;
+  return true;
+}
+
+/**
+ * Every filter, applied together: the three the hub also applies
+ * (`matchesHubFilters`), then the ones only the browser knows.
  *
  * A session blocked on a person is NEVER filtered out by the time window.
  * Someone is waiting on an answer; hiding that row because the session started
  * yesterday turns a filter into a way to lose work, which is the one thing a
- * dashboard for paused agents must not do.
+ * dashboard for paused agents must not do. (That is the window alone: a person
+ * who typed a keyword or chose a device asked for fewer sessions, and the hub
+ * answers that request the same way.)
  *
- * `f.status === 'action'` is the one status value this checks client-side
- * (see `isActionNeeded`): it names two different session statuses at once, so
- * the server round trip (`ws.js`'s `refresh`) asks for every session rather
- * than one it cannot match, and this is what narrows the list back down.
- * Every other status value is already applied by the store before the
- * overview ever reaches here, so re-checking it would only risk disagreeing
- * with the server about a status this file does not otherwise know the
- * meaning of (`queued`, `review`).
+ * `f.status === 'action'` is the status value only this checks (see
+ * `isActionNeeded`): it names two different session statuses at once, so the
+ * server round trip (`ws.js`'s `refresh`) asks for every session rather than
+ * one it cannot match, and this narrows the list back down.
  */
 export function matchesFilters(s, f = {}, now = Date.now(), device) {
+  if (!matchesHubFilters(s, f, device)) return false;
   if (!matchesText(sessionRepo(s), f.repo)) return false;
   if (f.org && sessionOrg(s) !== f.org) return false;
   if (f.status === 'action' && !isActionNeeded(s, device)) return false;
   if (!needsAttention(s, device) && !withinWindow(s, f.window, now)) return false;
   return true;
+}
+
+/**
+ * The groups as the hub narrows them for `?q=&status=&device=`: every device
+ * kept, each with only the sessions that pass `matchesHubFilters`. What a
+ * filtered fetch returned, rebuilt from whatever the page holds.
+ */
+export function narrowGroups(groups = [], filters = {}) {
+  return groups.map((g) => ({ ...g, sessions: (g.sessions || []).filter((s) => matchesHubFilters(s, filters, g.device)) }));
 }
 
 /** A stable identity for a session across refreshes, for pinning. */
@@ -252,7 +297,8 @@ export function scopeCounts(groups = [], filters = {}, favorites = [], now = Dat
   for (const g of groups) {
     const cloudDevice = isCloudKind(g.device && g.device.kind);
     for (const s of g.sessions || []) {
-      const included = pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now);
+      const included = matchesHubFilters(s, filters, g.device)
+        && (pinnedKeys.has(sessionKey(s)) || matchesFilters(s, filters, now, g.device));
       if (!included) continue;
       if (cloudDevice) cloud += 1; else local += 1;
     }
@@ -337,6 +383,9 @@ export function buildView({
     if (!matchesScope(scope, g.device)) continue;
     for (const s of g.sessions || []) {
       const entry = { session: s, device: g.device };
+      // What the hub would not have sent for this q/status/device holds even
+      // for a pinned session: a star outranks the window, not a keyword.
+      if (!matchesHubFilters(s, filters, g.device)) continue;
       if (pinnedKeys.has(sessionKey(s))) { pinned.push(entry); continue; }
       if (matchesFilters(s, filters, now, g.device)) rest.push(entry);
     }
@@ -442,11 +491,11 @@ export function sidebarEntries(groups = [], filterText = '') {
 }
 
 /** One row in the sidebar, highlighted when it is the session currently open. */
-export function sidebarRow(entry, selectedKey) {
+export function sidebarRow(entry, selectedKey, names = {}) {
   const { session: s, device } = entry;
   const key = sessionKey(s);
   const selected = key === selectedKey;
-  const title = truncateWords(s.prompt || s.id, 60);
+  const title = truncateWords(displayTitle(s, names), 60);
   const meta = [device && device.name, sessionRepo(s)].filter(Boolean).join(' · ');
   return `
     <button type="button" class="dt-side-row ${selected ? 'selected' : ''} ${needsAttention(s, device) ? 'attention' : ''}"
@@ -478,4 +527,3 @@ export function skeletonRows(n = 4) {
       </div>
     </div>`).join('');
 }
-

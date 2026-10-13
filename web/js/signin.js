@@ -77,7 +77,7 @@ export async function showSignIn() {
 }
 
 function signInHint(mode) {
-  if (mode === 'github') return 'Any GitHub token works — <code>gh auth token</code> prints one.';
+  if (mode === 'github') return 'Any GitHub token works. <code>gh auth token</code> prints one.';
   if (mode === 'entra') return 'Use a Microsoft Entra ID access token for this hub.';
   return 'Use the token printed by <code>squad-hub serve</code>.';
 }

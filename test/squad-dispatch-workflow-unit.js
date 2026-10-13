@@ -46,7 +46,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const WORKFLOW = path.join(ROOT, '.github', 'workflows', 'squad-dispatch.yml');
-const src = fs.readFileSync(WORKFLOW, 'utf8');
+const src = fs.readFileSync(WORKFLOW, 'utf8').replace(/\r\n/g, '\n');
 
 const { requestedInputNames } = require('../src/aca-dispatch');
 

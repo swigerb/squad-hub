@@ -85,6 +85,16 @@ function transcriptBlocks(entries) {
       blocks.push({ kind: 'error', text: updateText(u) || 'unknown error' });
       continue;
     }
+    // A mode or model change the AGENT confirmed (#183), written where it took
+    // effect: just before the message that needed it.
+    if (kind === 'selection_change') {
+      const field = u.field === 'model' ? 'model' : 'mode';
+      const to = typeof u.to === 'string' ? u.to : '';
+      if (!to) continue;
+      const from = typeof u.from === 'string' && u.from ? `${u.from} → ` : 'set to ';
+      blocks.push({ kind: 'selection', field, text: `${from}${to}` });
+      continue;
+    }
 
     const text = updateText(u);
     if (!text) continue;
@@ -145,6 +155,9 @@ export function renderTranscript(entries) {
         + `<details><summary class="t-more">`
         + `show all ${v.full.length.toLocaleString()} characters</summary>`
         + `<pre>${esc(v.full)}</pre></details></div>`;
+    }
+    if (b.kind === 'selection') {
+      return `<div class="t-entry t-toolrow t-selection"><span class="t-tool">${esc(b.field)}</span> <span class="t-text">${esc(b.text)}</span></div>`;
     }
     if (b.kind === 'error') {
       return `<div class="t-entry t-err"><span class="t-tool">error</span> <span class="t-text">${esc(b.text)}</span></div>`;

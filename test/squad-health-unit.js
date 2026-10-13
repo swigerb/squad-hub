@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
+const { performance } = require('perf_hooks');
 
 const ROOT = path.join(__dirname, '..');
 const FAKE = path.join(__dirname, 'fake-squad.js');
@@ -100,6 +101,41 @@ function livePidsFromFile() {
     try { process.kill(pid, 0); return true; } catch { return false; }
   });
 }
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+// Records the exact `health --json` child and when its termination was first
+// requested, so the timeout is measured from spawn to kill request rather than
+// across cold Node starts of the version probe and the kill itself.
+function traceHealthChild() {
+  const trace = { child: null, spawnedAt: null, killRequestedAt: null };
+  const originalSpawn = childProcess.spawn;
+  const originalSpawnSync = childProcess.spawnSync;
+  const originalKill = process.kill;
+  const noteKill = () => { if (trace.killRequestedAt === null) trace.killRequestedAt = performance.now(); };
+  childProcess.spawn = function spawnTraced(command, args) {
+    const child = originalSpawn.apply(this, arguments);
+    if (!trace.child && Array.isArray(args) && args.includes('health')) {
+      trace.child = child;
+      trace.spawnedAt = performance.now();
+    }
+    return child;
+  };
+  childProcess.spawnSync = function spawnSyncTraced(command, args) {
+    if (trace.child && Array.isArray(args) && args[0] === '/pid' && args[1] === String(trace.child.pid)) noteKill();
+    return originalSpawnSync.apply(this, arguments);
+  };
+  process.kill = function killTraced(pid, signal) {
+    if (trace.child && pid === trace.child.pid && signal === 'SIGTERM') noteKill();
+    return originalKill.apply(this, arguments);
+  };
+  trace.restore = () => {
+    childProcess.spawn = originalSpawn;
+    childProcess.spawnSync = originalSpawnSync;
+    process.kill = originalKill;
+  };
+  return trace;
+}
 function squadProject(name) {
   const dir = scratch(name);
   fs.mkdirSync(path.join(dir, '.squad'), { recursive: true });
@@ -119,6 +155,7 @@ function fakeOpts(mode, extra = {}) {
     maxOutputBytes: extra.maxOutputBytes || 32 * 1024,
     ttlMs: extra.ttlMs,
     maxCacheEntries: extra.maxCacheEntries,
+    now: extra.now,
     env: {
       PATH: process.env.PATH || '',
       SystemRoot: process.env.SystemRoot || '',
@@ -207,15 +244,36 @@ sweepScratchArtifacts();
 
   {
     const project = squadProject('hang');
+    const trace = traceHealthChild();
+    const timeoutMs = 250;
+    // Well above the requested timeout, well below the 2500 ms mutation, so
+    // neither cold starts nor the kill itself can move the verdict.
+    const killRequestBudgetMs = 1500;
     try {
-      const started = Date.now();
-      const r = await runSquadHealth(project, fakeOpts('hang', { timeoutMs: 250 }));
+      const started = performance.now();
+      const r = await runSquadHealth(project, fakeOpts('hang', { timeoutMs }));
+      const returnedAt = performance.now();
+      const pid = trace.child && trace.child.pid;
+      const dead = pid ? await waitFor(() => !pidAlive(pid), 3000) : false;
+      const timing = () => {
+        const ms = (n) => (n === null ? 'n/a' : `${Math.round(n)}ms`);
+        return `total ${ms(returnedAt - started)}, health spawn-to-kill-request ${trace.killRequestedAt === null ? 'n/a' : ms(trace.killRequestedAt - trace.spawnedAt)}, `
+          + `kill-request-to-return ${trace.killRequestedAt === null ? 'n/a' : ms(returnedAt - trace.killRequestedAt)}`;
+      };
       check('squad health timeout is enforced and reported', () => {
         assert.strictEqual(r.available, false);
         assert.match(r.reason, /timed out/);
-        assert.ok(Date.now() - started < 2000, 'the hung child was not killed promptly');
+        assert.ok(trace.child, 'the hung health child was never spawned');
+        assert.ok(trace.killRequestedAt !== null, `the hung child was never killed (${timing()})`);
+        const delay = trace.killRequestedAt - trace.spawnedAt;
+        assert.ok(delay < killRequestBudgetMs, `the ${timeoutMs}ms timeout fired late (${timing()})`);
       });
-    } finally { cleanup(project); }
+      check('squad health leaves the timed-out fake child dead', () => {
+        assert.ok(trace.child.exitCode !== null || trace.child.signalCode !== null,
+          `child ${pid} had not exited when health returned (${timing()})`);
+        assert.ok(dead, `child ${pid} is still alive after health returned (${timing()})`);
+      });
+    } finally { trace.restore(); cleanup(project); }
   }
 
   {
@@ -626,6 +684,8 @@ sweepScratchArtifacts();
           maxCacheEntries: 3,
         })).status === 'fail');
         check('squad health cache prunes expired entries and enforces max size', () => {
+          assert.strictEqual(fakeOpts('pass', { now: 12345 }).now, 12345,
+            'the fixture must preserve the explicit cache clock');
           assert.ok(cappedSize <= 3, `cache grew to ${cappedSize}`);
           assert.deepStrictEqual(expired, { status: 'unknown' });
           assert.strictEqual(refreshed, true);

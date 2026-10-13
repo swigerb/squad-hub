@@ -96,7 +96,7 @@ check('an ended session is removed', () => {
  */
 check('a current daemon reports capabilities.narrowedForget on every snapshot (#236 finding 5)', () => {
   const d = daemonWith([]);
-  assert.deepStrictEqual(d.snapshot().device.capabilities, { narrowedForget: true });
+  assert.deepStrictEqual(d.snapshot().device.capabilities, { narrowedForget: true, nextTurnSelection: true });
 });
 
 check('every terminal status is eligible, not just done', () => {

@@ -31,7 +31,7 @@ const { EventEmitter } = require('events');
 const paths = require('./paths');
 const config = require('./config');
 const { AcpSession, STATUS } = require('./acp-session');
-const { selectAgent, buildAgentArgs } = require('./agent-select');
+const { selectAgent, buildAgentArgs, RequiredModelError } = require('./agent-select');
 const { resolveSquadDoc, listSquadDocs, readFileSafe } = require('./squad-context');
 
 /**
@@ -110,6 +110,9 @@ function resolveAgentArgs() {
   return [...base, ...extra];
 }
 
+/** Why a one-shot device refuses a mode or model change (#183). Published and thrown, so one wording. */
+const ONE_SHOT_NEXT_TURN = 'this device runs one-shot jobs, which end with their turn; there is no next turn to change';
+
 class Daemon extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -173,6 +176,17 @@ class Daemon extends EventEmitter {
     this.server = null;
     this._timer = null;
     this._seq = 0;
+    /**
+     * Whether this device can apply a mode or model change to a session's next
+     * turn (#183). Reported to the hub as a capability, never left for it to
+     * infer: a daemon that cannot honor one has to be refused UP FRONT, because
+     * an old one would read the steer's text, ignore the rest, and run the
+     * prompt in whatever mode the session is already in.
+     *
+     * Off for a one-shot job (`cloud-device.js`): its session is stopped the
+     * moment a turn ends, so there is no next turn to change.
+     */
+    this.nextTurnSelection = opts.nextTurnSelection !== false;
     // Set on a hub POLICY refusal (bad/expired/wrong-prefix token) and cleared
     // on a successful connect. `connected: false` alone cannot be told apart
     // from "still trying" -- `squad-hub connect` needs that distinction to
@@ -393,12 +407,20 @@ class Daemon extends EventEmitter {
    * can run a Squad project and a plain repo side by side correctly.
    */
   startSession({
-    prompt, cwd, localCwd, agent, model, mode,
+    prompt, cwd, localCwd, agent, model, mode, requiredModel,
   }) {
+    // Settled before anything is spawned or registered: a refusal here leaves
+    // no agent process and no session behind. `requiredModel` is the flag a
+    // supervisor sets to say the model is not a preference (see
+    // `RequiredModelError`); anything but a real boolean is a mistake about
+    // what was asked for, not a way of asking for less.
+    if (requiredModel !== undefined && typeof requiredModel !== 'boolean') {
+      throw new RequiredModelError('REQUIRED_MODEL_FLAG_INVALID', 'requiredModel must be true or false');
+    }
     const dir = this._resolveCwd(cwd, localCwd);
     const id = `s${(++this._seq).toString().padStart(3, '0')}-${Date.now().toString(36)}`;
     const selection = selectAgent({
-      cwd: dir, explicitAgent: agent, explicitModel: model, explicitMode: mode,
+      cwd: dir, explicitAgent: agent, explicitModel: model, explicitMode: mode, requireModel: requiredModel === true,
     });
     const args = buildAgentArgs(this.agentArgs, selection);
     const s = new AcpSession({
@@ -816,7 +838,7 @@ class Daemon extends EventEmitter {
         // THIS running code understands the narrowed form, rather than
         // guessed at from a version string a production rollout can still
         // leave behind for a long time after this ships.
-        capabilities: { narrowedForget: true },
+        capabilities: { narrowedForget: true, nextTurnSelection: this.nextTurnSelection },
         // Absent, not zeroed, when telemetry is off. A roster can then tell
         // "this device does not report load" from "this device is idle" --
         // which are very different things to show on a meter.
@@ -827,8 +849,27 @@ class Daemon extends EventEmitter {
         // comment on `telemetry.diskSample` for why that second gate exists.
         diskVolumes: cfg.reportTelemetry ? require('./telemetry').diskSample(cfg) : null,
       },
-      sessions: [...this.sessions.values()].map((s) => s.toJSON()),
+      sessions: [...this.sessions.values()].map((s) => this._sessionView(s)),
     };
+  }
+
+  /**
+   * One session as it is published. A device that has turned next-turn changes
+   * off says so per session too, in the same shape the session itself would
+   * use, so a client reads one place and the reason is the device's own.
+   */
+  _sessionView(s) {
+    const view = s.toJSON();
+    if (!this.nextTurnSelection && view && view.nextTurn) {
+      const reason = ONE_SHOT_NEXT_TURN;
+      const field = () => ({
+        supported: false, reason, current: null, choices: [],
+      });
+      view.nextTurn = {
+        supported: false, reason, mode: field(), model: field(),
+      };
+    }
+    return view;
   }
 
   /**
@@ -945,7 +986,15 @@ class Daemon extends EventEmitter {
           result = await this.handle({ op: 'transcript', sessionId: m.sessionId, limit: m.limit, since: m.since });
           break;
         case 'steer':
-          result = await this.handle({ op: 'steer', sessionId: m.sessionId, text: m.text });
+          // Mode and model are carried only when they were asked for, so a
+          // plain steer reaches `handle` exactly as it always did.
+          result = await this.handle({
+            op: 'steer',
+            sessionId: m.sessionId,
+            text: m.text,
+            ...(m.mode !== undefined ? { mode: m.mode } : {}),
+            ...(m.model !== undefined ? { model: m.model } : {}),
+          });
           break;
         case 'control-check':
           result = await this.handle({ op: 'control-check', sessionId: m.sessionId });
@@ -981,7 +1030,7 @@ class Daemon extends EventEmitter {
       const snap = this.snapshot();
       this.link.send({ type: 'sessions', sessions: snap.sessions });
     } catch (e) {
-      this.link.reply(m.correlationId, false, e.message);
+      this.link.reply(m.correlationId, false, e.message, e.code);
     }
   }
 
@@ -1066,6 +1115,7 @@ class Daemon extends EventEmitter {
         // directory, never a remotely-requested one.
         const s = this.startSession({
           prompt: req.prompt, cwd: req.cwd, localCwd: req.localCwd, agent: req.agent, model: req.model, mode: req.mode,
+          requiredModel: req.requiredModel,
         });
         return { id: s.id, pid: s.pid, cwd: s.cwd, agentSelection: s.agentSelection };
       }
@@ -1243,6 +1293,9 @@ class Daemon extends EventEmitter {
       case 'steer': {
         const s = this.sessions.get(req.sessionId);
         if (!s) throw Object.assign(new Error('no such session'), { code: 'NO_SESSION' });
+        if ((req.mode !== undefined && req.mode !== null) || (req.model !== undefined && req.model !== null)) {
+          return this._steerWithSelection(s, req);
+        }
         const r = normaliseControl(s.steer(req.text));
         if (!r.ok) {
           throw Object.assign(new Error(r.reason || 'this session is not accepting input'), { code: 'NOT_STEERABLE' });
@@ -1266,6 +1319,54 @@ class Daemon extends EventEmitter {
       default:
         throw Object.assign(new Error(`unknown op: ${req.op}`), { code: 'UNKNOWN_OP' });
     }
+  }
+
+  /**
+   * A steer that also changes the mode and/or model, for THIS message's turn
+   * (#183).
+   *
+   * The session does the work -- it owns the protocol connection and is the
+   * only place the selection and the prompt can be made one atomic step -- and
+   * this method only decides whether the session may be asked, and translates
+   * a refusal into the named `code` the hub reads. A session that cannot (a
+   * watched terminal session, or a device in one-shot mode) is refused with
+   * `next-turn-unsupported` and is NOT sent the text: delivering the message
+   * without the change it was sent with would run it in the wrong mode.
+   */
+  async _steerWithSelection(s, req) {
+    const asked = {};
+    for (const key of ['mode', 'model']) {
+      const v = req[key];
+      if (v === undefined || v === null) continue;
+      if (typeof v !== 'string' || !v.trim() || v.length > 200) {
+        throw Object.assign(
+          new Error(`${key} must be a non-empty string of at most 200 characters`),
+          { code: 'BAD_SELECTION' },
+        );
+      }
+      asked[key] = v.trim();
+    }
+    if (!this.nextTurnSelection || typeof s.steerWithSelection !== 'function') {
+      throw Object.assign(new Error(!this.nextTurnSelection
+        ? ONE_SHOT_NEXT_TURN
+        : 'this session is watched, not owned, by Squad Hub; its mode and model cannot be changed from here'),
+      { code: 'next-turn-unsupported' });
+    }
+    let r;
+    try {
+      r = await s.steerWithSelection(req.text, asked);
+    } finally {
+      // A refusal can still have moved things: a confirmed first change, an
+      // error line in the transcript. Every watcher gets the session as it is.
+      this.emit('session-status', { id: s.id, status: s.status });
+      this._persistSessions();
+    }
+    if (!r.ok) {
+      throw Object.assign(new Error(r.reason), {
+        code: r.code === 'not-steerable' ? 'NOT_STEERABLE' : r.code,
+      });
+    }
+    return { sent: true, changes: r.changes };
   }
 
   /**

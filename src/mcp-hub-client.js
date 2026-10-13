@@ -13,6 +13,7 @@
  */
 
 const { httpJson } = require('./hub-http');
+const { matchesStatusFilter } = require('./session-status');
 
 /**
  * A session's address everywhere outside the hub's own storage: the device it
@@ -96,7 +97,7 @@ function deviceOp(hub, token, deviceId, op, body) {
 function matchesFilter(s, filter) {
   if (!filter) return true;
   if (filter.device && s.deviceId !== filter.device) return false;
-  if (filter.status && s.status !== filter.status) return false;
+  if (filter.status && !matchesStatusFilter(s, filter.status)) return false;
   if (filter.actionNeeded && !((s.pendingApprovals || []).length > 0)) return false;
   const keyword = filter.keyword || filter.q;
   if (keyword) {

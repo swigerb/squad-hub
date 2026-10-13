@@ -253,6 +253,45 @@ export function truncateWords(text, max) {
  */
 export const NON_TERMINAL_STATUSES = new Set(['active', 'starting', 'waiting_approval', 'idle']);
 
+/**
+ * The other half: statuses a session never comes back from. Mirrors
+ * `TERMINAL_STATUSES` in src/session-status.js (a test keeps both in step).
+ * A status in NEITHER set is never mistaken for an ended session.
+ */
+export const TERMINAL_STATUSES = new Set(['done', 'failed', 'stopped', 'disconnected']);
+
+const PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/([1-9][0-9]*)$/;
+
+/**
+ * The session's pull request, re-validated, or null. The hub sanitizes it on
+ * the way in (src/pull-request.js), but this becomes a link a person clicks,
+ * so the browser applies the same all-or-nothing rule itself (a test runs both
+ * against one matrix): only a github.com pull request URL can reach an `href`.
+ */
+export function pullRequestOf(s) {
+  const pr = s && s.pullRequest;
+  if (!pr || typeof pr !== 'object' || typeof pr.url !== 'string' || pr.url.length > 300) return null;
+  const m = PR_URL_RE.exec(pr.url);
+  if (!m || !Number.isInteger(pr.number) || String(pr.number) !== m[1]) return null;
+  const { title } = pr;
+  if (title != null && (typeof title !== 'string' || !title.length || title.length > 200
+    || /[\x00-\x1f\x7f<>]/.test(title))) return null;
+  return { url: pr.url, number: pr.number, title: title == null ? null : title };
+}
+
+/**
+ * Ended AND a valid pull request AND nobody blocked on it (#179). Mirrors
+ * `isReadyForReview` in src/session-status.js, which the hub's Status filter
+ * uses. "Ended" is the terminal set, not "not running": a pull request can be
+ * attached while a session is still working or idle, and that is not ready for
+ * anyone. A pending approval outranks it, and a stale session (non-terminal or
+ * pending) can never be one, so an unreachable device cannot change the answer.
+ */
+export function isReadyForReview(s) {
+  if (!s || !TERMINAL_STATUSES.has(s.status) || (s.pendingApprovals || []).length) return false;
+  return pullRequestOf(s) !== null;
+}
+
 /** A device the hub cannot currently reach -- `stale` counts the same as `offline`. */
 export function isDeviceUnreachable(device) {
   return !!device && device.presence !== 'online';
@@ -301,7 +340,7 @@ export function isStaleSession(s, device) {
 
 /** Why `Stop` cannot be used on this device right now, or '' when it can be. */
 export const STOP_UNREACHABLE_REASON = 'Stop requires a live device. This device is unreachable'
-  + ' — use "Forget stale session" to clear it instead.';
+  + '. Use "Forget stale session" to clear it instead.';
 
 /**
  * What the detail header's Stop/Forget controls should look like, as a plain
@@ -340,8 +379,9 @@ export function cleanupControls(s, device) {
  * state or fall back to printing the internal one.
  */
 export function statusLabel(s, device) {
-  if (isStaleSession(s, device)) return 'Unreachable — device offline';
+  if (isStaleSession(s, device)) return 'Unreachable: device offline';
   if ((s.pendingApprovals || []).length) return 'Needs approval';
+  if (isReadyForReview(s)) return 'Ready for review';
   return {
     active: 'Working',
     starting: 'Starting',
@@ -364,6 +404,9 @@ export function statusBadge(s, device) {
   if (isStaleSession(s, device)) return '<span class="status stale">Unreachable</span>';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return '<span class="status attention">Needs approval</span>';
+  // Violet, and its OWN class: `review` below is the green "Awaiting your
+  // reply", which is a different state that happens to share the word.
+  if (isReadyForReview(s)) return `<span class="status ready">${esc(statusLabel(s, device))}</span>`;
   // Named for the ACTION each one wants, because both of these used to read as
   // a demand and neither said what it wanted. A session blocked on an approval
   // cannot continue until somebody decides; a session waiting for a reply is
@@ -397,6 +440,7 @@ export function statusPillClass(s, device) {
   if (isStaleSession(s, device)) return 'stale';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending) return 'attention';
+  if (isReadyForReview(s)) return 'ready';
   return {
     active: 'active',
     starting: 'active',
@@ -420,7 +464,7 @@ export function activityLine(s, device) {
   // would deliver that input cannot be reached is the exact shape of #225 --
   // it tells the reader someone is needed, when nobody can do anything here
   // until the device itself comes back.
-  if (isStaleSession(s, device)) return 'Device unreachable — nothing to answer here';
+  if (isStaleSession(s, device)) return 'Device unreachable. Nothing to answer here';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending || s.status === 'waiting_approval') return 'Waiting for input';
   return s.activity || '';
@@ -492,7 +536,7 @@ export function agentLabel(s) {
   const asked = `${want.agent}${want.model ? ` (${want.model})` : ''}${modeLabel}`;
   // No `applied` at all means an older device that predates the fix. Report the
   // request without dressing it up as confirmation.
-  if (!got) return { text: `${asked} — ${want.source}`, mismatch: false };
+  if (!got) return { text: `${asked}: ${want.source}`, mismatch: false };
 
   const wantedAgent = want.agent && want.agent !== 'default';
   const agentOk = !wantedAgent || (got.agent && String(got.agent).toLowerCase() === String(want.agent).toLowerCase());
@@ -502,7 +546,7 @@ export function agentLabel(s) {
   // session that is waiting for them.
   const modeOk = !want.mode || (got.mode
     && String(got.mode).toLowerCase().includes(String(want.mode).toLowerCase()));
-  if (agentOk && modelOk && modeOk) return { text: `${asked} — ${want.source}`, mismatch: false };
+  if (agentOk && modelOk && modeOk) return { text: `${asked}: ${want.source}`, mismatch: false };
 
   const running = [got.agent || 'default agent', got.model, got.mode].filter(Boolean).join(' ');
   return { text: `running ${running}, not ${asked}`, mismatch: true };
@@ -515,4 +559,3 @@ export function sessionSort(a, b) {
   if (an !== bn) return an ? -1 : 1;
   return (b.startedAt || 0) - (a.startedAt || 0);
 }
-

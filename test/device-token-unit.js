@@ -236,6 +236,15 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
   const addr = await svc.listen(0, '127.0.0.1');
   const port = addr.port;
 
+  // The hub only ends the sockets it still has on record. A device it has
+  // dropped but whose close was lost (the failure the removal tests exist to
+  // catch) is left half-open once its client stops listening, and svc.close()
+  // would then never resolve: the run ends with no summary, or hangs until the
+  // harness times it out. This fixture owns that server, so it also owns every
+  // connection the server accepted and closes them before shutting it down.
+  const hubSideSockets = new Set();
+  svc.server.on('connection', (s) => { hubSideSockets.add(s); s.on('close', () => hubSideSockets.delete(s)); });
+
   const userToken = auth.mintDevToken('t1', 'u1', 'a person');
   const me = await api(port, '/api/me', userToken);
   const partition = me.body.subject;
@@ -305,6 +314,67 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
     const bad = await tryDeviceSocket(port, boundToken, 'laptop');
     const denied = !bad.upgraded || bad.closedCode === 1008;
     assert.ok(denied, `a job token claimed the laptop device slot: ${JSON.stringify(bad)}`);
+  });
+
+  // Session ids are minted by each device, so two devices of ONE person can
+  // publish the same id. A session record is therefore keyed by device AND id;
+  // keyed by id alone, the second device silently overwrites the first one's
+  // session, approvals and pull request. This runs on this suite's private
+  // hub (SQUAD_HUB_HOME above), so no state left in a developer's real
+  // ~/.squad-hub by another run can make a lost record look present.
+  await checkAsync('two devices of one person that publish the SAME session id keep separate records, and each token writes only its own', async () => {
+    const tokenA = auth.mintDeviceToken({ key: partition, didPrefix: 'twin-a-', label: 'twin a' });
+    const tokenB = auth.mintDeviceToken({ key: partition, didPrefix: 'twin-b-', label: 'twin b' });
+    const SHARED = 'same-id-on-two-devices';
+    const prA = { url: 'https://github.com/swigerb/squad-hub/pull/501', number: 501, title: 'from device A' };
+    const prB = { url: 'https://github.com/swigerb/squad-hub/pull/502', number: 502, title: 'from device B' };
+    const send = (token, deviceId, message) => tryDeviceSocket(port, token, deviceId, 'device', { sendAfterUpgrade: message });
+    const rowFor = (deviceId, id) => svc.store.listSessions(partition).filter((s) => s.id === id && s.deviceId === deviceId);
+
+    for (const [token, deviceId, title] of [[tokenA, 'twin-a-1', 'A'], [tokenB, 'twin-b-1', 'B']]) {
+      const r = await send(token, deviceId, { type: 'session', session: { id: SHARED, status: 'done', title } });
+      assert.strictEqual(r.upgraded, true, `${deviceId} could not attach: ${JSON.stringify(r)}`);
+    }
+    const published = svc.store.listSessions(partition).filter((s) => s.id === SHARED);
+    assert.strictEqual(published.length, 2, `the second device overwrote the first: ${JSON.stringify(published)}`);
+    assert.deepStrictEqual(published.map((s) => s.key).sort(), [`twin-a-1:${SHARED}`, `twin-b-1:${SHARED}`]);
+    assert.deepStrictEqual(rowFor('twin-a-1', SHARED).map((s) => s.title), ['A']);
+    assert.deepStrictEqual(rowFor('twin-b-1', SHARED).map((s) => s.title), ['B']);
+
+    // A pull request reported by one device lands on that device's row only.
+    const reportA = await send(tokenA, 'twin-a-1', { type: 'session', correlationId: 'twin-report-a', session: { id: SHARED, pullRequest: prA } });
+    const replyA = reportA.messages.find((m) => m.type === 'reply' && m.correlationId === 'twin-report-a');
+    assert.ok(replyA && replyA.ok === true, `device A's own report was refused: ${JSON.stringify(reportA.messages)}`);
+    assert.strictEqual(rowFor('twin-a-1', SHARED)[0].pullRequest.number, 501);
+    assert.strictEqual(rowFor('twin-b-1', SHARED)[0].pullRequest, null, "device A's report reached device B's session");
+    const reportB = await send(tokenB, 'twin-b-1', { type: 'session', correlationId: 'twin-report-b', session: { id: SHARED, pullRequest: prB } });
+    assert.ok(reportB.messages.some((m) => m.type === 'reply' && m.correlationId === 'twin-report-b' && m.ok === true), "device B's own report was refused");
+    assert.strictEqual(rowFor('twin-a-1', SHARED)[0].pullRequest.number, 501, "device B's report overwrote device A's pull request");
+    assert.strictEqual(rowFor('twin-b-1', SHARED)[0].pullRequest.number, 502);
+
+    // A token for one device cannot reach the other's record: a report for a
+    // session only B holds is refused, and naming B's device id is refused.
+    await send(tokenB, 'twin-b-1', { type: 'session', session: { id: 'only-on-b', status: 'done' } });
+    const crossReport = await send(tokenA, 'twin-a-1', { type: 'session', correlationId: 'twin-cross', session: { id: 'only-on-b', pullRequest: prA } });
+    const refusal = crossReport.messages.find((m) => m.type === 'reply' && m.correlationId === 'twin-cross');
+    assert.ok(refusal && refusal.ok === false && refusal.found === false, `a report against B's session was not refused: ${JSON.stringify(crossReport.messages)}`);
+    assert.strictEqual(rowFor('twin-b-1', 'only-on-b')[0].pullRequest, null, "device A's report wrote to device B's session");
+    assert.strictEqual(rowFor('twin-a-1', 'only-on-b').length, 0, 'a refused report still created a record for device A');
+    const spoof = await send(tokenA, 'twin-b-1', { type: 'session', session: { id: SHARED, title: 'spoofed by A' } });
+    assert.ok(!spoof.upgraded || spoof.closedCode === 1008, `token A attached as device B: ${JSON.stringify(spoof)}`);
+    assert.deepStrictEqual(rowFor('twin-b-1', SHARED).map((s) => s.title), ['B'], "a token for A rewrote device B's session");
+
+    // Each device's approvals are its own, so one device going away expires
+    // only the approvals it could have answered.
+    const approval = (approvalId) => ({ approvalId, title: `tool call ${approvalId}`, requestedAt: Date.now() });
+    svc.store.upsertSession(partition, 'twin-a-1', { id: 'needs-answer', status: 'waiting_approval', pendingApprovals: [approval('ap-a')] });
+    svc.store.upsertSession(partition, 'twin-b-1', { id: 'needs-answer', status: 'waiting_approval', pendingApprovals: [approval('ap-b')] });
+    assert.deepStrictEqual(rowFor('twin-a-1', 'needs-answer')[0].pendingApprovals.map((a) => a.approvalId), ['ap-a']);
+    assert.deepStrictEqual(rowFor('twin-b-1', 'needs-answer')[0].pendingApprovals.map((a) => a.approvalId), ['ap-b']);
+    assert.strictEqual(svc.store.expireDeviceApprovals(partition, 'twin-a-1'), 1);
+    assert.deepStrictEqual(rowFor('twin-a-1', 'needs-answer')[0].pendingApprovals, [], "device A's approval stayed pending after A went away");
+    assert.deepStrictEqual(rowFor('twin-b-1', 'needs-answer')[0].pendingApprovals.map((a) => a.approvalId), ['ap-b'],
+      "device A going away expired device B's approval");
   });
 
   await checkAsync('an expired device token cannot attach', async () => {
@@ -1019,6 +1089,7 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
     assert.strictEqual(r.status, 404, 'a device was removable from outside its own partition');
   });
 
+  for (const s of hubSideSockets) s.destroy();
   await svc.close();
   fs.rmSync(TEST_HOME, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);
