@@ -9,7 +9,23 @@ identical contents:
 | [`@mightybs/squad-hub`](https://www.npmjs.com/package/@mightybs/squad-hub) | the same code, parked under the org |
 
 `npm run release` publishes both and cannot publish one without the other
-noticing. There is nothing else to run.
+noticing. Each name is a separate registry operation, so read the result for
+both.
+
+## v0.7.0 is already published
+
+`squad-hub@0.7.0` and `@mightybs/squad-hub@0.7.0` were published on
+**2026-10-12** from `b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`. PR #248
+incorporated that source into `main` at
+`67efebdea2c33910f4b00fcf3b3bed9621a96b73`.
+
+**Do not republish 0.7.0 or move its tag.** The `v0.7.0` tag stays at
+`b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`; README, screenshot and documentation
+updates are a successor on `main`, not a replacement npm artifact. A GitHub
+release using the existing tag is separate from npm publication.
+
+The procedure below is for a **future, approved version on `main`**, not this
+documentation closeout.
 
 ## Before you start
 
@@ -20,47 +36,91 @@ often route npm through an internal proxy — check with:
 npm config get registry
 ```
 
-If that is not `https://registry.npmjs.org/`, publishing from that machine
-will not work, and no flag will fix it. Use a machine on an open network.
+The release script explicitly targets `https://registry.npmjs.org/`, even if
+the default registry is a mirror. That does not bypass a network restriction:
+if policy, proxy or TLS prevents access, use an approved publishing machine.
+Do not disable certificate checks or circumvent enterprise controls.
 
 You also need Node 18 or newer, and an npm account with publish rights on the
 `mightybs` org.
 
-## Publishing
+## Publishing future versions from main
 
-```bash
-git clone https://github.com/swigerb/squad-hub
-cd squad-hub
-npm login
-npm run release
+First land the reviewed version bump, release notes and code on `main` through
+the normal review process. Select the exact clean `main` commit approved for
+publication, with its CI results. A moving branch name alone is not approval
+of whichever commit happens to be newest.
+
+On the approved publishing machine:
+
+```powershell
+git clone --branch main --single-branch https://github.com/swigerb/squad-hub squad-hub-release
+Set-Location .\squad-hub-release
+git branch --show-current
+git rev-parse HEAD
+git status --porcelain
+(Get-Content .\package.json -Raw | ConvertFrom-Json).version
 ```
 
-That is the whole thing. `npm login` opens a browser. There is no build step
-and no `npm install` — Squad Hub has no dependencies.
+Require `main`, the **full approved SHA**, an empty status result and the
+approved new version. If any differs, stop. The script prints its selected
+branch and commit, but does **not** enforce `main` or compare an approved SHA
+for you.
 
-To regenerate the installed-app icons, use `node scripts/icons.js` with the
-same Playwright and Chromium prerequisite as the browser tests. All PNG icons
-are rendered from `web/icon.svg`, which uses the header's three-dot mark.
-`scripts/pwa-assets.js` generates only the manifest screenshots.
+There is no build step and no runtime dependency installation. Ensure the
+existing browser-test prerequisites are available
+[outside the checkout](README.md#how-this-is-tested); a skipped browser suite
+is not full release evidence.
 
-### Releasing from a branch
+### Keep helpers and logs outside the checkout
 
-`npm run release` publishes **the commit you have checked out**, and prints
-which one that is before it does anything. So if the release you want is not
-yet on the default branch — which is the normal case while the release
-tooling itself is changing — clone that branch instead:
+Use a sibling directory for helper scripts, logs, screenshots, reports and
+manually saved tarballs. Do not hide unreviewed files with ignore rules or put
+them in the checkout to make publishing convenient. Even an untracked helper
+can make the release's clean-tree check fail.
 
-```bash
-git clone -b <branch> https://github.com/swigerb/squad-hub
+```powershell
+$releaseArtifacts = Join-Path (Split-Path (Get-Location) -Parent) 'squad-hub-release-artifacts'
+New-Item -ItemType Directory -Force $releaseArtifacts | Out-Null
 ```
 
 ### Rehearsing
 
-To run every check and publish nothing:
+Sign in to the public registry, then rehearse the selected source:
 
-```bash
-npm run release -- --dry-run
+```powershell
+npm login --registry=https://registry.npmjs.org/
+npm run release -- --dry-run 2>&1 | Tee-Object -FilePath (Join-Path $releaseArtifacts 'dry-run.log')
+if ($LASTEXITCODE -ne 0) { throw 'Release rehearsal failed.' }
+git status --porcelain
 ```
+
+`npm login` opens a browser. **Dry-run publishes neither package and creates no
+tag**, but it is not an offline check: it still requires registry sign-in,
+runs the full suite, checks and smoke-tests the packed artifact, and invokes
+npm's dry-run publish for both names. The alias-name rewrite is restored.
+Registry-install verification and local tagging are skipped in dry-run.
+
+An empty final status confirms the source is still clean. Compare the full SHA
+and version again before proceeding; rehearsal does not authorize publication.
+
+### Actual publication
+
+Only after explicit approval to publish that exact clean source:
+
+```powershell
+npm run release
+```
+
+Without `--dry-run`, this publishes **both** package names, verifies their
+registry installs and attempts local tagging. A green rehearsal is not this
+step. Never run it for the already complete v0.7.0 release.
+
+To regenerate installed-app icons for a future reviewed source change, use
+`node scripts/icons.js` with the same Playwright and Chromium prerequisite as
+the browser tests. All PNG icons are rendered from `web/icon.svg`, which uses
+the header's three-dot mark. `scripts/pwa-assets.js` generates only the manifest
+screenshots; neither is part of a documentation-only closeout.
 
 ### Two-factor authentication
 
@@ -80,8 +140,8 @@ npm run release -- --otp=123456
 ```
 
 Codes expire in about 30 seconds, and one code cannot cover both publishes —
-so if the second publish then fails asking for a password, simply re-run
-`npm run release`. It skips the name that is already up and finishes the other.
+so if the second publish then fails asking for a password, investigate the
+partial result before retrying. See [If it stops half way](#if-it-stops-half-way).
 
 ## Warnings you can ignore
 
@@ -151,8 +211,12 @@ distinction:
 - **an auth, payment, or network failure** is treated as a failure and stops
   the release.
 
-That means the correct response to a failed release is almost always: fix the
-cause, then run `npm run release` again.
+For an approved future version's incomplete publication, fix the cause and
+confirm the checkout still matches the original approved SHA and contents
+before retrying `npm run release`. It can skip the already published name and
+finish the missing one; it cannot replace the first artifact. If both names
+were published and only registry verification failed, use `npm run verify`
+instead. None of this is a reason to rerun publication for completed v0.7.0.
 
 ## Verifying
 
@@ -365,9 +429,13 @@ evidence alone the flag should have been cleared.
 
 ## Cutting a new version
 
-1. Bump `version` in `package.json` and commit it.
-2. `npm run release`.
-3. Push the tag it created: `git push origin v<version>`.
+1. Prepare the next version and changelog through normal review, then merge to
+   `main`. Do not reuse a published version.
+2. Follow [the main-based procedure](#publishing-future-versions-from-main):
+   approved full SHA, clean source, prerequisites outside the checkout,
+   rehearsal, then separately approved actual publication.
+3. Verify both names. Inspect `v<version>` before any separately approved tag
+   push; do not force or move an existing tag.
 
 ### How long it takes, and why
 

@@ -248,7 +248,7 @@ of the session list, on the **All** and **Cloud** scopes (an ACA job cannot run
 on **Local**), through four steps: *Dispatched*, *Lease claimed*, *Starting
 job*, *Attached*. When the job's own session attaches, the row is replaced by
 the real session row. While the outcome remains open, the device rail draws
-the same dispatch with a pulsing dot in "Squad on ACA executions": *Queued*
+the same dispatch with a pulsing dot in "ACA runs": *Queued*
 for a queued run, then *Starting* once the run is in progress or
 its receipt names the execution. A finished run with no receipt reads
 *Waiting*; failed or unknown outcomes stop pulsing. See
@@ -379,7 +379,7 @@ check refuses the rest rather than guessing.
 
 This is **setup guidance**, not a record that it has been done — registering
 the App, installing it, and configuring the identifiers below is a real,
-separate administrative action (tracked under #238/#239), never performed by
+separate administrative action (tracked under #238), never performed by
 this project's code at startup or from any workflow.
 
 **Register a dedicated, private App — never repurpose the existing worker
@@ -621,9 +621,18 @@ for why that distinction matters.
 
 ### The status card's issue-watcher and Ralph rows (#180, #233)
 
-The devices panel's "Squad on ACA" status card identifies the persistent
-issue-watcher and Ralph (triage sweep) jobs, and reports two facts about
-them, honestly:
+The devices panel's "Squad on ACA" status card reports the Hub's GitHub App
+connection, matching issue-watcher and Ralph (triage sweep) device records,
+and the signed-in user's last dispatch. **Retry is a read-only refresh**:
+it checks `GET /api/aca/status` and, when enabled, reads
+`GET /api/aca/repos` and `GET /api/aca/dispatches`. It does not create an issue,
+dispatch a run, restart a worker or trigger Ralph.
+
+This is **not Azure scheduled-job health**. Ralph is a scheduled job and can
+finish a sweep without staying connected as a Hub device. "Not connected"
+means this Hub has no matching device record, not that Azure missed a scheduled
+run. Check Azure's run history separately when diagnosing the schedule. The
+Hub reports only the presence and metadata it actually receives:
 
 - **Role.** Preferred source: an explicit, sanitized `meta.role` of
   `watch` or `ralph` the device itself reports (see
@@ -670,12 +679,30 @@ the hub never polls Azure or holds Azure credentials to find out on its own
 
 ## Scope
 
-Both halves are implemented and proven.
+The protocol and UI paths are implemented and covered by repository tests.
+That is not a completed production acceptance record.
 
 | | |
 |---|---|
 | **Here** | the device protocol, one-shot mode, `squad-hub oneshot`, `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` — the channel a caller uses to impose a tool policy — and the devices panel's "Squad on ACA" status card (#180, honest role/approval/sweep reporting per #233). The card reads `GET /api/aca/repos` / `GET /api/aca/dispatches` and never starts a job. |
 | **In squad-on-aca** | `worker/lib/squad-hub.sh`, the `hub-argv-json` policy variant, and the `-SquadHubUrl` / `-SquadHubToken` deploy parameters. See its [docs/squad-hub.md][aca-doc]. |
+
+### Remaining operational acceptance
+
+v0.7.0 is published, but these checks and follow-through remain open:
+
+- [#238](https://github.com/swigerb/squad-hub/issues/238): production Hub-to-ACA
+  dispatch, device attachment and approval integration.
+- [#239](https://github.com/swigerb/squad-hub/issues/239): real installed desktop
+  and phone Web Push while the app is closed, including lifecycle checks.
+- [#188](https://github.com/swigerb/squad-hub/issues/188) /
+  [#189](https://github.com/swigerb/squad-hub/issues/189): remaining operational
+  checks and postpublication worker-image follow-through.
+
+The README's synthetic captures and Chromium viewport tests establish UI
+rendering, not live Azure runs, Teams delivery, installed-app behavior or
+closed-app push. Publishing npm also does not rebuild or deploy the ACA worker
+image; that follow-through needs its own evidence.
 
 [aca-doc]: https://github.com/swigerb/squad-on-aca/blob/main/docs/squad-hub.md
 

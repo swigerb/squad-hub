@@ -34,7 +34,7 @@ Squad Hub fixes both.
 | **Steer and stop** | Send follow-up input, choosing its Mode and Model where the agent supports it, or cut a run short |
 | **Device tokens** | Give a server a credential that can be a device and nothing else |
 | **Squad-aware** | Reads Squad's resolved state for team, decisions, routing, model policy, and health summary |
-| **Filter, sort, pin** | Keyword, status, device, repository and time-window filters, plus per-person pins that float above all of them |
+| **Filter, sort, pin** | Instant list controls, plus pins, custom names and a saved view synced for each signed-in user |
 | **Start an ACA job directly** | A GitHub App lets the hub call `workflow_dispatch` on an allow-listed repository — no local checkout, no link to click |
 | **Teams notifications** | An Adaptive Card posts when an agent asks for permission, and a short follow-up when it is answered or expires |
 | **Drive it from an agent** | `squad-hub mcp` exposes sessions and approvals as MCP tools, so a coding agent can watch and act on them too |
@@ -42,49 +42,49 @@ Squad Hub fixes both.
 
 ## What it looks like
 
-**Every session, across every device.** Anything blocked on a person is pulled
-to the top and edged in amber — that is the only row that cannot make progress
-on its own.
+These are **actual v0.7.0 UI captures with synthetic demo data**, not production
+deployment photos. Device presence, PR links, health and connection responses
+are fixtures. See [capture provenance and limits](docs/README.md#readme-gallery).
+
+**One cockpit for local, cloud and ACA sessions.** All / Local / Cloud scopes,
+instant filters, pinned work and a device rail keep the useful context in view.
+An approval is edged in amber; a reported PR makes ended work easy to find.
 
 <p align="center">
-  <img src="docs/images/all-sessions.jpg" alt="A session waiting for approval, pulled to the top and edged in amber" width="900">
+  <img src="docs/images/v070-desktop-overview.png" alt="Synthetic v0.7.0 desktop overview with a pinned review, an approval, and local, cloud and ACA demo devices" width="900">
 </p>
 
-**An approval, answerable from anywhere.** The card shows the **literal
-command** and every path it touches, each marked as reading or writing — not a
-summary, and not a yes/no with no context. This is the difference between a
-45-minute run finishing and stalling until you get back to that machine.
+**A session gets its own page.** The sidebar, Chat / Squad / Info tabs and inline
+approval keep the transcript and the **literal command** together. In this
+synthetic read-only request, Mode and Model correctly wait until the agent is
+ready for the next message. Files is a disabled design placeholder.
 
 <p align="center">
-  <img src="docs/images/approval.jpg" alt="An approval card showing the exact command and the files it touches" width="820">
+  <img src="docs/images/v070-desktop-session.png" alt="Synthetic v0.7.0 session page with Chat, Squad and Info tabs and an inline read-only approval" width="900">
 </p>
 
-**Inside a session.** The transcript as it happens, the Squad working it, and a
-box to steer the agent without touching the machine it runs on.
+**Prepare an ACA run without leaving the Hub.** Choose an App-installed
+repository, an existing issue or a new one, and instructions. This synthetic
+dialog is a preview only: **Start job was not pressed**, and no GitHub issue or
+Azure run was created.
 
 <p align="center">
-  <img src="docs/images/session-detail.jpg" alt="A session transcript, its Squad roster, and a follow-up input box" width="820">
+  <img src="docs/images/v070-desktop-aca.png" alt="Synthetic v0.7.0 ACA dialog preview for demo/widgets issue 42, not a submitted run" width="520">
 </p>
 
-**Your Squad, not just your sessions.** The roster prefers Squad 0.13's generated
-Team Capabilities block when it exists, falling back to `team.md` when the block
-is pending or absent. Click a member to read their charter, or open the team's
-decisions and routing — read from the device, and rendered as **text**, never as
-markup. These files are written by agents as well as by people, so the hub does
-not turn them into HTML.
+**The same work, phone-sized.** The list and session page below are real
+390px Chromium viewport captures of the same synthetic fixtures. They show
+responsive layout, not an installed phone app or closed-app push delivery.
 
 <p align="center">
-  <img src="docs/images/squad-charter.jpg" alt="A Squad member's charter, read from the device and shown as plain text" width="820">
+  <img src="docs/images/v070-phone-overview.png" alt="Synthetic v0.7.0 session list at a 390px phone viewport" width="320">
+  <img src="docs/images/v070-phone-session.png" alt="Synthetic v0.7.0 session page and inline approval at a 390px phone viewport" width="320">
 </p>
 
-**Starting work somewhere else.** Choose a device, write a prompt. The agent and
-model lists come from that device — only it knows which agents its Copilot has
-and which models the agent offers. Leave them blank and the project decides:
-in a Squad project that means the squad agent, automatically.
-
-<p align="center">
-  <img src="docs/images/new-session.jpg" alt="The new-session dialog: device, working directory, prompt, and agent and model pickers" width="820">
-</p>
+Production Hub-to-ACA acceptance remains tracked in
+[#238](https://github.com/swigerb/squad-hub/issues/238); installed desktop/phone
+closed-app Web Push acceptance remains in
+[#239](https://github.com/swigerb/squad-hub/issues/239).
 
 ## Try it
 
@@ -137,6 +137,11 @@ npm link
 > code under the org's namespace — use it if you prefer a scoped dependency.
 > To run the unreleased `main` instead of the last release, both npm commands
 > take `github:swigerb/squad-hub` in place of `squad-hub`.
+
+v0.7.0 was published on **2026-10-12** under both package names from
+`b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`. Its tag stays at that source commit;
+this gallery and the documentation on `main` are a successor, not a replacement
+npm package. See [releasing](docs/releasing.md) for future versions.
 
 ### Then, whichever way you got it
 

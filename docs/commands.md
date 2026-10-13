@@ -642,10 +642,17 @@ session started yesterday turns a filter into a way to lose work.
 **A pin outranks every filter.** A person pinned it, so it stays until they
 unpin it, and it is not shown twice.
 
-Controls and pins are kept in the browser's local storage, not on the hub.
-This is how one person likes to look at the list, not a property of the
-sessions; syncing it would mean a preference set on a laptop silently
-rearranging a phone.
+Pins, custom session names and the saved view (scope, filters, grouping and
+sorting) are cached in the browser's local storage and synchronized through
+[`GET`/`PUT /api/prefs`](api.md#get-apiprefs-put-apiprefs). They belong to the
+verified signed-in user, not the sessions or everyone using the hub. Sign in
+as the same user on another browser to load them there. A custom name changes
+your display title, not the agent's prompt.
+
+Local edits appear immediately; synchronization is best-effort and retries
+after failed reads or writes. An unavailable hub leaves the local view usable,
+not proof that another browser has received the change. Theme and device-rail
+collapse state remain browser-local.
 
 ### Theme
 
@@ -880,20 +887,24 @@ never the only thing on screen.
 Below that, the rail groups devices into sections rather than one flat list
 (#172):
 
-1. **ACA jobs** — always visible, never empty: on-demand compute, not a
+1. **Squad on ACA**: always visible, never empty; on-demand compute, not a
    roster entry. Its `+` opens the same "Run on ACA…" dialog as everywhere
    else in the app.
-2. **Squad on ACA executions (N)** — devices of kind `aca`, named from their
+2. **ACA runs (N)**: devices of kind `aca`, named from their
    `displayName` metadata when a cloud job supplies one (e.g.
-   `#304 · AzureAIDriveThru`), with the raw execution id shown as secondary
+   `#42 · demo/widgets`), with the raw Azure execution id shown as secondary
    text. A dispatch you made from this tab whose job has not attached yet is
    drawn here too, as `#issue · repo` with a pulsing dot (see
    [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
    Those rows are not devices and are not in the count.
-3. **Cloud devices (N)** — everything else `cloud`-flavored: on-demand and
-   always available, the one place work can always be sent.
+3. **Cloud devices (N)**: other `cloud` devices already attached to this hub.
+   Starting a session requires an online device; this does not provision one.
 4. **Local machines (N)** — everything else: your laptop, a dev box, a bare
    container.
+
+Older documentation called the on-demand row "ACA jobs" and the run roster
+"Squad on ACA executions". The current UI uses **Squad on ACA** and **ACA runs**
+respectively.
 
 | Column | |
 |---|---|
@@ -952,7 +963,7 @@ A job started with **Run on ACA…** has no device until its own session attache
 and the hub reports no presence for a device that does not exist. So the rail
 does not read a presence for it: it draws one row per dispatch this tab is
 tracking, from the same dispatch state as the list's "Queued on ACA" row
-([aca.md](aca.md#queued-on-aca-issue-178)), inside **Squad on ACA executions**.
+([aca.md](aca.md#queued-on-aca-issue-178)), inside **ACA runs**.
 
 - **Title and dot.** `#issue · repo`, with a blue dot that pulses only while the
   outcome is open. The pulse stops under *reduce motion*, where the dot simply
@@ -972,6 +983,11 @@ tracking, from the same dispatch state as the list's "Queued on ACA" row
 
 They come from this tab's own dispatch state: a dispatch made from another
 browser shows up only when its job's device attaches.
+
+The **Squad on ACA** status card's **Retry** is different: it refreshes
+read-only Hub/GitHub status and never dispatches a run. A missing Ralph
+connection does not establish that its scheduled Azure job failed. See
+[the status card](aca.md#the-status-cards-issue-watcher-and-ralph-rows-180-233).
 
 ### Telemetry
 **Off by default**, like every other thing the daemon could report about the

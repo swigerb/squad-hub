@@ -38,9 +38,51 @@ real daemon attached. It needs Playwright, which is deliberately **not** a
 dependency — without it that suite reports `SKIPPED` and the runner says so
 separately, so a green run is never mistaken for a complete one.
 
-```bash
-npm i -D playwright && npx playwright install chromium
+Install the browser-test tools **outside the source checkout**, so optional
+test prerequisites do not change its package manifest or lockfile. For example,
+from the checkout in PowerShell:
+
+```powershell
+npm install --prefix ..\squad-hub-browser-tools --no-save --package-lock=false playwright
+& ..\squad-hub-browser-tools\node_modules\.bin\playwright.cmd install chromium
+$env:NODE_PATH = (Resolve-Path ..\squad-hub-browser-tools\node_modules).Path
 ```
+
+The environment setting applies to this shell and its child test processes.
+Keep helper scripts, logs and captured test output outside a release checkout
+too. See [releasing](releasing.md#publishing-future-versions-from-main).
+
+### README gallery
+
+The five `v070-*.png` images in [`images/`](images/) render the actual, unchanged
+v0.7.0 UI at main merge commit
+`67efebdea2c33910f4b00fcf3b3bed9621a96b73`, whose release source is
+`b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`. They were captured locally using
+Node v24.12.0 and Playwright Chromium 147.0.7727.15, with the existing
+`test/harness.js` and the `HubService` / `Authenticator` / `HubLink` fixture
+pattern used by `test/browser-e2e-unit.js`.
+
+| Image | Capture |
+|---|---|
+| `v070-desktop-overview.png` | Dark overview, 1440 × 1000 |
+| `v070-desktop-session.png` | Light Chat page with inline approval, 1440 × 1000 |
+| `v070-desktop-aca.png` | Light ACA dialog only, 520 × 1186 crop from a 1440 × 1400 viewport |
+| `v070-phone-overview.png` | Light overview, 390 × 844 |
+| `v070-phone-session.png` | Light Chat page with inline approval, 390 × 844 |
+
+All sessions, transcripts, pins, PR links, health checks, device presence and
+`C:\demo\widgets` paths are **synthetic inputs**. GitHub App repository discovery
+is an in-process fixture, not a real installation. `Connected`, `healthy` and
+`Synced` reflect fixture responses, not a production acceptance pass. External
+browser requests were blocked; Start job was never pressed, no issue or run was
+created, and no approval was answered. No production or personal data was used.
+
+Capture checks passed for the five views, horizontal fit, phone navigation,
+inline approval, mid-turn disabled selectors, script errors and enforced CSP.
+These captures are not design mockups, but they do not prove an installed PWA,
+real phone behavior or notification delivery. Production ACA and closed-app
+Web Push acceptance, plus worker-image follow-through, remain
+[separately tracked](aca.md#remaining-operational-acceptance).
 
 ## Verification scripts
 
