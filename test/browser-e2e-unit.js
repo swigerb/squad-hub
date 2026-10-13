@@ -347,7 +347,26 @@ async function watchCsp(pg) {
  */
 function fakeInlineGithubApp({
   dispatchShouldFail = false, runState = 'queued', correlationSupported = true, declaredInputs = null, failAfterIssue = 0,
+  catalog = {}, otherRepos = {},
 } = {}) {
+  // What each repository's own configuration, branches and issues hold. Many
+  // more branches and issues than one page, so a search has to reach past it.
+  const pad = (n) => String(n).padStart(3, '0');
+  const baseCatalog = () => ({
+    defaultBranch: 'main',
+    branches: ['main', 'release', ...Array.from({ length: 150 }, (_, i) => `feature/branch-${pad(i + 1)}`)],
+    issues: [
+      { number: 7, title: 'Fix the docs' }, { number: 12, title: 'Add retries' },
+      ...Array.from({ length: 60 }, (_, i) => ({ number: 200 + i, title: `Backlog item ${i + 1}` })),
+    ],
+    model: { state: 'ok', source: 'repository-config', default: 'a-model', choices: [{ id: 'a-model' }, { id: 'b-model' }] },
+    reviewer: { state: 'ok', source: 'casting-registry', default: null, choices: [{ id: 'someone' }, { id: 'lead' }] },
+  });
+  const catalogs = new Map([['acme/widgets', { ...baseCatalog(), ...catalog }]]);
+  for (const [name, own] of Object.entries(otherRepos)) catalogs.set(name, { ...baseCatalog(), ...own });
+  const catalogOf = (t) => catalogs.get(`${t.owner}/${t.repo}`) || baseCatalog();
+  const PAGE = 30;
+  const paged = (all, page) => ({ slice: all.slice((page - 1) * PAGE, page * PAGE), nextPage: page * PAGE < all.length ? page + 1 : null });
   const runs = [];
   const issues = [];
   const dispatchRequests = [];
@@ -371,9 +390,31 @@ function fakeInlineGithubApp({
     // re-checks on every dispatch; this answers "yes" for the one repo it knows.
     async authorizeRepoAccess() { return { allowed: true }; },
     async listReposWithDispatchStatus() {
-      return [{
-        fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true, declaredInputs,
-      }];
+      return [...catalogs.keys()].map((fullName) => ({
+        fullName, owner: fullName.split('/')[0], repo: fullName.split('/')[1], hasDispatchWorkflow: true, declaredInputs,
+      }));
+    },
+    /** What the real `GitHubApp` serves for the New ACA job dialog's pickers (#257). */
+    async listDispatchChoices(target) {
+      const c = catalogOf(target);
+      return {
+        repo: `${target.owner}/${target.repo}`,
+        defaultBranch: c.defaultBranch,
+        workflow: { exists: true, declaredInputs },
+        model: c.model,
+        reviewer: c.reviewer,
+      };
+    },
+    async listBranchChoices(target, actor, { q = '', page = 1 } = {}) {
+      const hits = catalogOf(target).branches.filter((b) => b.toLowerCase().includes(q.toLowerCase()));
+      const { slice, nextPage } = paged(hits, page);
+      return { branches: slice.map((name) => ({ name })), nextPage };
+    },
+    async listIssueChoices(target, actor, { q = '', page = 1 } = {}) {
+      const hits = catalogOf(target).issues.filter((i) => (!q || String(i.number) === q.replace(/^#/, '')
+        || i.title.toLowerCase().includes(q.toLowerCase())));
+      const { slice, nextPage } = paged(hits, page);
+      return { issues: slice, nextPage };
     },
     async findInstallation(owner, repo) {
       return { installationId: 1, owner, repo };
@@ -389,6 +430,23 @@ function fakeInlineGithubApp({
           err.status = 422;
           throw err;
         }
+      }
+      // Like the real one: an explicit value the target does not offer is refused
+      // BEFORE anything is created or dispatched.
+      const own = catalogOf(request);
+      const refuse = (field, what) => {
+        const err = new Error(`${what} is not offered by ${owner}/${repo}`);
+        err.status = 422;
+        err.field = field;
+        throw err;
+      };
+      if (request.baseBranch && !own.branches.includes(request.baseBranch)) refuse('baseBranch', `branch "${request.baseBranch}"`);
+      if (request.issue != null && !own.issues.some((i) => i.number === request.issue) && !issues.some((i) => i.number === request.issue)) {
+        refuse('issue', `issue #${request.issue}`);
+      }
+      for (const field of ['model', 'reviewer']) {
+        const spec = own[field];
+        if (request[field] && !(spec.state === 'ok' && spec.choices.some((c) => c.id === request[field]))) refuse(field, `${field} "${request[field]}"`);
       }
       dispatchRequests.push(request);
       if (dispatchRequests.length <= failAfterIssue) {
@@ -474,13 +532,27 @@ async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
   };
 }
 
+/**
+ * Choose from one of the dialog's searchable pickers the way a person does:
+ * type to search, then pick. An exact value is chosen for them once the search
+ * answers; otherwise the matching row is clicked. Returns when it is CHOSEN
+ * (`data-value`), never merely typed.
+ */
+async function pickCombo(page, sel, text, match) {
+  await page.fill(sel, text);
+  await page.waitForSelector(`${sel}[data-value], ${sel} ~ .combo-list:not([hidden]) [role="option"]`, { timeout: 10000 });
+  if (await page.locator(`${sel}[data-value]`).count()) return;
+  await page.locator(`${sel} ~ .combo-list [role="option"]`).filter({ hasText: match || text }).first().click();
+  await page.waitForSelector(`${sel}[data-value]`, { timeout: 5000 });
+}
+
 /** One job through the real dialog -- a deliberate click, as a person would. */
 async function dispatchAcaJob(page, prompt) {
   await page.click('#newMoreBtn');
   await page.click('[data-new="aca"]');
   await page.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
   await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-  await page.fill('#acaRepo', 'acme/widgets');
+  await pickCombo(page, '#acaRepo', 'acme/widgets');
   await page.fill('#acaPrompt', prompt);
   await page.click('#acaStart');
   await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
@@ -4560,7 +4632,7 @@ function railFacts(page) {
         assert.deepStrictEqual(dispatchPostsBeforeStart, [],
           `/api/aca/dispatch was POSTed before #acaStart was ever clicked: ${JSON.stringify(dispatchPostsBeforeStart)}`);
 
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs and open a pull request');
         await page.click('#acaStart');
         await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
@@ -4885,7 +4957,7 @@ function railFacts(page) {
         await pageFail.click('#newMoreBtn');
         await pageFail.click('[data-new="aca"]');
         await pageFail.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await pageFail.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(pageFail, '#acaRepo', 'acme/widgets');
         await pageFail.fill('#acaPrompt', 'Update the docs and open a pull request');
         await pageFail.click('#acaStart');
         await pageFail.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
@@ -4910,16 +4982,16 @@ function railFacts(page) {
       await page.click('#newMoreBtn');
       await page.click('[data-new="aca"]');
       await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-      await page.fill('#acaRepo', 'acme/widgets');
+      await pickCombo(page, '#acaRepo', 'acme/widgets');
       await page.fill('#acaPrompt', 'Update the docs');
-      await page.fill('#acaBranch', 'release');
-      await page.fill('#acaModel', 'a-model');
-      await page.fill('#acaReviewer', 'someone');
+      await pickCombo(page, '#acaBranch', 'release');
+      await page.selectOption('#acaModel', 'a-model');
+      await page.selectOption('#acaReviewer', 'someone');
       await page.uncheck('#acaPublishPr');
       await page.check('#acaWatchOnly');
       if (mode === 'existing') {
         await page.check('#acaIssueModeExisting');
-        await page.fill('#acaIssueNumber', '7');
+        await pickCombo(page, '#acaIssueNumber', '7', '#7 ');
       }
       await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
         null, { timeout: 10000 });
@@ -4945,7 +5017,8 @@ function railFacts(page) {
         assert.strictEqual(await page.getAttribute('#acaErr a', 'href'), `https://github.com/acme/widgets/issues/${issueN}`);
         assert.ok(!(await page.evaluate(() => document.getElementById('acaScrim').hidden)), 'the dialog closed on a failed dispatch');
         assert.strictEqual(await page.isChecked('#acaIssueModeExisting'), true, 'the form stayed in New-issue mode');
-        assert.strictEqual(await page.inputValue('#acaIssueNumber'), String(issueN));
+        assert.strictEqual(await page.inputValue('#acaIssueNumber'), `#${issueN}`);
+        assert.strictEqual(await page.getAttribute('#acaIssueNumber', 'data-value'), String(issueN));
         assert.ok(await page.isVisible('#acaExistingIssueFields'), 'the Existing-issue fields are hidden');
         assert.ok(await page.isHidden('#acaNewIssueFields'), 'the New-issue fields are still shown');
         assert.strictEqual(await page.inputValue('#acaPrompt'), 'Update the docs');
@@ -4982,7 +5055,7 @@ function railFacts(page) {
         assert.doesNotMatch(err, /already created/, `an Existing-issue failure claimed a creation: ${err}`);
         assert.strictEqual(await page.locator('#acaErr a').count(), 0);
         assert.strictEqual(hub.app.issues.length, 0);
-        assert.strictEqual(await page.inputValue('#acaIssueNumber'), '7');
+        assert.strictEqual(await page.getAttribute('#acaIssueNumber', 'data-value'), '7');
         assert.strictEqual(dispatchPosts(hub)[0].issue, 7);
       } finally {
         await hub.close();
@@ -4995,7 +5068,7 @@ function railFacts(page) {
         await page.click('#newMoreBtn');
         await page.click('[data-new="aca"]');
         await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs and open a pull request');
         // Start must not be clicked before the repository list has told the
         // dialog what the workflow declares.
@@ -5043,7 +5116,7 @@ function railFacts(page) {
         await page.click('#newMoreBtn');
         await page.click('[data-new="aca"]');
         await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs');
         await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
           null, { timeout: 10000 });
@@ -5070,7 +5143,7 @@ function railFacts(page) {
         await page.click('#newMoreBtn');
         await page.click('[data-new="aca"]');
         await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs');
         await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
           null, { timeout: 10000 });

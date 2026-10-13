@@ -192,6 +192,25 @@ button.sm { padding: 4px 10px; font-size: 12px; }
 }
 .field textarea { resize: vertical; font-family: inherit; }
 .field small { color: var(--faint); display: block; margin-top: 6px; }
+.field small:empty { display: none; }
+
+/* A searchable picker (web/js/combobox.js): the list drops over the form rather
+   than pushing it, and is bounded so a long server list scrolls. */
+.combo { position: relative; }
+.combo-list {
+  position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 2px);
+  max-height: 220px; overflow-y: auto; margin: 0; padding: 4px; list-style: none;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+}
+.combo-list[hidden] { display: none; }
+.combo-list li { padding: 8px 10px; border-radius: 6px; cursor: pointer; overflow-wrap: anywhere; }
+.combo-list li.active, .combo-list li:hover { background: var(--accent-dim); }
+.combo-list li[aria-selected="true"] { font-weight: 600; }
+.combo-list .combo-more { color: var(--dim); }
+.combo-hint { display: block; margin: 2px 0 0; font-size: 12px; }
+.combo-retry { margin-left: 4px; }
+.field input:disabled, .field select:disabled { opacity: .65; cursor: not-allowed; }
 
 /* An "i" beside a label, explaining the field without spending a line on it.
    A form someone has to already understand is a form that gets guessed at, and

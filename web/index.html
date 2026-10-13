@@ -460,15 +460,15 @@
     <div class="field-row">
       <label class="field">
         <span>Agent <button type="button" class="hint-btn" aria-label="About Agent"
-          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device. Only it knows which agents its Copilot CLI has installed.">i</button></span>
-        <select id="nsAgentSelect" hidden></select>
-        <input id="nsAgent" placeholder="whatever the project selects">
+          title="A named persona with its own instructions, e.g. squad. &#10;&#10;Leave blank and the project decides: a Squad project picks the squad agent automatically, anywhere else Copilot's default. &#10;&#10;The list comes from the chosen device. Only it knows which agents its Copilot CLI has installed, so a device that has not reported any offers only the default.">i</button></span>
+        <select id="nsAgent"><option value="">whatever the project selects</option></select>
+        <small id="nsAgentNote" aria-live="polite"></small>
       </label>
       <label class="field">
         <span>Model <button type="button" class="hint-btn" aria-label="About Model"
-          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there. A model list is advertised by the agent when a session starts, and nowhere else.">i</button></span>
-        <select id="nsModelSelect" hidden></select>
-        <input id="nsModel" placeholder="the agent's default">
+          title="The language model the agent runs on, e.g. claude-opus-5 or gpt-5.6-luna. &#10;&#10;Leave blank to use the agent's own default, which is usually what you want. &#10;&#10;The list comes from the chosen device, and only appears once a session has run there. A model list is advertised by the agent when a session starts, and nowhere else, so until then only the default is offered.">i</button></span>
+        <select id="nsModel"><option value="">the agent's default</option></select>
+        <small id="nsModelNote" aria-live="polite"></small>
       </label>
     </div>
     <label class="field">
@@ -482,10 +482,10 @@
       </select>
     </label>
     <small class="field-note">
-      Leave either blank to let the project decide. In a Squad project that
-      selects the <code>squad</code> agent automatically; anywhere else, Copilot's
-      default. Naming one here overrides both, and if the device cannot honor
-      it, the session says so rather than pretending.
+      Leave either on its default to let the project decide. In a Squad project
+      that selects the <code>squad</code> agent automatically; anywhere else,
+      Copilot's default. Choosing one here overrides both. The choices are what
+      the selected device reports, and a request for anything else is refused.
     </small>
     <div class="modal-actions">
       <button class="ghost" id="nsCancel">Cancel</button>
@@ -712,13 +712,16 @@
          creating a new one. The picker means something with or without a
          direct dispatch: both fallback links below read `acaIssueNumber`
          when "Existing issue" is selected. -->
-    <label class="field">
+    <div class="field">
       <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
-      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
-      <datalist id="acaRepoList"></datalist>
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds the repositories the GitHub App can see that your own GitHub account may use. Type to search, then choose one.">i</button></span>
+      <div class="combo">
+        <input id="acaRepo" aria-label="Repository" placeholder="Search repositories (owner/repo)" autocapitalize="off" spellcheck="false">
+        <ul class="combo-list" id="acaRepoListbox" hidden></ul>
+      </div>
+      <small id="acaRepoStatus" aria-live="polite"></small>
       <small id="acaRepoHint"></small>
-    </label>
+    </div>
 
     <fieldset class="field cnopts">
       <legend>Issue <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Issue"
@@ -742,10 +745,14 @@
         </span>
       </label>
       <div id="acaExistingIssueFields" hidden>
-        <label class="field">
-          <span>Issue number</span>
-          <input id="acaIssueNumber" inputmode="numeric" placeholder="e.g. 72">
-        </label>
+        <div class="field">
+          <span>Open issue</span>
+          <div class="combo">
+            <input id="acaIssueNumber" aria-label="Existing issue" placeholder="Search open issues by title or number" autocapitalize="off" spellcheck="false">
+            <ul class="combo-list" id="acaIssueListbox" hidden></ul>
+          </div>
+          <small id="acaIssueStatus" aria-live="polite"></small>
+        </div>
       </div>
     </fieldset>
 
@@ -753,24 +760,31 @@
          Hidden by default so a hub with no GitHub App configured never shows a
          form whose submit can only 501 -- see acaSetMode() in aca.js. -->
     <div id="acaForm">
-      <label class="field">
+      <div class="field">
         <span>Base branch <button type="button" class="hint-btn" aria-label="About Base branch"
-          title="The branch the session checks out and opens its pull request against. &#10;&#10;Leave blank for the repository's default branch.">i</button></span>
-        <input id="acaBranch" placeholder="(repository default)" autocapitalize="off" spellcheck="false">
+          title="The branch the session checks out and opens its pull request against. &#10;&#10;Leave blank for the repository's default branch. Type to search the repository's branches, then choose one.">i</button></span>
+        <div class="combo">
+          <input id="acaBranch" aria-label="Base branch" placeholder="(repository default)" autocapitalize="off" spellcheck="false">
+          <ul class="combo-list" id="acaBranchListbox" hidden></ul>
+        </div>
+        <small id="acaBranchStatus" aria-live="polite"></small>
         <small>The pull request targets this branch.</small>
-      </label>
+      </div>
 
       <label class="field">
         <span>Model <button type="button" class="hint-btn" aria-label="About Model"
-          title="Leave blank and each squad member uses the model its charter and .squad config assign. &#10;&#10;Set one to override it for this job only -- the squad's cost policy still applies.">i</button></span>
-        <input id="acaModel" placeholder="Squad default" autocapitalize="off" spellcheck="false">
+          title="Leave on Squad default and each squad member uses the model its charter and .squad config assign. &#10;&#10;The choices are the models this repository's own Squad configuration names. They are not a check of what the job can run: the job confirms the model when it starts. &#10;&#10;Pick one to override it for this job only -- the squad's cost policy still applies.">i</button></span>
+        <select id="acaModel"><option value="">Squad default</option></select>
+        <small id="acaModelNote" aria-live="polite"></small>
       </label>
 
       <label class="field">
         <span>Required reviewer <button type="button" class="hint-btn" aria-label="About Required reviewer"
-          title="The Squad member id who must review the pull request before it can merge -- the same member id used throughout this Squad's own config and roster, not a GitHub username. &#10;&#10;Leave blank for the squad's own default reviewer, so no ACA job ships unreviewed.">i</button></span>
-        <input id="acaReviewer" placeholder="Squad default" autocapitalize="off" spellcheck="false">
+          title="The Squad member id who must review the pull request before it can merge -- the same member id used throughout this Squad's own config and roster, not a GitHub username. &#10;&#10;The choices are the active members in this repository's Squad roster. Leave on Squad default for the squad's own default reviewer, so no ACA job ships unreviewed.">i</button></span>
+        <select id="acaReviewer"><option value="">Squad default</option></select>
+        <small id="acaReviewerNote" aria-live="polite"></small>
       </label>
+      <button type="button" class="lnk" id="acaChoicesRetry" hidden>Retry loading this repository's choices</button>
 
       <label class="check">
         <input type="checkbox" id="acaPublishPr" checked>

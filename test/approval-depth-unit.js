@@ -630,31 +630,34 @@ check('the Squad pill is not repeated by the active-member chip beside it', () =
     '"Squad" (or an invented name) could reappear');
 });
 
-check('Agent and Model offer what the device actually has, and fall back when it cannot say', () => {
-  // The hub holds no Copilot install, so it cannot know either list on its own
-  // — they arrive with the device's heartbeat. Where a list exists, a
-  // free-text box asks someone to already know what to type, and a typo only
-  // surfaces when the session comes back reporting something else.
+check('Agent and Model are closed lists of what the device reports, never free text', () => {
+  // The hub holds no Copilot install, so neither list is known to it; they
+  // arrive with the device's heartbeat. A typed name the device does not offer
+  // is relayed and quietly replaced, so there is no text box to type one in.
   const app = web;
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
   assert.match(app, /function choicesField/, 'the picker helper is gone');
-  assert.match(app, /choicesField\('nsAgentSelect', 'nsAgent', device && device\.agents/,
+  assert.match(app, /choicesField\('nsAgent', 'nsAgentNote', device && device\.agents/,
     'the Agent picker must be driven by what the DEVICE reported');
-  assert.match(app, /choicesField\('nsModelSelect', 'nsModel', device && device\.models/,
+  assert.match(app, /choicesField\('nsModel', 'nsModelNote', device && device\.models/,
     'the Model picker must be driven by what the DEVICE reported');
+  assert.match(html, /<select id="nsAgent">/, 'Agent must be a dropdown');
+  assert.match(html, /<select id="nsModel">/, 'Model must be a dropdown');
+  assert.doesNotMatch(html, /<input id="ns(Agent|Model)"/, 'Agent and Model must not be typeable');
+  assert.doesNotMatch(app, /nsAgentSelect|nsModelSelect/, 'the old hidden-select/free-text pair is gone');
 
-  // The distinction that matters: "could not tell" is not "there are none".
-  // An empty picker would be a claim the device never made, and would leave
-  // someone unable to type a name they know is there.
-  assert.match(app, /if \(!Array\.isArray\(list\) \|\| !list\.length\)[\s\S]{0,120}box\.hidden = false/,
-    'a device that could not report a list must fall back to the text box');
+  // "Could not tell" is not "there are none", and is not another device's list:
+  // it offers only the default, disabled, and says why.
+  assert.match(app, /sel\.disabled = !known/, 'a device that could not report a list must offer only the default');
+  assert.match(app, /has not reported which \$\{noun\} it offers/, 'the reason must be shown');
+  // A selection survives a device change only if the new device offers it.
+  assert.match(app, /sel\.value = known && list\.includes\(prior\) \? prior : ''/,
+    'a choice the new device does not offer must be cleared');
 
   // And the choice has to reach the request, or picking one does nothing.
-  assert.match(app, /agentSel && !agentSel\.hidden \? agentSel\.value/,
-    'the visible agent control must be the one read on submit');
-  assert.match(app, /modelSel && !modelSel\.hidden \? modelSel\.value/,
-    'the visible model control must be the one read on submit');
+  assert.match(app, /agent: \$\('nsAgent'\)\.value,\s*model: \$\('nsModel'\)\.value/,
+    'the chosen agent and model must be what is sent');
 });
-
 check('every field in New session explains itself', () => {
   // A form someone has to already understand is a form that gets guessed at,
   // and a guessed Agent or Model is only found to be wrong after the session

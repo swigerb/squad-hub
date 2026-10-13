@@ -160,36 +160,46 @@ function updateCwdHint() {
 }
 
 /**
- * Swap a free-text box for a picker when the device can say what it accepts.
+ * Agent and Model are closed lists of what the SELECTED device reports (#257),
+ * for the same reason in both: a name typed here that the device does not offer
+ * would be relayed down to it and quietly replaced by something else, and the
+ * session would then report running on a model nobody asked for.
  *
- * Shared by Agent and Model because the rule is the same for both: offer a
- * list where one exists, and a text box where it does not. A device that could
- * not tell reports null rather than an empty list, and rendering an empty
- * picker would be a claim it never made -- while also taking away the box
- * someone could have typed a name they know into.
+ * A device that could not tell reports null rather than an empty list. That is
+ * "unknown", not "none", so it offers only the default, says why, and is never
+ * assumed to share another device's list. The server refuses an unsupported
+ * value too, so this is not the only check.
  */
-function choicesField(selId, boxId, list, blankLabel) {
+function choicesField(selId, noteId, list, blankLabel, noun) {
   const sel = $(selId);
-  const box = $(boxId);
-  if (!sel || !box) return;
-  if (!Array.isArray(list) || !list.length) {
-    sel.hidden = true;
-    box.hidden = false;
-    return;
-  }
-  const prior = box.value;
-  sel.innerHTML = `<option value="">${esc(blankLabel)}</option>${
-    list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}`;
+  const known = Array.isArray(list) && list.length > 0;
   // Keep a choice already made, but only if this device really offers it.
-  sel.value = list.includes(prior) ? prior : '';
-  box.value = sel.value;
-  sel.hidden = false;
-  box.hidden = true;
+  const prior = sel.value;
+  sel.innerHTML = `<option value="">${esc(blankLabel)}</option>${
+    known ? list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('') : ''}`;
+  sel.value = known && list.includes(prior) ? prior : '';
+  sel.disabled = !known;
+  $(noteId).textContent = known ? '' : `This device has not reported which ${noun} it offers, so only the default can be used.`;
+}
+
+/** Mode is a fixed protocol vocabulary; a device that reported its modes narrows it to those. */
+function modeChoices(device) {
+  const offered = device && Array.isArray(device.modes) && device.modes.length
+    ? device.modes.map((m) => String(m).toLowerCase())
+    : null;
+  const sel = $('nsMode');
+  for (const o of sel.options) {
+    const ok = !o.value || !offered || offered.some((m) => m === o.value || m.split('#').pop() === o.value);
+    o.hidden = !ok;
+    o.disabled = !ok;
+  }
+  if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.value = '';
 }
 
 function updateAgentChoices(device) {
-  choicesField('nsAgentSelect', 'nsAgent', device && device.agents, 'whatever the project selects');
-  choicesField('nsModelSelect', 'nsModel', device && device.models, "the agent's default");
+  choicesField('nsAgent', 'nsAgentNote', device && device.agents, 'whatever the project selects', 'agents');
+  choicesField('nsModel', 'nsModelNote', device && device.models, "the agent's default", 'models');
+  modeChoices(device);
 }
 
 function showNewErr(m) { $('nsErr').hidden = false; $('nsErr').textContent = m; }
@@ -286,17 +296,11 @@ export function wireConnect({ spawnRequest, spawnError }) {
 
   $('nsStart').onclick = async () => {
     const deviceId = $('nsDevice').value;
-    // Whichever control is showing is the one the person used. Reading the
-    // hidden one would silently discard their choice.
-    const agentSel = $('nsAgentSelect');
-    const agent = agentSel && !agentSel.hidden ? agentSel.value : $('nsAgent').value;
-    const modelSel = $('nsModelSelect');
-    const model = modelSel && !modelSel.hidden ? modelSel.value : $('nsModel').value;
     const body = spawnRequest({
       prompt: $('nsPrompt').value,
       cwd: $('nsCwd').value,
-      agent,
-      model,
+      agent: $('nsAgent').value,
+      model: $('nsModel').value,
       mode: $('nsMode') ? $('nsMode').value : '',
     });
     const problem = spawnError(body);
@@ -307,7 +311,12 @@ export function wireConnect({ spawnRequest, spawnError }) {
       $('newScrim').hidden = true;
       $('nsPrompt').value = '';
       refresh();
-    } catch (e) { showNewErr(e.message); }
+    } catch (e) {
+      showNewErr(e.message);
+      // The device no longer offers what was chosen: drop it rather than resend it.
+      const field = e.status === 422 && e.body && { agent: 'nsAgent', model: 'nsModel', mode: 'nsMode' }[e.body.field];
+      if (field) { $(field).value = ''; $(field).focus(); }
+    }
     $('nsStart').disabled = false;
   };
 }

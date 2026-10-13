@@ -3,7 +3,7 @@
 // original so the mutations in test/mutate.js that target it still match.
 
 import { state, api } from './api.js';
-import { $, esc, toast, copyToClipboard } from './util.js';
+import { $, toast, copyToClipboard } from './util.js';
 // Circular by necessity, the same way devices.js's own import of wiring.js is
 // (see the comment there), and the same way aca-pending.js's own import of
 // this file is: `submitAcaDispatch`/`wireAca` below need `trackAcaDispatch`/
@@ -16,6 +16,11 @@ import { render } from './devices.js';
 import { trackAcaDispatch, startAcaPolling } from './aca-pending.js';
 // Split out for the size budget; circular the same way aca-pending.js is.
 import { acaCreatedIssueOf, reportAcaCreatedIssueFailure } from './aca-created-issue.js';
+// The dialog's known-value pickers (#257); circular the same way.
+import {
+  acaLoadRepos, acaReposLoaded, acaChoicesOpen, acaChoicesFree, acaChoiceValues, acaIssueForLink,
+  acaChoicesPending, acaResolveChoices, acaChoiceRefused,
+} from './aca-choices.js';
 
 /**
  * Links that start a Squad on ACA run.
@@ -111,25 +116,15 @@ export function acaDialogIsCurrent(generation) {
  * never touches `document` itself. */
 export function acaFormValues() {
   return {
-    repo: $('acaRepo').value,
-    baseBranch: $('acaBranch').value,
+    // repo, baseBranch, issueNumber, model, reviewer: what was CHOSEN (#257)
+    ...acaChoiceValues(),
     issueMode: $('acaIssueModeExisting').checked ? 'existing' : 'new',
-    issueNumber: $('acaIssueNumber').value,
     newIssueTitle: $('acaNewIssueTitle').value,
-    model: $('acaModel').value,
-    reviewer: $('acaReviewer').value,
     publishPr: $('acaPublishPr').checked,
     watchOnly: $('acaWatchOnly').checked,
-    declaredInputs: acaRepoDeclaredInputs(acaCapabilityRepos, $('acaRepo').value),
     prompt: $('acaPrompt').value,
   };
 }
-
-/** The repository list answered for THIS open of the dialog, or `null` until
- * it has. Kept apart from `state.acaRepos` (which only feeds the picker) so a
- * capability read from an earlier open, or from a refresh that failed, is
- * never mistaken for what the target workflow declares now. */
-let acaCapabilityRepos = null;
 
 /**
  * Which `workflow_dispatch` inputs the chosen repository's `squad-dispatch.yml`
@@ -187,8 +182,12 @@ export function acaOptionsNote(declaredInputs) {
  * a trip.
  */
 export function acaBuildDispatchBody(form = {}) {
+  // Text typed into a picker that names nothing in its list is never sent.
+  if (form.unresolved && form.unresolved.length) {
+    return { ok: false, reason: `Choose ${form.unresolved.join(' and ')} from the list.` };
+  }
   const repo = acaRepoName(form.repo);
-  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };
+  if (!repo) return { ok: false, reason: 'Choose a repository from the list.' };
 
   const prompt = String(form.prompt == null ? '' : form.prompt).trim();
   if (!prompt) return { ok: false, reason: 'Instructions are required.' };
@@ -227,7 +226,7 @@ export function acaBuildDispatchBody(form = {}) {
   if (form.issueMode === 'existing') {
     const n = Number(form.issueNumber);
     if (!Number.isInteger(n) || n <= 0) {
-      return { ok: false, reason: 'Enter the existing issue number.' };
+      return { ok: false, reason: 'Choose the existing issue from the list.' };
     }
     body.issue = n;
   } else {
@@ -316,33 +315,7 @@ function acaSetMode(mode, reason) {
     $('acaDisabledNote').textContent = reason
       || 'This hub has no GitHub App configured, so it cannot start a cloud job directly. Use one of the links below instead.';
   }
-}
-
-function fillAcaRepoList(repos) {
-  const list = $('acaRepoList');
-  list.innerHTML = (repos || []).map((r) => `<option value="${esc(r.fullName)}"></option>`).join('');
-}
-
-/** The ✓/✗ line under Repository: whether the GitHub App can see this exact
- * repository, and whether it has `squad-dispatch.yml` -- the two facts that
- * decide whether Start job can possibly work, surfaced before the click
- * rather than only after it fails. */
-function updateAcaRepoHint(repos) {
-  const name = acaRepoName($('acaRepo').value);
-  const hintEl = $('acaRepoHint');
-  $('acaOptionsHint').textContent = acaOptionsNote(acaRepoDeclaredInputs(acaCapabilityRepos, name));
-  if (!name) { hintEl.textContent = ''; hintEl.style.color = ''; return; }
-  const match = (repos || []).find((r) => r.fullName.toLowerCase() === name.toLowerCase());
-  if (!match) {
-    hintEl.textContent = '\u2717 Not seen by the Squad Hub GitHub App on this account.';
-    hintEl.style.color = 'var(--warn)';
-  } else if (match.hasDispatchWorkflow) {
-    hintEl.textContent = '\u2713 Squad on ACA installed \u00b7 squad-dispatch.yml found';
-    hintEl.style.color = 'var(--ok)';
-  } else {
-    hintEl.textContent = '\u2717 Squad on ACA installed, but squad-dispatch.yml was not found.';
-    hintEl.style.color = 'var(--warn)';
-  }
+  acaChoicesFree(mode === 'disabled');
 }
 
 export function setAcaIssueMode(mode) {
@@ -377,20 +350,17 @@ export function openAca(sessionOverride) {
   const generation = ++acaDialogGeneration;
   const cur = sessionOverride || state.currentSession;
   $('acaErr').hidden = true;
-  $('acaRepo').value = (cur && acaSessionRepo(cur.session)) || '';
-  $('acaBranch').value = '';
+  // The repository, branch, issue, model and reviewer all start empty; the
+  // session's repository is only text to match against the repository list.
+  acaChoicesOpen((cur && acaSessionRepo(cur.session)) || '');
   $('acaIssueModeNew').checked = true;
   setAcaIssueMode('new');
   $('acaNewIssueTitle').value = '';
-  $('acaIssueNumber').value = '';
-  $('acaModel').value = '';
-  $('acaReviewer').value = '';
   $('acaPublishPr').checked = true;
   $('acaWatchOnly').checked = false;
   $('acaPrompt').value = (cur && cur.session.prompt) || '';
   $('acaRepoHint').textContent = '';
   $('acaOptionsHint').textContent = '';
-  acaCapabilityRepos = null;
   $('acaScrim').hidden = false;
   updateAcaCmdPreview();
   // Enabled until proven otherwise, the same posture the rest of the hub
@@ -408,12 +378,10 @@ export function openAca(sessionOverride) {
   // response; the `catch` below is what a genuine network failure needs.
   (async () => {
     try {
-      const r = await api('/api/aca/repos');
+      const repos = await acaLoadRepos();
       if (!acaDialogIsCurrent(generation)) return;
-      state.acaRepos = r.repos || [];
-      acaCapabilityRepos = state.acaRepos;
-      fillAcaRepoList(state.acaRepos);
-      updateAcaRepoHint(state.acaRepos);
+      state.acaRepos = repos;
+      acaReposLoaded(repos);
     } catch (e) {
       if (!acaDialogIsCurrent(generation)) return;
       if (e.status === 501) { acaSetMode('disabled', e.message); return; }
@@ -421,9 +389,8 @@ export function openAca(sessionOverride) {
         acaSetMode('disabled', `${e.message} Use one of the links below for now.`);
         return;
       }
-      // Any other failure (offline, 5xx): the form stays up -- the repository
-      // list is a convenience, not a precondition, and `acaRepo` is still a
-      // plain typeable field. Only the picker's own hint is affected.
+      // Any other failure (offline, 5xx): the form stays up, and the
+      // repository picker offers Retry. Nothing is chosen until the list loads.
       $('acaRepoHint').textContent = `Could not load the repository list: ${e.message}`;
     }
   })();
@@ -434,6 +401,17 @@ export function openAca(sessionOverride) {
 async function submitAcaDispatch() {
   const generation = acaDialogGeneration;
   if (acaSubmittingGeneration === generation || !acaDialogIsCurrent(generation)) return;
+  if (acaChoicesPending()) {
+    // A value typed in full, before the search had time to answer: look it up
+    // now. Anything that still names nothing is refused below.
+    acaSubmittingGeneration = generation;
+    $('acaStart').disabled = true;
+    try { await acaResolveChoices(); } finally {
+      if (acaSubmittingGeneration === generation) acaSubmittingGeneration = null;
+      if (generation === acaDialogGeneration) $('acaStart').disabled = false;
+    }
+    if (!acaDialogIsCurrent(generation)) return;
+  }
   const built = acaBuildDispatchBody(acaFormValues());
   if (!built.ok) {
     $('acaErr').textContent = built.reason;
@@ -458,9 +436,11 @@ async function submitAcaDispatch() {
       reportAcaCreatedIssueFailure(e, created, generation);
       return;
     }
+    const refused = acaChoiceRefused(e);
     if (acaDialogIsCurrent(generation)) {
       $('acaErr').textContent = isRateLimited(e) ? e.message : `Could not start the job: ${e.message}`;
       $('acaErr').hidden = false;
+      if (refused) $(refused).focus();
     } else {
       toast(`Could not start the previous job: ${e.message}`);
     }
@@ -484,7 +464,6 @@ export function wireAca() {
   $('acaScrim').onclick = (e) => { if (e.target === $('acaScrim')) $('acaScrim').hidden = true; };
   $('acaIssueModeNew').onchange = () => setAcaIssueMode('new');
   $('acaIssueModeExisting').onchange = () => setAcaIssueMode('existing');
-  $('acaRepo').oninput = () => updateAcaRepoHint(state.acaRepos);
   $('acaPrompt').oninput = updateAcaCmdPreview;
   $('acaStart').onclick = submitAcaDispatch;
 
@@ -502,7 +481,7 @@ export function wireAca() {
     // "Existing issue" was selected and a number was typed in.
     const existing = $('acaIssueModeExisting').checked;
     const url = existing
-      ? acaIssueLink($('acaRepo').value, $('acaIssueNumber').value)
+      ? acaIssueLink($('acaRepo').value, acaIssueForLink())
       : acaNewIssueLink($('acaRepo').value, $('acaPrompt').value);
     if (!url) {
       $('acaErr').textContent = existing

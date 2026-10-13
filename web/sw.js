@@ -155,6 +155,8 @@ const SHELL = [
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-created-issue.js',
+  '/js/aca-choices.js',
+  '/js/combobox.js',
   '/js/aca-match.js',
   '/js/aca-rail.js',
   '/js/aca-status.js',
