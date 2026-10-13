@@ -74,10 +74,11 @@ is an in-process fixture, not a real installation. `Connected`, `healthy` and
 requests were blocked; Start job was never pressed, no issue or run was created,
 and no approval was answered. No production or personal data was used.
 
-The captures show layout, inline approval, disabled selectors mid-turn, script
-errors and the enforced CSP. They do not show an installed PWA, real phone
-behavior, or notification delivery, and they are not evidence of production
-Hub-to-ACA runs or closed-app Web Push.
+The images show page layout, an inline approval card, and the ACA dialog. They
+do not show an installed PWA, real phone behavior, or notification delivery, and
+they are not evidence of production Hub-to-ACA runs or closed-app Web Push.
+Executable checks are separate from the images; the screenshots do not prove
+those checks passed.
 
 ## Verification scripts
 

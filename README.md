@@ -35,7 +35,7 @@ Squad Hub fixes both.
 | **Device tokens** | Give a server a credential that can be a device and nothing else |
 | **Squad-aware** | Reads Squad's resolved state for team, decisions, routing, model policy, and health summary |
 | **Filter, sort, pin** | Instant list controls, plus pins, custom names and a saved view synced for each signed-in user |
-| **Dispatch an ACA job** | A GitHub App can call `workflow_dispatch` on App-installed, allow-listed repositories to launch an isolated cloud run; this widens trust and is a separate path from device control |
+| **Dispatch an ACA job** | A GitHub App can call `workflow_dispatch` on repositories where the App is installed and the hub authorizes dispatch, to launch an isolated cloud run. This is a one-time job launch, separate from ongoing device control |
 | **Teams notifications** | An Adaptive Card links to the session when an agent asks for permission, and a short follow-up posts when it is answered or expires. Teams does not approve inline |
 | **Drive it from an agent** | `squad-hub mcp` exposes sessions, transcripts, devices and ACA dispatch as MCP tools. There is no approve tool; approvals stay with a human |
 | **On your phone** | Installable as a PWA |
@@ -217,7 +217,7 @@ squad-hub open <session>  # open it in the browser
 ## How it works
 
 <p align="center">
-  <img src="docs/images/how-it-works.jpg" alt="Architecture: devices dial out to the hub; browser, CLI, MCP and Teams control surfaces; and a separate one-time GitHub Actions to Azure Container Apps job launch path" width="900">
+  <img src="docs/images/how-it-works.jpg" alt="Architecture: devices dial out to the hub; browser, CLI and MCP controls and notification destinations; and a separate one-time GitHub Actions to Azure Container Apps job launch path" width="900">
 </p>
 
 Traffic falls into three kinds, and they are kept apart:
@@ -417,10 +417,8 @@ More in [`docs/`](docs/).
 
 Built on public specifications: the
 [Agent Client Protocol](https://agentclientprotocol.com) and GitHub Copilot
-CLI's published flags. The protocol behaviors it relies on were checked with
-scripts in [`spike/`](spike/), and the captured wire payloads are committed
-alongside. Those diagnostics are developer evidence, not a release acceptance
-record; see [docs/README.md](docs/README.md) for what they cover.
+CLI's published flags. For how the protocol and verification scripts are
+checked, see the [developer verification docs](docs/README.md#verification-scripts).
 
 **No dependencies.** Every `require` is a Node builtin — the WebSocket
 implementation included. There is no `npm install`, no `node_modules`, and no
