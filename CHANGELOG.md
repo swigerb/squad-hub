@@ -3,20 +3,26 @@
 All notable changes to Squad Hub are documented here. Dates are when a version
 was published to npm, not when a change merged — see [docs/releasing.md](docs/releasing.md).
 
-## [0.7.0] — npm publication pending
+## [0.7.0] - 2026-10-12
 
-This is the v0.7.0 candidate, so it carries no date: 0.7.0 has not been
-published to npm, and a date is added only once `npm run release` has done it.
-A tag or GitHub release made by the `Squad Release` workflow is not a
-publication — that workflow never touches npm.
+Published to npm as `squad-hub@0.7.0` and `@mightybs/squad-hub@0.7.0` from
+`b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`. The `v0.7.0` tag remains pinned
+there. Later documentation and screenshot updates on `main` do not replace
+the immutable package. The `Squad Release` workflow never publishes to npm.
+
+Production Hub-to-ACA acceptance (#238), installed desktop/phone closed-app
+Web Push acceptance (#239), and the remaining operational and worker-image
+follow-through (#188/#189) are still open. Browser viewport coverage is not
+operational acceptance.
 
 ### Added
 
 - **Session list: filter, sort and pin.** Keyword, status, device, repository
   and time-window filters apply instantly against what is already loaded; a
   session blocked on a person is never hidden by a time window or buried by a
-  sort, and a pin outranks every filter. Controls and pins live in the
-  browser, not the hub — one person's view, not a property of the sessions.
+  sort, and a pin outranks every filter. Pins, custom names and the saved view
+  are cached locally and synchronized through `/api/prefs` for the signed-in
+  user across browsers, not shared properties of the sessions.
   See [docs/commands.md](docs/commands.md#the-session-list).
 - **Desktop notifications.** The header bell shows how many sessions have a
   pending approval, the tab title gains a `(N)` prefix while any do, and —
@@ -76,8 +82,8 @@ publication — that workflow never touches npm.
   [docs/commands.md#sessions-across-every-device](docs/commands.md#sessions-across-every-device)
   and [docs/commands.md#open-the-hub-in-a-browser](docs/commands.md#open-the-hub-in-a-browser).
 - **Device rail: grouped sections, a header summary and new empty states**
-  (issue #172). The rail now groups devices into an always-visible "ACA
-  jobs" on-demand row, a collapsible "Squad on ACA executions" section
+  (issue #172). The rail now groups devices into an always-visible "Squad on
+  ACA" on-demand row, a collapsible "ACA runs" section
   (devices named from their `displayName`/execution metadata, and a row for
   each dispatch from this tab that has no device yet — next entry), "Cloud
   devices" and "Local machines" — each with its own count and collapse state,
@@ -89,7 +95,7 @@ publication — that workflow never touches npm.
   [docs/commands.md#the-device-roster](docs/commands.md#the-device-roster).
 - **A pulsing Starting dot in the rail for a dispatch still waiting for its
   device** (issues #172, #178). Each dispatch made from this tab that has not
-  attached is drawn in "Squad on ACA executions" as `#issue · repo` with a blue
+  attached is drawn in "ACA runs" as `#issue · repo` with a blue
   dot that pulses only while its outcome is open (and holds still under reduced
   motion). It reads "Queued" for a run not yet seen running, and "Starting" only
   once the run is in progress or its receipt names the execution — never from a
@@ -124,8 +130,9 @@ publication — that workflow never touches npm.
 - **A "Squad on ACA" status card** (issue #180). Under the device rail: whether
   this hub's GitHub App is connected, whether the issue watcher and Ralph are
   reachable, and the state of the last dispatch. The card reads
-  `GET /api/aca/repos` and `GET /api/aca/dispatches`; it is read-only and never
-  starts a job. See
+  `GET /api/aca/status`, `GET /api/aca/repos` and `GET /api/aca/dispatches`;
+  **Retry** only refreshes those reads. It never starts a job or checks Azure's
+  schedule, and Ralph need not remain connected between scheduled runs. See
   [docs/aca.md](docs/aca.md#the-status-cards-issue-watcher-and-ralph-rows-180-233).
 - **The session detail is a page** (issue #181). A session opens at
   `/?session=<key>` rather than in a modal, so a deep link, Back and Forward
