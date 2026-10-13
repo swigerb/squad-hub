@@ -5504,8 +5504,8 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'GET /api/aca/repos lists every installed repository instead of only the authorized ones',
     file: 'src/service/github-app.js',
-    find: `if ((await this.authorizeRepoAccess(r, actor)).allowed) out.push(r);`,
-    replace: `if (process.env.MUTANT || (await this.authorizeRepoAccess(r, actor)).allowed) out.push(r); // MUTATION`,
+    find: `if (verdict.allowed) out.push(r);`,
+    replace: `if (process.env.MUTANT || verdict.allowed) out.push(r); // MUTATION`,
     mustFail: 'two verified GitHub users on one hub and one App see disjoint repository lists, though both share the owner partition (#258)',
   },
   {
@@ -12084,6 +12084,20 @@ prompt: |
     find: `<select id="acaModel"><option value="">Squad default</option></select>`,
     replace: `<input id="acaModel" value="">`,
     mustFail: 'Model and Reviewer are dropdowns of what the repository reports, at desktop and 390px, with no text box to type an override (#257)',
+  },
+  {
+    name: '#258 review: the repository list rethrows the raw verification error (names a repository the caller never supplied)',
+    file: 'src/service/github-app.js',
+    find: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);`,
+    replace: `throw e;`,
+    mustFail: 'a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)',
+  },
+  {
+    name: '#258 review: the repository list failure message names the failing repository',
+    file: 'src/service/github-app.js',
+    find: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);`,
+    replace: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE + ' ' + r.fullName);`,
+    mustFail: 'a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)',
   },
 ];
 

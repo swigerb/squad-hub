@@ -3025,7 +3025,50 @@ function apiRequest(port, path, token, opts = {}) {
       assert.deepStrictEqual(effects, NO_SIDE_EFFECTS, label);
     }
   });
-  await checkAsync('a 404 from the permission lookup is "not available", not an error: the repo is simply absent (#258)', async () => {
+  // The list checks EVERY installed repository, including private ones the
+  // caller never named and may not use. A failure on one of those used to be
+  // reported as "could not verify your access to <owner>/<repo> (<GitHub's words>)",
+  // so any signed-in user could read private repository names off GET /api/aca/repos.
+  await checkAsync('a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)', async () => {
+    const SECRET = /zeta-private|vault-9|acme|shared|ghs_|\/repos\//i;
+    const leaky = [
+      ...failures,
+      ['a 403 whose body names the repository', { status: 403, body: { message: 'Resource not accessible: zeta-private/vault-9 is private' } }],
+      ['a 503 whose body names the repository', { status: 503, raw: 'zeta-private/vault-9 is unavailable at https://api.github.com/repos/zeta-private/vault-9' }],
+      ['a 200 that is not JSON and names the repository', { raw: '<html>zeta-private/vault-9</html>' }],
+    ];
+    for (const [label, grant] of leaky) {
+      const hub = await twoUserHub({
+        fakeOptions: { reposByInstallation: { 1: ['zeta-private/vault-9', 'acme/shared'] } },
+        repoAccess: { 'zeta-private/vault-9': { bob: 'admin', alice: grant }, 'acme/shared': { alice: 'write' } },
+      });
+      const list = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+      const effects = sideEffects(hub.fake, hub.svc);
+      await hub.close();
+      assert.strictEqual(list.status, 502, `${label}: ${list.raw}`);
+      assert.ok(!SECRET.test(list.raw), `${label}: the complete response names a repository or leaks upstream text: ${list.raw}`);
+      assert.ok(!list.body.repos, `${label}: a failure must never return a partial list`);
+      assert.match(list.body.error, /could not verify your access/, label);
+      assert.deepStrictEqual(effects, NO_SIDE_EFFECTS, label);
+    }
+  });
+  await checkAsync('the repository a caller names may be echoed in its own refusal, but never another repository (#258 review)', async () => {
+    const hub = await twoUserHub({
+      fakeOptions: { reposByInstallation: { 1: ['zeta-private/vault-9', 'acme/shared'] } },
+      repoAccess: { 'zeta-private/vault-9': { alice: { status: 503 } }, 'acme/shared': { alice: { status: 503 } } },
+    });
+    const post = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/shared', newIssue: { title: 'x' }, prompt: 'go' },
+    });
+    const choices = await apiRequest(hub.port, '/api/aca/choices?repo=acme/shared', aliceToken);
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    for (const r of [post, choices]) {
+      assert.strictEqual(r.status, 502, JSON.stringify(r));
+      assert.ok(!/zeta-private|vault-9/i.test(JSON.stringify(r)), `another repository was named: ${JSON.stringify(r)}`);
+    }
+    assert.deepStrictEqual(effects, NO_SIDE_EFFECTS);
+  });  await checkAsync('a 404 from the permission lookup is "not available", not an error: the repo is simply absent (#258)', async () => {
     // carol signed in fine, but GitHub's permission lookup does not know her at all -> 404.
     const carol = { login: 'carol', id: 3003 };
     const hub = await twoUserHub({ repoAccess: { 'acme/alpha': { alice: 'write' } }, auth: githubAuth({ users: [carol], owner: [] }) });

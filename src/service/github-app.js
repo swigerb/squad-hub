@@ -222,6 +222,11 @@ const GITHUB_IDENTITY_REQUIRED_MESSAGE = 'starting or listing cloud jobs from th
   + '(SQUAD_HUB_AUTH=github), because access is checked against the signed-in GitHub account; '
   + 'this hub session has none. Use the "Review on GitHub..." fallback instead.';
 
+// The 502 for a listing whose verification failed. Generic on purpose: the list checks
+// repositories the caller never named, so it must not say which one failed or why.
+const LIST_UNVERIFIABLE_MESSAGE = 'could not verify your access to the repositories this hub can see; '
+  + 'nothing was listed. Try again shortly.';
+
 /** A GitHub login as GitHub itself defines one (EMU logins add an underscore). */
 const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,99})$/;
 const GITHUB_ID_RE = /^[1-9][0-9]{0,15}$/;
@@ -600,12 +605,24 @@ class GitHubApp {
   /** The repositories `actor` may use: every one the App is installed on AND
    * where that verified GitHub account has write or admin (see
    * `authorizeRepoAccess`). Anything unverifiable throws -- never a partial or
-   * unfiltered list. `[{installationId, owner, repo, fullName}]`. */
+   * unfiltered list. `[{installationId, owner, repo, fullName}]`.
+   *
+   * This checks EVERY installed repository, including ones the caller may not
+   * use and never named. A failure on one of those must not say which: the
+   * error from `authorizeRepoAccess` carries that repository's name and GitHub's
+   * own words, so the list's 502 is generic -- no owner, repo, URL or upstream
+   * text -- while still failing closed with no list at all. */
   async listAuthorizedRepos(actor) {
     if (!verifiedActor(actor)) throw this._err(403, GITHUB_IDENTITY_REQUIRED_MESSAGE);
     const out = [];
     for (const r of await this.listInstalledRepos()) {
-      if ((await this.authorizeRepoAccess(r, actor)).allowed) out.push(r);
+      let verdict;
+      try {
+        verdict = await this.authorizeRepoAccess(r, actor);
+      } catch (e) {
+        throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);
+      }
+      if (verdict.allowed) out.push(r);
     }
     return out;
   }

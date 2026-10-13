@@ -601,6 +601,8 @@ workflow answers `422` that the inputs could not be determined, before any issue
 is created. The New ACA job dialog uses it to decide whether
 to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 
+If GitHub cannot confirm the account's access to any one installed repository, the whole call fails closed with a generic `502` and no list. That message names no repository, URL or upstream text, because the check covers repositories the caller never named.
+
 **`GET /api/aca/choices?repo=owner/repo`, `GET /api/aca/branches?repo=…&q=…&page=…`,
 `GET /api/aca/issues?repo=…&q=…&page=…`** (#257) — the values the New ACA job
 dialog offers for Model, Reviewer, Base branch and Existing issue, read from the
