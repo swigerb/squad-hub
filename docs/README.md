@@ -54,13 +54,10 @@ too. See [releasing](releasing.md#publishing-future-versions-from-main).
 
 ### README gallery
 
-The five `v070-*.png` images in [`images/`](images/) render the actual, unchanged
-v0.7.0 UI at main merge commit
-`67efebdea2c33910f4b00fcf3b3bed9621a96b73`, whose release source is
-`b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`. They were captured locally using
-Node v24.12.0 and Playwright Chromium 147.0.7727.15, with the existing
-`test/harness.js` and the `HubService` / `Authenticator` / `HubLink` fixture
-pattern used by `test/browser-e2e-unit.js`.
+The five `v070-*.png` images in [`images/`](images/) are local captures of the
+hub UI, made with the existing `test/harness.js` and the `HubService` /
+`Authenticator` / `HubLink` fixture pattern from `test/browser-e2e-unit.js`,
+driven by Playwright Chromium. The filenames keep their original prefix.
 
 | Image | Capture |
 |---|---|
@@ -73,22 +70,22 @@ pattern used by `test/browser-e2e-unit.js`.
 All sessions, transcripts, pins, PR links, health checks, device presence and
 `C:\demo\widgets` paths are **synthetic inputs**. GitHub App repository discovery
 is an in-process fixture, not a real installation. `Connected`, `healthy` and
-`Synced` reflect fixture responses, not a production acceptance pass. External
-browser requests were blocked; Start job was never pressed, no issue or run was
-created, and no approval was answered. No production or personal data was used.
+`Synced` reflect fixture responses, not live service state. External browser
+requests were blocked; Start job was never pressed, no issue or run was created,
+and no approval was answered. No production or personal data was used.
 
-Capture checks passed for the five views, horizontal fit, phone navigation,
-inline approval, mid-turn disabled selectors, script errors and enforced CSP.
-These captures are not design mockups, but they do not prove an installed PWA,
-real phone behavior or notification delivery. Production ACA and closed-app
-Web Push acceptance, plus worker-image follow-through, remain
-[separately tracked](aca.md#remaining-operational-acceptance).
+The captures show layout, inline approval, disabled selectors mid-turn, script
+errors and the enforced CSP. They do not show an installed PWA, real phone
+behavior, or notification delivery, and they are not evidence of production
+Hub-to-ACA runs or closed-app Web Push.
 
 ## Verification scripts
 
 [`spike/`](../spike/) holds the scripts used to settle questions that could not
 be answered by reading, along with the captured wire payloads. They are runnable,
-so the answers can be re-checked rather than taken on trust.
+so the answers can be re-checked rather than taken on trust. They are developer
+diagnostics and protocol evidence, not a release acceptance record.
+
 
 | Script | Answers |
 |---|---|
