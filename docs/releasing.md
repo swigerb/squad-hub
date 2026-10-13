@@ -54,7 +54,7 @@ of whichever commit happens to be newest.
 On the approved publishing machine:
 
 ```powershell
-git clone --branch main --single-branch https://github.com/swigerb/squad-hub squad-hub-release
+git clone -b main --single-branch https://github.com/swigerb/squad-hub squad-hub-release
 Set-Location .\squad-hub-release
 git branch --show-current
 git rev-parse HEAD
