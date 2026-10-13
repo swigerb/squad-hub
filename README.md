@@ -63,9 +63,11 @@ ready for the next message. Files is a disabled design placeholder.
   <img src="docs/images/v070-desktop-session.png" alt="Synthetic session page with Chat, Squad and Info tabs and an inline read-only approval" width="900">
 </p>
 
-**Prepare an ACA run without leaving the Hub.** Choose an App-installed
-repository, an existing issue or a new one, and instructions. This synthetic
-dialog is a preview only: **Start job was not pressed**, and no GitHub issue or
+**Prepare an ACA run without leaving the Hub.** Choose an authorized
+repository, an existing issue or a new one, and instructions. Base branch,
+configured model and reviewer are selectable rather than guessed values.
+The job confirms model availability when it starts. This synthetic dialog
+is a preview only: **Start job was not pressed**, and no GitHub issue or
 Azure run was created.
 
 <p align="center">

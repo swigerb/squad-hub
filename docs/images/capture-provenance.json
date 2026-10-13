@@ -1,0 +1,59 @@
+{
+  "sourceCommit": "0be323eb081362855086c954bccd89fe32f60710",
+  "browser": "147.0.7727.15",
+  "fixtures": "Synthetic devices, sessions, approvals, GitHub identity and repository catalogs served on loopback.",
+  "externalBrowserRequests": "blocked",
+  "productionAcceptance": false,
+  "startedJobs": 0,
+  "answeredApprovals": 0,
+  "screenshots": [
+    {
+      "file": "v070-desktop-overview.png",
+      "width": 1440,
+      "height": 1000,
+      "sha256": "1a11fea55aa5abdf842857ed0c61887acf86f8e2e30e2fd4a4eda1aa99f800a9"
+    },
+    {
+      "file": "v070-desktop-session.png",
+      "width": 1440,
+      "height": 1000,
+      "sha256": "388d0fabe6ee42fa754498cfb09efb060c5c4df7c86f8757fce5cc2533266560"
+    },
+    {
+      "file": "v070-phone-session.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "69701d3147887b7222f1d28dd64fa663566be4c9c33f1af25783fbbd699057da"
+    },
+    {
+      "file": "v070-phone-overview.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "d515bc74f617d7879013274b43218203cb869f8031717ecaf520e8cfdad44353"
+    },
+    {
+      "file": "v070-desktop-aca.png",
+      "width": 520,
+      "height": 1232,
+      "sha256": "ca51a4636a14f32cc197325c5a23a92e319b27ce55f1aa95db70e1ff0316b4af"
+    },
+    {
+      "file": "aca-pickers-phone.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "c13a21b8cafae64b491f25cdaee1e10ef8d3c5686a6a571d107cc65b5217e5ef"
+    },
+    {
+      "file": "new-session-pickers.png",
+      "width": 520,
+      "height": 678,
+      "sha256": "c1f08f9b67d3780f69ffebb4a174cfc70ff5e79e2f9ad205d02947cb00b496ae"
+    },
+    {
+      "file": "connection-stale.png",
+      "width": 1440,
+      "height": 1000,
+      "sha256": "e2fdcf2b9285b49648ddb56b754966afc14d18b394dfd19ae3474c7e2289af36"
+    }
+  ]
+}

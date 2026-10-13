@@ -54,18 +54,22 @@ too. See [releasing](releasing.md#publishing-future-versions-from-main).
 
 ### README gallery
 
-The five `v070-*.png` images in [`images/`](images/) are local captures of the
-hub UI, made with the existing `test/harness.js` and the `HubService` /
-`Authenticator` / `HubLink` fixture pattern from `test/browser-e2e-unit.js`,
-driven by Playwright Chromium. The filenames keep their original prefix.
+The gallery in [`images/`](images/) captures the actual local hub UI using
+the `HubService` / `Authenticator` / `HubLink` fixture pattern from
+`test/browser-e2e-unit.js`, driven by Playwright Chromium. The five README
+filenames keep their original prefix. [Capture provenance](images/capture-provenance.json)
+records the source commit, browser, dimensions, and hashes.
 
 | Image | Capture |
 |---|---|
 | `v070-desktop-overview.png` | Dark overview, 1440 × 1000 |
-| `v070-desktop-session.png` | Light Chat page with inline approval, 1440 × 1000 |
-| `v070-desktop-aca.png` | Light ACA dialog only, 520 × 1186 crop from a 1440 × 1400 viewport |
-| `v070-phone-overview.png` | Light overview, 390 × 844 |
-| `v070-phone-session.png` | Light Chat page with inline approval, 390 × 844 |
+| `v070-desktop-session.png` | Dark Chat page with inline approval, 1440 × 1000 |
+| `v070-desktop-aca.png` | Dark ACA dialog with repository-backed choices, 520 × 1232 crop |
+| `v070-phone-overview.png` | Dark overview, 390 × 844 |
+| `v070-phone-session.png` | Dark Chat page with inline approval, 390 × 844 |
+| `aca-pickers-phone.png` | Scrollable ACA dialog, 390 × 844 viewport |
+| `new-session-pickers.png` | Device-reported Agent and Model lists, 520 × 678 crop |
+| `connection-stale.png` | Stale-state warning after a synthetic watcher disconnect, 1440 × 1000 |
 
 All sessions, transcripts, pins, PR links, health checks, device presence and
 `C:\demo\widgets` paths are **synthetic inputs**. GitHub App repository discovery
