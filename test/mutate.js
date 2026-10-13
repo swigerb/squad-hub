@@ -5480,14 +5480,92 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'a dispatch request for a repo the App is not installed on is no longer refused by the route',
     file: 'src/service/hub-service.js',
     find: `      if (!installation) {
-        return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
+        return send(403, { error: repoNotAvailableMessage(validated.value.repo) });
       }`,
     replace: `      if (!process.env.MUTANT && !installation) { // MUTATION
-        return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
+        return send(403, { error: repoNotAvailableMessage(validated.value.repo) });
       }`,
     mustFail: 'the dispatch route refuses a repo the App is not installed on, with 403',
   },
 
+  // -- Issue #258: repository authorization. "Installed" is the operator's
+  // choice; the signed-in GitHub account must ALSO hold write/admin on the
+  // repository, asked of GitHub on every request. ----------------------------
+  {
+    name: 'GitHubApp.dispatch skips the per-request repository authorization',
+    file: 'src/service/github-app.js',
+    find: `if (!authorized.allowed) throw this._err(403,`,
+    replace: `if (!process.env.MUTANT && !authorized.allowed) throw this._err(403,`,
+    mustFail: 'a forged cross-user POST is refused 403 with zero issues, zero dispatches and nothing tracked -- existing issue and new issue (#258)',
+  },
+  {
+    name: 'GET /api/aca/repos lists every installed repository instead of only the authorized ones',
+    file: 'src/service/github-app.js',
+    find: `if ((await this.authorizeRepoAccess(r, actor)).allowed) out.push(r);`,
+    replace: `if (process.env.MUTANT || (await this.authorizeRepoAccess(r, actor)).allowed) out.push(r); // MUTATION`,
+    mustFail: 'two verified GitHub users on one hub and one App see disjoint repository lists, though both share the owner partition (#258)',
+  },
+  {
+    name: 'the permission answer is trusted without checking it is about the verified GitHub id',
+    file: 'src/service/github-app.js',
+    find: `|| String(user.id) !== who.id) return { allowed: false };`,
+    replace: `|| (!process.env.MUTANT && String(user.id) !== who.id)) return { allowed: false }; // MUTATION`,
+    mustFail: 'a login reassigned to a different GitHub account is denied: the numeric id decides, not the login (#258)',
+  },
+  {
+    name: 'read access is enough to use a repository',
+    file: 'src/service/github-app.js',
+    find: `const AUTHORIZED_PERMISSIONS = new Set(['write', 'admin']);`,
+    replace: `const AUTHORIZED_PERMISSIONS = new Set(process.env.MUTANT ? ['write', 'admin', 'read', 'none'] : ['write', 'admin']); // MUTATION`,
+    mustFail: 'write and admin may use a repository (maintain reports as write); read, triage, none and anything unrecognised may not (#258)',
+  },
+  {
+    name: 'a GitHub error while verifying access is treated as allowed',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status !== 200) throw unverifiable(`,
+    replace: `    if (process.env.MUTANT && res.status !== 200) return { allowed: true }; // MUTATION
+    if (res.status !== 200) throw unverifiable(`,
+    mustFail: 'any failure while verifying access fails closed: the list answers 502 with no repos and the POST answers 502 with no side effect (#258)',
+  },
+  {
+    name: 'a missing collaborator (404) is treated as allowed',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status === 404) return { allowed: false };`,
+    replace: `    if (res.status === 404) return { allowed: !!process.env.MUTANT }; // MUTATION`,
+    mustFail: 'a 404 from the permission lookup is "not available", not an error: the repo is simply absent (#258)',
+  },
+  {
+    name: 'the ACA routes infer a GitHub identity from the session name and tenant instead of the verified one',
+    file: 'src/service/hub-service.js',
+    find: `    const acaActor = () => verifiedActor(me.github);`,
+    replace: `    const acaActor = () => verifiedActor(process.env.MUTANT && me.tid === 'github' ? { id: me.oid, login: me.name } : me.github); // MUTATION`,
+    mustFail: 'a session without a GitHub-verified identity is refused with an explanation, and GitHub is never called (#258)',
+  },
+  {
+    name: 'a claimed GitHub tenant is promoted to a verified GitHub identity',
+    file: 'src/service/auth.js',
+    find: `      github: githubIdentity
+        ? { id: String(githubIdentity.id), login: String(githubIdentity.login) }
+        : null,`,
+    replace: `      github: (githubIdentity || (process.env.MUTANT && claims.tid === 'github' ? { id: claims.oid, login: claims.name } : null)) // MUTATION
+        ? { id: String((githubIdentity || { id: claims.oid }).id), login: String((githubIdentity || { login: claims.name }).login) }
+        : null,`,
+    mustFail: 'only the GitHub verification yields a verified GitHub identity -- never a dev token, an owner entry or a tenant name (#258)',
+  },
+  {
+    name: 'a tracked dispatch is shown to every account in the shared partition',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      recs = scope.actorId == null ? [] : recs.filter((r) => r.actorId === scope.actorId);`,
+    replace: `      recs = process.env.MUTANT ? recs : (scope.actorId == null ? [] : recs.filter((r) => r.actorId === scope.actorId)); // MUTATION`,
+    mustFail: 'a tracked dispatch is shown only to the GitHub account that made it, even inside one shared partition (#258)',
+  },
+  {
+    name: 'a tracked dispatch stays visible after the account loses access to its repository',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (scope.authorizeRepo && recs.length) {`,
+    replace: `    if (!process.env.MUTANT && scope.authorizeRepo && recs.length) { // MUTATION`,
+    mustFail: 'a tracked dispatch is shown only to the GitHub account that made it, even inside one shared partition (#258)',
+  },
   // -- Issue #213: GitHub App dispatch hardening follow-ups from #211 ------
   {
     // DispatchTracker: cross-user binding (and so run-stealing protection)
@@ -5604,7 +5682,7 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });`,
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus(actor) });`,
     replace: `      const limited = { allowed: process.env.MUTANT ? true : this.acaReadRateLimiter.check(me.key).allowed }; // MUTATION
       if (!limited.allowed) {
         return send(429, {
@@ -5613,7 +5691,7 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });`,
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus(actor) });`,
     mustFail: 'GET /api/aca/repos is rate-limited per signed-in user',
   },
   {
@@ -5630,7 +5708,9 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
+        // Only this account's own dispatches, and only on repositories it
+        // can still use: a run's status is read with the App's credential.
+        return send(200, {`,
     replace: `      const limited = { allowed: process.env.MUTANT ? true : this.acaReadRateLimiter.check(me.key).allowed }; // MUTATION
       if (!limited.allowed) {
         return send(429, {
@@ -5639,7 +5719,9 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
+        // Only this account's own dispatches, and only on repositories it
+        // can still use: a run's status is read with the App's credential.
+        return send(200, {`,
     mustFail: 'GET /api/aca/dispatches is rate-limited per signed-in user',
   },
   {

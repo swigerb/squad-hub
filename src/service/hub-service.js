@@ -31,7 +31,7 @@ const { WebPushSender } = require('./web-push');
 const { PushNotifier } = require('../notify/push');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
-const { GitHubApp } = require('./github-app');
+const { GitHubApp, verifiedActor, repoNotAvailableMessage, GITHUB_IDENTITY_REQUIRED_MESSAGE } = require('./github-app');
 const { RateLimiter } = require('./rate-limiter');
 const { DispatchTracker } = require('./dispatch-tracker');
 const { sanitizeDispatchRequest } = require('../aca-dispatch');
@@ -883,6 +883,18 @@ class HubService {
     // normal state until the real App exists; the web UI's existing
     // "Review on GitHub..." / "Copy command" fallback (docs/security.md)
     // needs no changes to keep working in that case.
+    //
+    // Repository authorization (#258). "Signed in" is not "may use this
+    // repository": every user shares the one App credential, so each route
+    // below acts for `actor` -- the GitHub account GitHub itself verified for
+    // this request (`me.github`, set only by the GitHub auth mode) -- and the
+    // hub asks GitHub, per request, whether that account has write access.
+    // Neither `me.key` (the owner list folds several identities into one
+    // partition) nor `me.tid`/`me.isOwner` (a dev token can claim `github`) is
+    // ever a substitute. A session with no verified GitHub account is refused
+    // with 403 and a reason; it is never given an unfiltered answer.
+    const acaActor = () => verifiedActor(me.github);
+    const needsGitHub = () => send(403, { error: GITHUB_IDENTITY_REQUIRED_MESSAGE });
 
     // `GET /api/aca/status` -- a cheap, always-200 discovery route (#233, a
     // fix-up from #180's review): whether the App is configured at all, with
@@ -902,6 +914,8 @@ class HubService {
 
     if (p === '/api/aca/repos' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      const actor = acaActor();
+      if (!actor) return needsGitHub();
       // Rate-limited per signed-in user (#213): this walks every
       // installation and every repository on each, spending the App's own
       // shared GitHub API quota -- see ACA_READ_RATE_LIMIT above.
@@ -913,7 +927,7 @@ class HubService {
         });
       }
       try {
-        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus(actor) });
       } catch (e) {
         return send(e.status || 502, { error: e.message });
       }
@@ -921,6 +935,8 @@ class HubService {
 
     if (p === '/api/aca/dispatches' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      const actor = acaActor();
+      if (!actor) return needsGitHub();
       // Rate-limited per signed-in user (#213): resolving every tracked
       // dispatch spends the App's own shared GitHub API quota, same as
       // GET /api/aca/repos above -- the two share one limiter/budget.
@@ -932,7 +948,14 @@ class HubService {
         });
       }
       try {
-        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });
+        // Only this account's own dispatches, and only on repositories it
+        // can still use: a run's status is read with the App's credential.
+        return send(200, {
+          dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp, {
+            actorId: actor.id,
+            authorizeRepo: async (rec) => (await this.githubApp.authorizeRepoAccess(rec, actor)).allowed,
+          }),
+        });
       } catch (e) {
         return send(e.status || 502, { error: e.message });
       }
@@ -940,6 +963,8 @@ class HubService {
 
     if (p === '/api/aca/dispatch' && req.method === 'POST') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      const actor = acaActor();
+      if (!actor) return needsGitHub();
 
       const body = await readJson(req);
       const validated = sanitizeDispatchRequest(body);
@@ -964,19 +989,22 @@ class HubService {
       } catch (e) {
         return send(e.status || 502, { error: e.message });
       }
-      // THE ALLOW-LIST. A repo the App is not installed on is refused here,
-      // never dispatched against -- this is the entire new trust boundary
-      // docs/security.md documents: not "is this caller a collaborator",
-      // but "did whoever installed the App choose this repository".
+      // THE ALLOW-LIST, first half. A repo the App is not installed on is
+      // refused here, never dispatched against: "did whoever installed the
+      // App choose this repository". The second half -- "may THIS signed-in
+      // GitHub account use it" -- is `GitHubApp.dispatch`'s own first step,
+      // re-asked of GitHub on every request and ahead of any issue creation,
+      // dispatch or tracker record. Both refuse with the same message.
       if (!installation) {
-        return send(403, { error: `the GitHub App is not installed on ${validated.value.repo}` });
+        return send(403, { error: repoNotAvailableMessage(validated.value.repo) });
       }
 
       try {
         const result = await this.githubApp.dispatch({
-          ...validated.value, owner, repo: repoName, installationId: installation.installationId,
+          ...validated.value, owner, repo: repoName, installationId: installation.installationId, actor,
         });
         const trackerId = this.dispatchTracker.record(me.key, {
+          actorId: actor.id,
           owner,
           repo: repoName,
           installationId: installation.installationId,

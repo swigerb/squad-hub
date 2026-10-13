@@ -32,6 +32,14 @@
  *   answers strictly from what `GET /app/installations` and
  *   `GET /installation/repositories` report -- never from the request.
  *
+ *   INSTALLATION IS NOT AUTHORIZATION (#258). The App sees every repository it
+ *   is installed on, which says nothing about WHO MAY USE one. Listing and
+ *   dispatching are both gated on `authorizeRepoAccess`: GitHub's own answer,
+ *   for the verified GitHub account (id + login, from the Authenticator's GitHub
+ *   mode only), that this account has write or admin on the repository. It is
+ *   asked again on every request, never cached, and any failure to get an answer
+ *   denies.
+ *
  *   NOT CONFIGURED FAILS CLOSED, LOUDLY. `SQUAD_HUB_GH_APP_ID` /
  *   `SQUAD_HUB_GH_APP_PRIVATE_KEY` absent, or a private key that does not
  *   parse, both set `enabled = false` with a short human reason -- the three
@@ -196,6 +204,42 @@ function parseDeclaredWorkflowInputs(yamlText) {
     names.push(m[1]);
   }
   return names;
+}
+
+/**
+ * The one refusal a caller ever sees for a repository it may not use, whether
+ * the App is not installed there or the signed-in GitHub account lacks write
+ * access to it. One message for both, so a hub user cannot probe which private
+ * repositories the App is installed on by comparing refusals.
+ */
+function repoNotAvailableMessage(fullName) {
+  return `${fullName} is not available to your GitHub account: the GitHub App must be installed on it and your account needs write access to it`;
+}
+
+/** What a caller without a GitHub identity verified by GitHub itself is told. */
+const GITHUB_IDENTITY_REQUIRED_MESSAGE = 'starting or listing cloud jobs from the hub needs a verified GitHub sign-in '
+  + '(SQUAD_HUB_AUTH=github), because access is checked against the signed-in GitHub account; '
+  + 'this hub session has none. Use the "Review on GitHub..." fallback instead.';
+
+/** A GitHub login as GitHub itself defines one (EMU logins add an underscore). */
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,99})$/;
+const GITHUB_ID_RE = /^[1-9][0-9]{0,15}$/;
+
+/** The base permissions that may start work. `maintain` is reported by GitHub
+ * as `write`, `triage` as `read` -- `role_name` is deliberately never read. */
+const AUTHORIZED_PERMISSIONS = new Set(['write', 'admin']);
+
+/**
+ * The verified GitHub identity (`{id, login}`) an authorization decision is
+ * made for, or `null` when the caller supplied anything less. Only the
+ * authenticator's GitHub verification produces one (see `auth.js`).
+ */
+function verifiedActor(actor) {
+  if (!actor || typeof actor !== 'object') return null;
+  const id = typeof actor.id === 'number' ? String(actor.id) : actor.id;
+  if (typeof id !== 'string' || !GITHUB_ID_RE.test(id)) return null;
+  if (typeof actor.login !== 'string' || !GITHUB_LOGIN_RE.test(actor.login)) return null;
+  return { id, login: actor.login };
 }
 
 function b64url(obj) {
@@ -478,6 +522,54 @@ class GitHubApp {
     return { exists: true, declaredInputs };
   }
 
+  /**
+   * Whether the signed-in GitHub account `actor` may use `owner/repo` through
+   * this hub: `{allowed: true}` or `{allowed: false}`. Throws (502) when that
+   * cannot be established -- a verification failure is never an allow, and a
+   * caller must never fall back to "installed, so fine".
+   *
+   * The App's installation says only that the OPERATOR chose the repository.
+   * It says nothing about the person at the keyboard, and every hub user
+   * shares the one App credential, so without this check any signed-in user
+   * could name any installed repository -- including a private one they can
+   * only see because the hub's token can -- and have the hub create an issue
+   * and dispatch a workflow on it. Public readability is not permission
+   * either: only write or admin (maintain reports as write) counts.
+   *
+   * Asked of GitHub on every call, never cached: a collaborator removed a
+   * second ago must be refused on the next request. Uses the repo-scoped
+   * installation token, whose Metadata read access the App already holds.
+   *
+   * The answer is trusted only if `user.id` is the verified numeric id. A
+   * login can be renamed and handed to someone else; the id cannot.
+   */
+  async authorizeRepoAccess({ owner, repo, installationId }, actor) {
+    const who = verifiedActor(actor);
+    if (!who) throw this._err(403, GITHUB_IDENTITY_REQUIRED_MESSAGE);
+    const fullName = `${owner}/${repo}`;
+    const unverifiable = (why) => this._err(502, `could not verify your access to ${fullName} (${why}); nothing was created or dispatched`);
+    let res;
+    try {
+      const token = await this._installationToken(installationId, repo);
+      res = await this._request({
+        method: 'GET',
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(who.login)}/permission`,
+        token,
+      });
+    } catch (e) {
+      throw unverifiable(e && e.message ? e.message : 'GitHub could not be reached');
+    }
+    if (res.status === 404) return { allowed: false };
+    if (res.status !== 200) throw unverifiable(`GitHub returned ${res.status}`);
+    const body = res.json;
+    if (!body || typeof body !== 'object' || typeof body.permission !== 'string') {
+      throw unverifiable('GitHub returned an unreadable answer');
+    }
+    const user = body.user;
+    if (!user || typeof user !== 'object' || String(user.id) !== who.id) return { allowed: false };
+    return { allowed: AUTHORIZED_PERMISSIONS.has(body.permission) };
+  }
+
   async _defaultBranch(owner, repo, token) {
     const res = await this._request({ method: 'GET', path: `/repos/${owner}/${repo}`, token });
     if (res.status !== 200) throw this._err(upstreamStatus(res.status), `could not read ${owner}/${repo} (GitHub returned ${res.status})`);
@@ -502,14 +594,30 @@ class GitHubApp {
     }
   }
 
-  /** Every repo the App can see, with whether each has `squad-dispatch.yml`
-   * and which `workflow_dispatch` inputs it declares (`null` when that is
+  /** The repositories `actor` may use: every one the App is installed on AND
+   * where that verified GitHub account has write or admin (see
+   * `authorizeRepoAccess`). Anything unverifiable throws -- never a partial or
+   * unfiltered list. `[{installationId, owner, repo, fullName}]`. */
+  async listAuthorizedRepos(actor) {
+    if (!verifiedActor(actor)) throw this._err(403, GITHUB_IDENTITY_REQUIRED_MESSAGE);
+    const out = [];
+    for (const r of await this.listInstalledRepos()) {
+      if ((await this.authorizeRepoAccess(r, actor)).allowed) out.push(r);
+    }
+    return out;
+  }
+
+  /** Every repo `actor` may use (`listAuthorizedRepos`), with whether each has
+   * `squad-dispatch.yml` and which `workflow_dispatch` inputs it declares
+   * (`null` when that is
    * unknown: no workflow, no `workflow_dispatch` trigger, or an unreadable
    * body -- a caller must treat `null` as "do not know", never as "none").
    * `GET /api/aca/repos`. A 404 from the contents check is "no"; anything
-   * else is a clear error rather than a silent false, per the issue. */
-  async listReposWithDispatchStatus() {
-    const repos = await this.listInstalledRepos();
+   * else is a clear error rather than a silent false, per the issue. The
+   * workflow file is only read for a repository the actor was just authorized
+   * on. */
+  async listReposWithDispatchStatus(actor) {
+    const repos = await this.listAuthorizedRepos(actor);
     const out = [];
     for (const r of repos) {
       const token = await this._installationToken(r.installationId, r.repo);
@@ -523,9 +631,14 @@ class GitHubApp {
 
   /**
    * Dispatch `squad-dispatch.yml` on `owner/repo`, already-validated and
-   * already allow-listed by the caller (see `hub-service.js`'s
-   * `/api/aca/dispatch`, which resolves `installationId` via
-   * `findInstallation` before this is ever called).
+   * already allow-listed against installations by the caller (see
+   * `hub-service.js`'s `/api/aca/dispatch`, which resolves `installationId`
+   * via `findInstallation` before this is ever called).
+   *
+   * `actor` is the verified GitHub account (`{id, login}`). It is authorized
+   * for the repository HERE, first, so no caller can reach issue creation or
+   * the dispatch without it: 403 when the account may not use the repository,
+   * 502 when GitHub could not say.
    *
    * Every precondition -- the workflow existing, and every requested option
    * being one the workflow actually declares -- is checked BEFORE `newIssue`
@@ -539,8 +652,14 @@ class GitHubApp {
    * allow-list lookup.
    */
   async dispatch({
-    owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly,
+    owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly, actor,
   }) {
+    // First, before ANY GitHub read of the repo's contents and long before an
+    // issue or a dispatch: the signed-in GitHub account must be allowed on
+    // this repository right now. The route's own installation check is not
+    // this -- it only says the operator installed the App there.
+    const authorized = await this.authorizeRepoAccess({ owner, repo, installationId }, actor);
+    if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(`${owner}/${repo}`));
     const token = await this._installationToken(installationId, repo);
 
     const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
@@ -783,4 +902,7 @@ module.exports = {
   UNSUPPORTED_CORRELATION_REASON,
   parseDeclaredWorkflowInputs,
   upstreamStatus,
+  repoNotAvailableMessage,
+  GITHUB_IDENTITY_REQUIRED_MESSAGE,
+  verifiedActor,
 };

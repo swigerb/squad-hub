@@ -544,7 +544,16 @@ with a new token.
 The hub dispatching an ACA job directly, as a GitHub App — see
 [aca.md](aca.md#the-third-direction-is-different-on-purpose) for the trust
 boundary and [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
-for why it widens who may start a run.
+for the authorization rule.
+
+**Authorization (#258).** `repos`, `dispatches` and `dispatch` act only for a
+session the hub verified as a GitHub account (`SQUAD_HUB_AUTH=github`); any other
+session gets **403** with an explanation, before any GitHub call or rate-limit
+budget is spent. Within that, a repository is only ever listed or used if the
+App is installed on it **and** GitHub reports that exact account has `write`,
+`maintain` or `admin` access to it. The check is repeated on every request and
+never cached. When GitHub cannot answer it, the routes fail closed with **502**
+rather than returning an unfiltered list.
 
 **`GET /api/aca/status`** — a cheap discovery route (#233): is the App
 configured at all? Always answers **200**, never a non-2xx status, and
@@ -567,8 +576,10 @@ when the App is not configured — the normal state until a hub installs the
 App — but a well-behaved caller checks `GET /api/aca/status` first and
 should not need to see one in practice.
 
-**`GET /api/aca/repos`** — every repository the App can see, and whether each
-has a `squad-dispatch.yml` the hub can dispatch:
+**`GET /api/aca/repos`** — every repository the App is installed on **that the
+signed-in GitHub account may use** (write access or better), and whether each
+has a `squad-dispatch.yml` the hub can dispatch. A repository that is merely
+public, or that only another hub user may use, is absent:
 
 ```json
 { "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true, "declaredInputs": ["issue", "prompt", "publish_pr", "watch_only"] }] }
@@ -583,7 +594,8 @@ workflow answers `422` that the inputs could not be determined, before any issue
 is created. The New ACA job dialog uses it to decide whether
 to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 
-**`GET /api/aca/dispatches`** — this signed-in user's own recent dispatches
+**`GET /api/aca/dispatches`** — this signed-in GitHub account's own recent
+dispatches, for repositories it can still use,
 (in memory only, lost on a hub restart — see
 [aca.md](aca.md#the-third-direction-is-different-on-purpose)), each resolved
 against GitHub Actions for its current run status:
@@ -668,7 +680,7 @@ installation, or an ambiguous correlation receipt — without hiding any other
 row).
 
 **`POST /api/aca/dispatch`** — call `squad-dispatch.yml`'s `workflow_dispatch`
-on a repository the App is installed on:
+on a repository the App is installed on **and** the signed-in account may use:
 
 ```json
 { "repo": "me/my-repo", "newIssue": { "title": "Fix the thing" }, "prompt": "...", "model": "claude-sonnet-5", "publishPr": true, "reviewer": "someone", "watchOnly": false }
@@ -681,8 +693,12 @@ an undeclared one is refused with a clear `422` before anything is created.
 `baseBranch` travels only as the `base_branch` **input** — the dispatch itself
 always runs on the repository's default branch.
 
-- `403` — the GitHub App is not installed on that repository. This is the
-  entire allow-list: not a per-person collaborator check.
+- `403` — the session is not a verified GitHub account, or the repository is
+  not available to it: the App is not installed there, or GitHub says the account
+  lacks write access. The two repository cases share one message so the response
+  does not reveal where the App is installed. Nothing was created or dispatched.
+- `502` — the hub could not verify the account's access (GitHub rate limit,
+  outage or an App permission problem). Nothing was created or dispatched.
 - `422` — a requested option is not one the workflow declares.
 - `429` — too many dispatches from this account; retry after `retryAfterMs`.
 - Success returns `{ "issue": {...}, "runUrl": "...", "trackerId": "..." }`.

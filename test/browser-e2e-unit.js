@@ -56,6 +56,31 @@ const { privateKey: ACA_FAKE_KEY_OBJ } = crypto.generateKeyPairSync('rsa', { mod
 const ACA_FAKE_PRIVATE_KEY_PEM = ACA_FAKE_KEY_OBJ.export({ type: 'pkcs1', format: 'pem' });
 
 /**
+ * The signed-in GitHub account every ACA flow below runs as (#258).
+ *
+ * `/api/aca/*` only answers a session the hub verified as a GitHub account, so
+ * these flows sign in through the real Authenticator in its GitHub mode, against
+ * a stand-in for `GET /user` -- the same seam test/github-auth-unit.js uses. A
+ * dev token is not a substitute: it can claim any identity, so the hub refuses
+ * it here by design (see "refuses a dev session" in test/github-app-unit.js).
+ */
+const ACA_USER = { login: 'aca-tester', id: 5150 };
+const ACA_OWNER_SUBJECT = subjectKey('owner', 'squad-hub');
+
+function acaGitHubAuth(tag) {
+  const token = `gho_e2e_${tag}`;
+  const auth = new Authenticator({
+    mode: MODES.GITHUB,
+    owner: [ACA_USER.login],
+    githubFetch: async (presented) => {
+      if (presented !== token) throw Object.assign(new Error('GitHub returned 401'), { status: 401 });
+      return { id: ACA_USER.id, login: ACA_USER.login, email: null };
+    },
+  });
+  return { auth, token };
+}
+
+/**
  * The smallest possible stand-in for api.github.com that `GitHubApp` and the
  * `/api/aca/*` routes need to answer `GET /api/aca/repos` and
  * `GET /api/aca/dispatches` for exactly one installed repo with one recent
@@ -78,6 +103,13 @@ function acaFakeGitHubServer() {
       }
       if (/^\/app\/installations\/\d+\/access_tokens$/.test(req.url) && req.method === 'POST') {
         return json(201, { token: 'ghs_fake_aca_card', expires_at: new Date(Date.now() + 3600000).toISOString() });
+      }
+      // #258: the hub asks GitHub whether the SIGNED-IN account may use the
+      // repository, by its numeric id. This account has write access.
+      if (req.url === `/repos/acme/widgets/collaborators/${ACA_USER.login}/permission`) {
+        return json(200, {
+          permission: 'write', role_name: 'write', user: { id: ACA_USER.id, login: ACA_USER.login },
+        });
       }
       if (req.url.startsWith('/installation/repositories')) {
         return json(200, { repositories: [{ full_name: 'acme/widgets', default_branch: 'main' }] });
@@ -335,6 +367,9 @@ function fakeInlineGithubApp({
     /** Every request `dispatch()` accepted, as `HubService` handed it over. */
     dispatchRequests,
     issues,
+    // The real `GitHubApp` filters to what the verified account may use and
+    // re-checks on every dispatch; this answers "yes" for the one repo it knows.
+    async authorizeRepoAccess() { return { allowed: true }; },
     async listReposWithDispatchStatus() {
       return [{
         fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true, declaredInputs,
@@ -415,12 +450,12 @@ const ACA_EXEC_2 = 'squad-hub-job-m4r8t1w';
  * every `/api/aca/*` request the page makes.
  */
 async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
-  const auth = new Authenticator({ mode: MODES.DEV, devSecret: `aca-${tag}`, deviceSecret: `aca-${tag}-dev` });
+  const { auth, token } = acaGitHubAuth(tag);
   const app = fakeInlineGithubApp(appOptions);
   const svc = new HubService({ auth, serveWeb: true, githubApp: app, persistStore: false });
   const addr = await svc.listen(0, '127.0.0.1');
   const origin = `http://127.0.0.1:${addr.port}`;
-  const subject = subjectKey(`t-${tag}`, `u-${tag}`);
+  const subject = ACA_OWNER_SUBJECT;
   const page = await browser.newPage();
   if (controlClock) await page.clock.install();
   const errors = [];
@@ -431,7 +466,7 @@ async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
     calls.push({ method: route.request().method(), url: route.request().url(), body: route.request().postData() });
     route.continue();
   });
-  await gotoSettled(page, `${origin}/?token=${auth.mintDevToken(`t-${tag}`, `u-${tag}`, `${tag} tester`)}`);
+  await gotoSettled(page, `${origin}/?token=${token}`);
   await page.waitForSelector('#who', { timeout: 15000 });
   return {
     svc, app, page, origin, subject, errors, calls,
@@ -4838,12 +4873,11 @@ function railFacts(page) {
     });
 
     await check('a dispatch that fails upstream shows the error and adds no pending row (#178)', async () => {
-      const authFail = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-fail', deviceSecret: 'aca-fail-dev' });
+      const { auth: authFail, token: tokenFail } = acaGitHubAuth('fail');
       const githubAppFail = fakeInlineGithubApp({ dispatchShouldFail: true });
       const svcFail = new HubService({ auth: authFail, serveWeb: true, githubApp: githubAppFail });
       const addrFail = await svcFail.listen(0, '127.0.0.1');
       const originFail = `http://127.0.0.1:${addrFail.port}`;
-      const tokenFail = authFail.mintDevToken('t-fail', 'u-fail', 'fail tester');
       const pageFail = await browser.newPage();
       try {
         await gotoSettled(pageFail, `${originFail}/?token=${tokenFail}`);
@@ -5372,11 +5406,10 @@ function railFacts(page) {
       const githubApp = new GitHubApp({
         appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort}`,
       });
-      const authAca = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca', deviceSecret: 'e2e-aca-dev' });
+      const { auth: authAca, token: tokenAca } = acaGitHubAuth('status-card');
       const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp, persistStore: false });
       const addrAca = await svcAca.listen(0, '127.0.0.1');
       const originAca = `http://127.0.0.1:${addrAca.port}`;
-      const tokenAca = authAca.mintDevToken('t-aca', 'u-aca', 'aca person');
       const pageAca = await browser.newPage();
       const errorsAca = [];
       pageAca.on('console', (m) => { if (m.type() === 'error') errorsAca.push(m.text()); });
@@ -5490,11 +5523,10 @@ function railFacts(page) {
       const githubApp2 = new GitHubApp({
         appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort2}`,
       });
-      const authAca2 = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca-2', deviceSecret: 'e2e-aca-2-dev' });
+      const { auth: authAca2, token: tokenAca2 } = acaGitHubAuth('status-card-2');
       const svcAca2 = new HubService({ auth: authAca2, serveWeb: true, githubApp: githubApp2 });
       const addrAca2 = await svcAca2.listen(0, '127.0.0.1');
       const originAca2 = `http://127.0.0.1:${addrAca2.port}`;
-      const tokenAca2 = authAca2.mintDevToken('t-aca2', 'u-aca2', 'aca person 2');
       const wsOriginAca2 = originAca2.replace('http', 'ws');
 
       const WATCH_DEVICE_ID = 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5';

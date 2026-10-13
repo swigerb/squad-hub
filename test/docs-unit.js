@@ -383,8 +383,14 @@ check('security.md states the new GitHub-App trust boundary plainly', () => {
   // The sentence wraps across lines, and the source blockquotes it (each
   // line prefixed with "> "), so normalize both before checking.
   const normalized = security.replace(/\*\*/g, '').replace(/^>\s?/gm, '').replace(/\s+/g, ' ');
-  assert.ok(normalized.includes('any signed-in hub user can dispatch a job on it directly'),
-    'the new rule -- App installation, not per-user collaborator status, gates a dispatch -- is not stated plainly');
+  // #258 replaced the #177 rule ("any signed-in hub user can dispatch"): the
+  // App installation is now only half the gate, and the person's own GitHub
+  // access is the other half. The old sentence must not come back.
+  assert.ok(normalized.includes('only if the hub has verified, as that user\'s own GitHub account, that they have write access or better on it'),
+    'the rule -- App installation AND the verified user\'s own write access gate a dispatch -- is not stated plainly');
+  assert.ok(!normalized.includes('any signed-in hub user can dispatch a job on it directly'),
+    'security.md still claims any signed-in hub user can dispatch on an App-installed repository');
+  assert.match(security, /collaborators\/\{login\}\/permission/, 'security.md does not name the per-user permission check');
   assert.match(security, /SQUAD_HUB_GH_APP_ID/, 'the App env var is not documented in security.md');
   assert.match(security, /never Azure/i, 'security.md must say the App token is a GitHub credential, never Azure');
 });

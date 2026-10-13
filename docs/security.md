@@ -98,8 +98,9 @@ exactly as described here whether or not the App is configured at all.
 ### Adding someone here does not let them run your cloud jobs
 
 **Squad Hub grants nothing on ACA. The repository does.** This remains true
-for any repository using the link-based path just above — read on for the
-one case where it changes.
+for any repository using the link-based path just above, and the GitHub App
+path below keeps the same shape: it asks the repository, per person, rather
+than trusting anyone's hub account.
 
 The action writes a URL and opens it. Whether a job actually runs is decided
 entirely by the target repository on GitHub:
@@ -136,31 +137,70 @@ default, until the App exists at all), these routes answer `501` and nothing
 above changes — every repository behaves exactly as described in "Starting a
 cloud job from the hub".
 
-**State the new rule plainly, because it is a real change, not a detail:**
+**State the rule plainly, because it is what keeps this path safe (issue #258):**
 
-> For a repository where the App is installed, **any signed-in hub user can
-> dispatch a job on it directly** — not just a collaborator on that
-> repository.
+> A signed-in hub user can dispatch a job on a repository **only if the hub
+> has verified, as that user's own GitHub account, that they have write
+> access or better on it** — and only where the App is also installed.
 
-Previously the gate was *"is the repository's own GitHub access control
-satisfied for this specific person"* — the hub only ever opened a prefilled
-issue, so GitHub itself refused the dispatch unless that person already had
-collaborator access (or better) on the target repository. **App-installed
-repositories work differently: the gate moves from per-user collaborator
-status to a single yes/no decided once, by whoever installed the App.**
+Being signed in to the hub, being the hub's owner, and being on **Who has
+access** grant **nothing** here. The decision is the intersection of two
+things, both required:
+
+1. **The App is installed on the repository** — decided once, by whoever
+   installed the App.
+2. **The signed-in person is authorized on it** — GitHub's own answer, per
+   person, asked fresh on every request.
 
 | | Link-based path (always available) | GitHub App path (opt-in per repo) |
 |---|---|---|
-| Who decides | The target repository's own collaborator list, per person | Whoever installed the App, once, for the whole repository |
-| What a hub user needs | Their own collaborator access on that repository | Nothing beyond being signed in to this hub |
-| Revoking access | Remove them as a collaborator | Uninstall the App from that repository |
+| Who decides | The target repository's own collaborator list, per person | The App installation **and** the repository's own collaborator list, per person |
+| What a hub user needs | Their own collaborator access on that repository | Their own **write, maintain or admin** access on it, and the App installed there |
+| Revoking access | Remove them as a collaborator | Remove them as a collaborator (immediate), or uninstall the App |
 
-So the "Adding someone here does not let them run your cloud jobs" framing
-above is no longer unconditionally true. For a repository the App is
-installed on, adding someone to **Who has access** on this hub is now
-sufficient by itself to let them dispatch a job there — there is no second,
-per-repository gate left to check. Install the App only on repositories where
-every current and future hub user is someone you would trust with that.
+**How the hub asks.** It calls GitHub's collaborator permission endpoint with
+its own repository-scoped installation token
+(`GET /repos/{owner}/{repo}/collaborators/{login}/permission`, which needs only
+the Metadata read permission the App already has — no new permission or
+scope), for the **verified** GitHub account of the session:
+
+- **Who the user is** comes only from GitHub-mode sign-in
+  (`SQUAD_HUB_AUTH=github`), where the hub itself exchanged the bearer token
+  with GitHub `GET /user`. The numeric account id is the identity; the login
+  is only the name used to ask. The answer must come back **about that same
+  id**, so a login that has been renamed or handed to a different account is
+  refused rather than trusted. An Entra, local or dev session has no verified
+  GitHub identity and is refused (`403`) — a dev token can claim any tenant or
+  name, so neither the tenant nor the name is ever used to infer one. Those
+  sessions keep the always-available link-based path.
+- **What counts** is the base permission GitHub reports: `write` or `admin`
+  (GitHub folds the `maintain` role into `write`). `read`, `triage`, none, a
+  missing user, and anything unrecognized are refused; the custom
+  `role_name` is never used to grant anything.
+- **Being public is not permission.** A public repository is readable by
+  everyone and authorizes nobody.
+- **It fails closed.** If GitHub cannot answer (`401`, `403`, rate limit,
+  `5xx`, a dropped connection, a malformed body) the hub answers `502`
+  "could not verify your access", never a partial or unfiltered list, and never
+  falls back to an earlier answer. Nothing is cached: revoking someone's
+  access takes effect on their very next request.
+- **It is enforced on the server, not in the picker.** `GET /api/aca/repos`
+  returns only authorized repositories (checked before any workflow file is
+  read), and **every** `POST /api/aca/dispatch` re-checks before the issue is
+  created, the workflow is dispatched or the dispatch is recorded — so a
+  hand-written request for a repository the picker never showed is refused with
+  zero side effects. A repository the App is not installed on and one the user
+  is not authorized on get the same `403` message, so the response does not
+  reveal where the App is installed.
+- **Hub users are isolated from each other.** Several owner identities share
+  one hub partition, but that partition never confers repository authority:
+  each GitHub account is authorized as itself. A tracked dispatch is shown only
+  to the account that started it, and only while that account still has access
+  to its repository.
+
+If you previously relied on "everyone who may sign in may dispatch anywhere the
+App is installed", that no longer holds: anyone who needs to start a job must
+also be a collaborator with write access on the repository.
 
 This does **not** relax the hub's own ground rule that it never holds an Azure
 credential. The App token this adds is a GitHub credential, scoped to
@@ -174,11 +214,12 @@ may ask for a `baseBranch`, but it is never used to pick which ref
 `workflow_dispatch` actually runs from — it travels only as the workflow's
 `base_branch` **input**, and only when the target workflow declares that
 input at all (see [aca.md](aca.md)). Letting a caller-supplied value become
-the dispatched `ref` would let any signed-in hub user run an App-scoped
+the dispatched `ref` would let a hub user run an App-scoped
 `workflow_dispatch` against an arbitrary branch of their own choosing on any
-App-installed repository — effectively picking what code that workflow's own
+repository they may use — effectively picking what code that workflow's own
 job steps execute, on a trust boundary that is otherwise "the App is
-installed here", not "this particular ref is safe". The ref is always read
+installed here and this person has write access", not "this particular ref
+is safe". The ref is always read
 back from the repository itself (`GET /repos/{owner}/{repo}`'s own
 `default_branch`), never taken from the request.
 
@@ -261,15 +302,13 @@ sharing one budget between the two routes, per signed-in user) — unlimited
 polling of either would let one account exhaust the App's own GitHub API rate
 limit, which every other hub user dispatching through the same App shares.
 
-**The App registration itself must be created as private ("Only on this
+**The App registration itself should be created as private ("Only on this
 account"), never public.** A public GitHub App can be installed by anyone on
-any repository they administer, and every repository it is installed on
-gains the trust described above — any signed-in hub user, not just that
-repository's own collaborators, would be able to dispatch a job on it.
+any repository they administer, which widens the set of repositories the hub
+will even consider — the per-person check above still decides who may use
+each one, but the operator should control where the App is installed at all.
 Private keeps installation to the account (or organization) that created the
-App, so "Install the App only on repositories where every current and future
-hub user is someone you would trust with that" (above) stays a decision the
-hub operator actually controls. See [aca.md](aca.md) for the setup walkthrough.
+App. See [aca.md](aca.md) for the setup walkthrough.
 
 **Hardening follow-ups from the #211 review (issue #213):**
 
