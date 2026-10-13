@@ -5495,8 +5495,10 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'GitHubApp.dispatch skips the per-request repository authorization',
     file: 'src/service/github-app.js',
-    find: `if (!authorized.allowed) throw this._err(403,`,
-    replace: `if (!process.env.MUTANT && !authorized.allowed) throw this._err(403,`,
+    find: `if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`));
+    const token = await this._installationToken(installationId, repo);`,
+    replace: `if (!process.env.MUTANT && !authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`));
+    const token = await this._installationToken(installationId, repo);`,
     mustFail: 'a forged cross-user POST is refused 403 with zero issues, zero dispatches and nothing tracked -- existing issue and new issue (#258)',
   },
   {

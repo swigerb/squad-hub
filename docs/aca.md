@@ -494,8 +494,9 @@ against the same identifier shape Squad member ids use elsewhere in this hub
 `squad.agent.md`-driven review step should address, not a GitHub account to
 `@mention`. Supplying an actual GitHub username that happens to match the
 identifier shape is accepted by the regex (the two namespaces can overlap),
-but the field's contract is the Squad member id; it is on the caller to
-supply the right one.
+but the field's contract is the Squad member id. When the repository's
+roster is readable (see *Choosing, not typing* below) an explicit `reviewer` that is not an active member of it is refused with a `422` before anything is
+created.
 
 The New ACA job dialog (`web/js/aca.js`) also takes the declared inputs into account before it posts.
 It reads each repository's declared inputs from `GET /api/aca/repos`
@@ -534,6 +535,56 @@ a shorter list. A dispatch against a workflow whose inputs are unknown is refuse
 with a `422` that says the inputs could not be determined (it does not claim an
 input is undeclared), before any issue is created.
 
+### Choosing, not typing (#257)
+
+Every field of the New ACA job dialog that has a knowable set of values is a
+picker over **that repository's own** values, not a text box. Nothing is a fixed
+product catalog, another device's list, or a guess.
+
+| Field | Where the choices come from |
+|---|---|
+| Repository | `GET /api/aca/repos`: installed, and usable by the signed-in account. Search filters it locally. |
+| Model | A closed `<select>` of the models the repository's `.squad/config.json` names (`defaultModel` and `modelPolicy` overrides), or the workflow's own `model` choice enum. |
+| Reviewer | A closed `<select>` of the **active** members of `.squad/casting/registry.json`. |
+| Base branch | Search over the repository's branches, server-backed, past the first page. |
+| Existing issue | Search over the repository's **open issues** (never pull requests), by title or number. |
+
+The model list is labeled **repository-configured**: it says what the repository
+asks for, not that the job can run it. The worker still confirms the requested
+model when it starts, and the **Squad default** (nothing sent) stays the explicit
+first choice. When the repository does not say (no config or registry, or team
+state kept outside the repository through `teamRoot`/`stateLocation`) the select
+shows only the default with the reason, and when the file exists but cannot be
+read it says so with a retry; neither is shown as an empty list.
+
+The pickers keep two promises. **Typed text is never sent**: the box under a
+dropdown is for searching, and only an entry chosen from the list (or an exact
+match the target confirmed) is a value; anything else stops the dispatch with
+"Choose … from the list". **A change of target clears what depended on it**:
+choosing another repository drops the branch, issue, model and reviewer chosen for
+the first, aborts its in-flight lookups, and ignores any reply that still arrives
+for it. Lookups are debounced, canceled when superseded and drawn from the same
+read budget as the repository list.
+
+The hub holds the same line: `POST /api/aca/dispatch` re-checks an explicit
+branch, issue, model and reviewer against the repository after authorizing the
+account and before creating an issue, answering `422` with the `field`
+([HTTP API](api.md#get-apiacastatus-get-apiacarepos-get-apiacadispatches-post-apiacadispatch)).
+An issue created for a dispatch that then fails is still handed back for the
+retry. With **no GitHub App**, the repository and issue boxes stay plain text and
+the two GitHub links work as before, because nothing can be checked.
+
+Known limits: GitHub offers no branch-search API, so the branch picker scans a
+bounded number of pages per search and continues with *Show more*, plus an exact
+name lookup; the model and reviewer lists are read from the **default branch**
+only; and the model list is not proof of runtime availability.
+
+New session (local) follows the same rule for the **selected device**: Agent and
+Model are closed lists of what that device reported, a device that reported none is
+default-only with the reason (never another device's list, never typed text),
+Mode narrows to the modes the device reported, switching device clears a choice the
+new one does not offer, and the hub refuses an unsupported value with a `422`
+before the device is asked.
 Known limit: a field that was never sent cannot be checked later. The hub's
 refusal of a field the workflow has since removed protects only a request that
 *sent* it. If the dialog left a default out because the workflow did not declare
