@@ -855,9 +855,9 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       f.element('acaScrim').hidden = true;
       f.open('Second job');
       newer.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
       older.resolve({ repos: [{ fullName: 'stale/old', hasDispatchWorkflow: false }] });
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
       assert.deepStrictEqual(f.state.acaRepos.map((r) => r.fullName), ['acme/widgets']);
     });
 
@@ -1169,8 +1169,9 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       assert.strictEqual(f.requests.length, 0, 'a dispatch went out for text that was never chosen');
       assert.match(f.lookups[0].url, /^\/api\/aca\/branches\?repo=acme%2Fwidgets&q=release%2Ftypo&page=1$/);
       f.lookups[0].resolve({ branches: [], nextPage: null });
+      await settle();
+      assert.strictEqual(f.requests.length, 0, 'a dispatch went out once the lookup found nothing');
       await sent;
-      assert.strictEqual(f.requests.length, 0);
       assert.strictEqual(f.element('acaErr').hidden, false);
       assert.match(f.element('acaErr').textContent, /Choose the base branch from the list/);
       assert.strictEqual(f.element('acaStart').disabled, false);
@@ -1254,8 +1255,6 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
     await checkAsync('changing the repository drops every choice that belonged to the old one and ignores its late reply (#257)', async () => {
       const f = dialogFixture();
       f.open('Switch');
-      f.choiceRequests[0].resolve(okChoices());
-      await settle();
       f.choose('branch', 'release');
       f.choose('issue', 5, '#5 Old issue');
       f.element('acaModel').value = 'm-fast';
@@ -1288,6 +1287,16 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       f.choose('repo', 'other/repo');
       assert.strictEqual(f.choiceRequests[0].signal.aborted, true);
       assert.strictEqual(f.choiceRequests[1].signal.aborted, false);
+    });
+
+    await checkAsync('clearing the repository aborts the choices request still in flight and shows no choices (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Cleared');
+      assert.strictEqual(f.choiceRequests[0].signal.aborted, false);
+      f.boxFor('repo').opts.onChange(null);
+      assert.strictEqual(f.choiceRequests[0].signal.aborted, true, 'the old repository\'s request kept running after it was cleared');
+      assert.match(f.element('acaModelNote').textContent, /Choose a repository to see its choices/);
+      assert.strictEqual(f.element('acaModel').disabled, true);
     });
 
     await checkAsync('branch and issue are unavailable until a repository is chosen, and again once it is cleared (#257)', async () => {

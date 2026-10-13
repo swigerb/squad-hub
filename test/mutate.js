@@ -3697,6 +3697,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-created-issue.js',
+  '/js/aca-choices.js',
+  '/js/combobox.js',
   '/js/aca-match.js',
   '/js/aca-rail.js',
   '/js/aca-status.js',
@@ -5163,16 +5165,16 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a missing squad-dispatch.yml does not block a dispatch',
     file: 'src/service/github-app.js',
-    find: `    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
+    find: `    const { exists: hasWorkflow, declaredInputs, choiceOptions } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {`,
-    replace: `    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
+    replace: `    const { exists: hasWorkflow, declaredInputs, choiceOptions } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!process.env.MUTANT && !hasWorkflow) { // MUTATION`,
     mustFail: 'a repo with no squad-dispatch.yml refuses the dispatch',
   },
   {
     name: 'a 404 checking for squad-dispatch.yml is treated as an error instead of "no"',
     file: 'src/service/github-app.js',
-    find: `    if (res.status === 404) return { exists: false, declaredInputs: null };`,
+    find: `    if (res.status === 404) return { exists: false, declaredInputs: null, choiceOptions: null };`,
     replace: `    if (!process.env.MUTANT && res.status === 404) return { exists: false, declaredInputs: null }; // MUTATION`,
     mustFail: 'GET /api/aca/repos reports hasDispatchWorkflow: false for a real 404, not assumed',
   },
@@ -7317,9 +7319,9 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'acaBuildDispatchBody stops refusing a blank repository',
     file: 'web/js/aca.js',
     find: `  const repo = acaRepoName(form.repo);
-  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+  if (!repo) return { ok: false, reason: 'Choose a repository from the list.' };`,
     replace: `  const repo = process.env.MUTANT ? (form.repo || 'x/x') : acaRepoName(form.repo); // MUTATION
-  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+  if (!repo) return { ok: false, reason: 'Choose a repository from the list.' };`,
     mustFail: 'a blank repository is refused before any request is made',
   },
   {
@@ -7383,10 +7385,10 @@ if ($health.accessStore -ne 'durable') {`,
     // A capability read on an earlier open (or before a failed refresh) must not
     // decide a later dispatch.
     name: 'the ACA dialog keeps the previous open\'s workflow capabilities when it is reopened',
-    file: 'web/js/aca.js',
-    find: `  $('acaOptionsHint').textContent = '';
+    file: 'web/js/aca-choices.js',
+    find: `  acaPick.reposPromise = null;
   acaCapabilityRepos = null;`,
-    replace: `  $('acaOptionsHint').textContent = '';
+    replace: `  acaPick.reposPromise = null;
   if (!process.env.MUTANT) acaCapabilityRepos = null; // MUTATION: stale capability kept`,
     mustFail: 'a capability read on an earlier open is not reused once the dialog is reopened',
   },
@@ -7992,9 +7994,9 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a stale ACA repository success overwrites the reopened list',
     file: 'web/js/aca.js',
-    find: `      const r = await api('/api/aca/repos');
+    find: `      const repos = await acaLoadRepos();
       if (!acaDialogIsCurrent(generation)) return;`,
-    replace: `      const r = await api('/api/aca/repos');
+    replace: `      const repos = await acaLoadRepos();
       // MUTATION: stale repository replies may overwrite the current list`,
     mustFail: 'a stale repository success cannot overwrite the reopened ACA repository list',
   },
@@ -8030,10 +8032,10 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'web/js/aca-created-issue.js',
     find: `    $('acaIssueModeExisting').checked = true;
     setAcaIssueMode('existing');
-    $('acaIssueNumber').value = String(created.number);`,
+    acaChooseIssue(created.number);`,
     replace: `    $('acaIssueModeExisting').checked = true;
     // MUTATION: the visible fields are not switched
-    $('acaIssueNumber').value = String(created.number);`,
+    acaChooseIssue(created.number);`,
     mustFail: 'a dispatch that fails after creating an issue switches to Existing issue and retries on it without a second issue (#253 F4)',
   },
   {
@@ -8144,24 +8146,30 @@ if ($health.accessStore -ne 'durable') {`,
     // from.
     name: 'acaRepo moves back inside #acaForm, breaking the 501 fallback links',
     file: 'web/index.html',
-    find: `    <label class="field">
+    find: `    <div class="field">
       <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
-      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
-      <datalist id="acaRepoList"></datalist>
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds the repositories the GitHub App can see that your own GitHub account may use. Type to search, then choose one.">i</button></span>
+      <div class="combo">
+        <input id="acaRepo" aria-label="Repository" placeholder="Search repositories (owner/repo)" autocapitalize="off" spellcheck="false">
+        <ul class="combo-list" id="acaRepoListbox" hidden></ul>
+      </div>
+      <small id="acaRepoStatus" aria-live="polite"></small>
       <small id="acaRepoHint"></small>
-    </label>
+    </div>
 
     <fieldset class="field cnopts">`,
     replace: `    <!-- MUTATION (#178): acaRepo moved inside #acaForm -->
     <div id="acaForm">
-      <label class="field">
+      <div class="field">
         <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
-        <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
-        <datalist id="acaRepoList"></datalist>
+          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds the repositories the GitHub App can see that your own GitHub account may use. Type to search, then choose one.">i</button></span>
+        <div class="combo">
+          <input id="acaRepo" aria-label="Repository" placeholder="Search repositories (owner/repo)" autocapitalize="off" spellcheck="false">
+          <ul class="combo-list" id="acaRepoListbox" hidden></ul>
+        </div>
+        <small id="acaRepoStatus" aria-live="polite"></small>
         <small id="acaRepoHint"></small>
-      </label>
+      </div>
 
     <fieldset class="field cnopts">`,
     mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
@@ -11918,6 +11926,162 @@ prompt: |
     find: `  if (requireCompletion) {`,
     replace: `  if (!process.env.MUTANT && requireCompletion) { // MUTATION`,
     mustFail: 'child runner rejects partial passing results without a final completion summary',
+  },
+  {
+    name: '#257: an explicit base branch the repository does not have is dispatched',
+    file: 'src/service/aca-choices.js',
+    find: `  if (baseBranch != null && !(await branchExists(app, up, owner, repo, token, baseBranch))) {`,
+    replace: `  if (!process.env.MUTANT && baseBranch != null && !(await branchExists(app, up, owner, repo, token, baseBranch))) { // MUTATION`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: an explicit existing issue is not looked up before dispatch',
+    file: 'src/service/aca-choices.js',
+    find: `  if (issue != null) {
+    const hit = await lookupIssue(`,
+    replace: `  if (!process.env.MUTANT && issue != null) { // MUTATION
+    const hit = await lookupIssue(`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: an explicit model or reviewer outside the catalog is dispatched',
+    file: 'src/service/aca-choices.js',
+    find: `    if (!s.choices.some((c) => c.id === value)) {`,
+    replace: `    if (!process.env.MUTANT && !s.choices.some((c) => c.id === value)) { // MUTATION`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: a pull request passes for an existing issue at dispatch',
+    file: 'src/service/aca-choices.js',
+    find: `  if (res.json.pull_request) return { ok: false,`,
+    replace: `  if (!process.env.MUTANT && res.json.pull_request) return { ok: false, /* MUTATION */`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: issue search lists pull requests among the issues',
+    file: 'src/service/aca-choices.js',
+    find: `    if (!isPlainObject(it) || it.pull_request || it.state !== 'open') continue;`,
+    replace: `    if (!isPlainObject(it) || (!process.env.MUTANT && it.pull_request) || it.state !== 'open') continue; // MUTATION`,
+    mustFail: 'issue search offers real OPEN issues only: pull requests and closed issues are excluded even when GitHub returns them, and results page past the first (#257)',
+  },
+  {
+    name: '#257: branch search looks at the first page of branches only',
+    file: 'src/service/aca-choices.js',
+    find: `  const maxPages = needle ? BRANCH_SCAN_PAGES : 1;`,
+    replace: `  const maxPages = process.env.MUTANT ? 1 : (needle ? BRANCH_SCAN_PAGES : 1); // MUTATION`,
+    mustFail: 'branch search finds a branch BEYOND the first page of GitHub results, and says when it stopped early instead of claiming it is exhaustive (#257)',
+  },
+  {
+    name: '#257: the choice routes read repository data without authorizing the signed-in user',
+    file: 'src/service/github-app.js',
+    find: `    if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`));
+    return this._installationToken(installationId, repo);
+  }`,
+    replace: `    if (!process.env.MUTANT && !authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`)); // MUTATION
+    return this._installationToken(installationId, repo);
+  }`,
+    mustFail: 'the three choice routes are authorized per user: bob is refused on alice\'s repository before ANY repository data is read (#257, #258)',
+  },
+  {
+    name: '#257: the choice routes are not rate limited',
+    file: 'src/service/aca-choice-routes.js',
+    find: `  const limited = limiter.check(limitKey);
+  if (!limited.allowed) {`,
+    replace: `  const limited = process.env.MUTANT ? { allowed: true } : limiter.check(limitKey); // MUTATION
+  if (!limited.allowed) {`,
+    mustFail: 'the choice routes draw on the SAME read budget as the repository list, so search cannot be used to exhaust GitHub (#257)',
+  },
+  {
+    name: '#257: a New session request names an agent the device does not offer',
+    file: 'src/service/spawn-choices.js',
+    find: `  if (agent && agents && !agents.includes(agent)) {`,
+    replace: `  if (!process.env.MUTANT && agent && agents && !agents.includes(agent)) { // MUTATION`,
+    mustFail: 'a New session request naming an agent, model or mode the device does not offer is refused before the device is asked (#257)',
+  },
+  {
+    name: '#257: a New session request names a model the device does not offer',
+    file: 'src/service/spawn-choices.js',
+    find: `  if (model && models && !models.includes(model)) {`,
+    replace: `  if (!process.env.MUTANT && model && models && !models.includes(model)) { // MUTATION`,
+    mustFail: 'a New session request naming an agent, model or mode the device does not offer is refused before the device is asked (#257)',
+  },
+  {
+    name: '#257: the dialog sends typed text that was never chosen',
+    file: 'web/js/aca.js',
+    find: `  if (form.unresolved && form.unresolved.length) {`,
+    replace: `  if (!process.env.MUTANT && form.unresolved && form.unresolved.length) { // MUTATION`,
+    mustFail: 'the dispatch body refuses unresolved typed text and still names a blank repository (#257)',
+  },
+  {
+    name: '#257: a late choices reply for the replaced repository overwrites the current one',
+    file: 'web/js/aca-choices.js',
+    find: `    if (gen !== acaPick.choiceGen) return;
+    $('acaBranch').placeholder`,
+    replace: `    // MUTATION: a stale reply is applied
+    $('acaBranch').placeholder`,
+    mustFail: 'changing the repository drops every choice that belonged to the old one and ignores its late reply (#257)',
+  },
+  {
+    name: '#257: changing the repository keeps the branch and issue chosen for the old one',
+    file: 'web/js/aca-choices.js',
+    find: `  b.branch.clear();
+  b.issue.clear();
+  $('acaBranch').placeholder`,
+    replace: `  if (!process.env.MUTANT) { b.branch.clear(); b.issue.clear(); } // MUTATION
+  $('acaBranch').placeholder`,
+    mustFail: 'changing the repository drops every choice that belonged to the old one and ignores its late reply (#257)',
+  },
+  {
+    name: '#257: changing the repository leaves the old choices request running',
+    file: 'web/js/aca-choices.js',
+    find: `  if (acaPick.choiceCtrl) acaPick.choiceCtrl.abort();
+  b.branch.clear();`,
+    replace: `  if (!process.env.MUTANT && acaPick.choiceCtrl) acaPick.choiceCtrl.abort(); // MUTATION
+  b.branch.clear();`,
+    mustFail: 'clearing the repository aborts the choices request still in flight and shows no choices (#257)',
+  },
+  {
+    name: '#257: Model and Reviewer stay selectable when the repository offers only the default',
+    file: 'web/js/aca-choices.js',
+    find: `  sel.disabled = !ok;
+  let text = message || '';`,
+    replace: `  sel.disabled = process.env.MUTANT ? false : !ok; // MUTATION
+  let text = message || '';`,
+    mustFail: 'model and reviewer say why only the default is offered, and never offer a made-up list (#257)',
+  },
+  {
+    name: '#257: New session keeps the first device\'s agent or model after switching to a device without it',
+    file: 'web/js/connect.js',
+    find: `  sel.value = known && list.includes(prior) ? prior : '';`,
+    replace: `  sel.value = process.env.MUTANT ? prior : (known && list.includes(prior) ? prior : ''); // MUTATION`,
+    mustFail: 'Agent and Model are closed lists of what the device reports, never free text',
+  },
+  {
+    name: '#257: New session lets a device that reported no agents or models be typed to',
+    file: 'web/js/connect.js',
+    find: `  sel.disabled = !known;
+  $(noteId)`,
+    replace: `  sel.disabled = process.env.MUTANT ? false : !known; // MUTATION
+  $(noteId)`,
+    mustFail: 'Agent and Model are closed lists of what the device reports, never free text',
+  },
+  {
+    name: '#257: editing the text of a chosen picker value leaves it chosen',
+    file: 'web/js/combobox.js',
+    find: `    const was = st.chosen;
+    st.chosen = null;
+    mark();`,
+    replace: `    const was = st.chosen;
+    // MUTATION: the chosen value survives the edit
+    mark();`,
+    mustFail: 'Base branch searches the repository past the first page and is chosen by keyboard, and unchosen text is never dispatched (#257)',
+  },
+  {
+    name: '#257: Model is a free-text box again',
+    file: 'web/index.html',
+    find: `<select id="acaModel"><option value="">Squad default</option></select>`,
+    replace: `<input id="acaModel" value="">`,
+    mustFail: 'Model and Reviewer are dropdowns of what the repository reports, at desktop and 390px, with no text box to type an override (#257)',
   },
 ];
 
