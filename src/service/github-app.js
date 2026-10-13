@@ -59,6 +59,7 @@ const http = require('http');
 const util = require('util');
 const { URL } = require('url');
 const { buildWorkflowInputs, requestedInputNames } = require('../aca-dispatch');
+const choices = require('./aca-choices');
 
 /** The workflow this whole feature dispatches. Named once, so a rename does
  * not have to be found by grepping literal strings through this file. */
@@ -510,16 +511,18 @@ class GitHubApp {
     // A missing file is an ordinary, expected answer -- NOT an error, and
     // must not be conflated with one: a repo without this workflow yet is not
     // the same fact as "GitHub could not be reached".
-    if (res.status === 404) return { exists: false, declaredInputs: null };
+    if (res.status === 404) return { exists: false, declaredInputs: null, choiceOptions: null };
     if (res.status !== 200) {
       throw this._err(upstreamStatus(res.status), `could not check for ${WORKFLOW_FILE} in ${owner}/${repo} (GitHub returned ${res.status})`);
     }
     let declaredInputs = null;
+    let choiceOptions = null;
     if (res.json && typeof res.json.content === 'string') {
       const yamlText = Buffer.from(res.json.content, 'base64').toString('utf8');
       declaredInputs = parseDeclaredWorkflowInputs(yamlText);
+      if (Array.isArray(declaredInputs)) choiceOptions = choices.parseWorkflowChoiceInputs(yamlText);
     }
-    return { exists: true, declaredInputs };
+    return { exists: true, declaredInputs, choiceOptions };
   }
 
   /**
@@ -630,6 +633,52 @@ class GitHubApp {
   }
 
   /**
+   * Authorizes `actor` for the repository FIRST (403 when the account may not
+   * use it, 502 when GitHub could not say) and only then hands back the
+   * repository-scoped token. Every new choice read below starts here, so no
+   * choice data -- branch names, issue titles, model policy, reviewer roster --
+   * is fetched or returned for a repository the caller cannot use.
+   */
+  async _authorizedToken({ owner, repo, installationId }, actor) {
+    const authorized = await this.authorizeRepoAccess({ owner, repo, installationId }, actor);
+    if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(`${owner}/${repo}`));
+    return this._installationToken(installationId, repo);
+  }
+
+  /**
+   * What the New ACA job dialog may offer for `owner/repo`: the default
+   * branch, the workflow's declared inputs, and the model and reviewer choice
+   * states (see `./aca-choices.js`). `GET /api/aca/choices`.
+   */
+  async listDispatchChoices(target, actor) {
+    const token = await this._authorizedToken(target, actor);
+    const { owner, repo } = target;
+    const workflow = await this._dispatchWorkflowFile(owner, repo, token);
+    const defaultBranch = await this._defaultBranch(owner, repo, token);
+    const base = { repo: `${owner}/${repo}`, defaultBranch, workflow: { exists: workflow.exists, declaredInputs: workflow.declaredInputs } };
+    if (!workflow.exists || !Array.isArray(workflow.declaredInputs)) {
+      const why = !workflow.exists
+        ? `${owner}/${repo} has no .github/workflows/${WORKFLOW_FILE}`
+        : `the inputs of ${owner}/${repo}'s ${WORKFLOW_FILE} cannot be read`;
+      const off = { state: 'unavailable', status: 422, choices: [], default: null, source: null, reason: why };
+      return { ...base, model: off, reviewer: off };
+    }
+    return { ...base, ...(await choices.discoverModelAndReviewer(this, owner, repo, token, workflow)) };
+  }
+
+  /** Branches of `owner/repo` matching `q`, one server-backed page. `GET /api/aca/branches`. */
+  async listBranchChoices(target, actor, { q = '', page = 1 } = {}) {
+    const token = await this._authorizedToken(target, actor);
+    return choices.searchBranches(this, upstreamStatus, target.owner, target.repo, token, { q, page });
+  }
+
+  /** Open issues (not pull requests) of `owner/repo` matching `q`, one server-backed page. `GET /api/aca/issues`. */
+  async listIssueChoices(target, actor, { q = '', page = 1 } = {}) {
+    const token = await this._authorizedToken(target, actor);
+    return choices.searchIssues(this, upstreamStatus, target.owner, target.repo, token, { q, page });
+  }
+
+  /**
    * Dispatch `squad-dispatch.yml` on `owner/repo`, already-validated and
    * already allow-listed against installations by the caller (see
    * `hub-service.js`'s `/api/aca/dispatch`, which resolves `installationId`
@@ -662,7 +711,7 @@ class GitHubApp {
     if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(`${owner}/${repo}`));
     const token = await this._installationToken(installationId, repo);
 
-    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
+    const { exists: hasWorkflow, declaredInputs, choiceOptions } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {
       throw this._err(422, `${owner}/${repo} has no .github/workflows/${WORKFLOW_FILE}`);
     }
@@ -697,6 +746,15 @@ class GitHubApp {
           + 'Add them to the workflow\'s workflow_dispatch.inputs (see swigerb/squad-on-aca#135), or omit them from this request.',
       );
     }
+
+    // An EXPLICIT base branch, existing issue, model or reviewer must be one
+    // the repository really offers (#257) -- checked here, with the same
+    // lookups the dialog's pickers use, and before anything below can create
+    // an issue or start a run. An omitted field means "the default" and is not
+    // checked; one that cannot be verified refuses (502) rather than passes.
+    await choices.validateDispatchChoices(this, upstreamStatus, {
+      owner, repo, token, workflow: { declaredInputs, choiceOptions }, baseBranch, issue, model, reviewer,
+    });
 
     const generatedCorrelationId = crypto.randomBytes(16).toString('hex');
     const correlationSupported = declared.includes(HUB_CORRELATION_INPUT);

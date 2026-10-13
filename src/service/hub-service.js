@@ -35,6 +35,8 @@ const { GitHubApp, verifiedActor, repoNotAvailableMessage, GITHUB_IDENTITY_REQUI
 const { RateLimiter } = require('./rate-limiter');
 const { DispatchTracker } = require('./dispatch-tracker');
 const { sanitizeDispatchRequest } = require('../aca-dispatch');
+const { acaChoiceRoute, serveAcaChoiceRoute } = require('./aca-choice-routes');
+const { checkSpawnChoices } = require('./spawn-choices');
 const { Store } = require('./store');
 const { FileBacking, MemoryBacking } = require('./store-backing');
 const ws = require('./ws');
@@ -933,6 +935,26 @@ class HubService {
       }
     }
 
+    // The pickers' own reads (#257): choices, branches, issues. One gate in
+    // aca-choice-routes.js -- this preamble is the same as `/api/aca/repos`'s,
+    // and the module then re-authorizes the account against the repository
+    // before returning any of its data.
+    const choiceKind = acaChoiceRoute(p);
+    if (choiceKind && req.method === 'GET') {
+      if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
+      const actor = acaActor();
+      if (!actor) return needsGitHub();
+      return serveAcaChoiceRoute({
+        kind: choiceKind,
+        params: url.searchParams,
+        githubApp: this.githubApp,
+        actor,
+        limiter: this.acaReadRateLimiter,
+        limitKey: me.key,
+        send,
+      });
+    }
+
     if (p === '/api/aca/dispatches' && req.method === 'GET') {
       if (!this.githubApp.enabled) return send(501, { reason: this.githubApp.disabledReason() });
       const actor = acaActor();
@@ -1029,6 +1051,9 @@ class HubService {
         // not strand that issue number -- the caller gets it back even
         // though the job itself never started.
         if (e.issue) errBody.issue = e.issue;
+        // Which field a refused choice was (`baseBranch`, `issue`, `model`,
+        // `reviewer`), so the dialog can put the message beside it (#257).
+        if (e.field) errBody.field = e.field;
         return send(e.status || 502, errBody);
       }
     }
@@ -1458,6 +1483,12 @@ class HubService {
           error: 'device does not support removing a single session; use the bulk tidy action instead',
           code: 'narrowed-forget-unsupported',
         });
+      }
+      // New session (#257): an explicit agent, model or mode the device does
+      // not offer is refused here, naming the field, before the device is asked.
+      if (op === 'spawn') {
+        const refused = checkSpawnChoices(device, body);
+        if (refused) return send(refused.status, refused.body);
       }
       try {
         // Who is doing this travels with the command. An approval answered on
