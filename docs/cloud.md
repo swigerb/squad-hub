@@ -171,10 +171,9 @@ SQUAD_HUB_GH_APP_PRIVATE_KEY   the App's private key (PEM)
 
 Unset, the `/api/aca/repos`, `/api/aca/dispatches` and `/api/aca/dispatch`
 routes answer `501` and every repository still works through the existing
-label/comment/`workflow_dispatch`-by-hand paths. Installing the App widens who
-may start a run — any signed-in hub user, on any repository the App is
-installed on — which is a real trust-boundary change, not a convenience
-setting. Read
+label/comment/`workflow_dispatch`-by-hand paths. Direct dispatch requires both
+App installation and verified write or admin permission for the signed-in
+GitHub user on that repository. Public visibility and Hub owner status do not
+grant repository access. Read
 [security.md's "GitHub App path"](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
 before setting these.
-

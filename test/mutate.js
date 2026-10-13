@@ -1958,8 +1958,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'the renamed-row tooltip carries the raw prompt unescaped (stored XSS)',
     file: 'web/js/sessionrow.js',
-    find: `title="\${esc(s.prompt || s.id || '')}"`,
-    replace: `title="\${process.env.MUTANT ? (s.prompt || s.id || '') : esc(s.prompt || s.id || '')}"`,
+    find: `title="\${esc(titleTip)}"`,
+    replace: `title="\${process.env.MUTANT ? titleTip : esc(titleTip)}"`,
     mustFail: 'a malicious raw prompt in the renamed tooltip renders as inert text',
   },
   {
@@ -3786,11 +3786,10 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // The reassurance is the point, not decoration: the natural fear on seeing
     // a dashboard fail is that the work it was watching has failed too, and
     // here that is precisely backwards.
-    name: 'the offline page drops the line saying sessions keep running',
+    name: 'the offline page claims to know the state of disconnected work',
     file: 'web/js/ws.js',
-    find: `      <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
-         Anything waiting on an approval is still waiting.</p>`,
-    replace: `      <!-- MUTATION -->`,
+    find: `Their current status cannot be confirmed`,
+    replace: `All your sessions are still running`,
     mustFail: 'offline, the app says the network failed — not that you are signed out',
   },
 
@@ -9004,8 +9003,8 @@ prompt: |
   {
     name: '#179 review: the healthy tooltip claims something else',
     file: 'web/js/review.js',
-    find: `  if (v.healthy) tip = 'Squad health: healthy. No failing checks';`,
-    replace: `  if (v.healthy) tip = process.env.MUTANT ? 'Squad health: ok' : 'Squad health: healthy. No failing checks'; // MUTATION`,
+    find: `    tip = \`Squad health: healthy. No failing checks\${skipped ? \`; \${skipped} skipped\` : ''}\`;`,
+    replace: `    tip = process.env.MUTANT ? 'Squad health: ok' : \`Squad health: healthy. No failing checks\${skipped ? \`; \${skipped} skipped\` : ''}\`; // MUTATION`,
     mustFail: 'a passing health report is a "● healthy" badge with a no-failures tooltip',
   },
   {
