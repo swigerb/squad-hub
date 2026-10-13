@@ -7,11 +7,11 @@
   "dispatchSource": "local-cli",
   "route": "aca-job",
   "executionMode": "aca-job",
-  "state": "dispatched",
+  "state": "released",
   "attempts": 1,
   "startedAt": "2026-10-13T23:39:16.274Z",
-  "lastHeartbeatAt": "2026-10-13T23:39:22.461Z",
-  "updatedAt": "2026-10-13T23:39:22.461Z",
-  "terminalReason": null,
+  "lastHeartbeatAt": "2026-10-13T23:40:51.815Z",
+  "updatedAt": "2026-10-13T23:40:51.815Z",
+  "terminalReason": "model-policy-preflight-refused-before-agent-start",
   "executionRef": "caj-squad-aca-session-6bgrigr"
 }
