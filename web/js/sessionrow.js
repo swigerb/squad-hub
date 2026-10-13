@@ -104,7 +104,7 @@ export function sessionRow(s, deviceName, opts = {}) {
       ${statusBadge(s, device)}
       <div class="row-main">
         <div class="row-title">
-          <b${renamed ? ` title="${esc(s.prompt || s.id || '')}"` : ''}>${esc(title)}</b>
+          <b title="${esc(renamed ? (s.prompt || s.id || '') : displayTitle(s, opts.names))}">${esc(title)}</b>
           <span class="activity">${esc(activityLine(s, device))}</span>
         </div>
         <div class="row-meta">${meta}</div>

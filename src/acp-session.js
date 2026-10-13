@@ -326,7 +326,8 @@ class AcpSession extends EventEmitter {
     if (u.sessionUpdate === 'tool_call') {
       this.toolCallCount += 1;
       if (running) {
-        this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
+        const title = typeof u.title === 'string' ? u.title.trim() : '';
+        this.activity = title ? (/^running\b/i.test(title) ? title : `Running ${title}`) : 'Running a tool...';
       }
     } else if (u.sessionUpdate === 'agent_message_chunk') {
       if (running) this.activity = 'Processing...';

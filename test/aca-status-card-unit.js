@@ -355,12 +355,15 @@ check('acaDispatchStatusLabel labels an in_progress run as "running"', () => {
   assert.strictEqual(acaDispatchStatusLabel({ state: 'in_progress' }), 'running');
 });
 
-check('acaDispatchStatusLabel labels a successful completed run as plain "completed"', () => {
-  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'success' }), 'completed');
+check('dispatch workflow success does not claim that the ACA job succeeded', () => {
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'success' }),
+    'Dispatch workflow succeeded; job outcome not confirmed');
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed' }),
+    'Dispatch workflow completed; job outcome not confirmed');
 });
 
 check('acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"', () => {
-  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'failure' }), 'completed (failure)');
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'failure' }), 'dispatch workflow completed (failure)');
 });
 
 check('acaDispatchStatusLabel labels an error state with its reason', () => {

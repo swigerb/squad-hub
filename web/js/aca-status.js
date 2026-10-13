@@ -224,7 +224,9 @@ export function acaDispatchStatusLabel(status) {
     case 'pending': return 'queued, waiting for the run';
     case 'queued': return 'queued';
     case 'in_progress': return 'running';
-    case 'completed': return s.conclusion && s.conclusion !== 'success' ? `completed (${s.conclusion})` : 'completed';
+    case 'completed':
+      if (s.conclusion && s.conclusion !== 'success') return `dispatch workflow completed (${s.conclusion})`;
+      return `${s.conclusion === 'success' ? 'Dispatch workflow succeeded' : 'Dispatch workflow completed'}; job outcome not confirmed`;
     case 'error': return s.reason ? `error: ${s.reason}` : 'error';
     case 'unsupported': return "can't confirm (older workflow)";
     default: return 'unknown';

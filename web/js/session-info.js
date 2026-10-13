@@ -70,13 +70,15 @@ export function infoHealthView(session) {
     label: SQUAD_CHECK_LABEL[c.id] || String(c.id),
     status: String(c.status || 'unknown'),
   }));
+  const skipped = checks.filter((c) => c.status === 'skip').length;
+  const verdict = checks.some((c) => c.status === 'fail') ? 'fail' : String(health.status || 'unreported');
   const overall = {
-    pass: 'All checks pass',
+    pass: `No failures reported${skipped ? `; ${skipped} skipped` : ''}`,
     fail: 'A check failed',
     unavailable: 'Unavailable on this device',
     unknown: 'Not checked yet',
-  }[health.status] || 'Not reported by this device';
-  return { state: String(health.status || 'unreported'), text: overall, checks };
+  }[verdict] || 'Not reported by this device';
+  return { state: verdict, text: overall, checks };
 }
 
 const HEALTH_TONE = { pass: 'review', fail: 'failed', skip: 'stale' };

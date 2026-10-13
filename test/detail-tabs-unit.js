@@ -276,6 +276,17 @@ check('Squad health is honest when the device cannot or has not checked', () => 
   assert.ok(/Not reported/.test(rowHtml(sessionInfoRows({ device: device(), session: session({ squad: {} }) }), 'squadHealth')));
 });
 
+check('the health summary distinguishes skipped checks and never hides a reported failure', () => {
+  const health = { status: 'pass', checks: [{ id: 'team', status: 'pass' }, { id: 'env-vars', status: 'skip' }] };
+  const v = infoHealthView({ squad: { health } });
+  assert.strictEqual(v.text, 'No failures reported; 1 skipped');
+  assert.doesNotMatch(v.text, /All checks pass/);
+  health.checks.push({ id: 'routing', status: 'fail' });
+  const failed = infoHealthView({ squad: { health } });
+  assert.strictEqual(failed.state, 'fail');
+  assert.strictEqual(failed.text, 'A check failed');
+});
+
 check('the ACA row lists only links the device reported, and never a lease', () => {
   const aca = device({
     kind: 'aca', name: 'aca-job-x', deviceId: 'aca-1',

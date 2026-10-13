@@ -41,8 +41,8 @@ export function connect() {
   setConn(state.reconnectAttempt ? 'retrying' : 'connecting');
 
   ws.onopen = () => {
-    state.reconnectAttempt = 0;
-    setConn('live');
+    if (state.ws !== ws) return;
+    setConn('connecting');
   };
 
   ws.onclose = async (ev) => {
@@ -76,11 +76,14 @@ export function connect() {
   ws.onerror = () => {};
 
   ws.onmessage = (ev) => {
+    if (state.ws !== ws) return;
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'overview') {
       refreshSeq += 1;
       state.overview = { devices: msg.devices, groups: msg.groups, counts: msg.counts, hubVersion: msg.hubVersion };
+      state.reconnectAttempt = 0;
+      setConn('live');
       // A pending ACA row is replaced the moment its job's device shows up.
       acaAttachFromOverview();
       render();
@@ -130,9 +133,9 @@ const CONN_LABEL = {
  */
 const CONN_TITLE = {
   live: 'Live: this page is receiving updates as they happen',
-  connecting: 'Connecting to the live feed',
-  retrying: 'The live feed dropped and is reconnecting. Your sessions keep running.',
-  offline: 'The hub is not answering. This page keeps retrying; your devices are unaffected.',
+  connecting: 'Waiting for a fresh live snapshot. Displayed statuses may be out of date.',
+  retrying: 'Reconnecting to the live feed. Displayed statuses may be out of date; sessions run independently on devices.',
+  offline: 'Live updates are unavailable. Displayed statuses may be out of date; the current state of your devices is not confirmed.',
 };
 
 export function setConn(s) {
@@ -152,6 +155,11 @@ export function setConn(s) {
   el.textContent = s === 'live' ? '' : (CONN_LABEL[s] || s);
   el.title = CONN_TITLE[s] || '';
   el.setAttribute('aria-label', `Live feed: ${CONN_LABEL[s] || s}`);
+  const note = $('connectionNote');
+  if (note) {
+    note.hidden = s === 'live';
+    note.textContent = CONN_TITLE[s] || '';
+  }
 }
 
 /**
@@ -229,8 +237,8 @@ export function showOffline() {
     <div class="empty">
       <h3>Can't reach the hub</h3>
       <p>You're still signed in. This device just can't get to the hub right now.</p>
-      <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
-         Anything waiting on an approval is still waiting.</p>
+      <p>Sessions run on your devices, not here. Their current status cannot be confirmed
+         until the connection returns.</p>
       <p class="empty-actions"><button class="primary" id="offlineRetry">Try again</button></p>
     </div>`;
   const retry = document.getElementById('offlineRetry');

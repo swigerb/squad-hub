@@ -13,7 +13,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { readWebApp, readWebSource } = require('./helpers/web-source');
+const { readWebApp, readWebSource, stripModuleSyntax } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -544,11 +544,50 @@ check('every state that is NOT live still spells itself out', () => {
   assert.match(labels, /hub unreachable/, 'the state worth interrupting for must say something a person can act on');
 });
 
-check('a broken feed says the WORK is unaffected, not just that the page is', () => {
+check('a broken feed distinguishes independent work from unconfirmed device status', () => {
   const app = web;
   const titles = app.match(/const CONN_TITLE = \{[\s\S]*?\};/)[0];
-  assert.match(titles, /keep running|unaffected/,
-    'the obvious fear on seeing a red badge is that the work stopped, and it has not');
+  assert.match(titles, /independently on devices/);
+  assert.match(titles, /not confirmed/);
+  assert.doesNotMatch(titles, /unaffected|keep running/,
+    'a disconnected browser cannot guarantee that every worker is still running');
+});
+
+check('the live feed is confirmed by a current snapshot, not an open or superseded socket', () => {
+  const source = stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'ws.js'), 'utf8'));
+  const state = { token: 'synthetic-token', overview: { groups: [] } };
+  const elements = {
+    conn: { dataset: {}, setAttribute() {} },
+    connectionNote: { hidden: true, textContent: '' },
+  };
+  const timers = [];
+  class FakeSocket { close() {} }
+  const client = new Function('state', '$', 'location', 'WebSocket', 'render',
+    'acaAttachFromOverview', 'setTimeout', 'clearTimeout', `${source}\nreturn { connect };`)(
+    state, (id) => elements[id], { protocol: 'http:', host: 'localhost' },
+    FakeSocket, () => {}, () => {}, (fn, delay) => { timers.push({ fn, delay }); return timers.length; }, () => {},
+  );
+  const snapshot = { type: 'overview', devices: [], groups: [], counts: { sessions: 0 } };
+  client.connect();
+  const first = state.ws;
+  first.onopen();
+  assert.strictEqual(elements.conn.dataset.state, 'connecting');
+  assert.strictEqual(elements.connectionNote.hidden, false);
+  first.onmessage({ data: JSON.stringify(snapshot) });
+  assert.strictEqual(elements.conn.dataset.state, 'live');
+  assert.strictEqual(elements.connectionNote.hidden, true);
+  first.onclose({ code: 1006 });
+  assert.strictEqual(elements.conn.dataset.state, 'retrying');
+  assert.match(elements.connectionNote.textContent, /out of date/);
+  assert.strictEqual(timers[0].delay, 1000);
+  client.connect();
+  first.onopen();
+  first.onmessage({ data: JSON.stringify({ ...snapshot, counts: { sessions: 99 } }) });
+  assert.notStrictEqual(elements.conn.dataset.state, 'live');
+  assert.strictEqual(state.overview.counts.sessions, 0);
+  state.ws.onmessage({ data: JSON.stringify(snapshot) });
+  assert.strictEqual(elements.conn.dataset.state, 'live');
+  assert.strictEqual(elements.connectionNote.hidden, true);
 });
 
 check('the device pill reports the EXCEPTION, not the agreement', () => {

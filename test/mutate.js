@@ -3186,8 +3186,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'a non-success conclusion is reported as plain "completed", hiding the failure',
     file: 'web/js/aca-status.js',
-    find: `    case 'completed': return s.conclusion && s.conclusion !== 'success' ? \`completed (\${s.conclusion})\` : 'completed';`,
-    replace: `    case 'completed': return (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) ? \`completed (\${s.conclusion})\` : 'completed'; // MUTATION`,
+    find: `      if (s.conclusion && s.conclusion !== 'success') return \`dispatch workflow completed (\${s.conclusion})\`;`,
+    replace: `      if (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) return \`dispatch workflow completed (\${s.conclusion})\`; // MUTATION`,
     mustFail: 'acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"',
   },
   {
