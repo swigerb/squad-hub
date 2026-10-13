@@ -7,11 +7,11 @@
   "dispatchSource": "local-cli",
   "route": "aca-job",
   "executionMode": "aca-job",
-  "state": "claimed",
+  "state": "dispatched",
   "attempts": 1,
   "startedAt": "2026-10-13T23:40:53.587Z",
-  "lastHeartbeatAt": "2026-10-13T23:40:53.587Z",
-  "updatedAt": "2026-10-13T23:40:53.587Z",
+  "lastHeartbeatAt": "2026-10-13T23:40:59.162Z",
+  "updatedAt": "2026-10-13T23:40:59.162Z",
   "terminalReason": null,
-  "executionRef": null
+  "executionRef": "caj-squad-aca-session-oyo37uv"
 }
