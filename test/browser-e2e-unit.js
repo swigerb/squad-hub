@@ -928,6 +928,39 @@ function railFacts(page) {
       await page.click('#cnCancel');
     });
 
+    await check('the Connect dialog turns each file-access and track-all box into its own flag', async () => {
+      const flagsOf = async () => {
+        // The result panel stays open between mints, so clear the command first
+        // and wait for the new one rather than reading the previous token's.
+        await page.evaluate(() => { document.getElementById('cnCmd').textContent = ''; });
+        await page.click('#cnCreate');
+        await page.waitForFunction(() => document.getElementById('cnCmd').textContent.startsWith('squad-hub connect'), null, { timeout: 10000 });
+        return ((await page.textContent('#cnCmd')).split(/--token \S+/)[1] || '').trim();
+      };
+      await openFrom('#deviceList [data-sec="local"] [data-action="connect-device"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      try {
+        assert.strictEqual(await flagsOf(), '--device-kind local', 'an untouched dialog added a flag');
+        await page.check('#cnFiles');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files', 'the working-directory box did not reach the command');
+        await page.check('#cnFilesAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files-all', '"anywhere" must replace --allow-files, not join it');
+        await page.uncheck('#cnFilesAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files', 'clearing "anywhere" did not fall back to --allow-files');
+        await page.uncheck('#cnFiles');
+        await page.check('#cnTrackAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --track-all', 'the track-all box did not reach the command, or needed file access');
+        await page.check('#cnFiles');
+        await page.check('#cnFilesAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files-all --track-all');
+      } finally {
+        if (await page.isChecked('#cnFilesAll')) await page.uncheck('#cnFilesAll');
+        if (await page.isChecked('#cnFiles')) await page.uncheck('#cnFiles');
+        if (await page.isChecked('#cnTrackAll')) await page.uncheck('#cnTrackAll');
+        await page.click('#cnCancel');
+      }
+    });
+
     // ---- minting a device token through the UI ---------------------------
     let deviceToken = null;
     await check('the UI mints a DEVICE token, not the user credential', async () => {

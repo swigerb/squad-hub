@@ -39,6 +39,7 @@ const SCENARIOS = [
       'empty Local and Cloud tabs explain how to connect, and their Connect buttons work',
       'the Connect dialog carries the Local or Cloud choice into its command, and a generic open carries none',
       'a token response that lands after the dialog was reopened never renders a command for the old intent',
+  'the Connect dialog turns each file-access and track-all box into its own flag',
     ],
     alsoRuns: [
       'the whole suite ran under the enforced CSP with zero securitypolicyviolation events',

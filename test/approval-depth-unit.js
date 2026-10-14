@@ -34,12 +34,13 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell,
-  updateText, transcriptBlocks, resultView, forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton };`)(mod, mod.exports);
+  updateText, transcriptBlocks, resultView, forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton,
+  connectCommand };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
   exact, timeCell, updateText, transcriptBlocks, resultView,
-  forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton,
+  forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton, connectCommand,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -787,12 +788,31 @@ check('the Connect dialog can put device flags into the command it hands you', (
   // cannot apply them -- the only place they take effect is the command that
   // gets pasted. Without them a device connects and then cannot open a file,
   // with nothing having said it wouldn't.
-  const app = web;
-  assert.match(app, /cnFilesAll'\)\.checked\) flags\.push\('--allow-files-all'\)/,
+  // The real command builder, run with synthetic values. Which checkbox feeds
+  // which argument is proved in a browser (see the Connect dialog check in
+  // browser-e2e-unit.js) and pinned here at the one place the dialog calls it.
+  const base = { origin: 'https://hub.example.test', token: 'sqhd1.synthetic' };
+  const cmd = (opts) => connectCommand({ ...base, ...opts });
+  const prefix = 'squad-hub connect --hub https://hub.example.test --token sqhd1.synthetic';
+  assert.strictEqual(cmd({}), prefix, 'no option chosen must add no flag');
+  assert.strictEqual(cmd({ files: true }), `${prefix} --allow-files`);
+  assert.strictEqual(cmd({ filesAll: true }), `${prefix} --allow-files-all`,
     'the "anywhere" option does not reach the command');
-  assert.match(app, /else if \(\$\('cnFiles'\)\.checked\) flags\.push\('--allow-files'\)/,
+  assert.strictEqual(cmd({ files: true, filesAll: true }), `${prefix} --allow-files-all`,
     '--allow-files-all implies --allow-files; emitting both is noise');
-  assert.match(app, /cnTrackAll'\)\.checked\) flags\.push\('--track-all'\)/);
+  assert.strictEqual(cmd({ trackAll: true }), `${prefix} --track-all`);
+  assert.strictEqual(cmd({ files: true, trackAll: true }), `${prefix} --allow-files --track-all`,
+    '--track-all is independent of file access');
+  assert.strictEqual(cmd({ filesAll: true, trackAll: true }), `${prefix} --allow-files-all --track-all`);
+  assert.strictEqual(cmd({ kind: 'local' }), `${prefix} --device-kind local`);
+  assert.strictEqual(cmd({ kind: 'cloud', files: true, trackAll: true }),
+    `${prefix} --device-kind cloud --allow-files --track-all`);
+  assert.strictEqual(cmd({ kind: 'aca' }), prefix, 'only local and cloud can be requested');
+
+  // The dialog must hand each checkbox to the argument of its own name.
+  const app = web;
+  assert.match(app, /files:\s*\$\('cnFiles'\)\.checked,\s*filesAll:\s*\$\('cnFilesAll'\)\.checked,\s*trackAll:\s*\$\('cnTrackAll'\)\.checked/,
+    'the dialog does not pass its three checkboxes to the command builder');
 
   const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
   for (const id of ['cnFiles', 'cnFilesAll', 'cnTrackAll']) {
