@@ -1,0 +1,99 @@
+name: Candidate acceptance
+
+# The ordinary pull-request gate: a risk-based selection of the mutation
+# catalogue for what this change touches, measured against the exact base
+# commit. It is coordinated, with one shared baseline, isolated workers and a
+# final full regression. release/* pull requests are covered by the exhaustive
+# gate (mutation-acceptance.yml) and are not run here as well.
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+jobs:
+  candidate:
+    if: ${{ !startsWith(github.head_ref, 'release/') }}
+    name: candidate acceptance
+    # Real Windows cmd-shim and process cleanup paths are part of what is proven.
+    # Linux behavior remains covered by the separate Node 18/24 Tests matrix.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Optional browser prerequisites live outside the checkout, so they can
+      # neither dirty the source nor change its package manifest or lockfile.
+      - name: Install real browser coverage outside the checkout
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'browser-tools'
+          npm install --prefix $tools --no-save --package-lock=false --no-audit --no-fund playwright
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm install playwright failed ($LASTEXITCODE)"; exit 1 }
+          & (Join-Path $tools 'node_modules\.bin\playwright.cmd') install --with-deps chromium
+          if ($LASTEXITCODE -ne 0) { Write-Error "playwright install chromium failed ($LASTEXITCODE)"; exit 1 }
+          "NODE_PATH=$(Join-Path $tools 'node_modules')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Check the checkout is the exact head and the base is present
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { Write-Error "git rev-parse failed ($LASTEXITCODE)"; exit 1 }
+          if ($head -ne $env:SOURCE_SHA) { Write-Error "checkout is $head, expected $env:SOURCE_SHA"; exit 1 }
+          git cat-file -e "$($env:BASE_SHA)^{commit}"
+          if ($LASTEXITCODE -ne 0) { Write-Error "base commit $env:BASE_SHA is not in the checkout history"; exit 1 }
+          Write-Host "candidate acceptance of $head against $env:BASE_SHA"
+
+      # One coordinated run against the immutable base commit. Logs, proofs and
+      # worker copies stay outside the source.
+      - name: Run the candidate acceptance gate
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          $artifacts = Join-Path $env:RUNNER_TEMP 'acceptance-candidate'
+          node test\acceptance.js --scope candidate --base $env:BASE_SHA --artifacts $artifacts
+          if ($LASTEXITCODE -ne 0) { Write-Error "candidate acceptance exited $LASTEXITCODE"; exit 1 }
+
+      - name: Verify the report is for this scope and source
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          $artifacts = Join-Path $env:RUNNER_TEMP 'acceptance-candidate'
+          node test\acceptance.js --verify (Join-Path $artifacts 'report.json') --scope candidate
+          if ($LASTEXITCODE -ne 0) { Write-Error "report verification exited $LASTEXITCODE"; exit 1 }
+
+      - name: Require a clean source tree
+        run: |
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0) { Write-Error "git status failed ($LASTEXITCODE)"; exit 1 }
+          if ($dirty) { Write-Host ($dirty -join "`n"); Write-Error 'the gate left the source tree modified'; exit 1 }
+
+      # The report names what was selected, deferred and excluded, with logs,
+      # proofs and timings, so the whole directory is kept, pass or fail.
+      - name: Preserve the complete acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-candidate-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/acceptance-candidate
+          if-no-files-found: error

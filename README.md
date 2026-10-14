@@ -399,9 +399,15 @@ See [docs/commands.md](docs/commands.md#login-startup-optional).
 ## Testing
 
 ```bash
-npm test              # the suite
-node test/mutate.js   # break each mechanism, require a named test to fail
+npm test              # the complete ordinary regression
+npm run test:candidate -- --base origin/main --artifacts ../acceptance-candidate
+                      # prove the mutations for what you changed were caught
 ```
+
+`node test/mutate.js` remains as the legacy full sweep; the exhaustive scope
+(`npm run test:exhaustive`) is the deliberate, much longer equivalent. See
+[docs/README.md](docs/README.md#how-this-is-tested) for how the scopes, plans,
+artifacts and report verification work.
 
 Two rules the suite follows:
 

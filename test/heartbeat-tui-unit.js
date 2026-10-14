@@ -361,6 +361,16 @@ check('THE APPROVAL CARD USES THE FIELD NAMES THE UI ACTUALLY READS', () => {
   });
 });
 
+check('A WATCHED SESSION READS ONE "Running" WHATEVER THE HOOK CALLS THE TOOL', () => {
+  const s = tui();
+  s.noteTool('bash');
+  assert.strictEqual(s.activity, 'Running bash');
+  s.noteTool('Running Running tests');
+  assert.strictEqual(s.activity, 'Running tests');
+  s.noteTool('');
+  assert.strictEqual(s.activity, 'Running a tool');
+});
+
 check('A WATCHED SESSION HAS A TRANSCRIPT THE HUB CAN READ', () => {
   const s = tui();
   s.notePrompt('do a thing');

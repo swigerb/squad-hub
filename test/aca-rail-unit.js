@@ -305,10 +305,10 @@ check('rail section: pending rows follow the devices and are not counted as devi
 check('rail section: with only a pending row the section is not empty and still counts zero devices', () => {
   const html = deviceSectionHtml('aca', 'ACA runs', [], new Map(), 'aca', 'Start an ACA run', null, acaRailRowsHtml([entry()], []));
   assert.match(html, /ACA runs \(0\)/);
-  assert.ok(!/No aca runs yet/.test(html));
+  assert.ok(!/No ACA runs yet/.test(html));
   assert.strictEqual(railRows(html), 1);
   const empty = deviceSectionHtml('aca', 'ACA runs', [], new Map(), 'aca', 'Start an ACA run', null, acaRailRowsHtml([], []));
-  assert.match(empty, /No aca runs yet\./);
+  assert.match(empty, /No ACA runs yet\./);
 });
 
 check('rail section: the always-visible ACA jobs row is unchanged and uncounted', () => {
@@ -317,7 +317,8 @@ check('rail section: the always-visible ACA jobs row is unchanged and uncounted'
   assert.match(html, /Set up to start runs/);
   assert.doesNotMatch(html, /dot online|Always available/);
   const connected = acaJobsRowHtml(true);
-  assert.match(connected, /Connected service &middot; Ready to start runs/);
+  assert.match(connected, /Ready to start runs/);
+  assert.doesNotMatch(connected, /Connected service/, 'the dot and the status card already say it is connected');
   assert.match(connected, /dot online/);
   assert.match(html, /data-action="aca"/);
 });
@@ -485,7 +486,7 @@ const running = (over = {}) => dispatchRow({ status: { state: 'in_progress', run
     render();
     const html = deviceList();
     assert.strictEqual(railRows(html), 0);
-    assert.match(html, /No aca runs yet\./);
+    assert.match(html, /No ACA runs yet\./);
     assert.match(html, /class="device ondemand"/);
   });
 

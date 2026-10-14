@@ -147,11 +147,17 @@ function squadProject(name) {
   ].join('\n'));
   return dir;
 }
+// A bound for every call whose verdict is not a timeout: a process start on a loaded
+// host can take longer than a second, and a timeout would then replace the verdict.
+const TEST_BUDGET_MS = 10000;
 function fakeOpts(mode, extra = {}) {
   return {
     squadCommand: process.execPath,
     squadArgsPrefix: [FAKE],
-    timeoutMs: extra.timeoutMs || 700,
+    // Only the timeout tests need a short budget and each passes one. A cold Node
+    // start on a loaded Windows runner can exceed 700ms, which turns a version
+    // verdict into "timed out while running `squad --version`".
+    timeoutMs: extra.timeoutMs || TEST_BUDGET_MS,
     maxOutputBytes: extra.maxOutputBytes || 32 * 1024,
     ttlMs: extra.ttlMs,
     maxCacheEntries: extra.maxCacheEntries,
@@ -220,7 +226,33 @@ sweepScratchArtifacts();
       const r = await runSquadHealth(project, fakeOpts('pass', { version: '0.12.9' }));
       check('squad versions older than 0.13 are rejected', () => {
         assert.strictEqual(r.available, false);
-        assert.match(r.reason, /0\.12\.9.*need >= 0\.13/);
+        assert.match(r.reason, /0\.12\.9.*need >= 0\.13/, `reason was: ${JSON.stringify(r.reason)}`);
+      });
+    } finally { cleanup(project); }
+  }
+
+  {
+    const project = squadProject('old-slow-start');
+    try {
+      const r = await runSquadHealth(project, fakeOpts('pass', {
+        version: '0.12.9', env: { FAKE_SQUAD_VERSION_DELAY_MS: '900' },
+      }));
+      check('a slow cold start of the version probe still yields the too-old verdict, not a timeout', () => {
+        assert.strictEqual(r.available, false);
+        assert.match(r.reason, /0\.12\.9.*need >= 0\.13/, `reason was: ${JSON.stringify(r.reason)}`);
+      });
+    } finally { cleanup(project); }
+  }
+
+  {
+    const project = squadProject('slow-start');
+    try {
+      const r = await runSquadHealth(project, fakeOpts('pass', {
+        version: '0.12.9', timeoutMs: 300, env: { FAKE_SQUAD_VERSION_DELAY_MS: '1500' },
+      }));
+      check('a squad that starts slower than the bound is reported as timed out on --version, not as too old or crashed', () => {
+        assert.strictEqual(r.available, false);
+        assert.strictEqual(r.reason, 'timed out while running `squad --version`');
       });
     } finally { cleanup(project); }
   }
@@ -334,7 +366,7 @@ sweepScratchArtifacts();
     try {
       const r = await runSquadHealth(project, {
         squadArgsPrefix: [dangerous],
-        timeoutMs: 1000,
+        timeoutMs: TEST_BUDGET_MS,
         maxOutputBytes: 32 * 1024,
         env: fakeOpts('pass', {
           env: {
@@ -374,7 +406,7 @@ sweepScratchArtifacts();
     try {
       for (const f of sideEffects) { try { fs.unlinkSync(f); } catch { /* absent */ } }
       const r = await runSquadHealth(project, {
-        timeoutMs: 1000,
+        timeoutMs: TEST_BUDGET_MS,
         maxOutputBytes: 32 * 1024,
         env: fakeOpts('pass', { env: { PATH: shimDir, PATHEXT: '.CMD' } }).env,
       });
@@ -403,7 +435,7 @@ sweepScratchArtifacts();
     try {
       const r = await runSquadHealth(project, {
         squadArgsPrefix: prefix,
-        timeoutMs: 1000,
+        timeoutMs: TEST_BUDGET_MS,
         maxOutputBytes: 32 * 1024,
         env: fakeOpts('pass', {
           env: {
@@ -450,7 +482,7 @@ sweepScratchArtifacts();
         try { fs.unlinkSync(argvFile); } catch { /* absent */ }
         const r = await runSquadHealth(project, {
           squadArgsPrefix: c.prefix,
-          timeoutMs: 1000,
+          timeoutMs: TEST_BUDGET_MS,
           maxOutputBytes: 32 * 1024,
           env: fakeOpts('pass', {
             env: {
@@ -490,7 +522,7 @@ sweepScratchArtifacts();
       for (const c of cases) {
         const r = await runSquadHealth(project, {
           squadCommand: c.command,
-          timeoutMs: 1000,
+          timeoutMs: TEST_BUDGET_MS,
           maxOutputBytes: 32 * 1024,
           env: fakeOpts('pass', { env: { FAKE_SQUAD_SHOULD_NOT_EXPAND: 'EXPANDED' } }).env,
         });
@@ -515,7 +547,7 @@ sweepScratchArtifacts();
     process.env.PATHEXT = '.CMD';
     try {
       const r = await runSquadHealth(project, {
-        timeoutMs: 1000,
+        timeoutMs: TEST_BUDGET_MS,
         maxOutputBytes: 32 * 1024,
         env: fakeOpts('fail', { env: { PATH: shimDir, PATHEXT: '.CMD' } }).env,
       });
@@ -592,7 +624,7 @@ sweepScratchArtifacts();
     };
     try {
       const r = await runSquadHealth(project, {
-        timeoutMs: 1000,
+        timeoutMs: TEST_BUDGET_MS,
         maxOutputBytes: 32 * 1024,
         env: fakeOpts('pass', { env: { PATH: extlessDir, PATHEXT: '.EXE' } }).env,
       });

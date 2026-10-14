@@ -1,5 +1,9 @@
 name: Mutation acceptance
 
+# The exhaustive gate: every runnable mutation, caught by its named test. It is
+# deliberate, not part of the everyday edit loop. It runs on a manual dispatch
+# and on release/* pull requests. Ordinary pull requests are gated by the
+# candidate-scope workflow (candidate-acceptance.yml) instead.
 on:
   pull_request:
     branches: [main, dev]
@@ -16,74 +20,77 @@ env:
   SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  mutation:
+  exhaustive:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/')
-    name: mutation shard ${{ matrix.shard }}/4
+    name: exhaustive acceptance
     # The catalogue includes real Windows cmd-shim and process cleanup paths.
     # Linux behavior remains covered by the separate Node 18/24 Tests matrix.
     runs-on: windows-latest
     timeout-minutes: 240
     defaults:
       run:
-        shell: bash
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        shard: [1, 2, 3, 4]
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
 
-      - name: Install real browser coverage
+      # Optional browser prerequisites live outside the checkout, so they can
+      # neither dirty the source nor change its package manifest or lockfile.
+      - name: Install real browser coverage outside the checkout
         run: |
-          npm install --no-save --no-audit --no-fund playwright
-          npx playwright install --with-deps chromium
+          $tools = Join-Path $env:RUNNER_TEMP 'browser-tools'
+          npm install --prefix $tools --no-save --package-lock=false --no-audit --no-fund playwright
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm install playwright failed ($LASTEXITCODE)"; exit 1 }
+          & (Join-Path $tools 'node_modules\.bin\playwright.cmd') install --with-deps chromium
+          if ($LASTEXITCODE -ne 0) { Write-Error "playwright install chromium failed ($LASTEXITCODE)"; exit 1 }
+          "NODE_PATH=$(Join-Path $tools 'node_modules')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Record the exact partition
-        env:
-          SHARD: ${{ matrix.shard }}/4
+      - name: Check the checkout is the exact source under test
         run: |
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          node - <<'NODE'
-          const fs = require('fs');
-          const { MUTATIONS } = require('./test/mutate');
-          const { planRun } = require('./test/helpers/shard');
-          const plan = planRun(['--shard', process.env.SHARD], MUTATIONS, null);
-          const record = {
-            sha: process.env.SOURCE_SHA,
-            shard: plan.shard.label,
-            total: plan.total,
-            selected: plan.selected.map(m => ({ name: m.name, mustFail: m.mustFail })),
-            exclusions: MUTATIONS.filter(m => m.skip).map(m => ({ name: m.name, reason: m.skip })),
-          };
-          fs.writeFileSync('mutation-partition.json', JSON.stringify(record, null, 2));
-          console.log(`${record.shard}: ${record.selected.length} of ${record.total} runnable mutations at ${record.sha}`);
-          NODE
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { Write-Error "git rev-parse failed ($LASTEXITCODE)"; exit 1 }
+          if ($head -ne $env:SOURCE_SHA) { Write-Error "checkout is $head, expected $env:SOURCE_SHA"; exit 1 }
+          Write-Host "exhaustive acceptance of $head"
 
-      # Each runner owns one checkout and performs both real full baselines.
-      - name: Run the complete partition and require named catches
+      # One coordinated run: a single shared baseline, isolated workers, and a
+      # final full regression. Logs, proofs and worker copies stay outside the source.
+      - name: Run the exhaustive acceptance gate
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: |
-          set -o pipefail
-          node test/mutate.js --shard "${{ matrix.shard }}/4" 2>&1 | tee mutation.log
-          grep -Fx 'ACCEPTED: every selected mutation was caught by its named test.' mutation.log
-          grep -Fx 'source restored, baseline re-run: green' mutation.log
-          git diff --exit-code
+          $artifacts = Join-Path $env:RUNNER_TEMP 'acceptance-exhaustive'
+          node test\acceptance.js --scope exhaustive --jobs 4 --artifacts $artifacts
+          if ($LASTEXITCODE -ne 0) { Write-Error "exhaustive acceptance exited $LASTEXITCODE"; exit 1 }
 
-      - name: Preserve partition and actual results
+      - name: Verify the report is for this scope and source
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          $artifacts = Join-Path $env:RUNNER_TEMP 'acceptance-exhaustive'
+          node test\acceptance.js --verify (Join-Path $artifacts 'report.json') --scope exhaustive
+          if ($LASTEXITCODE -ne 0) { Write-Error "report verification exited $LASTEXITCODE"; exit 1 }
+
+      - name: Require a clean source tree
+        run: |
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0) { Write-Error "git status failed ($LASTEXITCODE)"; exit 1 }
+          if ($dirty) { Write-Host ($dirty -join "`n"); Write-Error 'the gate left the source tree modified'; exit 1 }
+
+      # The report names every selected, deferred and excluded mutation with its
+      # logs, proofs and timings, so the whole directory is kept, pass or fail.
+      - name: Preserve the complete acceptance artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutation-shard-${{ matrix.shard }}-${{ env.SOURCE_SHA }}
-          path: |
-            mutation-partition.json
-            mutation.log
+          name: acceptance-exhaustive-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/acceptance-exhaustive
           if-no-files-found: error

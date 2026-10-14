@@ -833,18 +833,51 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
     });
 
     await checkAsync('a stale repository failure cannot disable a reopened ACA dialog', async () => {
-      const older = deferred();
-      const newer = deferred();
-      const f = dialogFixture([older, newer]);
-      f.open('First job');
-      f.element('acaScrim').hidden = true;
-      f.open('Second job');
-      older.reject(Object.assign(new Error('no App'), { status: 501 }));
-      await Promise.resolve();
-      assert.strictEqual(f.element('acaForm').hidden, false);
-      assert.strictEqual(f.element('acaStart').hidden, false);
-      newer.resolve({ repos: [] });
-      await Promise.resolve();
+      const flush = () => new Promise((resolve) => setImmediate(resolve));
+      // The settled failure must have had every chance to run its handler:
+      // a single microtask tick returns before the dialog's catch block does,
+      // which is how a missing stale guard once looked like a pass.
+      const staleFailure = async (status, message) => {
+        const older = deferred();
+        const newer = deferred();
+        const f = dialogFixture([older, newer]);
+        f.open('First job');
+        f.element('acaScrim').hidden = true;
+        f.open('Second job');
+        const hintBefore = f.element('acaRepoHint').textContent;
+        older.reject(Object.assign(new Error(message), { status }));
+        await flush();
+        return { f, newer, hintBefore };
+      };
+
+      // Control: the same failure on the CURRENT dialog does take effect, so
+      // the assertions below cannot pass merely because the handler never ran.
+      const live = deferred();
+      const current = dialogFixture([live]);
+      current.open('Only job');
+      live.reject(Object.assign(new Error('no App'), { status: 501 }));
+      await flush();
+      assert.strictEqual(current.element('acaForm').hidden, true, 'a current 501 no longer disables the dialog');
+      assert.strictEqual(current.element('acaDisabledNote').textContent, 'no App');
+      const liveOther = deferred();
+      const currentOther = dialogFixture([liveOther]);
+      currentOther.open('Only job');
+      liveOther.reject(Object.assign(new Error('offline'), { status: 500 }));
+      await flush();
+      assert.match(currentOther.element('acaRepoHint').textContent, /Could not load the repository list: offline/);
+
+      for (const [status, message] of [[501, 'no App'], [429, 'rate limited'], [500, 'offline']]) {
+        const { f, newer, hintBefore } = await staleFailure(status, message);
+        assert.strictEqual(f.element('acaForm').hidden, false, `a stale ${status} hid the reopened form`);
+        assert.strictEqual(f.element('acaStart').hidden, false, `a stale ${status} hid the reopened Start button`);
+        assert.strictEqual(f.element('acaDisabledNote').hidden, true, `a stale ${status} showed the disabled note`);
+        assert.notStrictEqual(f.element('acaDisabledNote').textContent, message, `a stale ${status} wrote the disabled note`);
+        assert.strictEqual(f.element('acaRepoHint').textContent, hintBefore, `a stale ${status} replaced the reopened repository hint`);
+        newer.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
+        await flush();
+        assert.deepStrictEqual(f.state.acaRepos.map((r) => r.fullName), ['acme/widgets'], `the reopened list was lost after a stale ${status}`);
+        assert.strictEqual(f.element('acaForm').hidden, false);
+      }
     });
 
     await checkAsync('a stale repository success cannot overwrite the reopened ACA repository list', async () => {
@@ -1451,52 +1484,30 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       assert.strictEqual(clientState.overview.counts.sessions, 1);
     });
 
-    global.fetch = async () => ({
-      ok: false,
-      status: 501,
-      json: async () => ({ reason: 'This hub has no GitHub App configured.' }),
+    await checkAsync('api() surfaces a `reason`-shaped 501 body as its error message', async () => {
+      global.fetch = async () => ({
+        ok: false,
+        status: 501,
+        json: async () => ({ reason: 'This hub has no GitHub App configured.' }),
+      });
+      let thrown = null;
+      try { await api('/api/aca/repos'); } catch (e) { thrown = e; }
+      assert.ok(thrown, 'expected api() to throw');
+      assert.strictEqual(thrown.status, 501);
+      assert.strictEqual(thrown.message, 'This hub has no GitHub App configured.');
     });
-    try {
-      await api('/api/aca/repos');
-      fail += 1;
-      console.log('  FAIL api() surfaces a `reason`-shaped 501 body as its error message\n         expected api() to throw');
-      console.log('RESULT\tfail\tapi() surfaces a `reason`-shaped 501 body as its error message\texpected api() to throw');
-    } catch (e) {
-      try {
-        assert.strictEqual(e.status, 501);
-        assert.strictEqual(e.message, 'This hub has no GitHub App configured.');
-        pass += 1;
-        console.log('  ok   api() surfaces a `reason`-shaped 501 body as its error message');
-        console.log('RESULT\tok\tapi() surfaces a `reason`-shaped 501 body as its error message');
-      } catch (assertErr) {
-        fail += 1;
-        console.log(`  FAIL api() surfaces a \`reason\`-shaped 501 body as its error message\n         ${assertErr.message}`);
-        console.log(`RESULT\tfail\tapi() surfaces a \`reason\`-shaped 501 body as its error message\t${String(assertErr.message).split('\n')[0]}`);
-      }
-    }
 
-    global.fetch = async () => ({
-      ok: false,
-      status: 404,
-      json: async () => ({ error: 'no such device' }),
+    await checkAsync('api() still prefers an `error`-shaped body over `reason`', async () => {
+      global.fetch = async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'no such device' }),
+      });
+      let thrown = null;
+      try { await api('/api/devices/x'); } catch (e) { thrown = e; }
+      assert.ok(thrown, 'expected api() to throw');
+      assert.strictEqual(thrown.message, 'no such device');
     });
-    try {
-      await api('/api/devices/x');
-      fail += 1;
-      console.log('  FAIL api() still prefers an `error`-shaped body over `reason`\n         expected api() to throw');
-      console.log('RESULT\tfail\tapi() still prefers an `error`-shaped body over `reason`\texpected api() to throw');
-    } catch (e) {
-      try {
-        assert.strictEqual(e.message, 'no such device');
-        pass += 1;
-        console.log('  ok   api() still prefers an `error`-shaped body over `reason`');
-        console.log('RESULT\tok\tapi() still prefers an `error`-shaped body over `reason`');
-      } catch (assertErr) {
-        fail += 1;
-        console.log(`  FAIL api() still prefers an \`error\`-shaped body over \`reason\`\n         ${assertErr.message}`);
-        console.log(`RESULT\tfail\tapi() still prefers an \`error\`-shaped body over \`reason\`\t${String(assertErr.message).split('\n')[0]}`);
-      }
-    }
 
     // --- syncAcaPending / retryAcaPending: bounded polling (follow-up to
     // #178) --------------------------------------------------------------

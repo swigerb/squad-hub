@@ -307,13 +307,21 @@ const secrets = [
   ['a SAS token in a URL', 'azcopy copy https://acct.blob.core.windows.net/c?sig=AbCdEf123456SecretSignature', 'AbCdEf123456SecretSignature'],
 ];
 
-for (const [label, text, secret] of secrets) {
-  check(`${label} is redacted before it can reach a channel`, () => {
-    const out = redact(text);
-    assert.ok(!out.includes(secret), `THE SECRET SURVIVED: ${out}`);
-    assert.ok(out.includes('[redacted]'), `nothing was redacted: ${out}`);
-  });
-}
+// One call per secret shape, each with a literal title the mutation harness can find in source.
+const redactionHolds = (label) => () => {
+  const [, text, secret] = secrets.find(([l]) => l === label);
+  const out = redact(text);
+  assert.ok(!out.includes(secret), `THE SECRET SURVIVED: ${out}`);
+  assert.ok(out.includes('[redacted]'), `nothing was redacted: ${out}`);
+};
+check('a GitHub token is redacted before it can reach a channel', redactionHolds('a GitHub token'));
+check('an OpenAI-style key is redacted before it can reach a channel', redactionHolds('an OpenAI-style key'));
+check('a JWT is redacted before it can reach a channel', redactionHolds('a JWT'));
+check('an inline password is redacted before it can reach a channel', redactionHolds('an inline password'));
+check('a SAS token in a URL is redacted before it can reach a channel', redactionHolds('a SAS token in a URL'));
+check('every secret shape in the table has a named redaction test', () => {
+  assert.strictEqual(secrets.length, 5, 'a new secret shape needs its own literal-titled check above');
+});
 
 check('redaction survives the whole card path, not just the helper', () => {
   const c = approvalCard({

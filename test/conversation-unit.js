@@ -263,6 +263,17 @@ check('tool titles that already say Running are not prefixed again', async () =>
   assert.strictEqual(s.activity, 'Running a tool...');
 });
 
+check('a tool title that repeats Running is shown behind a single Running', async () => {
+  const s = fakeSession();
+  s.status = STATUS.ACTIVE;
+  const cases = [['Running Running tests', 'Running tests'], ['running: Running npm test', 'Running npm test'],
+    ['Running Running Running x', 'Running x']];
+  for (const [title, want] of cases) {
+    s._update({ update: { sessionUpdate: 'tool_call', title } });
+    assert.strictEqual(s.activity, want, `"${title}" must read "${want}"`);
+  }
+});
+
 // --- the bell inbox needs the agent's actual words (#174) -------------------
 //
 // "Awaiting your reply" with no question attached is a card nobody can act on

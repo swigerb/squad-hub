@@ -352,6 +352,13 @@ check('waiting_approval alone is enough to say "Waiting for input"', () => {
     'Waiting for input');
 });
 
+check('a device that still sends a doubled Running shows one Running', () => {
+  assert.strictEqual(activityLine({ status: 'active', activity: 'Running Running tests', pendingApprovals: [] }), 'Running tests');
+  assert.strictEqual(activityLine({ status: 'active', activity: 'Running: running tests', pendingApprovals: [] }), 'running tests');
+  assert.strictEqual(activityLine({ status: 'active', activity: 'Running tests', pendingApprovals: [] }), 'Running tests');
+  assert.strictEqual(activityLine({ status: 'active', activity: 'Processing...', pendingApprovals: [] }), 'Processing...');
+});
+
 check('an unblocked session reports the agent\'s own activity', () => {
   assert.strictEqual(activityLine({ status: 'active', activity: 'Running ask_user', pendingApprovals: [] }),
     'Running ask_user');

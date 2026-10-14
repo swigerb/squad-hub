@@ -28,13 +28,15 @@ front door" below.
 
 ```
 squad-hub connect --hub <url> --token <device-token> [--name <device-name>]
+                   [--device-kind local|cloud]
                    [--allow-files|--allow-files-all] [--track-all] [--force]
 ```
 
 The one command a new machine needs. It:
 
-1. validates `--hub` (must be `http://` or `https://`) and `--token` (must have
-   the device-token shape) before touching anything,
+1. validates `--hub` (must be `http://` or `https://`), `--token` (must have
+   the device-token shape) and `--device-kind` (must be exactly `local` or
+   `cloud`) before touching anything,
 2. reads the CURRENTLY saved config first and checks whether the candidate
    hub/token/flags are genuinely a change at all,
 3. proves the candidate hub/token actually works with a bounded, disposable
@@ -71,6 +73,31 @@ yet) or the new daemon's own freshly-written state, never a leftover.
 Get a device token from the hub's account menu → **Connect a device**, which
 mints one and shows you the exact `squad-hub connect …` command to run. It is
 shown once; the hub does not store it.
+
+### Where the device is listed (`--device-kind`)
+
+The roster has **Local machines** and **Cloud devices**. Which one a device
+appears under is a setting on that device (`deviceKind` in its config), not
+something the token says and not inferred from the operating system.
+
+- `--device-kind local` or `--device-kind cloud` sets it. Anything else, a
+  missing value, or the option given twice is refused before the network, the
+  config or the daemon is touched.
+- Leaving it out keeps the saved kind (a new device starts as `local`). A
+  generic reconnect therefore never moves a real cloud worker.
+- Changing it is an ordinary configuration change: the candidate hub/token is
+  probed first, a running session still needs `--force` before the daemon is
+  restarted, and a failed attach restores the previous config and daemon. Name,
+  token, file access and `--track-all` are not touched by it.
+- `aca` is never set this way. A device is listed as an ACA run by the hub from
+  its `aca-` device id or its ACA metadata, and `squad-hub oneshot` stays cloud.
+
+The **+** beside Local machines and Cloud devices in the web Hub puts the
+matching `--device-kind` into the command it shows. The account menu's
+**Connect a device** does not choose a kind, so its command omits the option.
+The option is new in v0.7.1: `squad-hub` 0.7.0 and older ignore it and keep
+the saved kind, so update the CLI to 0.7.1 or newer first (`npm i -g squad-hub`)
+when you need to move an already connected device between sections.
 
 `connect` never prints or logs the token itself, other than echoing it back
 into the one-time command the browser already showed you.
@@ -432,7 +459,8 @@ running from a nested subdirectory of the project still picks it up.
 
 `connect` accepts the same `--allow-files`/`--allow-files-all`/`--track-all`
 flags and is the recommended way to set them, since it also saves the hub and
-token in the same step.
+token in the same step. It also accepts `--device-kind local|cloud` (see "Where
+the device is listed" above).
 
 `reset` takes the same file-access flags. Without them, file access returns to
 **off** — that is the point of a reset.
@@ -880,7 +908,7 @@ that check and reads the file every time.
 
 ## The device roster
 
-The rail header reads "Connected devices (N)" plus a one-line summary —
+The rail header reads "Devices and services (N)" plus a one-line summary —
 "N online · N sessions" — directly underneath it, so the headline number is
 never the only thing on screen.
 
@@ -888,17 +916,23 @@ Below that, the rail groups devices into sections rather than one flat list
 (#172):
 
 1. **Squad on ACA**: always visible, never empty; on-demand compute, not a
-   roster entry. Its `+` opens the same "Run on ACA…" dialog as everywhere
-   else in the app.
-2. **ACA runs (N)**: devices of kind `aca`, named from their
+   roster entry and never part of the device count or "N online". When the
+   GitHub App is connected, its dot is green and it reads "Ready to start
+   runs"; the status card beneath the header is where "Connected" is said. Its
+   `+` opens the same "Run on ACA…" dialog as everywhere else in the app.
+2. **ACA runs (N)**: devices of kind `aca` that are runs, named from their
    `displayName` metadata when a cloud job supplies one (e.g.
    `#42 · demo/widgets`), with the raw Azure execution id shown as secondary
    text. A dispatch you made from this tab whose job has not attached yet is
    drawn here too, as `#issue · repo` with a pulsing dot (see
    [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
    Those rows are not devices and are not in the count.
-3. **Cloud devices (N)**: other `cloud` devices already attached to this hub.
-   Starting a session requires an online device; this does not provision one.
+3. **Cloud devices (N)**: other `cloud` devices already attached to this hub,
+   and the persistent issue-watcher and Ralph jobs. Those two are `aca` devices
+   too, but they stay up between runs, so they are services and not "ACA runs";
+   they keep their details and controls, and their whole infrastructure name
+   wraps instead of being cut off. Starting a session requires an online device;
+   this does not provision one.
 4. **Local machines (N)** — everything else: your laptop, a dev box, a bare
    container.
 
@@ -978,7 +1012,7 @@ tracking, from the same dispatch state as the list's "Queued on ACA" row
 - **When it ends badly.** A dispatch that failed, or whose outcome the hub cannot
   prove, stops pulsing, says why and offers **Check again**, which re-reads the
   dispatch and starts nothing.
-- **Not a device.** These rows are not counted in "Connected devices", the
+- **Not a device.** These rows are not counted in "Devices and services", the
   section's count or "N online".
 
 They come from this tab's own dispatch state: a dispatch made from another

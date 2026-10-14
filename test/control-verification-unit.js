@@ -250,17 +250,19 @@ process.env.SQUAD_HUB_HOME = home;
     assert.match(r.reason, /agent process is gone/);
   });
 
-  for (const status of ['done', 'failed', 'stopped']) {
-    await checkAsync(`a ${status} session is not controllable`, async () => {
-      d.sessions.set(status, {
-        id: status, status, pid: process.pid,
-        isAgentDead: () => false, pendingApprovals: new Map(),
-      });
-      const r = await d.handle({ op: 'control-check', sessionId: status });
-      assert.strictEqual(r.controllable, false);
-      assert.match(r.reason, new RegExp(status));
+  // One call per status, each with a literal title the mutation harness can find in source.
+  const notControllable = async (status) => {
+    d.sessions.set(status, {
+      id: status, status, pid: process.pid,
+      isAgentDead: () => false, pendingApprovals: new Map(),
     });
-  }
+    const r = await d.handle({ op: 'control-check', sessionId: status });
+    assert.strictEqual(r.controllable, false);
+    assert.match(r.reason, new RegExp(status));
+  };
+  await checkAsync('a done session is not controllable', () => notControllable('done'));
+  await checkAsync('a failed session is not controllable', () => notControllable('failed'));
+  await checkAsync('a stopped session is not controllable', () => notControllable('stopped'));
 
   // --- approval expiry ----------------------------------------------------
 

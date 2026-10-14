@@ -17,13 +17,23 @@ import { acaPendingAttached } from './aca-match.js';
  * devices, so it has no count and nothing to collapse -- only the + that
  * opens the ACA dialog (#172).
  */
+/**
+ * What the "Squad on ACA" row says under its name. Whether the service is
+ * connected is the dot's color and the status card's own "Connected"; this
+ * line says only what that means for the user, so the row and the card do not
+ * announce the same fact twice.
+ */
+export function acaJobsRowMeta(connected = false) {
+  return connected ? 'Ready to start runs' : 'Set up to start runs';
+}
+
 export function acaJobsRowHtml(connected = false) {
   return `
     <div class="device ondemand">
       <span class="dot ${connected ? 'online' : 'offline'}"></span>
       <div class="device-main">
         <div class="device-name">Squad on ACA</div>
-        <div class="device-meta">${connected ? 'Connected service &middot; Ready to start runs' : 'Set up to start runs'}</div>
+        <div class="device-meta">${acaJobsRowMeta(connected)}</div>
       </div>
       <button class="add" data-action="aca" title="Start an ACA run">+</button>
     </div>`;

@@ -1,6 +1,6 @@
 {
   "name": "squad-hub",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "One place to see and control your Squad sessions, across every substrate.",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/swigerb/squad-hub.git" },
@@ -10,6 +10,8 @@
   "bin": { "squad-hub": "bin/squad-hub.js" },
   "scripts": {
     "test": "node test/run-tests.js",
+    "test:candidate": "node test/acceptance.js --scope candidate",
+    "test:exhaustive": "node test/acceptance.js --scope exhaustive",
     "start": "node bin/squad-hub.js serve",
     "release": "node scripts/release-npm.js",
     "verify": "node scripts/release-npm.js --verify-only"

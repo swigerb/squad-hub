@@ -14,6 +14,7 @@
 
 import { state, api } from './api.js';
 import { $, esc, ago } from './util.js';
+import { acaJobsRowMeta } from './aca-rail.js';
 
 /** The three phases the card's own fetch can be in, independent of whether
  * ANY Squad on ACA activity has ever happened. */
@@ -33,13 +34,18 @@ export const ACA_PHASE = {
  */
 export const ACA_STATUS_POLL_MS = 30000;
 
+/**
+ * The rail's counts, and whether the ACA service is connected beside them.
+ * The service is neither a device nor a session host, so it is a flag and
+ * never part of `devices` or `online`: a connected service on an empty
+ * roster reads 0 devices, and two real devices read 2, not 3.
+ */
 export function acaConnectionCounts(counts = {}, phase) {
-  const service = phase === ACA_PHASE.CONNECTED ? 1 : 0;
   return {
-    devices: (counts.devices || 0) + service,
-    online: (counts.online || 0) + service,
+    devices: counts.devices || 0,
+    online: counts.online || 0,
     sessions: counts.sessions || 0,
-    service,
+    service: phase === ACA_PHASE.CONNECTED ? 1 : 0,
   };
 }
 
@@ -147,16 +153,30 @@ function pickFreshestAcaDevice(pool) {
  * `resolveDeviceKind`), so a `local` or plain `cloud` device claiming either
  * role by name coincidence is never in scope to begin with.
  */
+function deviceFillsAcaRole(d, role) {
+  if (!d || d.kind !== 'aca') return false;
+  if (d.meta && d.meta.role) return d.meta.role === role;
+  const candidates = [d.meta && d.meta.jobName, d.meta && d.meta.executionName, d.name];
+  return candidates.some((c) => matchesAcaJobConvention(nameTokens(c), role));
+}
+
 function findAcaRoleDevice(devices, role) {
   const pool = (devices || []).filter((d) => d && d.kind === 'aca');
   const metaMatches = pool.filter((d) => d.meta && d.meta.role === role);
   if (metaMatches.length) return pickFreshestAcaDevice(metaMatches);
-  const nameMatches = pool.filter((d) => {
-    if (d.meta && d.meta.role && d.meta.role !== role) return false;
-    const candidates = [d.meta && d.meta.jobName, d.meta && d.meta.executionName, d.name];
-    return candidates.some((c) => matchesAcaJobConvention(nameTokens(c), role));
-  });
+  const nameMatches = pool.filter((d) => deviceFillsAcaRole(d, role));
   return nameMatches.length ? pickFreshestAcaDevice(nameMatches) : null;
+}
+
+/**
+ * Whether this device is one of the two persistent ACA jobs (the issue
+ * watcher, Ralph) rather than a run. They stay up between runs, so the rail
+ * does not list them as "ACA runs". The same verified-role-first, then
+ * job-naming-convention test the status card uses, applied to EVERY revision
+ * of a job and not only the freshest one `findAcaRoleDevice` picks for the card.
+ */
+export function isPersistentAcaJob(d) {
+  return deviceFillsAcaRole(d, 'watch') || deviceFillsAcaRole(d, 'ralph');
 }
 
 /** The persistent issue-watcher ACA job, found by `findAcaRoleDevice`. */
@@ -419,21 +439,13 @@ export function renderAcaStatus() {
   const st = state.acaStatus || { phase: ACA_PHASE.CHECKING };
   const devices = (state.overview && state.overview.devices) || [];
   el.innerHTML = acaStatusCardHtml(acaStatusModel({ ...st, devices }));
-  const counts = acaConnectionCounts(state.overview && state.overview.counts, st.phase);
-  const badge = $('deviceCount');
-  if (badge) {
-    badge.textContent = counts.devices;
-    badge.title = counts.service
-      ? `${counts.devices - 1} devices and 1 connected ACA service`
-      : `${counts.devices} devices`;
-  }
-  const summary = $('deviceSummary');
-  if (summary) summary.innerHTML = `${counts.online} online &middot; ${counts.sessions} session${counts.sessions === 1 ? '' : 's'}${counts.service ? ' &middot; ACA ready' : ''}`;
+  // The device badge and the "N online" line belong to devices.js's render() and
+  // count real devices only; a connected service changes this row and nothing else.
+  const { service } = acaConnectionCounts(state.overview && state.overview.counts, st.phase);
   const row = document.querySelector('.ondemand');
   if (row) {
-    row.querySelector('.dot').className = `dot ${counts.service ? 'online' : 'offline'}`;
-    row.querySelector('.device-meta').innerHTML = counts.service
-      ? 'Connected service &middot; Ready to start runs' : 'Set up to start runs';
+    row.querySelector('.dot').className = `dot ${service ? 'online' : 'offline'}`;
+    row.querySelector('.device-meta').textContent = acaJobsRowMeta(!!service);
   }
 }
 

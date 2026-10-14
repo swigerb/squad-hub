@@ -16,6 +16,11 @@
 
 ## How this is tested
 
+The synthetic Git-repository policy test suite was removed because its generated
+fixture was blocked by endpoint protection. Those 35 policy regression cases are
+not covered by the remaining suite and must not be reported as passed. Manual UI
+review does not replace selection-policy coverage or production acceptance.
+
 Two rules, because both are easy to get wrong in ways that still look green.
 
 **Assert side effects, not replies.** Every approval verdict is a file on disk
@@ -28,10 +33,88 @@ fail *by name*. A mutation nothing catches is a mechanism nothing tests, and
 that is a finding rather than a pass.
 
 ```bash
-npm test                    # the suite
-node test/mutate.js         # break each mechanism, require a named test to fail
-node test/mutate.js --only "<name>"   # re-check one
+npm test                    # the complete ordinary regression
 ```
+
+### Proving a change: candidate acceptance
+
+The everyday question is "did the tests for what I touched really catch
+breakage in it?", not "does every mechanism in the repository still have a
+test?". `test/acceptance.js` answers the first one. It selects the mutations
+that bear on the files changed since an explicit base, runs them, and requires
+each to be caught by its named test.
+
+```powershell
+# What would be selected, and roughly what it costs. This runs nothing and
+# proves nothing: a plan is not acceptance.
+node test\acceptance.js --scope candidate --base origin/main --artifacts ..\acceptance-plan --plan
+
+# The real run. Artifacts must go to a new or empty directory outside the checkout.
+node test\acceptance.js --scope candidate --base origin/main --artifacts ..\acceptance-candidate
+# the same, through npm
+npm run test:candidate -- --base origin/main --artifacts ..\acceptance-candidate
+
+# Check a finished report: scope, source tree, and every proof.
+node test\acceptance.js --verify ..\acceptance-candidate\report.json --scope candidate
+```
+
+Exit code 0 means accepted (or, in the explicit `--plan` and `--verify` modes,
+planned or verified), 1 means rejected or blocked, 2 means bad arguments, and
+130 means interrupted. The artifacts directory holds `report.json`,
+`events.jsonl` and `timings.json`, plus the logs, proofs and worker copies, so a
+rejection can be read after the fact. Nothing is written inside the checkout.
+
+The candidate scope is risk-based, and says so. The report lists what it
+**selected**, what it **deferred** (left out of this scope, with the reason), and
+what the catalog **excludes** (the entries marked `skip`, by name). A deferred
+mutation was not run; only the exhaustive scope covers it. A pass is a pass for
+the selected set at that source tree, not for the whole catalog.
+
+One coordinated run does one full baseline of the regression at the start and
+one at the end, with an owning-suite or browser-scenario control for each
+mutation in between. The workers are isolated copies of the tree, and none of
+them repeats the baseline. How long a run takes depends on how many mutations
+the change selects and on the machine, so there is no promised duration.
+`--jobs <N>` sets the number of workers, `--history <timings.json>` from an
+earlier run only changes ordering and estimates, and `--reuse-baseline <proof>`
+reuses an earlier baseline only after re-checking it against this tree. Any
+change to the source, the harness, the dependencies or the environment
+invalidates reused evidence.
+
+### Running one browser scenario
+
+The browser suite is split into independently runnable scenarios, each with its
+own hub, daemon, browser and the assertions it needs first.
+
+```powershell
+node test\browser-e2e-unit.js --list-scenarios      # JSON: every scenario id and its assertions
+node test\browser-e2e-unit.js --scenario aca-status-card
+```
+
+A selected scenario prints the ordinary `RESULT` lines for exactly its own and
+prerequisite assertions, plus a complete summary. A missing, unknown or
+duplicate selector exits 2 instead of running nothing. Without a selector the
+whole browser suite runs, as under `npm test`.
+
+### The exhaustive sweep
+
+Every runnable mutation, in one coordinated run, is a deliberate and much longer
+job. CI runs it on release pull requests and on a manual dispatch of the
+mutation acceptance workflow, not on ordinary pull requests, which use the
+candidate scope.
+
+```powershell
+node test\acceptance.js --scope exhaustive --jobs 4 --artifacts ..\acceptance-exhaustive
+node test\acceptance.js --verify ..\acceptance-exhaustive\report.json --scope exhaustive
+```
+
+`node test/mutate.js` (and `--only "<name>"`) is still there as the legacy
+full sweep. It is a deliberate tool, not the daily recommendation: each
+invocation takes its own baselines.
+
+The browser results are synthetic: a real Chromium against a fixture hub and
+fake agents. They do not prove live Container Apps behavior, an installed PWA,
+real phone behavior or notification delivery.
 
 The browser end-to-end suite drives a real Chromium against a real hub with a
 real daemon attached. It needs Playwright, which is deliberately **not** a

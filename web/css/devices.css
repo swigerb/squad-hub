@@ -257,10 +257,15 @@
 .device { position: relative; }
 .device:last-child { border-bottom: 0; }
 .device-main { flex: 1; min-width: 0; }
+/* The name is a flex row (expander, name, pill), where text-overflow never
+   applies: a long infrastructure name was silently clipped, with no ellipsis
+   and no way to read the rest. It wraps instead, so the whole name is on
+   screen; the title still carries it for a screen reader. */
 .device-name {
-  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600;
   display: flex; align-items: center; gap: 4px;
 }
+.device-name > span:not(.kind-pill) { min-width: 0; overflow-wrap: anywhere; }
 .device-meta { color: var(--faint); font-size: 12px; }
 .add { background: transparent; border: 1px solid var(--line); color: var(--dim);
   border-radius: 8px; width: 28px; height: 28px; cursor: pointer; }

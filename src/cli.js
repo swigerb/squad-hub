@@ -29,6 +29,42 @@ function value(argv, name, dflt = null) {
   return i !== -1 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : dflt;
 }
 
+/** The roster placements a person may choose. `aca` is a role the hub derives, never a setting. */
+const DEVICE_KINDS = Object.freeze(['local', 'cloud']);
+
+/**
+ * `--device-kind local|cloud` (or `--device-kind=<kind>`).
+ *
+ * Absent is a legitimate answer ({ kind: null }): the saved kind is left alone.
+ * Anything else must be exactly one known kind. A missing value, an unknown
+ * one, or the option given twice is an error, never a quiet fall back to the
+ * saved kind -- the person typed it because they wanted that placement, and
+ * silently ignoring it is the bug this option exists to fix.
+ */
+function parseDeviceKind(argv) {
+  const found = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--device-kind') {
+      const next = argv[i + 1];
+      found.push(next === undefined || next.startsWith('--') ? '' : next);
+      if (next !== undefined && !next.startsWith('--')) i += 1;
+    } else if (a.startsWith('--device-kind=')) {
+      found.push(a.slice('--device-kind='.length));
+    }
+  }
+  if (!found.length) return { kind: null };
+  if (found.length > 1) return { error: '--device-kind was given more than once' };
+  if (!DEVICE_KINDS.includes(found[0])) {
+    return {
+      error: found[0]
+        ? `unknown --device-kind: ${found[0]} (expected ${DEVICE_KINDS.join(' or ')})`
+        : `--device-kind needs a value (${DEVICE_KINDS.join(' or ')})`,
+    };
+  }
+  return { kind: found[0] };
+}
+
 /**
  * Options that belong to the CLI itself rather than to any one subcommand, and
  * are therefore accepted on EITHER side of it -- `squad-hub --env ppe status`
@@ -184,7 +220,7 @@ async function ensureDaemonRunning() {
  * `run "do the thing" --cwd /tmp/x` produced the prompt "do the thing /tmp/x".
  * Visible in the session list as a title with a path glued onto it.
  */
-function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth', 'agent', 'model', 'name']) {
+function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth', 'agent', 'model', 'name', 'device-kind']) {
   const out = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -482,12 +518,21 @@ async function probeHubConnection({ hub, token }, timeoutMs = 8000) {
  * live config or daemon is touched, a live-session gate requires `--force` to
  * restart a daemon that is carrying running work, and re-running connect with
  * the identical hub/token that is already live is a pure no-op.
+ *
+ * `--device-kind local|cloud` is the one way connect changes a device's
+ * roster placement. It is configuration of THIS device, not a claim carried by
+ * the token, and only an explicit option moves it: a reconnect that omits it
+ * keeps whatever kind was saved (so a real cloud worker is never quietly
+ * reclassified by a generic reconnect). A changed kind is an ordinary config
+ * change, so it takes the same probe, live-session `--force` gate, restart and
+ * rollback as a changed name or token.
  */
 async function cmdConnect(argv) {
   const hub = value(argv, 'hub');
   const token = value(argv, 'token');
   if (!hub || !token) {
     err('usage: squad-hub connect --hub <url> --token <device-token> [--name <device-name>]');
+    err('                          [--device-kind local|cloud]');
     err('                          [--allow-files|--allow-files-all] [--track-all] [--force]');
     err('');
     err('Mint a device token from the hub: account menu -> Connect a device,');
@@ -512,9 +557,18 @@ async function cmdConnect(argv) {
     return 2;
   }
 
+  // Offline, like the checks above: a malformed kind must fail before the
+  // network, the config or the daemon is touched.
+  const deviceKind = parseDeviceKind(argv);
+  if (deviceKind.error) {
+    err(deviceKind.error);
+    return 2;
+  }
+
   const name = value(argv, 'name');
   const force = flag(argv, 'force');
   const patch = { server: hub, token };
+  if (deviceKind.kind) patch.deviceKind = deviceKind.kind;
   /**
    * What to call this device.
    *
@@ -2024,7 +2078,11 @@ function usage() {
 
   ONE-TIME PER MACHINE
   squad-hub connect --hub <url> --token <device-token> [--name <device-name>]
+                     [--device-kind local|cloud]
                      [--allow-files|--allow-files-all] [--track-all]
+                     --device-kind sets where this device is listed (Local machines or
+                     Cloud devices). Left out, the saved kind is kept. Releases before
+                     it existed ignore the option and keep the saved kind.
 
   THE SERVICE (hosted already for most people -- do not run this to use a hosted hub)
   squad-hub serve [--port 7420] [--auth dev|github|entra]

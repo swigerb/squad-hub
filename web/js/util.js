@@ -467,7 +467,9 @@ export function activityLine(s, device) {
   if (isStaleSession(s, device)) return 'Device unreachable. Nothing to answer here';
   const pending = (s.pendingApprovals || []).length > 0;
   if (pending || s.status === 'waiting_approval') return 'Waiting for input';
-  return s.activity || '';
+  // An older device may still send "Running Running tests"; one "Running" is
+  // all the row needs.
+  return String(s.activity || '').replace(/^(running\b[\s:]*)+(?=running\b)/i, '');
 }
 
 /**

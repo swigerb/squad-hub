@@ -1133,7 +1133,7 @@ function apiRequest(port, path, token, opts = {}) {
   // =========================================================================
 
   await checkAsync('an option the workflow does not declare is refused with 4xx, before any side effect', async () => {
-    const { server, state } = fakeGitHubApp({
+    const { server, state, calls } = fakeGitHubApp({
       reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS,
     });
     const port = await listen(server);
@@ -1150,12 +1150,45 @@ function apiRequest(port, path, token, opts = {}) {
     await svc.close();
     server.close();
     assert.ok(r.status >= 400 && r.status < 500, `expected a 4xx, got ${r.status}: ${JSON.stringify(r.body)}`);
-    assert.match(r.body.error, /model/);
+    // The request is well-formed and its model is one the repository's config
+    // offers, so the declared-inputs check is what must stop it. A refusal from
+    // the later choice validation, or GitHub's own 422, is also a 4xx that names
+    // the model and would stay green with this check removed, so the hub's own
+    // sentence is required and GitHub must never have been asked to dispatch.
+    assert.match(r.body.error, /acme\/widgets's squad-dispatch\.yml does not declare the input\(s\): model\./, JSON.stringify(r.body));
+    assert.strictEqual(calls.byPath['POST /repos/acme/widgets/actions/workflows/squad-dispatch.yml/dispatches'] || 0, 0,
+      'the undeclared option was sent to GitHub, which refused it instead of the hub');
     assert.strictEqual(state.dispatches.length, 0, 'the undeclared-input refusal still dispatched the workflow');
+
+    // The same guard with a catalog-aware request: this workflow declares `model`
+    // and the repository offers `claude`, so the choice validation has nothing to
+    // object to. Only the undeclared publish_pr is left, and without the guard
+    // that request is dispatched, so the hub's own sentence and a dispatch count
+    // of zero are the only things that can pass.
+    const catalog = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: ['issue', 'prompt', 'model'],
+    });
+    const catalogPort = await listen(catalog.server);
+    const catalogSvc = new HubService({
+      auth: githubAuth(), serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${catalogPort}` }),
+    });
+    const catalogAddr = await catalogSvc.listen(0, '127.0.0.1');
+    const c = await apiRequest(catalogAddr.port, '/api/aca/dispatch', TEST_TOKEN, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go', model: 'claude', publishPr: false },
+    });
+    await catalogSvc.close();
+    catalog.server.close();
+    assert.ok(c.status >= 400 && c.status < 500, `expected a 4xx, got ${c.status}: ${JSON.stringify(c.body)}`);
+    assert.match(c.body.error, /acme\/widgets's squad-dispatch\.yml does not declare the input\(s\): publish_pr\./, JSON.stringify(c.body));
+    assert.strictEqual(catalog.calls.byPath['POST /repos/acme/widgets/actions/workflows/squad-dispatch.yml/dispatches'] || 0, 0,
+      'the undeclared publish_pr was sent to GitHub, which is where only a missing guard would let it go');
+    assert.strictEqual(catalog.state.dispatches.length, 0, 'the undeclared-input refusal still dispatched the workflow');
+    assert.strictEqual(catalog.state.createdIssues.length, 0, 'an issue was created for a refused request');
   });
 
   await checkAsync('the undeclared-input refusal runs before newIssue ever creates anything', async () => {
-    const { server, state } = fakeGitHubApp({
+    const { server, state, calls } = fakeGitHubApp({
       reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS,
     });
     const port = await listen(server);
@@ -1172,7 +1205,9 @@ function apiRequest(port, path, token, opts = {}) {
     await svc.close();
     server.close();
     assert.ok(r.status >= 400 && r.status < 500, JSON.stringify(r));
+    assert.match(r.body.error, /acme\/widgets's squad-dispatch\.yml does not declare the input\(s\): reviewer\./, JSON.stringify(r.body));
     assert.strictEqual(state.createdIssues.length, 0, 'an issue was created despite the request being refused');
+    assert.strictEqual(calls.byPath['POST /repos/acme/widgets/actions/workflows/squad-dispatch.yml/dispatches'] || 0, 0);
     assert.strictEqual(state.dispatches.length, 0);
   });
 
@@ -1506,18 +1541,38 @@ function apiRequest(port, path, token, opts = {}) {
   });
 
   await checkAsync('a device token can never reach /api/aca/dispatch', async () => {
+    // A 403 alone proves little here: past the gate the route would refuse a
+    // non-GitHub principal with a 403 of its own. So this asserts WHERE the
+    // request was stopped, by what the hub did before and after that point: the
+    // API gate's own message, and no read of whether the App is enabled, no
+    // rate-limit charge and no call to GitHub, all of which a request that got
+    // past the gate makes.
+    const { server, calls, state } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
     const auth = githubAuth();
+    const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    let appEnabledReads = 0;
+    Object.defineProperty(githubApp, 'enabled', { get() { appEnabledReads += 1; return true; } });
     const svc = new HubService({
-      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
-      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM }),
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false, githubApp,
     });
+    let rateLimitCharges = 0;
+    const charge = svc.acaRateLimiter.check.bind(svc.acaRateLimiter);
+    svc.acaRateLimiter.check = (key) => { rateLimitCharges += 1; return charge(key); };
     const addr = await svc.listen(0, '127.0.0.1');
     const deviceToken = auth.mintDeviceToken({ key: 'me', name: 'a device' });
     const r = await apiRequest(addr.port, '/api/aca/dispatch', deviceToken, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go' },
     });
     await svc.close();
+    server.close();
     assert.strictEqual(r.status, 403, JSON.stringify(r));
+    assert.match(r.body.error, /device token cannot be used to call the API/, `refused somewhere other than the API gate: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(appEnabledReads, 0, 'the request reached the ACA route: it read whether the GitHub App is enabled');
+    assert.strictEqual(rateLimitCharges, 0, 'the request reached the ACA route: it was charged against the dispatch limiter');
+    assert.strictEqual(calls.total, 0, `GitHub was called ${calls.total} time(s) for a device token`);
+    assert.strictEqual(state.dispatches.length, 0, 'a workflow was dispatched for a device token');
+    assert.strictEqual(state.createdIssues.length, 0, 'an issue was created for a device token');
   });
 
   // =========================================================================

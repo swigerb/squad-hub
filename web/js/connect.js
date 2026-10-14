@@ -46,6 +46,63 @@ export function openNew(deviceId) {
 }
 
 /**
+ * Which kind of device the person asked to connect, when a control said so:
+ * the "+" beside Local machines or Cloud devices. `null` is the generic
+ * Connect a device (account menu, New session with nothing online), which
+ * makes no choice, so its command carries no kind and the CLI keeps whatever
+ * the machine already has.
+ *
+ * Reset by EVERY open, so a section's intent can never leak into a later
+ * generic open. `connectSession` numbers each open (and each close): a token
+ * response that arrives after the dialog was reopened or closed belongs to an
+ * earlier session and must not render a command for the current intent.
+ */
+const CONNECT_KINDS = ['local', 'cloud'];
+let connectKind = null;
+let connectSession = 0;
+
+/** Only an exact, known kind is an intent; anything else (an Event, a typo) is no choice. */
+export function normalizeConnectKind(kind) {
+  return CONNECT_KINDS.includes(kind) ? kind : null;
+}
+
+const CONNECT_KIND_NOTE = {
+  local: 'Connecting a local machine. The command adds --device-kind local, which needs squad-hub 0.7.1 or newer. Version 0.7.0 and older ignore it and keep the device\'s saved kind, so update squad-hub first.',
+  cloud: 'Connecting a cloud device. The command adds --device-kind cloud, which needs squad-hub 0.7.1 or newer. Version 0.7.0 and older ignore it and keep the device\'s saved kind, so update squad-hub first.',
+};
+
+/**
+ * Build the command the person will paste.
+ *
+ * These are DEVICE settings rather than token claims, so the hub cannot apply
+ * them itself -- the only place they can take effect is the command run on the
+ * machine. Offering them here is the difference between "it connected but
+ * cannot open a file, and nothing said it wouldn't" and a device that works
+ * the way it was set up to.
+ *
+ * --allow-files-all implies --allow-files, so only one is ever emitted.
+ * --device-kind is emitted only for a kind the person chose.
+ */
+export function connectCommand({
+  origin, token, kind = null, files = false, filesAll = false, trackAll = false,
+}) {
+  const flags = [];
+  const deviceKind = normalizeConnectKind(kind);
+  if (deviceKind) flags.push(`--device-kind ${deviceKind}`);
+  if (filesAll) flags.push('--allow-files-all');
+  else if (files) flags.push('--allow-files');
+  if (trackAll) flags.push('--track-all');
+  return `squad-hub connect --hub ${origin} --token ${token}${flags.length ? ` ${flags.join(' ')}` : ''}`;
+}
+
+function syncConnectKindNote() {
+  const note = $('cnKindNote');
+  if (!note) return;
+  note.textContent = connectKind ? CONNECT_KIND_NOTE[connectKind] : '';
+  note.hidden = !connectKind;
+}
+
+/**
  * Connect a device.
  *
  * This mints a DEVICE TOKEN rather than handing out the signed-in user's own
@@ -53,14 +110,25 @@ export function openNew(deviceId) {
  * which meant following the built-in instructions produced the insecure setup:
  * a credential on a server that could also read this page's data and start work
  * on every other device.
+ *
+ * `kind` is the section's intent (see `connectKind`); omit it for the generic dialog.
  */
-export function openConnect() {
+export function openConnect(kind) {
+  connectKind = normalizeConnectKind(kind);
+  connectSession += 1;
+  syncConnectKindNote();
   $('cnErr').hidden = true;
   $('cnResult').hidden = true;
   $('cnCreate').disabled = false;
   $('cnCreate').textContent = 'Create token';
   $('connectScrim').hidden = false;
   $('cnLabel').focus();
+}
+
+function closeConnect() {
+  connectSession += 1;
+  connectKind = null;
+  $('connectScrim').hidden = true;
 }
 
 /**
@@ -101,6 +169,11 @@ async function removeDevice(deviceId) {
 
 async function createDeviceToken() {
   const btn = $('cnCreate');
+  // This request belongs to the dialog open it started in. If the dialog is
+  // closed or reopened (possibly for another kind) before the response lands,
+  // the answer is stale and must neither render nor report an error.
+  const session = connectSession;
+  const kind = connectKind;
   btn.disabled = true;
   btn.textContent = 'Creating…';
   $('cnErr').hidden = true;
@@ -113,28 +186,21 @@ async function createDeviceToken() {
         ttlHours: Number($('cnTtl').value),
       },
     });
-    /**
-     * Build the command the person will actually paste.
-     *
-     * These are DEVICE settings rather than token claims, so the hub cannot
-     * apply them itself -- the only place they can take effect is the command
-     * run on the machine. Offering them here is the difference between "it
-     * connected but cannot open a file, and nothing said it wouldn't" and a
-     * device that works the way it was set up to.
-     *
-     * --allow-files-all implies --allow-files, so only one is ever emitted.
-     */
-    const flags = [];
-    if ($('cnFilesAll').checked) flags.push('--allow-files-all');
-    else if ($('cnFiles').checked) flags.push('--allow-files');
-    if ($('cnTrackAll').checked) flags.push('--track-all');
-    const cmd = `squad-hub connect --hub ${location.origin} --token ${r.token}${
-      flags.length ? ` ${flags.join(' ')}` : ''}`;
+    if (session !== connectSession) return;
+    const cmd = connectCommand({
+      origin: location.origin,
+      token: r.token,
+      kind,
+      files: $('cnFiles').checked,
+      filesAll: $('cnFilesAll').checked,
+      trackAll: $('cnTrackAll').checked,
+    });
     $('cnCmd').textContent = cmd;
     $('cnResult').hidden = false;
     btn.textContent = 'Create another';
     btn.disabled = false;
   } catch (e) {
+    if (session !== connectSession) return;
     $('cnErr').textContent = e.message;
     $('cnErr').hidden = false;
     btn.disabled = false;
@@ -252,7 +318,7 @@ export function wireConnect({ spawnRequest, spawnError }) {
     const action = e.target.closest('[data-action]');
     if (action) {
       if (action.dataset.action === 'aca') openAca();
-      else if (action.dataset.action === 'connect-device') openConnect();
+      else if (action.dataset.action === 'connect-device') openConnect(action.dataset.connectKind);
       return;
     }
     // Only after every button inside a section header has had first claim on
@@ -275,7 +341,7 @@ export function wireConnect({ spawnRequest, spawnError }) {
     toggleDeviceSection(sec.dataset.sec);
   };
 
-  $('cnCancel').onclick = () => { $('connectScrim').hidden = true; };
+  $('cnCancel').onclick = () => closeConnect();
   $('cnCreate').onclick = () => createDeviceToken();
   // "…anywhere" only means something once a working directory is allowed at
   // all, so it follows the box above it rather than sitting there as a live

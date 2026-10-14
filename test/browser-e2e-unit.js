@@ -24,6 +24,38 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const browserScenarios = require('./helpers/browser-scenarios');
+
+/**
+ * Which journey this process runs.
+ *
+ * With no argument it runs the whole suite, exactly as before. With
+ * `--scenario <id>` it runs only that scenario's journey (see
+ * test/helpers/browser-scenarios.js): every check outside the scenario is not
+ * executed at all, so its browser interactions never happen, and the checks the
+ * scenario builds on run first, in file order, with their ordinary RESULT lines.
+ * A selector that cannot be honoured exits nonzero before anything starts.
+ */
+const selection = browserScenarios.parseSelection(process.argv.slice(2));
+if (selection.error) {
+  console.log(`ERROR: ${selection.error}`);
+  console.log('usage: node test/browser-e2e-unit.js [--scenario <id> | --list-scenarios]');
+  process.exit(2);
+}
+if (selection.list) {
+  console.log(JSON.stringify(browserScenarios.SCENARIOS.map((s) => ({
+    id: s.id, summary: s.summary, titles: s.titles, alsoRuns: s.alsoRuns,
+  })), null, 2));
+  process.exit(0);
+}
+const scenario = selection.scenario;
+const scenarioTitles = scenario ? new Set(browserScenarios.titlesToRun(scenario)) : null;
+/** Whether this process runs the check titled `name`. */
+const scenarioRuns = (name) => !scenarioTitles || scenarioTitles.has(name);
+const scenarioRan = new Map();
+/** The scenarios whose first check expects the main page already on the controls (no navigation of its own). */
+const CONTROLS_PAGE_SCENARIOS = ['list-controls', 'new-menu', 'tidy-and-forget', 'device-removal',
+  'bell-and-account-menu', 'rail-and-aca-card', 'keyword-and-keyboard'];
 
 let chromium = null;
 try { ({ chromium } = require('playwright')); } catch { /* optional */ }
@@ -139,6 +171,8 @@ function listen(server) {
 let pass = 0; let fail = 0;
 let browserForChecks = null;
 async function check(name, fn) {
+  if (!scenarioRuns(name)) return;
+  scenarioRan.set(name, (scenarioRan.get(name) || 0) + 1);
   const pages = () => browserForChecks ? browserForChecks.contexts().flatMap((c) => c.pages()) : [];
   const dialogs = new Map(pages().map((p) => [p, p.listeners('dialog')]));
   try {
@@ -809,6 +843,91 @@ function railFacts(page) {
       await page.click('[data-scope="all"]');
     });
 
+    // ---- the device kind a Connect dialog asks for ---------------------------
+    //
+    // The defect: every "+" and Connect link opened the same dialog, so a
+    // person who chose Local machines got a command that could not say so, and
+    // a machine whose saved kind was cloud stayed under Cloud devices.
+    const openFrom = (sel) => page.$eval(sel, (el) => el.click());
+    const mintCommand = async () => {
+      await page.click('#cnCreate');
+      await page.waitForSelector('#cnResult:not([hidden])', { timeout: 10000 });
+      return page.textContent('#cnCmd');
+    };
+    await check('the Connect dialog carries the Local or Cloud choice into its command, and a generic open carries none', async () => {
+      await openFrom('#deviceList [data-sec="cloud"] [data-action="connect-device"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      assert.match(await page.textContent('#cnKindNote'), /cloud device/i);
+      await page.fill('#cnLabel', 'kept label');
+      assert.match(await mintCommand(), / --device-kind cloud(?: |$)/, 'the Cloud devices + did not ask for a cloud device');
+
+      // Reopened from the other section without closing: the new intent wins and
+      // nothing else in the dialog is reset.
+      await openFrom('#deviceList [data-sec="local"] [data-action="connect-device"]');
+      assert.match(await page.textContent('#cnKindNote'), /local machine/i);
+      assert.strictEqual(await page.inputValue('#cnLabel'), 'kept label', 'reopening reset the device name');
+      assert.strictEqual(await page.isVisible('#cnResult'), false, 'the previous command stayed on screen');
+      const local = await mintCommand();
+      assert.match(local, / --device-kind local(?: |$)/, 'the Local machines + did not ask for a local device');
+      assert.doesNotMatch(local, /--device-kind cloud/);
+
+      // Reopened with no choice while still open (+ New, with nothing online):
+      // the Local intent must not linger into the generic dialog.
+      await openFrom('#newBtn');
+      assert.strictEqual(await page.isVisible('#cnKindNote'), false, 'a generic reopen kept the previous kind note');
+      assert.doesNotMatch(await mintCommand(), /--device-kind/, 'a generic reopen inherited the previous kind');
+      await page.click('#cnCancel');
+
+      // The Local and Cloud empty states.
+      await page.click('[data-scope="cloud"]');
+      await page.waitForSelector('#empty:not([hidden])', { timeout: 5000 });
+      await openFrom('#empty [data-action="connect-device"]');
+      assert.match(await mintCommand(), / --device-kind cloud(?: |$)/, 'the empty Cloud tab did not ask for a cloud device');
+      await page.click('#cnCancel');
+      await page.click('[data-scope="local"]');
+      await openFrom('#empty [data-action="connect-device"]');
+      assert.match(await mintCommand(), / --device-kind local(?: |$)/, 'the empty Local tab did not ask for a local device');
+      await page.click('#cnCancel');
+      await page.click('[data-scope="all"]');
+
+      // The account menu chooses nothing, so it must not inherit the last intent.
+      await page.click('#menuBtn');
+      await page.click('[data-menu="connect"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      assert.strictEqual(await page.isVisible('#cnKindNote'), false, 'the generic dialog still shows a kind');
+      const generic = await mintCommand();
+      assert.doesNotMatch(generic, /--device-kind/, 'the generic Connect a device inherited a stale kind');
+      assert.match(generic, /^squad-hub connect --hub \S+ --token sqhd1\./);
+      await page.click('#cnCancel');
+    });
+
+    await check('a token response that lands after the dialog was reopened never renders a command for the old intent', async () => {
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      await page.route('**/api/device-tokens', async (route) => {
+        if (route.request().method() === 'POST') await gate;
+        await route.continue();
+      });
+      try {
+        await openFrom('#deviceList [data-sec="cloud"] [data-action="connect-device"]');
+        await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+        const before = await page.textContent('#cnCmd');
+        await page.click('#cnCreate');
+        await page.click('#cnCancel');
+        await openFrom('#deviceList [data-sec="local"] [data-action="connect-device"]');
+        release();
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 600)));
+        assert.strictEqual(await page.isVisible('#cnResult'), false, 'a stale response rendered into the reopened dialog');
+        assert.strictEqual(await page.textContent('#cnCmd'), before, 'a stale response rewrote the command');
+        assert.strictEqual(await page.textContent('#cnCreate'), 'Create token', 'the reopened dialog kept the old request\'s busy state');
+      } finally {
+        release();
+        await page.unroute('**/api/device-tokens');
+      }
+      assert.match(await mintCommand(), / --device-kind local(?: |$)/, 'the reopened Local dialog did not ask for a local device');
+      await page.click('#cnCancel');
+    });
+
     // ---- minting a device token through the UI ---------------------------
     let deviceToken = null;
     await check('the UI mints a DEVICE token, not the user credential', async () => {
@@ -1205,8 +1324,12 @@ function railFacts(page) {
     // name the browser used to provide for free, and every one of those is a
     // thing that can silently stop working.
     // -----------------------------------------------------------------------
-    await gotoSettled(page, `${origin}/?token=${userToken}`);
-    await page.waitForSelector('.selectpill', { timeout: 10000 });
+    // Outside any check, so a scenario that does not own the controls below must
+    // not pay for it (or depend on it): see browser-scenarios.js.
+    if (!scenario || CONTROLS_PAGE_SCENARIOS.includes(scenario.id)) {
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
+      await page.waitForSelector('.selectpill', { timeout: 10000 });
+    }
 
     await check('a dropdown opens on click and lists exactly the VISIBLE options its select holds', async () => {
       await page.click('#statusFilter >> xpath=..');
@@ -5838,9 +5961,13 @@ function railFacts(page) {
           const t = await pageAca.$eval('#acaStatusCard .status', (el) => el.textContent).catch(() => null);
           return t && /^Connected$/.test(t.trim()) ? true : null;
         }, 'the card to settle on Connected once the delayed fetch resolves');
-        assert.strictEqual((await pageAca.textContent('#deviceCount')).trim(), '1',
-          'a verified ACA service without a worker still counts as one connection');
-        assert.match(await pageAca.textContent('.ondemand .device-meta'), /Ready to start runs/);
+        assert.strictEqual((await pageAca.textContent('#deviceCount')).trim(), '0',
+          'a connected ACA service is not a device, so a hub with none still says 0 (#259)');
+        assert.doesNotMatch(await pageAca.textContent('#deviceSummary'), /ACA ready|[1-9]\d* online/,
+          'the "N online" line counts devices, and the service is not one (#259)');
+        const jobsMeta = (await pageAca.textContent('.ondemand .device-meta')).trim();
+        assert.strictEqual(jobsMeta, 'Ready to start runs',
+          'the row says what connected means for the user, not that a service is connected (the card says Connected)');
         const connectedTxt = await pageAca.textContent('#acaStatusCard');
         assert.match(connectedTxt, /Issue watcher/, 'no Issue watcher row once connected');
         assert.match(connectedTxt, /Ralph/, 'no Ralph row once connected');
@@ -5959,6 +6086,45 @@ function railFacts(page) {
           const t = await pageAca2.textContent('#acaStatusCard').catch(() => null);
           return t && /Issue watcher/.test(t) ? true : null;
         }, 'the watcher row to render at all');
+
+        // #259: the two persistent jobs are the ONLY two devices on this hub.
+        // The count says 2 (never 3 with the connected service), the summary
+        // says 2 online, and neither job is listed as an ACA run -- they are
+        // services, shown with their full infrastructure name.
+        await until(async () => ((await pageAca2.textContent('#deviceCount')).trim() === '2' ? true : null),
+          'the rail to count the two real devices');
+        const railAca2 = await pageAca2.evaluate(() => {
+          const names = (sel) => [...document.querySelectorAll(sel)].map((s) => s.textContent.trim());
+          const fit = (s) => {
+            const r = s.getBoundingClientRect();
+            const dev = s.closest('.device').getBoundingClientRect();
+            return {
+              text: s.textContent.trim(), wholeWidth: s.scrollWidth <= s.clientWidth + 1,
+              inside: r.left >= dev.left - 1 && r.right <= dev.right + 1,
+            };
+          };
+          return {
+            badge: document.getElementById('deviceCount').textContent.trim(),
+            summary: document.getElementById('deviceSummary').textContent.replace(/\s+/g, ' ').trim(),
+            acaLabel: document.querySelector('[data-sec="aca"] .sec-label').textContent.trim(),
+            acaNames: names('#devsecbody-aca .device:not(.aca-rail) .device-name > span:not(.kind-pill)'),
+            cloudNames: names('#devsecbody-cloud .device-name > span:not(.kind-pill)'),
+            cloudFit: [...document.querySelectorAll('#devsecbody-cloud .device-name > span:not(.kind-pill)')].map(fit),
+          };
+        });
+        assert.strictEqual(railAca2.badge, '2', 'the watcher and Ralph are two devices, not three with the service');
+        assert.match(railAca2.summary, /^2 online/, `the summary was "${railAca2.summary}"`);
+        assert.doesNotMatch(railAca2.summary, /ACA ready/);
+        assert.match(railAca2.acaLabel, /ACA runs \(0\)/, 'the persistent jobs are not ACA runs');
+        assert.deepStrictEqual(railAca2.acaNames, []);
+        assert.deepStrictEqual(railAca2.cloudNames.slice().sort(), [RALPH_DEVICE_ID, WATCH_DEVICE_ID].sort(),
+          'the watcher and Ralph keep their rows, with the whole infrastructure name');
+        for (const f of railAca2.cloudFit) {
+          assert.ok(f.wholeWidth && f.inside, `"${f.text}" is clipped or overflows its row: ${JSON.stringify(f)}`);
+        }
+        if (process.env.SQUAD_HUB_SCREENSHOT_DIR) {
+          await pageAca2.screenshot({ path: path.join(process.env.SQUAD_HUB_SCREENSHOT_DIR, 'rail-aca-services-desktop.png') });
+        }
 
         const textNoMeta = await pageAca2.textContent('#acaStatusCard');
         assert.doesNotMatch(textNoMeta, /Issue watcher[^\n]*Not connected/,
@@ -6872,6 +7038,20 @@ function railFacts(page) {
     fs.rmSync(home, { recursive: true, force: true });
   }
 
+  if (scenario) {
+    // A selected scenario must run every assertion it names, once. One that did
+    // not (a renamed title, a check moved out of reach) would otherwise read as
+    // a shorter, passing run.
+    const wanted = browserScenarios.titlesToRun(scenario);
+    const missed = wanted.filter((t) => scenarioRan.get(t) !== 1);
+    if (missed.length) {
+      fail += 1;
+      const why = `did not run exactly once: ${missed.join(' | ')}`;
+      console.log(`  FAIL scenario ${scenario.id} ran every assertion it names\n         ${why}`);
+      console.log(`RESULT\tfail\tscenario ${scenario.id} ran every assertion it names\t${why}`);
+    }
+    console.log(`\nscenario ${scenario.id}: ${scenario.titles.length} owned and ${wanted.length - scenario.titles.length} prerequisite assertions`);
+  }
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.log(`ERROR: ${e.message}`); console.log(e.stack); process.exit(1); });

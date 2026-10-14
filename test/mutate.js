@@ -3025,8 +3025,8 @@ import { syncSession } from './js/detail-control.js';`,
     // must never also be picked up by the opposite role's name fallback.
     name: 'findAcaRoleDevice stops excluding a device that explicitly claims the OTHER role from the name fallback',
     file: 'web/js/aca-status.js',
-    find: `    if (d.meta && d.meta.role && d.meta.role !== role) return false;`,
-    replace: `    if (!process.env.MUTANT && d.meta && d.meta.role && d.meta.role !== role) return false; // MUTATION`,
+    find: `  if (d.meta && d.meta.role) return d.meta.role === role;`,
+    replace: `  if (!process.env.MUTANT && d.meta && d.meta.role) return d.meta.role === role; // MUTATION`,
     mustFail: 'a device explicitly self-reporting meta.role "watch" is never ALSO picked up as Ralph by name coincidence',
   },
   {
@@ -4691,6 +4691,22 @@ if ($health.accessStore -ne 'durable') {`,
     return { available: false, reason: \`squad \${foundVersion || '(unknown version)'} is too old; need >= 0.13\` };
   }`,
     mustFail: 'squad versions older than 0.13 are rejected',
+  },
+  {
+    name: 'squad health version probe gives up after a fixed 50ms',
+    file: 'src/squad-health.js',
+    find: `  const version = await spawnBounded(command, [...parts.prefix, '--version'], {
+    cwd: projectDir, timeoutMs, maxOutputBytes, env,`,
+    replace: `  const version = await spawnBounded(command, [...parts.prefix, '--version'], {
+    cwd: projectDir, timeoutMs: process.env.MUTANT ? 50 : timeoutMs, maxOutputBytes, env, // MUTATION`,
+    mustFail: 'a slow cold start of the version probe still yields the too-old verdict, not a timeout',
+  },
+  {
+    name: 'a timeout on squad --version is reported as a crash instead of a timeout',
+    file: 'src/squad-health.js',
+    find: `  if (version.timedOut) return { available: false, reason: 'timed out while running \`squad --version\`' };`,
+    replace: `  if (version.timedOut && !process.env.MUTANT) return { available: false, reason: 'timed out while running \`squad --version\`' }; // MUTATION`,
+    mustFail: 'a squad that starts slower than the bound is reported as timed out on --version, not as too old or crashed',
   },
   {
     name: 'squad health treats exit-code-1 JSON as unavailable',
@@ -11568,9 +11584,9 @@ prompt: |
   },
   {
     name: '[aca rail] the device count in the rail header includes pending dispatches',
-    file: 'web/js/aca-status.js',
-    find: `    badge.textContent = counts.devices;`,
-    replace: `    badge.textContent = counts.devices + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
+    file: 'web/js/devices.js',
+    find: `  $('deviceCount').textContent = counts.devices || 0;`,
+    replace: `  $('deviceCount').textContent = (counts.devices || 0) + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
     mustFail: 'rail flow: counts, summary and the pending main list ignore the rail row',
   },
   // Real Chromium (test/browser-e2e-unit.js): the pulse is a computed style
@@ -11599,6 +11615,87 @@ prompt: |
     find: `    if (retry) { retryAcaPending(retry.dataset.acaRetry).then(render); return; }`,
     replace: `    if (retry) return; // MUTATION: the rail's Check again is a dead button`,
     mustFail: 'a failed or unknown ACA dispatch stops pulsing in the rail, says why, and Check again re-reads it (#172, #178)',
+  },
+
+  // #259: the rail's counts, grouping and wording. Each of these re-opens one
+  // defect the audit found, and names the test that must notice.
+  {
+    name: '[#259 rail] a connected ACA service is added to the device count again',
+    file: 'web/js/aca-status.js',
+    find: `    devices: counts.devices || 0,
+    online: counts.online || 0,`,
+    replace: `    devices: (counts.devices || 0) + (phase === ACA_PHASE.CONNECTED ? 1 : 0), // MUTATION
+    online: (counts.online || 0) + (phase === ACA_PHASE.CONNECTED ? 1 : 0),`,
+    mustFail: 'a connected ACA service is flagged beside the counts, never added to them',
+  },
+  {
+    name: '[#259 rail] the status card repaints the device badge with the service included',
+    file: 'web/js/aca-status.js',
+    find: `  const row = document.querySelector('.ondemand');
+  if (row) {`,
+    replace: `  const badge = $('deviceCount');
+  if (badge && service) badge.textContent = String((Number(badge.textContent) || 0) + 1); // MUTATION
+  const row = document.querySelector('.ondemand');
+  if (row) {`,
+    mustFail: 'the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)',
+  },
+  {
+    name: '[#259 rail] the persistent watcher and Ralph are listed as ACA runs again',
+    file: 'web/js/devices.js',
+    find: `  const isRun = (d) => d.kind === 'aca' && !isPersistentAcaJob(d);`,
+    replace: `  const isRun = (d) => d.kind === 'aca'; // MUTATION`,
+    mustFail: 'the persistent watcher and Ralph jobs are services, not ACA runs',
+  },
+  {
+    name: '[#259 rail] the Squad on ACA row announces Connected service again',
+    file: 'web/js/aca-rail.js',
+    find: `  return connected ? 'Ready to start runs' : 'Set up to start runs';`,
+    replace: `  return connected ? 'Connected service \u00b7 Ready to start runs' : 'Set up to start runs'; // MUTATION`,
+    mustFail: 'rail section: the always-visible ACA jobs row is unchanged and uncounted',
+  },
+  {
+    name: '[#259 rail] the empty ACA section lowercases the acronym',
+    file: 'web/js/devices.js',
+    find: `label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())`,
+    replace: `label.toLowerCase() /* MUTATION */`,
+    mustFail: 'rail flow: nothing tracked draws no rail row and the empty ACA section reads as before',
+  },
+  {
+    name: '[#259 rail] an infrastructure name is cut off on one line again',
+    file: 'web/css/devices.css',
+    find: `.device-name > span:not(.kind-pill) { min-width: 0; overflow-wrap: anywhere; }`,
+    replace: `.device-name > span:not(.kind-pill) { min-width: 0; overflow-wrap: anywhere; overflow: hidden; white-space: nowrap; } /* MUTATION */`,
+    mustFail: 'the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)',
+  },
+  {
+    name: '[#259 rail] the device name rule goes back to a nowrap flex row',
+    file: 'web/css/devices.css',
+    find: `.device-name {
+  font-weight: 600;`,
+    replace: `.device-name {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; /* MUTATION */`,
+    mustFail: 'the device name is not clipped by a nowrap flex row that shows no ellipsis',
+  },
+  {
+    name: '[#259 activity] a repeated Running in a tool title is not collapsed',
+    file: 'src/session-status.js',
+    find: `  while (/^running\\b[\\s:]*running\\b/i.test(t))`,
+    replace: `  while (false && /^running\\b[\\s:]*running\\b/i.test(t)) /* MUTATION */`,
+    mustFail: 'a tool title that repeats Running is shown behind a single Running',
+  },
+  {
+    name: '[#259 activity] the row shows the doubled Running an older device sends',
+    file: 'web/js/util.js',
+    find: `  return String(s.activity || '').replace(/^(running\\b[\\s:]*)+(?=running\\b)/i, '');`,
+    replace: `  return s.activity || ''; // MUTATION`,
+    mustFail: 'a device that still sends a doubled Running shows one Running',
+  },
+  {
+    name: '[#259 activity] a watched session prefixes its tool with Running again',
+    file: 'src/tui-session.js',
+    find: `this.touch(runningActivity(toolName, 'Running a tool'));`,
+    replace: `this.touch(toolName ? \`Running \${toolName}\` : 'Running a tool'); // MUTATION`,
+    mustFail: 'A WATCHED SESSION READS ONE "Running" WHATEVER THE HOOK CALLS THE TOOL',
   },
 
   // The 0.7.0 changelog is the feature list a reader trusts, and the audit
