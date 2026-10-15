@@ -15,6 +15,7 @@
 import { state, api } from './api.js';
 import { $, esc, ago } from './util.js';
 import { acaJobsRowMeta } from './aca-rail.js';
+import { acaDispatchSession } from './aca-match.js';
 
 /** The three phases the card's own fetch can be in, independent of whether
  * ANY Squad on ACA activity has ever happened. */
@@ -237,9 +238,28 @@ export function acaRalphLine(devices = []) {
  * A `GET /api/aca/dispatches` row's Actions run status, in words. Mirrors
  * `docs/api.md`'s own list of `status.state` values so a new one added there
  * is never silently swallowed into "unknown" here.
+ *
+ * `session` (#262) is the real session `acaDispatchSession` proved this
+ * dispatch started. Its own status, in the session vocabulary, is the job's
+ * outcome and replaces the "not confirmed" wording; the Actions run alone
+ * never says the job succeeded. A failed dispatch run keeps its own words.
+ *
+ * `stopped` reads "job ended", not "job stopped": a one-shot cloud run stops
+ * its own idle session when its work is finished (`src/cloud-device.js`), so
+ * the hub records a normal finish as `stopped`, the same as a manual stop.
  */
-export function acaDispatchStatusLabel(status) {
+const ACA_SESSION_OUTCOME = {
+  starting: 'job running', active: 'job running', waiting_approval: 'job running', idle: 'job running',
+  done: 'job completed', failed: 'job failed', stopped: 'job ended',
+};
+
+export function acaDispatchStatusLabel(status, session = null) {
   const s = status || {};
+  const outcome = session && Object.prototype.hasOwnProperty.call(ACA_SESSION_OUTCOME, session.status)
+    ? ACA_SESSION_OUTCOME[session.status] : null;
+  if (outcome && (s.state === 'in_progress' || (s.state === 'completed' && (!s.conclusion || s.conclusion === 'success')))) {
+    return outcome;
+  }
   switch (s.state) {
     case 'pending': return 'queued, waiting for the run';
     case 'queued': return 'queued';
@@ -259,7 +279,7 @@ export function acaDispatchStatusLabel(status) {
  * first, so the first entry IS the last dispatch -- there is no sorting left
  * to do here, only wording it.
  */
-export function acaLastDispatchLine(dispatches = []) {
+export function acaLastDispatchLine(dispatches = [], { devices = [], groups = [], tracked = [] } = {}) {
   if (!dispatches.length) return 'No dispatches yet';
   const d = dispatches[0];
   // `label` can carry an upstream error's `reason` (a GitHub API message, or
@@ -267,7 +287,7 @@ export function acaLastDispatchLine(dispatches = []) {
   // metadata is (see `src/device-meta.js`), so it is escaped here, same as
   // `owner`/`repo`, rather than trusted because it happens to come from a
   // status field instead of a name field.
-  const label = esc(acaDispatchStatusLabel(d.status));
+  const label = esc(acaDispatchStatusLabel(d.status, acaDispatchSession(d, { devices, groups, tracked, dispatches })));
   return `${esc(d.owner)}/${esc(d.repo)} \u00b7 ${label}`;
 }
 
@@ -278,7 +298,7 @@ export function acaLastDispatchLine(dispatches = []) {
  * fetch.
  */
 export function acaStatusModel({
-  phase, reason, devices = [], dispatches = [],
+  phase, reason, devices = [], dispatches = [], groups = [], tracked = [],
 } = {}) {
   if (phase === ACA_PHASE.CHECKING || !phase) return { phase: ACA_PHASE.CHECKING };
   if (phase === ACA_PHASE.NOT_CONNECTED) {
@@ -288,7 +308,7 @@ export function acaStatusModel({
     phase: ACA_PHASE.CONNECTED,
     watcher: acaWatcherLine(devices),
     ralph: acaRalphLine(devices),
-    lastDispatch: acaLastDispatchLine(dispatches),
+    lastDispatch: acaLastDispatchLine(dispatches, { devices, groups, tracked }),
   };
 }
 
@@ -438,7 +458,8 @@ export function renderAcaStatus() {
   if (!el) return;
   const st = state.acaStatus || { phase: ACA_PHASE.CHECKING };
   const devices = (state.overview && state.overview.devices) || [];
-  el.innerHTML = acaStatusCardHtml(acaStatusModel({ ...st, devices }));
+  const groups = (state.overview && state.overview.groups) || [];
+  el.innerHTML = acaStatusCardHtml(acaStatusModel({ ...st, devices, groups, tracked: state.acaPending || [] }));
   // The device badge and the "N online" line belong to devices.js's render() and
   // count real devices only; a connected service changes this row and nothing else.
   const { service } = acaConnectionCounts(state.overview && state.overview.counts, st.phase);

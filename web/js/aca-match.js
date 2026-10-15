@@ -95,3 +95,35 @@ export function acaPendingMatch(entry, devices = [], entries = []) {
 export function acaPendingAttached(entry, devices = [], entries = []) {
   return acaPendingMatch(entry, devices, entries) !== null;
 }
+
+/**
+ * The ONE real session that a `GET /api/aca/dispatches` row provably started,
+ * else `null` (#262). Built on the same proof the pending rows use: the row's
+ * hub-confirmed `executionName` for a live run attempt (`acaDispatchEvidence`,
+ * which also drops a lower attempt than the one this tab tracked) names the
+ * device `aca-<executionName>` (`acaPendingMatch`, which rejects a device whose
+ * own metadata contradicts the execution, repository or issue, and a device
+ * another dispatch also claims). `tracked` is `state.acaPending`: the only
+ * place a dispatch's issue is known. The device must then hold exactly one
+ * session; presence and heartbeat are never an outcome.
+ */
+export function acaDispatchSession(row, { devices = [], groups = [], tracked = [], dispatches = [] } = {}) {
+  if (!row || !row.id) return null;
+  const own = (tracked || []).find((e) => e && e.trackerId === row.id);
+  const base = own
+    ? { ...own }
+    : { trackerId: row.id, repo: `${row.owner}/${row.repo}`, issue: null, runId: null, runAttempt: null, executionName: null };
+  const ev = acaDispatchEvidence(base, row);
+  if (!ev || !ev.executionName) return null;
+  const entry = { ...base, executionName: ev.executionName };
+  const rivals = [
+    ...(tracked || []).filter((e) => e && e.trackerId !== row.id),
+    ...(dispatches || []).filter((d) => d && d.id !== row.id),
+  ];
+  const device = acaPendingMatch(entry, devices, rivals);
+  if (!device) return null;
+  const sessions = (groups || [])
+    .flatMap((g) => (g && Array.isArray(g.sessions) ? g.sessions : []))
+    .filter((s) => s && s.deviceId === device.deviceId);
+  return sessions.length === 1 ? sessions[0] : null;
+}
