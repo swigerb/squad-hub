@@ -3164,6 +3164,9 @@ function apiRequest(port, path, token, opts = {}) {
     for (const r of [list, post, dispatches]) {
       assert.strictEqual(r.status, 403, JSON.stringify(r));
       assert.match(r.body.error, /verified GitHub sign-in/);
+      // The setting is SQUAD_HUB_AUTH_MODE / --auth github; SQUAD_HUB_AUTH is not one.
+      assert.match(r.body.error, /SQUAD_HUB_AUTH_MODE=github/, 'the 403 names a setting that does not exist');
+      assert.match(r.body.error, /--auth github/);
     }
     assert.strictEqual(status.status, 200, 'the discovery route stays a cheap, always-200 answer');
     assert.strictEqual(fake.calls.total, 0, 'no GitHub call may be spent on a session that cannot be authorized');

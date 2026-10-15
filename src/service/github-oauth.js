@@ -28,6 +28,7 @@
 
 const crypto = require('crypto');
 const https = require('https');
+const { requestScheme } = require('./request-scheme');
 
 class GitHubOAuth {
   constructor({ clientId, clientSecret, publicUrl } = {}) {
@@ -45,9 +46,10 @@ class GitHubOAuth {
   redirectUri(req) {
     if (this.publicUrl) return `${this.publicUrl}/auth/github/callback`;
     // Fall back to the host the request arrived on, so a local run works
-    // without configuration. Behind a proxy this is what the proxy reports.
-    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0];
-    return `${proto}://${req.headers.host}/auth/github/callback`;
+    // without configuration. Behind a proxy this is what the proxy reports; with
+    // no forwarded scheme it is http, the same rule the WebSocket origin check
+    // and HSTS use.
+    return `${requestScheme(req)}://${req.headers.host}/auth/github/callback`;
   }
 
   /**

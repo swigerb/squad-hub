@@ -179,7 +179,7 @@ produce. They are developer tools, not a release acceptance record.
 
 ## Known limits
 
-- **One instance.** State is in memory; see [architecture.md](architecture.md#one-instance-only).
+- **One instance.** Each instance keeps its own state and nothing is shared; see [architecture.md](architecture.md#one-instance-only).
 - **A daemon restart ends its sessions**, deliberately — an unsupervised agent
   holding a repository checkout is worse than no agent.
 - **macOS is untested.** Windows and Linux are covered.

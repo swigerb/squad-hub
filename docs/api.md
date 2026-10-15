@@ -527,7 +527,7 @@ and whether it is revoked. There is no endpoint that returns a token.
 
 ### `DELETE /api/device-tokens/{id}`
 
-Revoke one, immediately and for every purpose. `404` if it is not in your view.
+Revoke one, immediately and for every purpose. `404` if it is not in your view; `400` for a malformed percent-escape in `{id}`.
 
 **Any device currently holding that token is disconnected**, with a `1008` close
 and a reason it can log. Recording a revocation is not enforcing one: a socket is
@@ -559,6 +559,8 @@ publish a `jti` on the device record for a UI control to work.
 { "revoked": "zs-AFWvlSQJrnhMT", "deviceId": "gaming-pc", "removed": true }
 ```
 
+- `400` — a malformed percent-escape in `{id}` (as on every route that decodes a
+  path id: push subscriptions, `/api/access/{login}`, device tokens, static files).
 - `404` — no such device in your view.
 - `409` — the device is not connected, so there is no credential to revoke here;
   or it attached before this hub recorded which token each socket holds. Both
@@ -577,7 +579,7 @@ boundary and [security.md](security.md#the-github-app-path-a-trust-boundary)
 for the authorization rule.
 
 **Authorization.** `repos`, `dispatches` and `dispatch` act only for a
-session the hub verified as a GitHub account (`SQUAD_HUB_AUTH=github`); any other
+session the hub verified as a GitHub account (`SQUAD_HUB_AUTH_MODE=github`); any other
 session gets **403** with an explanation, before any GitHub call or rate-limit
 budget is spent. Within that, a repository is only ever listed or used if the
 App is installed on it **and** GitHub reports that exact account has `write`,

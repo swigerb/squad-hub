@@ -1089,6 +1089,19 @@ function tryDeviceSocket(port, token, deviceId, role = 'device', opts = {}) {
     assert.strictEqual(r.status, 404, 'a device was removable from outside its own partition');
   });
 
+  await checkAsync('a malformed %-escape in a device-token or device id gets 400, not a 500', async () => {
+    // `decodeURIComponent` throws on a lone `%` or a truncated sequence; the push
+    // and access routes already answered 400, these two answered 500.
+    for (const bad of ['%', '%E0%A4%A', '%ZZ']) {
+      const del = await api(port, `/api/device-tokens/${bad}`, userToken, { method: 'DELETE' });
+      assert.strictEqual(del.status, 400, `DELETE /api/device-tokens/${bad}: ${JSON.stringify(del)}`);
+      assert.ok(del.body && del.body.error, 'refused with no explanation');
+      const rev = await api(port, `/api/devices/${bad}/revoke`, userToken, { method: 'POST' });
+      assert.strictEqual(rev.status, 400, `POST /api/devices/${bad}/revoke: ${JSON.stringify(rev)}`);
+      assert.ok(rev.body && rev.body.error, 'refused with no explanation');
+    }
+  });
+
   for (const s of hubSideSockets) s.destroy();
   await svc.close();
   fs.rmSync(TEST_HOME, { recursive: true, force: true });

@@ -219,7 +219,7 @@ function repoNotAvailableMessage(fullName) {
 
 /** What a caller without a GitHub identity verified by GitHub itself is told. */
 const GITHUB_IDENTITY_REQUIRED_MESSAGE = 'starting or listing cloud jobs from the hub needs a verified GitHub sign-in '
-  + '(SQUAD_HUB_AUTH=github), because access is checked against the signed-in GitHub account; '
+  + '(SQUAD_HUB_AUTH_MODE=github, or --auth github), because access is checked against the signed-in GitHub account; '
   + 'this hub session has none. Use the "Review on GitHub..." fallback instead.';
 
 // The 502 for a listing whose verification failed. Generic on purpose: the list checks
