@@ -1209,6 +1209,31 @@ Teams stays out of scope, for the reasons above.
 The web UI is a PWA: install it from the account menu, or with your browser's
 own *Install app* / *Add to Home Screen*.
 
+Once it is installed, Chromium browsers (Edge and Chrome) stop offering to
+install it, and the header install icon stays hidden. The hub also tells a
+browser **tab** that the app is installed, where the browser supports
+`navigator.getInstalledRelatedApps()` (Edge and Chrome 140 or later on the
+desktop): the account menu item then reads **Installed ✓** but stays clickable.
+It opens a dialog on how to open the installed app:
+
+- **Edge** — open `edge://apps` and choose Squad Hub, or select *Open in app* in
+  the address bar, or use the Start menu. A web page cannot open `edge://`
+  addresses, so the dialog shows `edge://apps` with a **Copy** button to paste
+  into a new tab.
+- **Chrome** — the same, with `chrome://apps`.
+
+When the browser cannot confirm the install and offers no install prompt, the
+dialog says that usually means the app is already installed, shows the same
+steps, and adds how to install it if it is not. Inside the installed app's own
+window the menu item is disabled and reads **Installed ✓**. Other browsers
+(Firefox, Safari, iOS, Android) keep their existing instructions.
+
+The detection needs a `related_applications` entry in `web/app.webmanifest`.
+Desktop Chromium also requires that entry's `id` to be the app's absolute id,
+which depends on the host the hub runs on, so the hub fills it in when it
+serves `/app.webmanifest`: from `SQUAD_HUB_PUBLIC_URL` when set, otherwise from
+the request's host.
+
 ### Offline
 
 A service worker caches the **app shell** — the HTML, CSS, JS and icons. Those

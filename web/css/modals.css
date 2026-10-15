@@ -101,6 +101,8 @@
 
 .ih-steps { margin: 12px 0 4px; padding-left: 22px; line-height: 1.7; }
 .ih-steps li { margin-bottom: 6px; }
+.ih-copy { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.ih-copy code { padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; user-select: all; }
 
 /* The dialog itself does not scroll: only the list does. Two scrollbars on one
    panel is how the previous version ended up with a horizontal one as well. */

@@ -6808,6 +6808,33 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'dismissing writes a 30-day expiry that installDismissedUntil reads back',
   },
   {
+    // #267: in a browser tab the item must stay clickable when the app is
+    // installed -- it opens the "how to open the installed app" dialog. Only the
+    // standalone window, with nothing left to explain, disables it.
+    name: 'the install menu item is disabled in a browser tab when the app is installed',
+    file: 'web/js/install.js',
+    find: `  item.disabled = installed && standalone;`,
+    replace: `  item.disabled = process.env.MUTANT ? installed : installed && standalone; // MUTATION`,
+    mustFail: 'in a TAB with the app installed: item stays ENABLED and labelled Installed, header icon stays hidden',
+  },
+  {
+    // An empty result is the browser saying "not installed"; reading it as a
+    // match would show "Installed" on a machine that never installed the app.
+    name: 'an empty getInstalledRelatedApps result counts as installed',
+    file: 'web/js/install.js',
+    find: `    return Array.isArray(apps) && apps.length > 0;`,
+    replace: `    return Array.isArray(apps) && (process.env.MUTANT ? true : apps.length > 0); // MUTATION`,
+    mustFail: 'getInstalledRelatedApps returning [] (or junk): "not installed"',
+  },
+  {
+    // Desktop Chromium matches the manifest's absolute web app id; without it
+    // the hub's manifest names no host and getInstalledRelatedApps() is empty.
+    name: 'the served manifest no longer gets its absolute web app id',
+    file: 'src/service/hub-service.js',
+    find: `            if (app && app.platform === 'webapp') app.id = id;`,
+    replace: `            if (app && app.platform === 'webapp' && !process.env.MUTANT) app.id = id; // MUTATION`,
+    mustFail: 'the manifest is served with a host-specific absolute id in related_applications',
+  },  {
     // #171's manifest `shortcuts` promise three ids by naming convention
     // alone (see the manifest-side test); if app.js stops recognising one,
     // the pinned shortcut still opens the hub and silently does nothing.

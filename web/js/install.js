@@ -4,7 +4,7 @@
 // beforeinstallprompt, and the 30-day "Not now" dismissal.
 
 import { state } from './api.js';
-import { $, esc, toast } from './util.js';
+import { $, esc, toast, copyToClipboard } from './util.js';
 
 /**
  * Is this page already running as an installed app?
@@ -28,6 +28,34 @@ export function isInstalled(win = typeof window === 'undefined' ? null : window)
 }
 
 /**
+ * Is the app installed even though THIS page is an ordinary browser tab?
+ *
+ * Chromium stops firing `beforeinstallprompt` once the app is installed, and
+ * `display-mode: standalone` only describes the window the page is in -- so a
+ * tab on a machine that has the app installed otherwise looks "not installed".
+ * `navigator.getInstalledRelatedApps()` answers it from the manifest's
+ * `related_applications` entry. It is Chromium-only, so every failure mode
+ * (missing API, a rejection, an empty list) collapses to `false`: "unknown"
+ * and "not installed" are treated alike, never as an error.
+ */
+export async function checkInstalledRelated(nav = typeof navigator === 'undefined' ? null : navigator) {
+  try {
+    if (!nav || typeof nav.getInstalledRelatedApps !== 'function') return false;
+    const apps = await nav.getInstalledRelatedApps();
+    return Array.isArray(apps) && apps.length > 0;
+  } catch { return false; }
+}
+
+/** Run the check, cache it in `state.installedRelated`, and re-sync the UI if the answer changed. */
+export async function refreshInstalledRelated(nav) {
+  const found = await checkInstalledRelated(nav);
+  const changed = found !== !!state.installedRelated;
+  state.installedRelated = found;
+  if (changed) syncInstallUI();
+  return found;
+}
+
+/**
  * Where "Install as an app" leads when the browser will not do it for us.
  *
  * `beforeinstallprompt` exists only in Chromium on desktop and Android. **No
@@ -43,8 +71,9 @@ export function isInstalled(win = typeof window === 'undefined' ? null : window)
  * it in their own share menu and may not, so the reliable route is named
  * rather than guessed at.
  */
-export function installSteps() {
+export function installSteps({ installed } = {}) {
   const ua = navigator.userAgent || '';
+  if (installed === undefined) installed = !!state.installedRelated || isInstalled();
   const ios = /iPhone|iPad|iPod/.test(ua)
     // iPadOS 13+ reports itself as a Mac; a touch point tells them apart.
     || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
@@ -71,6 +100,8 @@ export function installSteps() {
       note: null,
     };
   }
+  const chromium = desktopChromium(ua, typeof navigator === 'undefined' ? null : navigator);
+  if (chromium) return chromiumSteps(chromium, ua, installed);
   return {
     title: 'Install Squad Hub',
     steps: ['Look for the install icon in the address bar, or the browser menu \u2192 "Install Squad Hub".'],
@@ -78,19 +109,61 @@ export function installSteps() {
   };
 }
 
+/** Edge or Chrome on the desktop, by user agent; null for anything else (Brave, Opera and friends keep the generic text). */
+function desktopChromium(ua, nav) {
+  if (/Edg\//.test(ua)) return { name: 'Edge', apps: 'edge://apps' };
+  if (/Chrome\//.test(ua) && !/OPR\/|Vivaldi|YaBrowser|SamsungBrowser/.test(ua) && !(nav && nav.brave)) {
+    return { name: 'Chrome', apps: 'chrome://apps' };
+  }
+  return null;
+}
+
+/**
+ * Edge and Chrome stop offering to install once the app IS installed, so
+ * "no install prompt" there usually means "already installed". A page cannot
+ * navigate to edge:// or chrome:// URLs, so the apps page is shown as copyable
+ * text (`copy`) rather than a link.
+ */
+function chromiumSteps({ name, apps }, ua, installed) {
+  const launcher = /Windows/.test(ua) ? 'the Start menu' : /Macintosh/.test(ua) ? 'your Applications folder' : 'your app launcher';
+  const open = [
+    `Open ${apps} in the address bar and choose Squad Hub.`,
+    'Or select Open in app in the address bar.',
+    `Or open Squad Hub from ${launcher}.`,
+  ];
+  const note = `A web page cannot open ${apps} for you. Copy the address and paste it into a new tab.`;
+  if (installed) return { title: 'Squad Hub is installed', steps: open, note, copy: apps };
+  const install = name === 'Edge'
+    ? 'If it is not installed yet: open the browser menu (\u2026) \u2192 Apps \u2192 "Install Squad Hub".'
+    : 'If it is not installed yet: use the install icon in the address bar, or the browser menu (\u22ee).';
+  return {
+    title: 'Is Squad Hub already installed?',
+    intro: `${name} is not offering to install Squad Hub right now, which usually means it is already installed.`,
+    steps: [...open, install],
+    note,
+    copy: apps,
+  };
+}
+
 export function showInstallHelp() {
-  const { title, steps, note } = installSteps();
+  const { title, intro, steps, note, copy } = installSteps();
   const box = $('installHelp');
   if (!box) { toast(steps[0]); return; }
   box.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ihTitle">
       <h2 id="ihTitle">${esc(title)}</h2>
+      ${intro ? `<p class="sub">${esc(intro)}</p>` : ''}
       <ol class="ih-steps">${steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
+      ${copy ? `<p class="ih-copy"><code id="ihCode">${esc(copy)}</code> <button id="ihCopy">Copy</button></p>` : ''}
       ${note ? `<p class="sub">${esc(note)}</p>` : ''}
       <div class="modal-actions"><button class="primary" id="ihClose">Got it</button></div>
     </div>`;
   box.hidden = false;
   $('ihClose').onclick = () => { box.hidden = true; };
+  const copyBtn = $('ihCopy');
+  if (copyBtn) {
+    copyBtn.onclick = async () => toast(await copyToClipboard(copy) ? `Copied ${copy}` : `Select and copy ${copy}`);
+  }
   box.onclick = (e) => { if (e.target === box) box.hidden = true; };
 }
 
@@ -160,15 +233,23 @@ export function dismissInstallButton(storage = safeLocalStorage(), now = Date.no
 }
 
 /**
- * The kebab's "Install as an app" row never disappears -- it just stops being
- * a button once there is nothing left for it to do, and says so.
+ * The kebab's "Install as an app" row never disappears -- it just says so when
+ * there is nothing left to install.
+ *
+ * Two different "installed" cases, on purpose:
+ *  - `standalone`: this window IS the app. Nothing to show help for, so the
+ *    item is disabled (and labeled "Installed ✓").
+ *  - installed, but this is a browser tab (`installed && !standalone`): the
+ *    item stays ENABLED and labeled "Installed ✓", because clicking it opens
+ *    the help dialog that says how to open the installed app. A disabled item
+ *    in a tab could not explain anything.
  */
-function syncInstallMenuItem(installed) {
+function syncInstallMenuItem(installed, standalone = false) {
   // No id on this button -- see the comment in index.html -- so it is found
   // the same way the `people` menu item is: by its `data-menu` attribute.
   const item = document.querySelector('[data-menu="install"]');
   if (!item) return;
-  item.disabled = installed;
+  item.disabled = installed && standalone;
   // The checkmark is its own element, appended beside the unchanging label,
   // so toggling it can never clobber the label text itself.
   let mark = item.querySelector('.install-done');
@@ -186,8 +267,9 @@ function syncInstallMenuItem(installed) {
 export function syncInstallUI() {
   const btn = $('installBtn');
   if (!btn) return;
-  const installed = isInstalled();
-  syncInstallMenuItem(installed);
+  const standalone = isInstalled();
+  const installed = standalone || !!state.installedRelated;
+  syncInstallMenuItem(installed, standalone);
   const availability = installAvailability({ hasDeferredPrompt: !!state.installPrompt });
   const mode = installButtonState({
     installed, availability, dismissedUntil: installDismissedUntil(),
@@ -257,8 +339,13 @@ export function wireInstall() {
   // OS's point of view, already is.
   window.addEventListener('appinstalled', () => {
     state.installPrompt = null;
+    state.installedRelated = true;
     closeInstallCard();
     syncInstallUI();
+  });
+  // The app can be installed or removed while this tab sits in the background.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshInstalledRelated();
   });
 
   $('installBtn').onclick = (e) => { e.stopPropagation(); onInstallBtn(); };
@@ -286,4 +373,6 @@ export function wireInstall() {
   // The header install icon and the kebab's "Install as an app" row both
   // depend on install state, so both are synced from one place at startup.
   syncInstallUI();
+  // Asynchronous and not awaited: startup never waits on the browser's answer.
+  refreshInstalledRelated();
 }
