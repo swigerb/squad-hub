@@ -288,15 +288,14 @@ check('the token-precedence claim matches what the code does', () => {
   assert.ok(cloud.includes('COPILOT_GITHUB_TOKEN'), 'the cloud doc does not mention it');
 });
 
-// #172: the device rail was split into grouped sections (ACA jobs,
-// ACA executions, cloud devices, local machines), with a header summary
-// line, per-section collapse and new empty states. The doc's claims about
-// that redesign are checked against the actual rail markup the client
-// builds, not just asserted in prose that could drift the next time the
-// rail changes shape.
+// The device rail is split into grouped sections (the always-visible Squad on
+// ACA row, ACA runs, cloud devices, local machines), with a header summary
+// line, per-section collapse and empty states. The doc's claims about the
+// rail are checked against the labels the client actually renders, not just
+// asserted in prose that could drift the next time the rail changes shape.
 check('docs describe the device rail\'s grouped sections, and the code matches', () => {
   const client = read('web/app.js');
-  for (const label of ['ACA jobs', 'Squad on ACA executions', 'Cloud devices', 'Local machines']) {
+  for (const label of ['Squad on ACA', 'ACA runs', 'Cloud devices', 'Local machines']) {
     assert.ok(commands.includes(label), `commands.md does not mention the "${label}" section`);
     assert.ok(client.includes(label), `the rail no longer renders a "${label}" section`);
   }

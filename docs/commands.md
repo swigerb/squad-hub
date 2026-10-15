@@ -64,11 +64,9 @@ candidate genuinely changes the connection AND a session is running; the web
 the user is already looking at.
 
 After a restart, `connect` waits on the daemon's reported state before
-trusting it. The old daemon is fully stopped and its on-disk state file
-deleted (`cmdStop`) before the new one is even spawned, so there is no stale
-state left over from the previous process for a fast poll to misread as the
-new connection's result — the wait loop either sees nothing (no daemon up
-yet) or the new daemon's own freshly-written state, never a leftover.
+trusting it. The old daemon is fully stopped and its state file deleted before
+the new one starts, so the wait only ever sees nothing (no daemon up yet) or
+the new daemon's own state, never a leftover from the previous process.
 
 Get a device token from the hub's account menu → **Connect a device**, which
 mints one and shows you the exact `squad-hub connect …` command to run. It is
@@ -105,7 +103,7 @@ into the one-time command the browser already showed you.
 
 ```
 squad-hub squad                          # interactive terminal
-squad-hub squad --tui                    # the real Copilot TUI (not supervised)
+squad-hub squad --tui                    # the real Copilot TUI (supervised when hooks are installed)
 squad-hub squad "<prompt>"               # start a session and return
 ```
 
@@ -123,8 +121,8 @@ Not a re-implementation of the Copilot CLI's own TUI, and it does not claim to
 be one. It is a plain, scriptable `readline` loop that talks to the **same**
 daemon-owned session the web Hub can see and drive. That is deliberate: there
 is no supported way to attach to a `copilot` process someone already started
-by hand (see "Why Squad Hub cannot attach to a running `copilot`" in the
-[README](../README.md)), so the daemon has to own the ACP process from the
+by hand (see [A constraint worth knowing up front](../README.md#a-constraint-worth-knowing-up-front)
+in the README), so the daemon has to own the ACP process from the
 very first prompt — and this terminal is just one more client of that.
 
 On start it prints the project, the selected agent/model and why, the daemon
@@ -322,8 +320,8 @@ reported by `squad-hub doctor` — which distinguishes "not installed" (a warnin
 and a legitimate choice) from "installed but stale" (a failure, because somebody
 believes it is working).
 
-**There is no local reattach yet.** Every `squad-hub squad` (or `run`) with no
-prompt starts a **new** session — it never resumes a previous terminal's
+**There is no local reattach yet.** Every `squad-hub squad` with no prompt
+starts a **new** session — it never resumes a previous terminal's
 session, even if that one is still running. If you detach (or the terminal
 just exits) and later run `squad-hub squad` again from the same project, you
 will be talking to a second, independent session, not the one you left. To
@@ -535,7 +533,7 @@ at a glance, in both `squad-hub status` and the web UI.
 | Repository | The `origin` remote in the session's checkout, as `owner/repo`. Falls back to the repository directory name when there is no remote. |
 | Branch | The checked-out branch, or the short commit when `HEAD` is detached. |
 | Activity | What the agent is doing right now — `Running <tool>`, `Processing…`, or `Waiting for input`. |
-| Badge | `Working`, `Needs approval`, `Awaiting your reply`, `Finished`, `Failed`, or `Stopped`. |
+| Badge | `Working`, `Awaiting your reply`, or `Finished`, plus `NEEDS APPROVAL`, `FAILED`, and `STOPPED`. `squad-hub status` prints the last three in upper case; the web UI shows them as `Needs approval`, `Failed`, and `Stopped`. |
 
 Repository and branch are read directly from `.git`, never by running `git`.
 Linked worktrees and submodules (where `.git` is a *file*) are handled.
@@ -674,6 +672,7 @@ Runs a fixed set of independent checks and reports each as `OK`, `WARN`, or
 | `squad-project` | Whether the current directory is a Squad project. |
 | `squad-health` | Runs `squad health --json` when this is a Squad project and a separately installed `squad` CLI version **0.13 or newer** is on `PATH`. If it cannot run, this is a `WARN` with the specific reason: not a Squad project, `squad` not on `PATH`, version too old, timed out, crashed, produced too much output, or returned JSON that was not the expected schema. |
 | `squad-health:<id>` | One row per check reported by `squad health --json`: `team`, `registry-charters`, `routing`, `state-backend`, and `env-vars`. A reported `pass` is `OK`, `fail` is `FAIL`, and `skip` is `WARN`. |
+| `copilot-hooks` | Whether the Copilot hooks that register terminal sessions with the hub are installed. `WARN` when not installed (a legitimate choice), `FAIL` when the hook file is out of date or cannot be read, `OK` when current. Fix with `squad-hub hooks install` (add `--force` to update a stale file). |
 | `squad-agent` | If it is a Squad project, whether this Copilot installation has a `squad` custom agent. If not, `squad-hub squad` would run the default agent instead and says so. |
 | `hub-url` | A hub URL is saved and has a valid `http(s)` scheme. |
 | `device-token` | A device token is saved. Its value is never printed. |
@@ -684,7 +683,8 @@ Runs a fixed set of independent checks and reports each as `OK`, `WARN`, or
 | `agent-selection-warnings` | Any warning produced while resolving the agent/model — a `.squad-hub.json` value rejected for an invalid name, a stray credential-shaped key (`token`, `hub`, ...) in the project config, or a rejected `--agent`/`--model` value. `WARN` if any exist, `OK` if none. Only key names and reasons are ever shown; credential *values* are never printed. The same warnings (if any) are also printed on `squad-hub run`/`squad "<prompt>"` startup and in the interactive terminal's banner — not only here. |
 
 `node-version`, `copilot-cli`, a malformed `hub-url`, a `daemon-hub-attach`
-refusal, a missing Squad custom agent in a Squad project, and failing checks
+refusal, a stale or unreadable `copilot-hooks` file, a missing Squad custom agent
+in a Squad project, and failing checks
 reported by `squad health --json` are `FAIL` checks. Most setup gaps are still
 `WARN`: a machine with no hub configured yet, no local daemon currently running,
 or no compatible `squad` CLI installed can be a normal state, not a broken one.
@@ -738,7 +738,7 @@ test suite verifies this behavior without ever installing a real login task.
 
 | Command | |
 |---|---|
-| `squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]` | Start a session. Starts the daemon automatically if needed. |
+| `squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>] [--mode agent\|plan\|autopilot]` | Start a session. A prompt is required. Starts the daemon automatically if needed. |
 | `squad-hub approve <session> <approval> <option>` | Answer a pending approval. |
 | `squad-hub kill <session>` | Stop a session and its agent. |
 | `squad-hub oneshot` | Run **one** session from the environment, then exit. For a job platform. |
@@ -774,8 +774,9 @@ access, the daemon refuses rather than silently using somewhere else.
 
 | Command | |
 |---|---|
-| `squad-hub track-all <on\|off>` | Report every session, or only Squad Hub ones. |
-| `squad-hub --version` | Print the version. |
+| `squad-hub track-all <on\|off>` | Report every session, or only Squad Hub ones. If a daemon is running it is restarted, which stops its running sessions. |
+| `squad-hub --version` (or `-v`) | Print the version. |
+| `squad-hub --help` | Print the usage summary. `-h` and the word `help` do the same, as does running `squad-hub` with no arguments. |
 | `squad-hub config show` | Print the current configuration. |
 | `squad-hub config edit` | Open the configuration in `$VISUAL`, `$EDITOR`, or the platform default. |
 | `squad-hub config server <url>` | Pin a hub service URL. |
@@ -896,10 +897,6 @@ Below that, the rail groups devices into sections rather than one flat list:
 4. **Local machines (N)** — everything else: your laptop, a dev box, a bare
    container.
 
-Older documentation called the on-demand row "ACA jobs" and the run roster
-"Squad on ACA executions". The current UI uses **Squad on ACA** and **ACA runs**
-respectively.
-
 | Column | |
 |---|---|
 | Platform | `Windows`, `macOS`, `Linux`. An unrecognised platform is shown as reported rather than discarded. |
@@ -914,7 +911,7 @@ Expanding it shows:
 - Every reported volume, free of total, with the workspace volume marked.
 - Cores and total RAM.
 - The device's own installed package version, with a warning when it differs
-  from the hub's (`overview().hubVersion`) — a drifted daemon is the first
+  from the hub's — a drifted daemon is the first
   thing to check when "it works on my machine" doesn't.
 - The Copilot CLI version the daemon found on its `PATH`, or nothing if it
   could not be detected.
@@ -1274,9 +1271,11 @@ you happen to be standing in front of — the same list the web app's session
 view reads, over the same `/api/sessions` the hub exposes to anything holding
 your sign-in token.
 
-Authenticated with **your** token, never a device token, for the same reason
-`mcp` and `device-token` refuse one above: a device token can be a device and
-nothing else, and "list everything I own" is squarely outside that. A
+Authenticated with **your** token, never a device token, because a device token
+can be a device and nothing else, and "list everything I own" is squarely
+outside that. `squad-hub mcp` (see [MCP server](#mcp-server)) refuses one
+locally for the same reason, and the hub itself rejects a device token that
+tries to mint another (see [Device tokens](#device-tokens)). A
 `sqhd1.`-prefixed token is refused immediately, by its shape alone.
 `SQUAD_HUB_USER_TOKEN` supplies `--token` here too, and `--hub` falls back to
 whatever `squad-hub config` already has pinned or resolved from `--env`.
@@ -1294,13 +1293,14 @@ Status filter derives it. `--json` prints the raw session objects, for scripting
 ## Open the hub in a browser
 
 ```
-squad-hub open [<session>]
+squad-hub open [<session>] [--hub <url>]
 ```
 
 Opens the hub's web app in a browser — or, given a session id or a
 `deviceId:sessionId` key (as `sessions` above prints it), opens straight to
 that session, the same deep link a Teams card's "View live session" button
-uses.
+uses. `--hub` opens that hub instead of the configured one; without it, and
+with no hub configured, the command fails and asks you to run `squad-hub connect`.
 
 The URL is always printed first, whether or not a browser could actually be
 launched — useful over SSH, or on a machine with no desktop at all, where the
@@ -1374,7 +1374,7 @@ Three different things, and it is worth knowing which one you want.
 | You want | Do this |
 |---|---|
 | Stop the daemon on a machine you can reach | `squad-hub stop`, on that machine |
-| Tidy away the record of sessions that have ended | The **⋯** menu in the web app, or `squad-hub forget` |
+| Tidy away the record of sessions that have ended | The **⋮** menu in the web app, or `squad-hub forget` |
 | **Remove a device you cannot reach** | The **×** on the device in the web app |
 
 The **×** revokes the credential that device is using, drops the connection, and
@@ -1412,14 +1412,24 @@ number, and changes nothing — a half-applied restore is worse than a refused
 one.
 
 Owners come from `SQUAD_HUB_OWNER` alone. An export naming an owner is refused
-outright on import, never silently skipped: import always goes through
-`AccessStore.add()`, the one place that rule is enforced, so a tampered file
-cannot mint an owner.
+outright on import, never silently skipped, so a tampered file cannot mint an
+owner.
+
+```
+squad-hub access log [--limit <n>]
+```
+
+Prints the history of access-list changes recorded on this hub, one per line:
+the time, the action, the login, and who made the change. A change that was
+refused is marked with `!` and its reason. By default the last 50 entries are
+shown; `--limit <n>` changes that, and `--limit 0` shows all of them. The log is
+append-only, so a line that cannot be read is reported as a warning and the
+command exits non-zero rather than silently skipping it.
 
 ## Environment
 
 
-### The service
+### Hub service environment variables
 
 | Variable | |
 |---|---|
@@ -1439,7 +1449,7 @@ cannot mint an owner.
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
 | `SQUAD_HUB_VAPID_PUBLIC_KEY` | The hub's Web Push public key. Web Push is off unless this and the private key are set. See [security.md](security.md#web-push). |
 | `SQUAD_HUB_VAPID_PRIVATE_KEY` | The hub's Web Push private key. See [security.md](security.md#web-push). |
-| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" below: it must be a Power Automate workflow webhook URL. |
+| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" above: it must be a Power Automate workflow webhook URL. |
 | `SQUAD_HUB_BUILD` | Build marker reported by `/healthz`. Set by the deploy script so it can prove the code it pushed is the code now serving. |
 | `SQUAD_HUB_INSTANCE_COUNT` | Overrides the detected instance count. Azure App Service sets `WEBSITE_INSTANCE_COUNT` itself; this is for platforms that do not. |
 
@@ -1458,10 +1468,10 @@ the UI shows a banner. Scale up, not out.
 | `SQUAD_HUB_PPE_URL` | Hub URL for `--env ppe`. Wins over the saved value. |
 | `SQUAD_HUB_TOKEN` | Identifies the **device** to the hub. |
 | `SQUAD_HUB_AGENT_TOKEN` | Authorises the **agent** to GitHub. |
-| `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list. |
+| `SQUAD_HUB_DEVICE_NAME` | Name shown in the device list, for a cloud or one-shot device. A local machine is named by `squad-hub connect --name`, then by the label given when its device token was minted, then by its hostname. |
 | `SQUAD_HUB_BROWSER` | Command `squad-hub open` launches instead of the platform default, run without a shell with the URL as its last argument. Mostly for scripting and tests. |
 | `SQUAD_HUB_DEVICE_META_JSON` | Optional device metadata as JSON: `displayName`, `repo`, `issue`, `executionName`, `jobName`, `role` (`watch` or `ralph`, see [`aca.md`](aca.md)), `approvalMode` (`auto` or `manual`), `lastSweepAt` (an ISO timestamp). Validated, size-capped (4KB total, 200 chars per field), string-only, and `role`/`approvalMode`/`lastSweepAt` are further restricted to their closed vocabularies -- anything else is dropped silently rather than refusing to start, since metadata is cosmetic. |
-| `SQUAD_HUB_DEVICE_ID` | This device's identity. Default is a hash of the app name — stable, so a restart re-attaches as itself. **Set it explicitly** when the token is bound to a device-id prefix, or when more than one process attaches: two attachments sharing an id fight over the same slot. |
+| `SQUAD_HUB_DEVICE_ID` | Device identity for a cloud or one-shot device. Without it, the id is a hash of `cloud\|<app name>` (the container app name, else `SQUAD_HUB_DEVICE_NAME`, else `cloud`) — stable, so a restart re-attaches as itself. **Set it explicitly** when the token is bound to a device-id prefix, or when more than one process attaches: two attachments sharing an id fight over the same slot. A local machine ignores it and uses the id saved in its configuration, generated once from a hash of its hostname and user name. |
 | `SQUAD_HUB_AGENT` | Agent executable. Default `copilot`. |
 | `SQUAD_HUB_AGENT_ARGS` | The agent's argv, replaced wholesale. Default `--acp`. |
 | `SQUAD_HUB_AGENT_EXTRA_ARGS_JSON` | Extra arguments **appended** to the above, as a JSON array of strings. |
@@ -1594,12 +1604,12 @@ and say so anyway.
 
 It reconnects to the hub **as the same device** the session ran on — using
 `SQUAD_HUB_URL` and `SQUAD_HUB_TOKEN`, the same two variables `oneshot` used,
-and deriving the same device id `cloud-device.js` would have — so the update
+and deriving the same device id `oneshot` would have — so the update
 lands on the session that device already published, not a new device the hub
 has never seen. `--session` is optional; without it, the target is this
 device's own most recently ended session, read from its local session
 record. The pull request itself is validated client-side before anything is
-sent (the same checks `src/pull-request.js` applies on the hub side): a
+sent (the same checks the hub applies): a
 missing or non-GitHub `--url`, a `--number` that is not a positive, decimal
 integer or does not match the one in `--url`, or an injection-shaped or
 dropped-flag-shaped `--title`, is refused with exit **2** before any network

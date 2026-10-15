@@ -62,8 +62,8 @@ In this order (`scripts/release-npm.js`):
 2. **Checks the registry login.** `npm whoami --registry https://registry.npmjs.org/`
    must succeed.
 3. **Runs `npm test`.** Any failure stops the release before anything is published.
-4. **Checks the tarball.** It requires every file under `web/` and every `bin`
-   target in the package, a `bin` path without a leading `./`, and a shebang on
+4. **Checks the tarball.** It requires every file under `web/` except `.map` and
+   `.log` files, and every `bin` target in the package, a `bin` path without a leading `./`, and a shebang on
    each `bin` target.
 5. **Packs and runs the package.** It packs the tarball, installs it offline into
    a temporary prefix, and runs the installed command with `--version`.
@@ -109,14 +109,20 @@ to run unless the npm registry is `https://registry.npmjs.org/` (exit code 3);
 
 Published versions cannot be replaced or removed by a new publish. To warn
 users about a broken version, deprecate it and release a fixed version. The
-release script prints the command to use after a verification failure:
+release script prints this command for `squad-hub` after a verification failure:
 
 ```bash
 npm deprecate squad-hub@<version> "<message>"
+```
+
+The script does not print a command for `@mightybs/squad-hub`. If that name
+needs the same warning, run the same command by hand with the scoped name:
+
+```bash
 npm deprecate @mightybs/squad-hub@<version> "<message>"
 ```
 
-Deprecate each name separately. To undo a deprecation, deprecate the same version
+To undo a deprecation, deprecate the same version
 with an empty message, then check it:
 
 ```bash
@@ -124,9 +130,7 @@ npm deprecate squad-hub@<version> ""
 npm view squad-hub@<version> deprecated    # prints nothing once cleared
 ```
 
-Current status, read from the public registry: versions 0.1.0 through 0.4.0 of
-both `squad-hub` and `@mightybs/squad-hub` are deprecated, and 0.4.1 and later
-are not. Install the latest version.
+Deprecation notices are visible with `npm view squad-hub@<version> deprecated`.
 
 ## The `Squad Release` workflow
 
@@ -149,8 +153,12 @@ A passing workflow run does not publish to npm. Publishing is the separate
 
 | Changed | How it reaches users |
 |---|---|
-| `src/service/` or `web/` | Deploying the hub. No npm release is needed for these. |
+| `src/service/`, `web/`, and the hub-side modules `src/service/` requires: `src/notify/`, `src/aca-dispatch.js`, `src/agent-select.js`, `src/device-meta.js`, `src/disk-meta.js`, `src/paths.js`, `src/pull-request.js`, `src/session-status.js`, `src/squad-context.js` | Deploying the hub. No npm release is needed for the hub-only parts. |
 | `bin/`, or `src/` outside `src/service/` | An npm release, then each device upgrades to the new version. |
+
+Some of the hub-side modules above are also loaded by the device daemon or the
+CLI (for example `src/paths.js` and `src/squad-context.js`), so a change to one
+of them can need both a hub deploy and an npm release.
 
 To list changes in `bin/` or `src/` since the last tag:
 
@@ -158,4 +166,6 @@ To list changes in `bin/` or `src/` since the last tag:
 git diff --name-only v<last-tag>..main -- bin src ':!src/service'
 ```
 
-If the command prints anything, the change needs a release.
+This command is conservative: it also lists the hub-side modules above. If it
+prints anything, check whether the device or CLI loads each changed file; if so,
+the change needs a release.

@@ -23,7 +23,4 @@ device allows file access".
 - No file listing or file read endpoint exists in the hub or the daemon.
 - The tab is rendered disabled in the web interface (`web/index.html`).
 
-Any future Files tab would need a separate design for path confinement, size
-limits, offline handling and audit. Writing files from the browser is not
-planned here. See [Architecture](../architecture.md) for the current device
-protocol.
+See [Architecture](../architecture.md) for the device protocol.

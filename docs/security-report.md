@@ -28,8 +28,8 @@ service on a laptop for anything to reach.
 | Control | Where |
 |---|---|
 | Every authenticated path resolves identity in one function | `src/service/auth.js` `_principal()` |
-| The device WebSocket goes through the same check as the REST API | `src/service/ws.js` |
-| A valid credential belonging to a non-permitted person is refused **403** | `auth.js` |
+| The device WebSocket goes through the same check as the REST API | `src/service/hub-service.js` `_upgrade()` |
+| A valid credential belonging to a non-permitted person is refused **403** on REST, and **401** on the WebSocket upgrade | `auth.js`, `hub-service.js` `_upgrade()` |
 | The three auth modes are mutually exclusive | `auth.js` |
 | GitHub identity is anchored to the numeric account id, not the login | `auth.js` |
 | The WebSocket upgrade is refused from a foreign `Origin`, before a device can register or a watcher can attach | `hub-service.js` `_upgrade()` / `originIsAllowed()` |
@@ -58,9 +58,10 @@ is configured -- the same setting `deploy-appservice.ps1` writes and
 a hub behind a proxy that forwards some other `Host` still recognises its own
 public domain, and a request that merely agrees with itself does not earn a
 match by doing so. Unset -- a local run, or a deployment that does not set
-it -- the origin falls back to the forwarded scheme plus `Host`
-of the request itself, derived the same way `github-oauth.js redirectUri()`
-falls back. A value that is set but does not parse as an absolute `http`/
+it -- the origin falls back to the request's own `Host` plus a scheme taken from
+`X-Forwarded-Proto`, the header `github-oauth.js redirectUri()` also reads. The
+two differ when that header is absent: this check then assumes `http`, while
+`redirectUri()` assumes `https`. A value that is set but does not parse as an absolute `http`/
 `https` URL is refused at startup rather than silently falling back to that
 request-derived behavior, which would let a typo look configured while
 actually granting the weaker of the two.
@@ -108,7 +109,7 @@ can drive a laptop.
 | Expiry | Enforced on verification |
 | Device-id binding | A token may be restricted to an id prefix |
 | Revocation | Persisted, and **fails closed** — an unreadable store refuses every device token |
-| Storage | The token is never written down; only its id, and only when revoked |
+| Storage | The token is never written down. The hub records its id, label, id prefix, issue and expiry times, and a revoked flag |
 | Minting | A device token cannot mint another |
 | Partition | Taken from the verified caller, never from the request |
 
@@ -187,7 +188,7 @@ fail to run, not merely log that it did.
 | `default-src` | `'self'` | Nothing loads from anywhere but this origin unless a directive below says otherwise. Covers the WebSocket, the service worker, and the manifest, all of which are same-origin. |
 | `script-src` | `'self'` | Every handler is assigned in JavaScript, from a file this origin serves. No inline `<script>` anywhere, including the sign-in pages (below). |
 | `style-src` | `'self' 'sha256-…'` | One hash, for the 404 page's own stylesheet — kept inline so that page still renders if `web/` is missing or misdeployed. Nothing else uses a `style=""` attribute: styling comes from stylesheet classes or JavaScript property assignment, neither of which needs an exception. `'unsafe-inline'` is never used. |
-| `img-src` | `'self' https://avatars.githubusercontent.com` | The one sanctioned external origin in the policy: the signed-in person's own GitHub avatar, fetched directly from GitHub's CDN. `auth.js` already validates a claimed avatar URL is on this exact host before trusting it; this only makes that same boundary visible to the browser. |
+| `img-src` | `'self' https://avatars.githubusercontent.com` | The one sanctioned external origin in the policy: the signed-in person's own GitHub avatar, fetched directly from GitHub's CDN. `auth.js` accepts a claimed avatar URL only if it is `https` and its host ends in `githubusercontent.com`, which is a wider check than this one host; the policy is what limits the browser to `avatars.githubusercontent.com`. |
 | `object-src` | `'none'` | No plugin content of any kind. |
 | `base-uri` | `'none'` | Does not fall back to `default-src`; listed so a page's base cannot be redirected. |
 | `form-action` | `'self'` | Does not fall back to `default-src`; a form can only submit back to this origin. |
@@ -206,9 +207,9 @@ both sign-in pages by their real route, and asserts zero
 ## Referrer and transport policy
 
 **`Referrer-Policy: no-referrer`** is sent on every response, unconditionally.
-The manual sign-in link carries a token as `/?token=...` (`web/app.js` reads
-it, then calls `history.replaceState` to strip it from the address bar) —
-until that removal runs, any request the page makes would otherwise hand the
+The manual sign-in link carries a token as `/?token=...` (`loadToken()` in
+`web/js/api.js` stores it in `localStorage`, then calls `history.replaceState`
+to strip it from the address bar) — until that removal runs, any request the page makes would otherwise hand the
 whole URL, token included, to whatever it requested, in a `Referer` header.
 `no-referrer` is the strictest value available: no referrer at all, to any
 origin, same-origin included.
@@ -218,9 +219,9 @@ arrived over TLS. The hub itself always listens on plain HTTP
 (`http.createServer` in `src/service/hub-service.js`) — every deployment this
 repo ships terminates TLS in front of it (Azure App Service, Container Apps,
 an AKS ingress) and forwards the original scheme in `X-Forwarded-Proto`. That
-is the same header `github-oauth.js` already trusts, on the same request, to
-build the OAuth redirect URI; the HSTS decision reads it the same way rather
-than inventing a second convention. A request carrying no such signal — a bare
+is the same header `github-oauth.js` reads to build the OAuth redirect URI,
+though the absent-header default differs: the redirect URI assumes `https`,
+while the HSTS decision assumes the request is insecure. A request carrying no such signal — a bare
 `curl` to a local `dev`-mode hub, or an in-cluster health check over plain
 HTTP — is treated as insecure, not assumed secure, and gets no HSTS header at
 all: sending one there would tell a browser to stop using the very channel
@@ -244,15 +245,16 @@ the one that is easy to assert.
 
 | | |
 |---|---|
-| Devices, sessions, prompts, approval commands | Held **in memory only** |
-| Persisted under `SQUAD_HUB_HOME` | Device-token records, revocations, the access list |
-| Never written to disk by the hub | Signing secrets and tokens |
+| Held in memory only | Pending approvals and live connections |
+| Persisted under `SQUAD_HUB_HOME` by default | Device and session records (prompts, titles, working directories, expired and answered approval lists, and a bounded transcript tail for cloud jobs) in `sessions.json`; `prefs.json`; `push-subscriptions.json` (includes each subscription's `keys.auth`); `access.json`; `access-audit.jsonl`; `device-tokens.json` |
+| Never written to disk by the hub | Signing secrets and device tokens |
 | `/healthz` without a credential | Returns `{"ok": true}` and nothing else |
 | Sign-in token in the address bar | Removed from the URL as soon as it is read |
 
-Prompts and the literal commands on approval cards never reach a disk the hub
-controls.
-
+Because the persisted files hold session content and push subscription keys,
+protect `SQUAD_HUB_HOME` as sensitive data. `/healthz` reports `sessionStore`,
+`prefsStore`, `pushStore` and `accessStore` as `durable` or `memory` for an
+authenticated caller.
 ---
 
 ## Starting a cloud job

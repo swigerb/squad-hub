@@ -187,11 +187,11 @@ node bin/squad-hub.js serve
 ```
 
 It prints a URL containing a token — open that, and you are signed in. It also
-prints the exact `connect` command for this device. In a **second terminal**,
-in the same folder:
+prints the exact `start` command for this device. In a **second terminal**,
+in the same folder, run that command:
 
 ```bash
-node bin/squad-hub.js connect --hub http://localhost:7420 --token <token>
+node bin/squad-hub.js start --hub http://localhost:7420 --token <token>
 
 cd /path/to/your/project
 node /path/to/squad-hub/bin/squad-hub.js squad "add a health endpoint and a test for it"

@@ -9,8 +9,10 @@ The **device daemon** owns everything real: the agent process, the session, and
 any pending approval. The agent's request for permission is an open RPC to the
 daemon on the same machine.
 
-The **hub service** holds only a projection of that, in memory, so a browser has
-something to render and something to command.
+The **hub service** holds only a projection of that, so a browser has something to
+render and something to command. By default it persists the projection under
+`SQUAD_HUB_HOME` when that directory is writable, and otherwise keeps it in memory;
+pending approvals are never persisted.
 
 <p align="center">
   <img src="images/device-flow.jpg" alt="Device flow: the agent and daemon on the device, the service as a cache, and the browser as a view" width="900">
@@ -20,8 +22,8 @@ Three roles, and the distinction between them is the whole design:
 
 | | | |
 |---|---|---|
-| `squad-hub daemon` | **the record** | on the device, alongside the agent |
-| `squad-hub service` | **a cache** | in the cloud, per-user, in memory |
+| device daemon (started by `squad-hub start` or `connect`) | **the record** | on the device, alongside the agent |
+| hub service (`squad-hub serve`) | **a cache** | in the cloud, per-user, persisted under `SQUAD_HUB_HOME` when writable |
 | browser · PWA · Teams | **a view** | HTTPS to command, WebSocket to watch |
 
 ### Device kind
@@ -97,15 +99,18 @@ The first row is enforced by [`test/restart-unit.js`](../test/restart-unit.js).
 
 | Event | Sessions | A pending approval | Devices |
 |---|---|---|---|
-| **Hub service restarts / redeploys** | restored by devices when they reconnect | **survives**, same id, still answerable | re-register |
+| **Hub service restarts / redeploys** | reloaded from disk when `SQUAD_HUB_HOME` is writable; republished by devices when they reconnect | **survives** on the device, same id, still answerable once it republishes | re-register |
 | **Daemon restarts** (`squad-hub stop`/`start`) | **lost** — agents are reaped | lost with its session | re-registers, online |
-| **Daemon killed** (crash, network, laptop lid) | held until it reconnects | held | online → stale → offline |
+| **Daemon killed** (crash, network, laptop lid) | live sessions marked **disconnected** when the socket closes; a reconnect republishes what is still live | expired with reason `device disconnected`; a reconnect republishes any still pending | online → stale → offline |
 | **Agent process dies** | marked **failed** within one heartbeat | cleared | unaffected |
 | **Browser closed** | nothing lost | nothing lost | nothing lost |
 
 ### The hub restart, in full
 
-A restarted service starts with an empty store and no sessions. Each device
+A restarted service reloads its session records from `sessions.json` under
+`SQUAD_HUB_HOME` when that directory is writable; `/healthz` reports
+`sessionStore` as `"durable"` or `"memory"`. Pending approvals are never written
+to disk, and with no writable directory the store starts empty. Each device
 reconnects with exponential backoff (1 s, 2 s, 4 s, and so on, capped at 30 s)
 and republishes its sessions, including pending approvals. The approval id is
 unchanged, so a card already open elsewhere still answers the right thing, and
@@ -132,12 +137,14 @@ away and has no sessions worth remembering.
 
 ## What is genuinely not durable
 
-**A record of completed sessions.** Both the hub and the daemon hold them in
-memory, so once the daemon restarts, finished work is gone from both. Nothing is
-lost that is still running — only the history.
+**Pending approvals.** A pending approval lives only on the device, because it is
+an open request to a specific agent process. The hub never writes it to disk; it
+holds a copy only while the device is connected and the device republishes it on
+reconnect.
 
-That is the only thing persistence would buy, and it is a history feature rather
-than a reliability one.
+**Sessions after a daemon restart.** The daemon holds its sessions in memory and
+reaps its agents on shutdown, so once it restarts the device no longer reports
+them and the hub drops its copy on the next sync.
 
 ## Per-user preferences
 

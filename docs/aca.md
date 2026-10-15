@@ -227,8 +227,8 @@ They are different things, and only one of them starts anything.
 | | A job **attaches** to the hub | The hub **links** to a job | The hub **dispatches** a job |
 |---|---|---|---|
 | What happens | An ACA job runs `squad-hub oneshot` and dials the hub, so a person can answer its approvals | **+ New → New ACA job…** falls back to writing a GitHub URL and opening it, when the App is not configured | The hub calls `workflow_dispatch` on `squad-dispatch.yml` directly, as a GitHub App |
-| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue | Whoever presses Start job in the dialog, signed in as any hub user |
-| What the hub holds | A device token, minted by you | Nothing | A GitHub App installation token (in memory, per request) |
+| Who starts the job | Whoever dispatched it on GitHub | Whoever presses Create on the issue | Whoever presses Start job in the dialog, signed in with GitHub as an account that has write, maintain or admin access to the repository |
+| What the hub holds | A device token, minted by you | Nothing | A GitHub App installation token (cached in memory until about a minute before it expires) |
 | Appears in **+ New** as | **On an attached cloud device** — it is already running | **New ACA job…** — the dialog's 501 fallback links, when the App is not configured | **New ACA job…** — the same dialog, posting `POST /api/aca/dispatch` directly instead, on a repository the App is installed on |
 
 Neither of the first two gives the hub the ability to start compute. In the
@@ -318,9 +318,10 @@ terminal state rather than polling.
 Actions run moves from queued to in progress, so this is the ACA-specific timer
 beside the app's ordinary overview refresh) and at most one request is in
 flight; overlapping triggers coalesce into one follow-up pass. With nothing
-pending or everything attached or resolved, it makes no request at all, so an
-ordinary page load, or a hub with no GitHub App, never calls that route, and it
-stays under the 30 per minute read limit. The tracking is per tab and in
+pending or everything attached or resolved, it makes no request at all, so this poller makes no request for an
+ordinary page load, and it stays under the 30 per minute read limit. (The status
+card's own refresh does read `GET /api/aca/dispatches` on every page load once the
+App is configured; a hub with no App never calls it.) The tracking is per tab and in
 memory, like `DispatchTracker`: reloading loses the row, not the job.
 
 **When the hub cannot dispatch.** With no GitHub App, on a repository the App
@@ -366,8 +367,9 @@ these routes and keeps the link-based path. Read
 for the full rule.
 
 Configured with `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` (see
-[commands.md](commands.md#the-service)); unset, the three `/api/aca/*` routes
-answer `501` and every repository works exactly as the first two directions
+[commands.md](commands.md#hub-service-environment-variables)); unset, `GET /api/aca/repos`,
+`GET /api/aca/dispatches`, `POST /api/aca/dispatch` and the three choice routes
+(`choices`, `branches`, `issues`) answer `501` and every repository works exactly as the first two directions
 above describe. Which inputs actually get sent for a given target repository
 depends on that repository's own `squad-dispatch.yml` declaring them (the 422
 refusal two paragraphs below). The hub sends up to seven inputs: `issue`,
@@ -399,7 +401,7 @@ a second, independent App registration.
 |---|---|---|
 | Actions | Read and write | `workflow_dispatch` itself, and reading a run's status back for `/api/aca/dispatches` |
 | Issues | Read and write | Creating the issue a `newIssue` dispatch targets, and reading/listing issues for `/api/aca/repos`-adjacent UI |
-| Contents | Read only | Reading `squad-dispatch.yml` off the target repository's default branch, to check declared inputs before dispatching (never writes — the App never pushes anything) |
+| Contents | Read only | Reading `squad-dispatch.yml` off the target repository's default branch, to check declared inputs before dispatching; reading `.squad/config.json` and `.squad/casting/registry.json` for the model and reviewer choices; and listing branches (never writes — the App never pushes anything) |
 | Metadata | Read only | Mandatory on every GitHub App; lets the hub enumerate installed repositories |
 
 No other permission is needed, and none should be granted — in particular,
@@ -420,7 +422,7 @@ implies.
    the workflow actually runs from is always that repository's own current
    default branch (never a caller-supplied `baseBranch` — see below).
 4. **Set `SQUAD_HUB_GH_APP_ID` and `SQUAD_HUB_GH_APP_PRIVATE_KEY`** on the hub
-   deployment (see [commands.md](commands.md#the-service)) — held only in
+   deployment (see [commands.md](commands.md#hub-service-environment-variables)) — held only in
    memory, never written to disk, never returned by any hub endpoint.
 5. **Confirm the OIDC/RBAC/lease prerequisites on the TARGET repository
    itself are already in place** before relying on a dispatch to actually
@@ -451,13 +453,11 @@ implies.
 | The workflow's own lease-claim step reports `stand-down` | Another dispatch (Ralph, or a concurrent manual run) already holds the lease for that issue | The shared lease store, by design — this is a normal outcome, not a failure |
 
 With no App configured, the dialog's Repository and Issue fields still work
-(they sit outside the disabled `#acaForm`, not inside it, specifically so the
-501 state does not take them down too): the caller can still pick or type a
+(they sit outside `#acaForm`, which is hidden when no App is configured): the caller can still pick or type a
 repository, and either open a **new** issue or point at an **existing** one —
-`acaIssueLink`/`acaNewIssueLink` branch on that choice so "Review existing
-issue" always opens the issue the caller actually selected, never silently
-falling back to the new-issue link regardless of mode. Below the disabled
-form, a read-only, selectable `#acaCmdPreview` shows the exact `/squad-aca`
+`acaIssueLink`/`acaNewIssueLink` branch on that choice so the
+**Review on GitHub instead…** link always opens the issue the caller actually
+selected, new or existing. Below the hidden form, a read-only, selectable `#acaCmdPreview` shows the exact `/squad-aca`
 command (updated live as the Instructions field changes) the caller copies
 into a PR comment instead — the only direction available without the App —
 and "Copy command" reports success or failure honestly (via the same
@@ -646,28 +646,20 @@ docs/security.md).
 
 The run-list lookup additionally narrows its *candidate set* to runs created
 at or after this dispatch's own `dispatchedAt` (minus a small clock-skew
-buffer), using GitHub's `created` query filter. Without that bound, a
-repository's lifetime `workflow_dispatch` count — not just runs relevant to
-this dispatch — decides whether the page looks truncated; once a repository
-has made more than 20 manual dispatches *ever*, every future dispatch would
-otherwise see `total_count` exceed the fetched page and fail closed forever,
-even though the dispatch it is looking for is right there on the page. Time
-only bounds *which runs are candidates for the search* — it is never used as
-or in place of the correlation id, and a run sitting inside the time window
-with no matching correlation id is still left `pending`, exactly as if it had
-never been fetched at all.
+buffer), using GitHub's `created` query filter, so the truncation check above
+considers only runs created around this dispatch. Time only bounds *which runs
+are candidates for the search* — it is never used as or in place of the
+correlation id, and a run inside the time window with no matching correlation id
+is left `pending`.
 
 Each dispatch also gets a second, unrelated id: `DispatchTracker.record()`
-mints its own opaque `crypto.randomUUID()` the moment the dispatch is
-recorded, returned to the browser as `trackerId` from `POST /api/aca/dispatch`
-and exposed again as `.id` on every row `GET /api/aca/dispatches` returns.
-Unlike `hub_correlation_id` (used only internally, server-side, to match the
-Actions run and never sent to a browser), this id is meant to be handed back:
-it is the one stable, authoritative handle a client has for "the dispatch I
-just made", so a pending-row UI can bind to its own record directly
-instead of re-guessing which row is "its" dispatch from timestamp, issue
-number, or repo+ref proximity once more than one dispatch against the same
-repository is in flight at once.
+mints its own opaque `crypto.randomUUID()` when the dispatch is recorded,
+returned to the browser as `trackerId` from `POST /api/aca/dispatch` and
+exposed again as `.id` on every row `GET /api/aca/dispatches` returns. Unlike
+`hub_correlation_id` (used only internally, server-side, to match the Actions
+run and never sent to a browser), this id is meant to be handed back: it is the
+one stable handle a client has for "the dispatch I just made", so a pending-row
+UI binds to its own record directly.
 
 The dispatch always runs on the repository's own **default branch** — never on
 a caller-supplied `baseBranch`. `baseBranch` travels only as the `base_branch`
@@ -699,13 +691,13 @@ Hub reports only the presence and metadata it actually receives:
   convention, requiring the literal tokens `squad`, `aca`, then the role
   word, consecutively, ANCHORED to what actually follows a real Azure
   revision name: either nothing (a bare job name with no suffix) or a
-  purely numeric revision token (matching a real production device name
-  like `aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5`). A name that
+  purely numeric revision token (for example a device named
+  `aca-<container-app>--<revision>-<suffix>`, where the container-app name
+  contains `squad-aca-watch` and `<revision>` is numeric). A name that
   merely contains the same three-token run somewhere in the middle,
   followed by an ordinary word rather than a revision number or the end of
-  the name (for example an implementation session slug ending
-  `...-squad-aca-watch-card`), is rejected — the anchor is what tells a
-  real job name apart from a session slug that happens to embed it. Only
+  the name, is rejected — the anchor is what tells a real job name apart from
+  a session name that happens to embed it. Only
   `kind: 'aca'` devices are considered either way. Neither path ever
   matches an implementation session merely because its own name happens to
   contain the English words "watcher" or "ralph" as a substring. A device
@@ -721,7 +713,7 @@ Hub reports only the presence and metadata it actually receives:
 - **"watch-only."** Said about the issue watcher ONLY when `meta.approvalMode`
   is the verified value `auto`. A watcher can exist under manual approval
   too, and presence alone proves nothing about its approval mode — with no
-  `approvalMode` reported (today's real shape), the row shows plain
+  `approvalMode` reported, the row shows plain
   presence instead of a guessed label.
 - **"Last sweep."** Said about Ralph ONLY from a confirmed `meta.lastSweepAt`.
   `lastSeen` is a wire-protocol heartbeat every device reports merely by

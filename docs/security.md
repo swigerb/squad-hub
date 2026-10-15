@@ -132,8 +132,8 @@ See [Squad on ACA: who may trigger a run](https://github.com/swigerb/squad-on-ac
 reads beside it, are a second, direct way to start a job — only for
 repositories where an administrator installed the hub's own GitHub App.
 Configuring it is `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY`; see
-[commands.md](commands.md#the-service) and [aca.md](aca.md). Unset (the
-default, until the App exists at all), these routes answer `501` and nothing
+[commands.md](commands.md#hub-service-environment-variables) and [aca.md](aca.md). Unset (the
+default), these routes answer `501` and nothing
 above changes — every repository behaves exactly as described in "Starting a
 cloud job from the hub".
 
@@ -165,7 +165,7 @@ the Metadata read permission the App already has — no new permission or
 scope), for the **verified** GitHub account of the session:
 
 - **Who the user is** comes only from GitHub-mode sign-in
-  (`SQUAD_HUB_AUTH=github`), where the hub itself exchanged the bearer token
+  (`SQUAD_HUB_AUTH_MODE=github`), where the hub itself exchanged the bearer token
   with GitHub `GET /user`. The numeric account id is the identity; the login
   is only the name used to ask. The answer must come back **about that same
   id**, so a login that has been renamed or handed to a different account is
@@ -295,11 +295,12 @@ other tracked-dispatch field is.
 
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
-a repository's issue tracker through this endpoint. `GET /api/aca/repos` and
-`GET /api/aca/dispatches` are rate-limited too (30 requests per minute,
-sharing one budget between the two routes, per signed-in user) — unlimited
-polling of either would let one account exhaust the App's own GitHub API rate
-limit, which every other hub user dispatching through the same App shares.
+a repository's issue tracker through this endpoint. The read routes —
+`GET /api/aca/repos`, `GET /api/aca/dispatches`, and the dispatch-form lookups for
+choices, branches and issues — are rate-limited too (30 requests per minute,
+sharing one budget across all of them, per signed-in user). Unlimited polling
+would let one account exhaust the App's own GitHub API rate limit, which every
+other hub user dispatching through the same App shares.
 
 **The App registration itself should be created as private ("Only on this
 account"), never public.** A public GitHub App can be installed by anyone on
@@ -391,7 +392,9 @@ the device WebSocket, which authenticates through a query string rather than an
 `Authorization` header.
 
 A validly signed token belonging to someone not permitted is refused with
-**403**, not 401.
+**403** on a REST request, not 401. On the device WebSocket upgrade, which has
+no body to carry a reason, any failed authentication — including this one — is
+answered with **401**.
 
 ## Verify it yourself
 
@@ -486,13 +489,18 @@ Revoking one does not affect the others.
 ##### If sign-in fails with a redirect URI mismatch
 
 The redirect the hub sends to GitHub comes from `SQUAD_HUB_PUBLIC_URL` when set,
-and otherwise from the host the request arrived on. The deploy script sets it.
+and otherwise from the request's own host and `X-Forwarded-Proto` header, with the
+scheme defaulting to `https` when that header is absent. A local run therefore
+needs `SQUAD_HUB_PUBLIC_URL=http://localhost:7420`. The deploy script sets it for a
+hosted hub.
 
 Check these in order:
 
 - The App is registered against the address you are browsing to.
 - If the hub is reached through a custom domain, register the callback for
   whichever address `SQUAD_HUB_PUBLIC_URL` names.
+- The scheme matches too: without `SQUAD_HUB_PUBLIC_URL` and without an
+  `X-Forwarded-Proto` header, the hub sends an `https://` redirect.
 - The path is `/auth/github/callback`. A trailing slash counts as different.
 
 What the flow does:
@@ -622,10 +630,11 @@ restarts (a browser's subscription is bound to the public key it was handed;
 rotating the pair silently would orphan every existing subscription). Mint a
 pair once, out of band, and set both variables before deploying.
 
-`/api/me`'s `push.enabled` field, and `/healthz`'s authenticated
-`pushStore` field, report this state plainly so the installed app can say
-"push is not configured on this hub" instead of offering a toggle that can
-never do anything.
+`/api/me`'s `push.enabled` field reports this state plainly so the installed
+app can say "push is not configured on this hub" instead of offering a toggle
+that can never do anything. `/healthz`'s authenticated `pushStore` field is a
+different fact: it reports whether the subscription store is `durable` or
+`memory`, not whether VAPID is configured.
 
 ### Generating and deploying a key pair
 
@@ -683,6 +692,9 @@ independently by accident. **Never set either of those two in a real
 deployment.**
 
 ```bash
+# Interactive bash would treat the ! characters in the script as history
+# expansion inside double quotes; turn that off first (zsh: setopt no_bang_hist).
+set +H
 node -e "
 const { generateVapidKeys } = require('./src/service/web-push.js');
 const crypto = require('crypto');
@@ -693,7 +705,7 @@ const crypto = require('crypto');
 //   az account get-access-token --query accessToken -o tsv
 const resourcePath = process.env.APP_SERVICE_SETTINGS_PATH; // .../config/appsettings
 const token = process.env.AZ_ACCESS_TOKEN;
-if (!resourcePath || !token) {
+if (resourcePath === undefined || resourcePath === '' || token === undefined || token === '') {
   console.error('Set APP_SERVICE_SETTINGS_PATH and AZ_ACCESS_TOKEN first.');
   process.exit(1);
 }
@@ -736,7 +748,7 @@ function settingsRequest(method, body, timeoutPhase) {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
-        if (!data) { resolve({ status: res.statusCode, body: {} }); return; }
+        if (data === '') { resolve({ status: res.statusCode, body: {} }); return; }
         try {
           resolve({ status: res.statusCode, body: JSON.parse(data) });
         } catch {
@@ -748,11 +760,11 @@ function settingsRequest(method, body, timeoutPhase) {
     // The timeout message must be chosen by PHASE, not by HTTP method --
     // 'POST .../list' is a read both in step 1 (before any write -- safe to
     // say nothing was written) and in step 4 (AFTER step 3's PUT already
-    // succeeded -- saying "no write happened" there would be false, the
+    // succeeded -- saying no write happened there would be false, the
     // exact false-safety failure mode this whole script exists to avoid).
     // 'PUT' is the write itself: the request body may already have reached
     // the server before the response stalled, so that case must never claim
-    // "no write happened" either -- only that the outcome is unknown and
+    // that no write happened either -- only that the outcome is unknown and
     // must be investigated, same honesty already required of a step-4
     // MISMATCH after a successful PUT (see below). Each call site below
     // passes its own phase explicitly rather than relying on method alone.
@@ -896,10 +908,9 @@ function readProperties(res, label) {
   from a different generation is a new, different, untested pair, not a
   smaller edit; see "no automatic mismatch guarantee" below for why that is
   not caught for you.
-- Production keys for this deployment are already configured, once, by the
-  operator. **Never regenerate or rotate them from a worker, from this
-  workflow, or at any startup path** — doing so would silently orphan every
-  browser already subscribed (below).
+- If a key pair is already configured, do not regenerate it. **Never
+  regenerate or rotate it from a worker or at any startup path** — doing so
+  would silently orphan every browser already subscribed (below).
 - **A `MISMATCH` (or any other) failure in step 4, after the PUT in step 3
   already returned success, does not mean the pair was never stored.** The
   write already landed; only the readback/verification failed. The pair is
@@ -1042,7 +1053,7 @@ enforces two things beyond "is this a URL":
 - **No IPv4 private, loopback, or link-local literal**, even over `https:`.
   Every real push service is reached by a public DNS name, never a bare IP —
   so refusing `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `127.0.0.0/8`,
-  and `169.254.0.0/16` (which includes the common cloud-metadata address,
+  `0.0.0.0/8`, and `169.254.0.0/16` (which includes the common cloud-metadata address,
   `169.254.169.254`) literals costs no legitimate subscription anything,
   while closing off the most direct route to internal-network services an
   attacker's browser could not otherwise reach.
@@ -1114,8 +1125,9 @@ authorise that surface.
   may register `aca-<execution>` and cannot claim to be your laptop.
 - **It carries an id**, so one token can be revoked without disturbing others.
 
-The token itself is never stored. Only its id is written down, and only when
-revoked.
+The token itself is never stored. When one is minted, the hub records its id,
+label, id prefix, and issue and expiry times, plus a revoked flag. That record
+is what `--list` and revocation work from.
 
 ### Issuing one
 
@@ -1172,7 +1184,10 @@ answers.
 Or the **×** on a device in the web app, which revokes the credential that
 device is holding, drops the connection, and deletes the record in one action.
 It asks first: it cannot be undone from the hub, and the machine returns only
-when somebody runs `squad-hub connect` there with a new token.
+when somebody runs `squad-hub connect` there with a new token. This works only
+while the device is connected, because the hub identifies the credential from the
+live socket; otherwise it answers `409`, and the revoke command above, which
+needs only the token id, is the way to do it.
 
 Neither is `forget`, which removes the hub's record of ended sessions and
 deliberately refuses a device that is still reachable.
@@ -1280,11 +1295,28 @@ directory. An explicit `--cwd`, local or remote, always goes through the
 
 ## Where state is kept
 
-The hub holds devices, sessions and pending approvals **in memory only**.
-Prompts, session titles and the commands on approval cards are never written to
-a disk the hub controls.
+**Held in memory only:** pending approvals and live connections (devices and
+watchers). A pending approval is a handle onto a specific running agent
+process, so it is never written to disk; a connected device republishes its real
+pending approvals when it reconnects.
 
-Anything that must survive a restart goes under `SQUAD_HUB_HOME`:
+**Written to disk by default**, under `SQUAD_HUB_HOME`:
+
+| File | Contents |
+|---|---|
+| `sessions.json` | Device and session records: device metadata, and for each session its prompt, title, working directory, status, the expired and answered approval lists (including the commands shown on those approval cards), and a bounded transcript tail when a cloud job publishes one |
+| `prefs.json` | Per-user pins, renames and saved views |
+| `push-subscriptions.json` | Browser push subscriptions, including each subscription's `keys.auth` secret |
+| `access.json` | The list of users granted access through the web app |
+| `access-audit.jsonl` | Append-only record of access grants and revocations |
+| `device-tokens.json` | Device-token metadata and revocations (never the token) |
+
+`/healthz` reports `sessionStore`, `prefsStore`, `pushStore` and `accessStore`
+as `durable` or `memory`, so a deployment can read whether these survive a
+restart instead of inferring it. Where no directory is configured, or the
+writes are disabled, a store falls back to memory.
+
+`SQUAD_HUB_HOME` resolves to:
 
 | Platform | Location | Survives a restart? |
 |---|---|---|
@@ -1299,8 +1331,11 @@ permissions.** Every file reports mode `777`, files are owned by `nobody`, and
 `chmod` succeeds while changing nothing.
 
 **Nothing secret may be written to `/home`.** Signing secrets and tokens stay in
-app settings, where the platform
-protects them. Anything the hub does persist has to be safe to read.
+app settings, where the platform protects them. Anything the hub does persist
+has to be safe to read: the files above hold session content (prompts, titles,
+working directories, approval commands) and push subscription keys, so treat
+`SQUAD_HUB_HOME` as sensitive. Restrict who can read the directory or volume,
+and protect backups of it the same way.
 
 **A container without a volume forgets.** ACA and AKS have no `/home` equivalent
 by default, so persisted state resets on restart. Mount a volume, or accept that
@@ -1309,7 +1344,6 @@ it does not survive.
 **This is single-instance.** State is per-process, so a second instance has its
 own copy and the two diverge. `/healthz` reports the instance count and refuses
 to pretend otherwise, and the deploy script refuses to scale out.
-
 ### Anything security-critical fails closed
 
 If a persisted security decision cannot be read — file missing, wrong shape, or
