@@ -31,11 +31,11 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { ACA_PHASE, findWatcherDevice, findRalphDevice, acaWatcherLine,
   acaRalphLine, acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel,
-  acaStatusCardHtml, acaConnectionCounts, isPersistentAcaJob };`)(mod, mod.exports);
+  acaStatusCardHtml, acaConnectionCounts, isPersistentAcaJob, acaDispatchSession };`)(mod, mod.exports);
 
 const {
   ACA_PHASE, findWatcherDevice, findRalphDevice, acaWatcherLine, acaRalphLine,
-  acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel, acaStatusCardHtml, acaConnectionCounts, isPersistentAcaJob,
+  acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel, acaStatusCardHtml, acaConnectionCounts, isPersistentAcaJob, acaDispatchSession,
 } = mod.exports;
 
 check('a connected ACA service is flagged beside the counts, never added to them', () => {
@@ -569,6 +569,134 @@ check('acaStatusCardHtml renders Connected with watcher/Ralph/last-dispatch rows
   assert.match(html, /swigerb\/squad-hub \u00b7 running/);
   assert.match(html, /data-action="aca-retry">Retry<\/a>/);
   assert.match(html, /Learn more<\/a>/);
+});
+
+// ---------------------------------------------------------------------------
+// #262: the job's own outcome, from the session the dispatch provably started
+// ---------------------------------------------------------------------------
+
+const NOT_CONFIRMED = 'Dispatch workflow succeeded; job outcome not confirmed';
+const dispatchRow = (over = {}) => ({
+  id: 'trk-1', owner: 'swigerb', repo: 'squad-hub', executionName: 'job-abc123',
+  status: {
+    state: 'completed', conclusion: 'success', runId: 7, runAttempt: 1, executionName: 'job-abc123',
+  },
+  ...over,
+});
+const acaDevice = (over = {}) => ({ deviceId: 'aca-job-abc123', kind: 'aca', presence: 'online', ...over });
+const acaGroups = (sessions, deviceId = 'aca-job-abc123') => [{ device: { deviceId }, sessions: sessions.map((st) => ({ deviceId, status: st })) }];
+const ctx = (over = {}) => ({ devices: [acaDevice()], groups: acaGroups(['done']), tracked: [], ...over });
+const lastLine = (rows, c) => acaLastDispatchLine(rows, c);
+const modelLine = (rows, c) => acaStatusModel({ phase: ACA_PHASE.CONNECTED, dispatches: rows, ...c }).lastDispatch;
+
+check('acaDispatchStatusLabel reports the matched session outcome in session vocabulary', () => {
+  const run = dispatchRow().status;
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'done' }), 'job completed');
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'failed' }), 'job failed');
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'stopped' }), 'job stopped');
+  for (const st of ['starting', 'active', 'waiting_approval', 'idle']) {
+    assert.strictEqual(acaDispatchStatusLabel({ ...run, state: 'in_progress', conclusion: null }, { status: st }), 'job running');
+  }
+});
+
+check('acaDispatchStatusLabel never infers an outcome without a session, or from an unknown/disconnected one', () => {
+  const run = dispatchRow().status;
+  assert.strictEqual(acaDispatchStatusLabel(run), NOT_CONFIRMED);
+  assert.strictEqual(acaDispatchStatusLabel(run, null), NOT_CONFIRMED);
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'disconnected' }), NOT_CONFIRMED);
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'bogus' }), NOT_CONFIRMED);
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'toString' }), NOT_CONFIRMED);
+});
+
+check('acaDispatchStatusLabel keeps a failed dispatch run and queued states in their own words', () => {
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'failure' }, { status: 'done' }), 'dispatch workflow completed (failure)');
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'queued' }, { status: 'done' }), 'queued');
+});
+
+  check('acaLastDispatchLine: confirmed execution + matching device + running session says running', () => {
+    const row = dispatchRow({ status: { ...dispatchRow().status, state: 'in_progress', conclusion: null } });
+    assert.strictEqual(lastLine([row], ctx({ groups: acaGroups(['active']) })), 'swigerb/squad-hub \u00b7 job running');
+  });
+  check('acaLastDispatchLine: confirmed execution + matching device + finished session says completed', () => {
+    assert.strictEqual(lastLine([dispatchRow()], ctx()), 'swigerb/squad-hub \u00b7 job completed');
+  });
+  check('acaLastDispatchLine: failed and stopped sessions say failed / stopped', () => {
+    assert.strictEqual(lastLine([dispatchRow()], ctx({ groups: acaGroups(['failed']) })), 'swigerb/squad-hub \u00b7 job failed');
+    assert.strictEqual(lastLine([dispatchRow()], ctx({ groups: acaGroups(['stopped']) })), 'swigerb/squad-hub \u00b7 job stopped');
+  });
+  check('acaLastDispatchLine: no executionName stays not confirmed', () => {
+    const row = dispatchRow({ executionName: null, status: { ...dispatchRow().status, executionName: null } });
+    assert.ok(lastLine([row], ctx()).endsWith(NOT_CONFIRMED));
+  });
+  check('acaLastDispatchLine: no matching device stays not confirmed', () => {
+    assert.ok(lastLine([dispatchRow()], ctx({ devices: [acaDevice({ deviceId: 'aca-other-run' })], groups: acaGroups(['done'], 'aca-other-run') })).endsWith(NOT_CONFIRMED));
+  });
+  check('acaLastDispatchLine: a mismatched attempt stays not confirmed', () => {
+    const noAttempt = dispatchRow({ status: { ...dispatchRow().status, runAttempt: null } });
+    assert.ok(lastLine([noAttempt], ctx()).endsWith(NOT_CONFIRMED), 'a receipt with no valid attempt must not join');
+    const tracked = [{ trackerId: 'trk-1', repo: 'swigerb/squad-hub', issue: 5, runId: 7, runAttempt: 2, executionName: null }];
+    assert.ok(lastLine([dispatchRow()], ctx({ tracked })).endsWith(NOT_CONFIRMED), 'a stale lower attempt must not join');
+  });
+  check('acaLastDispatchLine: a mismatched issue stays not confirmed', () => {
+    const tracked = [{ trackerId: 'trk-1', repo: 'swigerb/squad-hub', issue: 5, runId: 7, runAttempt: 1, executionName: null }];
+    const devices = [acaDevice({ meta: { issue: 6 } })];
+    assert.ok(lastLine([dispatchRow()], ctx({ tracked, devices })).endsWith(NOT_CONFIRMED));
+    const same = [acaDevice({ meta: { issue: 5 } })];
+    assert.ok(lastLine([dispatchRow()], ctx({ tracked, devices: same })).endsWith('job completed'));
+  });
+  check('acaLastDispatchLine: a device with no session stays not confirmed, heartbeat is not an outcome', () => {
+    assert.ok(lastLine([dispatchRow()], ctx({ groups: [{ device: { deviceId: 'aca-job-abc123' }, sessions: [] }] })).endsWith(NOT_CONFIRMED));
+    assert.ok(lastLine([dispatchRow()], ctx({ groups: [] })).endsWith(NOT_CONFIRMED));
+    assert.ok(lastLine([dispatchRow()], { devices: [acaDevice({ presence: 'online', lastSeen: Date.now() })] }).endsWith(NOT_CONFIRMED));
+  });
+
+  check('acaStatusModel: confirmed execution + matching device + running session says running', () => {
+    const row = dispatchRow({ status: { ...dispatchRow().status, state: 'in_progress', conclusion: null } });
+    assert.strictEqual(modelLine([row], ctx({ groups: acaGroups(['active']) })), 'swigerb/squad-hub \u00b7 job running');
+  });
+  check('acaStatusModel: confirmed execution + matching device + finished session says completed', () => {
+    assert.strictEqual(modelLine([dispatchRow()], ctx()), 'swigerb/squad-hub \u00b7 job completed');
+  });
+  check('acaStatusModel: failed and stopped sessions say failed / stopped', () => {
+    assert.strictEqual(modelLine([dispatchRow()], ctx({ groups: acaGroups(['failed']) })), 'swigerb/squad-hub \u00b7 job failed');
+    assert.strictEqual(modelLine([dispatchRow()], ctx({ groups: acaGroups(['stopped']) })), 'swigerb/squad-hub \u00b7 job stopped');
+  });
+  check('acaStatusModel: no executionName stays not confirmed', () => {
+    const row = dispatchRow({ executionName: null, status: { ...dispatchRow().status, executionName: null } });
+    assert.ok(modelLine([row], ctx()).endsWith(NOT_CONFIRMED));
+  });
+  check('acaStatusModel: no matching device stays not confirmed', () => {
+    assert.ok(modelLine([dispatchRow()], ctx({ devices: [acaDevice({ deviceId: 'aca-other-run' })], groups: acaGroups(['done'], 'aca-other-run') })).endsWith(NOT_CONFIRMED));
+  });
+  check('acaStatusModel: a mismatched attempt stays not confirmed', () => {
+    const noAttempt = dispatchRow({ status: { ...dispatchRow().status, runAttempt: null } });
+    assert.ok(modelLine([noAttempt], ctx()).endsWith(NOT_CONFIRMED), 'a receipt with no valid attempt must not join');
+    const tracked = [{ trackerId: 'trk-1', repo: 'swigerb/squad-hub', issue: 5, runId: 7, runAttempt: 2, executionName: null }];
+    assert.ok(modelLine([dispatchRow()], ctx({ tracked })).endsWith(NOT_CONFIRMED), 'a stale lower attempt must not join');
+  });
+  check('acaStatusModel: a mismatched issue stays not confirmed', () => {
+    const tracked = [{ trackerId: 'trk-1', repo: 'swigerb/squad-hub', issue: 5, runId: 7, runAttempt: 1, executionName: null }];
+    const devices = [acaDevice({ meta: { issue: 6 } })];
+    assert.ok(modelLine([dispatchRow()], ctx({ tracked, devices })).endsWith(NOT_CONFIRMED));
+    const same = [acaDevice({ meta: { issue: 5 } })];
+    assert.ok(modelLine([dispatchRow()], ctx({ tracked, devices: same })).endsWith('job completed'));
+  });
+  check('acaStatusModel: a device with no session stays not confirmed, heartbeat is not an outcome', () => {
+    assert.ok(modelLine([dispatchRow()], ctx({ groups: [{ device: { deviceId: 'aca-job-abc123' }, sessions: [] }] })).endsWith(NOT_CONFIRMED));
+    assert.ok(modelLine([dispatchRow()], ctx({ groups: [] })).endsWith(NOT_CONFIRMED));
+    assert.ok(modelLine([dispatchRow()], { devices: [acaDevice({ presence: 'online', lastSeen: Date.now() })] }).endsWith(NOT_CONFIRMED));
+  });
+
+check('acaDispatchSession refuses a device claimed by another dispatch and an ambiguous session list', () => {
+  const other = dispatchRow({ id: 'trk-2' });
+  assert.strictEqual(acaDispatchSession(dispatchRow(), { ...ctx(), dispatches: [dispatchRow(), other] }), null);
+  assert.strictEqual(acaDispatchSession(dispatchRow(), ctx({ groups: acaGroups(['done', 'failed']) })), null);
+  assert.strictEqual(acaDispatchSession(dispatchRow(), ctx()).status, 'done');
+});
+
+check('the last-dispatch line still escapes text when a session outcome is shown', () => {
+  const line = lastLine([dispatchRow({ owner: '<b>' })], ctx());
+  assert.ok(!line.includes('<b>') && line.includes('&lt;b&gt;'));
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
