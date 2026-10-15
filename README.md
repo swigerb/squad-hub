@@ -187,11 +187,11 @@ node bin/squad-hub.js serve
 ```
 
 It prints a URL containing a token — open that, and you are signed in. It also
-prints the exact `connect` command for this device. In a **second terminal**,
-in the same folder:
+prints the exact `start` command for this device. In a **second terminal**,
+in the same folder, run that command:
 
 ```bash
-node bin/squad-hub.js connect --hub http://localhost:7420 --token <token>
+node bin/squad-hub.js start --hub http://localhost:7420 --token <token>
 
 cd /path/to/your/project
 node /path/to/squad-hub/bin/squad-hub.js squad "add a health endpoint and a test for it"
@@ -259,7 +259,7 @@ The full matrix of what survives what is in
 The simplest option is **Azure App Service** — native Node, no container:
 
 ```powershell
-./scripts/deploy-appservice.ps1 -ResourceGroup rg-my-hub -Name my-squad-hub `
+./scripts/deploy-appservice.ps1 -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github -Owner your-github-login
 ```
 
@@ -280,8 +280,8 @@ Container Apps and Kubernetes are also supported, and can additionally run a
 your laptop:
 
 ```powershell
-./scripts/deploy-aca.ps1 -ResourceGroup rg -Environment cae -Registry acr -WithCloudDevice
-./scripts/deploy-aks.ps1 -ResourceGroup rg -Cluster aks -Registry acr -HubUrl https://... -HubToken ... -AgentToken ...
+./scripts/deploy-aca.ps1 -ResourceGroup <resource-group> -Environment <environment> -Registry <registry> -WithCloudDevice
+./scripts/deploy-aks.ps1 -ResourceGroup <resource-group> -Cluster <cluster> -Registry <registry> -HubUrl https://<your-hub>.azurewebsites.net -HubToken <token> -AgentToken <token>
 ```
 
 Give a cloud device a GitHub token and it runs a real agent:
@@ -321,14 +321,14 @@ See [docs/cloud.md](docs/cloud.md).
 machines, so the deploy script **refuses to deploy without an owner**:
 
 ```powershell
-./scripts/deploy-appservice.ps1 -ResourceGroup rg -Name my-hub `
+./scripts/deploy-appservice.ps1 -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github -Owner your-github-login
 ```
 
 **More than one account?** List them all — they share one view:
 
 ```powershell
--Owner you@work.example,you@personal.example
+-Owner you@example.com,you@example.org
 ```
 
 Partitioning is keyed on tenant + object id, so two accounts of the same person
@@ -387,14 +387,14 @@ start instead of trying to attach to one later.
 ## Keep it running at login (optional)
 
 ```bash
-squad-hub install-service   # Windows Task Scheduler / systemd --user / LaunchAgent
-squad-hub uninstall-service
-squad-hub service-status
+squad-hub autostart enable    # Windows Task Scheduler / systemd --user / LaunchAgent
+squad-hub autostart disable
+squad-hub autostart status
 ```
 
-Registers a login task that runs `squad-hub start` once at sign-in, so the
-daemon is already up the next time you need it. Never requires admin or root.
-See [docs/commands.md](docs/commands.md#login-startup-optional).
+`autostart enable` registers a login task that runs `squad-hub start` once at
+sign-in, so the daemon is already up the next time you need it. See
+[docs/commands.md](docs/commands.md#login-startup-optional).
 
 ## Testing
 
@@ -404,8 +404,9 @@ npm run test:candidate -- --base origin/main --artifacts ../acceptance-candidate
                       # prove the mutations for what you changed were caught
 ```
 
-`node test/mutate.js` remains as the legacy full sweep; the exhaustive scope
-(`npm run test:exhaustive`) is the deliberate, much longer equivalent. See
+`npm run test:exhaustive` runs the exhaustive scope, which takes much longer
+than the candidate scope. `node test/mutate.js` disables each load-bearing
+mechanism in turn. See
 [docs/README.md](docs/README.md#how-this-is-tested) for how the scopes, plans,
 artifacts and report verification work.
 

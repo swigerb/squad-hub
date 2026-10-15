@@ -10,7 +10,7 @@ For the full posture and how each control is verified, see the
 
 ```powershell
 ./scripts/deploy-appservice.ps1 `
-  -ResourceGroup rg -Name my-hub `
+  -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github `
   -Owner your-github-login
 ```
@@ -27,13 +27,13 @@ pass `-AllowAnyone`.
 List every identity that is you, including accounts in different Entra tenants:
 
 ```powershell
--Owner you@work.example,you@personal.example
+-Owner you@example.com,you@example.org
 ```
 
 or as an environment variable:
 
 ```
-SQUAD_HUB_OWNER=you@work.example,you@personal.example
+SQUAD_HUB_OWNER=you@example.com,you@example.org
 ```
 
 All of them may sign in and **they share one view**. A device registered while
@@ -75,7 +75,7 @@ installed the hub's GitHub App on it — see "The GitHub App path" below for
 that one. Absent an installation, this is what happens:
 
 **+ New → New ACA job…**, or the same button on a session, opens the dialog
-described in [aca.md](aca.md#queued-on-aca-issue-178). Without the GitHub App
+described in [aca.md](aca.md#queued-on-aca). Without the GitHub App
 installed, the dialog itself falls back to a prefilled new issue on GitHub:
 you press Create; the label triggers the workflow, which starts the job.
 
@@ -126,18 +126,18 @@ who once landed a pull request.
 
 See [Squad on ACA: who may trigger a run](https://github.com/swigerb/squad-on-aca/blob/main/docs/actions-trigger.md#who-may-trigger-a-run).
 
-### The GitHub App path (issue #177): a NEW trust boundary
+### The GitHub App path: a trust boundary
 
 `POST /api/aca/dispatch`, and the "installed repos" / "recent dispatches"
 reads beside it, are a second, direct way to start a job — only for
 repositories where an administrator installed the hub's own GitHub App.
 Configuring it is `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY`; see
-[commands.md](commands.md#the-service) and [aca.md](aca.md). Unset (the
-default, until the App exists at all), these routes answer `501` and nothing
+[commands.md](commands.md#hub-service-environment-variables) and [aca.md](aca.md). Unset (the
+default), these routes answer `501` and nothing
 above changes — every repository behaves exactly as described in "Starting a
 cloud job from the hub".
 
-**State the rule plainly, because it is what keeps this path safe (issue #258):**
+**State the rule plainly, because it is what keeps this path safe:**
 
 > A signed-in hub user can dispatch a job on a repository **only if the hub
 > has verified, as that user's own GitHub account, that they have write
@@ -165,7 +165,7 @@ the Metadata read permission the App already has — no new permission or
 scope), for the **verified** GitHub account of the session:
 
 - **Who the user is** comes only from GitHub-mode sign-in
-  (`SQUAD_HUB_AUTH=github`), where the hub itself exchanged the bearer token
+  (`SQUAD_HUB_AUTH_MODE=github`), where the hub itself exchanged the bearer token
   with GitHub `GET /user`. The numeric account id is the identity; the login
   is only the name used to ask. The answer must come back **about that same
   id**, so a login that has been renamed or handed to a different account is
@@ -198,9 +198,8 @@ scope), for the **verified** GitHub account of the session:
   to the account that started it, and only while that account still has access
   to its repository.
 
-If you previously relied on "everyone who may sign in may dispatch anywhere the
-App is installed", that no longer holds: anyone who needs to start a job must
-also be a collaborator with write access on the repository.
+Signing in does not by itself allow dispatch: anyone who needs to start a job
+must also be a collaborator with write access on the repository.
 
 This does **not** relax the hub's own ground rule that it never holds an Azure
 credential. The App token this adds is a GitHub credential, scoped to
@@ -296,11 +295,12 @@ other tracked-dispatch field is.
 
 Rate-limited per signed-in user (five dispatches per five minutes, in-memory,
 reset on a hub restart) so one account cannot exhaust Actions minutes or spam
-a repository's issue tracker through this endpoint. `GET /api/aca/repos` and
-`GET /api/aca/dispatches` are rate-limited too (30 requests per minute,
-sharing one budget between the two routes, per signed-in user) — unlimited
-polling of either would let one account exhaust the App's own GitHub API rate
-limit, which every other hub user dispatching through the same App shares.
+a repository's issue tracker through this endpoint. The read routes —
+`GET /api/aca/repos`, `GET /api/aca/dispatches`, and the dispatch-form lookups for
+choices, branches and issues — are rate-limited too (30 requests per minute,
+sharing one budget across all of them, per signed-in user). Unlimited polling
+would let one account exhaust the App's own GitHub API rate limit, which every
+other hub user dispatching through the same App shares.
 
 **The App registration itself should be created as private ("Only on this
 account"), never public.** A public GitHub App can be installed by anyone on
@@ -310,7 +310,7 @@ each one, but the operator should control where the App is installed at all.
 Private keeps installation to the account (or organization) that created the
 App. See [aca.md](aca.md) for the setup walkthrough.
 
-**Hardening follow-ups from the #211 review (issue #213):**
+**Hardening follow-ups:**
 
 - Repository matching when binding a dispatch to its GitHub Actions run
   compares `owner`/`repo` case-insensitively, matching how GitHub itself
@@ -359,7 +359,7 @@ able to do more than its job.
 | **Your sign-in** | Proves who *you* are. Whichever provider the hub runs in — GitHub, Entra, or dev. | Your browser, or `--token` on the CLI |
 | **A device token** | Lets a machine **be a device** and nothing else. Cannot read the API or drive your other devices. | On the device: `SQUAD_HUB_TOKEN` |
 | **An agent token** | Authorises the *agent* to GitHub and spends a **Copilot entitlement**. | On the device: `SQUAD_HUB_AGENT_TOKEN` |
-| **The GitHub App's own token** (issue #177) | Lets the hub itself call GitHub — list installed repos, create an issue, dispatch `squad-dispatch.yml` — on repositories an administrator installed the App on. A GitHub credential, scoped to Actions/Issues/Contents/Metadata; never Azure, and never returned by any hub endpoint. | On the hub, held only in memory: `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` |
+| **The GitHub App's own token** | Lets the hub itself call GitHub — list installed repos, create an issue, dispatch `squad-dispatch.yml` — on repositories an administrator installed the App on. A GitHub credential, scoped to Actions/Issues/Contents/Metadata; never Azure, and never returned by any hub endpoint. | On the hub, held only in memory: `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` |
 
 The first three are separate even when more than one is a GitHub token: one
 says which device this is, the other spends quota, and so on. The fourth is
@@ -392,7 +392,9 @@ the device WebSocket, which authenticates through a query string rather than an
 `Authorization` header.
 
 A validly signed token belonging to someone not permitted is refused with
-**403**, not 401.
+**403** on a REST request, not 401. On the device WebSocket upgrade, which has
+no body to carry a reason, any failed authentication — including this one — is
+answered with **401**.
 
 ## Verify it yourself
 
@@ -427,7 +429,7 @@ A locked hub reports **0 open, 0 leaks**.
 
 ```powershell
 ./scripts/deploy-appservice.ps1 `
-  -ResourceGroup rg -Name my-hub `
+  -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github `
   -Owner your-github-login
 ```
@@ -459,7 +461,7 @@ OAuth Apps are created from your own account settings and need no administrator.
 
 ```powershell
 ./scripts/deploy-appservice.ps1 `
-  -ResourceGroup rg -Name my-hub `
+  -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github -Owner your-github-login `
   -GitHubClientId  $env:GH_CLIENT_ID `
   -GitHubClientSecret $env:GH_CLIENT_SECRET
@@ -487,13 +489,18 @@ Revoking one does not affect the others.
 ##### If sign-in fails with a redirect URI mismatch
 
 The redirect the hub sends to GitHub comes from `SQUAD_HUB_PUBLIC_URL` when set,
-and otherwise from the host the request arrived on. The deploy script sets it.
+and otherwise from the request's own host and `X-Forwarded-Proto` header, with the
+scheme defaulting to `https` when that header is absent. A local run therefore
+needs `SQUAD_HUB_PUBLIC_URL=http://localhost:7420`. The deploy script sets it for a
+hosted hub.
 
 Check these in order:
 
 - The App is registered against the address you are browsing to.
 - If the hub is reached through a custom domain, register the callback for
   whichever address `SQUAD_HUB_PUBLIC_URL` names.
+- The scheme matches too: without `SQUAD_HUB_PUBLIC_URL` and without an
+  `X-Forwarded-Proto` header, the hub sends an `https://` redirect.
 - The path is `/auth/github/callback`. A trailing slash counts as different.
 
 What the flow does:
@@ -528,7 +535,7 @@ partition:
 
 ```
 SQUAD_HUB_AUTH_MODE=github
-SQUAD_HUB_OWNER=your-github-login,you@work.example
+SQUAD_HUB_OWNER=your-github-login,you@example.com
 ```
 
 Switching the hub to `entra` later needs no other change: the work identity is
@@ -580,7 +587,7 @@ property being protected is partitioning, not secrecy.
 
 Web Push subscriptions (`GET`/`POST /api/push/subscriptions`,
 `DELETE /api/push/subscriptions/{id}` — see
-[api.md](api.md#web-push-subscriptions-175)) follow the same rule: a
+[api.md](api.md#web-push-subscriptions)) follow the same rule: a
 subscription is stored and listed under the verified caller's own partition
 key, never one the request supplies, so one person can never list, add to,
 or remove another person's registered browsers. Reaching any of these three
@@ -589,7 +596,7 @@ never a person — is refused with **403**, the same gate every other
 `/api/*` route in this file already sits behind; registering or revoking a
 push subscription stays a thing only a signed-in person does.
 
-## Web Push (#175)
+## Web Push
 
 An installed PWA can receive an OS-level notification — "a session needs
 you" — while it is closed, the same way a native app would, using the
@@ -623,12 +630,13 @@ restarts (a browser's subscription is bound to the public key it was handed;
 rotating the pair silently would orphan every existing subscription). Mint a
 pair once, out of band, and set both variables before deploying.
 
-`/api/me`'s `push.enabled` field, and `/healthz`'s authenticated
-`pushStore` field, report this state plainly so the installed app can say
-"push is not configured on this hub" instead of offering a toggle that can
-never do anything.
+`/api/me`'s `push.enabled` field reports this state plainly so the installed
+app can say "push is not configured on this hub" instead of offering a toggle
+that can never do anything. `/healthz`'s authenticated `pushStore` field is a
+different fact: it reports whether the subscription store is `durable` or
+`memory`, not whether VAPID is configured.
 
-### Generating and deploying a key pair (#242)
+### Generating and deploying a key pair
 
 `src/service/web-push.js`'s `generateVapidKeys()` is the ONE reviewed
 generator — a fixed-width P-256 key pair (see the function's own comment for
@@ -651,18 +659,14 @@ is generated, checked, and written to the settings API entirely in this one
 process's memory, with nothing ever passed to `console.log`, `console.error`,
 a file, or a command-line argument.
 
-**A clipboard is not memory-only either, and the reviewed procedure no
-longer uses one.** An earlier revision of this doc recommended handing the
-private half to `pbcopy`/`xclip`/`clip`, then pasting it into the protected
-setting. That still leaks: a system clipboard is commonly synced to other
+**A clipboard is not memory-only either, so the procedure does not use one.**
+Handing the private half to `pbcopy`/`xclip`/`clip` and pasting it into the
+protected setting would leak it: a system clipboard is commonly synced to other
 signed-in devices, kept in a clipboard *history* application (several ship
 enabled by default on both desktop and mobile), and readable by any other
-app with clipboard-read permission while it sits there — and overwriting or
+app with clipboard-read permission while it sits there. Overwriting or
 "clearing" the current clipboard entry does **not** erase it from that
-history. No production key was ever exposed through this — these are held
-docs, not an incident — but "paste it in somewhere, then clear the
-clipboard" is not actually memory-only, so this section no longer
-recommends it.
+history.
 
 **The reviewed procedure instead captures the generated pair only in this
 one process's memory, proves the two halves actually correspond before ever
@@ -688,6 +692,9 @@ independently by accident. **Never set either of those two in a real
 deployment.**
 
 ```bash
+# Interactive bash would treat the ! characters in the script as history
+# expansion inside double quotes; turn that off first (zsh: setopt no_bang_hist).
+set +H
 node -e "
 const { generateVapidKeys } = require('./src/service/web-push.js');
 const crypto = require('crypto');
@@ -698,7 +705,7 @@ const crypto = require('crypto');
 //   az account get-access-token --query accessToken -o tsv
 const resourcePath = process.env.APP_SERVICE_SETTINGS_PATH; // .../config/appsettings
 const token = process.env.AZ_ACCESS_TOKEN;
-if (!resourcePath || !token) {
+if (resourcePath === undefined || resourcePath === '' || token === undefined || token === '') {
   console.error('Set APP_SERVICE_SETTINGS_PATH and AZ_ACCESS_TOKEN first.');
   process.exit(1);
 }
@@ -741,7 +748,7 @@ function settingsRequest(method, body, timeoutPhase) {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
-        if (!data) { resolve({ status: res.statusCode, body: {} }); return; }
+        if (data === '') { resolve({ status: res.statusCode, body: {} }); return; }
         try {
           resolve({ status: res.statusCode, body: JSON.parse(data) });
         } catch {
@@ -753,11 +760,11 @@ function settingsRequest(method, body, timeoutPhase) {
     // The timeout message must be chosen by PHASE, not by HTTP method --
     // 'POST .../list' is a read both in step 1 (before any write -- safe to
     // say nothing was written) and in step 4 (AFTER step 3's PUT already
-    // succeeded -- saying "no write happened" there would be false, the
+    // succeeded -- saying no write happened there would be false, the
     // exact false-safety failure mode this whole script exists to avoid).
     // 'PUT' is the write itself: the request body may already have reached
     // the server before the response stalled, so that case must never claim
-    // "no write happened" either -- only that the outcome is unknown and
+    // that no write happened either -- only that the outcome is unknown and
     // must be investigated, same honesty already required of a step-4
     // MISMATCH after a successful PUT (see below). Each call site below
     // passes its own phase explicitly rather than relying on method alone.
@@ -819,9 +826,8 @@ function readProperties(res, label) {
   // stored after the write -- Azure's real List Application Settings
   // operation DOES return the private value verbatim on a read, so step 4
   // below reads it back and compares it, in memory only, never logging or
-  // printing it. This is the same check an earlier revision of this doc ran
-  // as a separate, paste-based manual step; it is now folded in here so the
-  // private half never leaves this one protected process at all.
+  // printing it. The check runs here so the private half never leaves this
+  // one protected process.
   const { publicKey, privateKey } = generateVapidKeys();
   const ecdh = crypto.createECDH('prime256v1');
   ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'));
@@ -902,10 +908,9 @@ function readProperties(res, label) {
   from a different generation is a new, different, untested pair, not a
   smaller edit; see "no automatic mismatch guarantee" below for why that is
   not caught for you.
-- Production keys for this deployment are already configured, once, by the
-  operator. **Never regenerate or rotate them from a worker, from this
-  workflow, or at any startup path** — doing so would silently orphan every
-  browser already subscribed (below).
+- If a key pair is already configured, do not regenerate it. **Never
+  regenerate or rotate it from a worker or at any startup path** — doing so
+  would silently orphan every browser already subscribed (below).
 - **A `MISMATCH` (or any other) failure in step 4, after the PUT in step 3
   already returned success, does not mean the pair was never stored.** The
   write already landed; only the readback/verification failed. The pair is
@@ -958,16 +963,12 @@ sign for), not a failure at *subscribe* time — subscribing only ever hands
 the browser the public half, never the private one, so a mismatch is
 invisible until the first real send.
 
-**Verifying a pair actually corresponds, once, at initial setup — now step 2
-of the one script above, not a separate manual procedure.** An earlier
-revision of this doc ran this as its own copy-pasted example, with a comment
-telling the operator to paste the two candidate values into the shell's
-environment for a one-off check. That is exactly the kind of manual,
-by-hand handling of a private key this project otherwise refuses to
-recommend — a pasted secret can land in shell history, a terminal's
-scrollback, or a recorded session the same way a printed or clipped one can.
-There is nothing about this check that requires a separate process or a
-separate paste: step 2 above runs the identical ECDH derivation
+**Verifying a pair actually corresponds, once, at initial setup — step 2
+of the one script above.** Pasting candidate values into a shell for a
+separate check would be manual handling of a private key, which this
+project refuses to recommend: a pasted secret can land in shell history, a
+terminal's scrollback, or a recorded session the same way a printed or
+clipped one can. The check needs no separate process or paste: step 2 above runs the identical ECDH derivation
 (`crypto.createECDH('prime256v1')`, `setPrivateKey`, `getPublicKey(null,
 'uncompressed')`, compared against the generated `publicKey`) on the pair
 the moment it is generated, inside the same protected, memory-only process,
@@ -977,8 +978,7 @@ like every other refusal in this procedure. This check exists because
 Node's JWK import does not verify `d·G == (x, y)` on its own (below) — it is
 still a one-time, initial-setup-only check, never called at hub startup,
 never run automatically before a send, and never a substitute for the "set
-both together" rule above; it is just no longer a second, paste-based
-runnable example.
+both together" rule above.
 
 **Backup and recovery.** The hub itself is not a backup for this pair — it
 holds the private key only in process memory (an environment variable), the
@@ -1053,7 +1053,7 @@ enforces two things beyond "is this a URL":
 - **No IPv4 private, loopback, or link-local literal**, even over `https:`.
   Every real push service is reached by a public DNS name, never a bare IP —
   so refusing `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `127.0.0.0/8`,
-  and `169.254.0.0/16` (which includes the common cloud-metadata address,
+  `0.0.0.0/8`, and `169.254.0.0/16` (which includes the common cloud-metadata address,
   `169.254.169.254`) literals costs no legitimate subscription anything,
   while closing off the most direct route to internal-network services an
   attacker's browser could not otherwise reach.
@@ -1061,15 +1061,13 @@ enforces two things beyond "is this a URL":
   getter keeps the brackets around an IPv6 literal (`new
   URL('https://[::1]/').hostname` is `"[::1]"`, not `"::1"`), and Node's
   `net.isIP()` does not recognize the bracketed form — it returns `0`
-  ("not an IP"). An earlier version of this check called `net.isIP()` on the
-  bracketed hostname directly, so every IPv6 branch silently never ran and
-  `https://[::1]/`, `https://[fd00::1]/`, `https://[fe80::1]/`, and the
+  ("not an IP"). So the check strips the brackets before
+  asking `net.isIP()` and refuses every IPv6 literal outright,
+  including `https://[::1]/`, `https://[fd00::1]/`, `https://[fe80::1]/`, and the
   IPv4-mapped `https://[::ffff:169.254.169.254]/` (which the URL parser
-  itself rewrites to its hex form, `[::ffff:a9fe:a9fe]`) were all **accepted**
-  (fixed in the security review that gated #175). Rather than re-enumerating
-  `::1`, `::`, `fc00::/7`, `fe80::/10`, and IPv4-mapped/-compatible addresses
-  in both dotted and hex notation — and risking the same kind of oversight
-  again — the fix refuses every IPv6 literal outright. No real push service
+  itself rewrites to its hex form, `[::ffff:a9fe:a9fe]`), rather than
+  enumerating `::1`, `::`, `fc00::/7`, `fe80::/10`, and IPv4-mapped/-compatible
+  addresses in both dotted and hex notation. No real push service
   is ever reached by a bare IPv6 literal either, so this costs no legitimate
   subscription anything.
 
@@ -1085,12 +1083,9 @@ account — bounded impact, not zero risk.
 time (`push-store.js`'s `validate()`) against the same shapes
 `web-push.js`'s `encryptPayload` has always required at send time — a
 decoded `p256dh` must be exactly 65 bytes (an uncompressed P-256 point) and
-a decoded `auth` exactly 16 bytes. An earlier version checked only that
-each was a non-empty string, so a malformed or garbage value could be
-registered successfully and would only fail the first time a notification
-actually tried to use it — with no feedback at subscribe time to the person
-who could fix it by re-subscribing. Catching the same mismatch here costs
-nothing new; it only moves an existing check to where it is useful.
+a decoded `auth` exactly 16 bytes. A malformed value is refused at subscribe
+time, where the person can fix it by re-subscribing, instead of failing the
+first time a notification tries to use it.
 
 ## Two tokens, deliberately separate
 
@@ -1130,8 +1125,9 @@ authorise that surface.
   may register `aca-<execution>` and cannot claim to be your laptop.
 - **It carries an id**, so one token can be revoked without disturbing others.
 
-The token itself is never stored. Only its id is written down, and only when
-revoked.
+The token itself is never stored. When one is minted, the hub records its id,
+label, id prefix, and issue and expiry times, plus a revoked flag. That record
+is what `--list` and revocation work from.
 
 ### Issuing one
 
@@ -1188,7 +1184,10 @@ answers.
 Or the **×** on a device in the web app, which revokes the credential that
 device is holding, drops the connection, and deletes the record in one action.
 It asks first: it cannot be undone from the hub, and the machine returns only
-when somebody runs `squad-hub connect` there with a new token.
+when somebody runs `squad-hub connect` there with a new token. This works only
+while the device is connected, because the hub identifies the credential from the
+live socket; otherwise it answers `409`, and the revoke command above, which
+needs only the token id, is the way to do it.
 
 Neither is `forget`, which removes the hub's record of ended sessions and
 deliberately refuses a device that is still reachable.
@@ -1257,7 +1256,7 @@ The hub calls `GET /user` and reads your login and numeric id, nothing else. A
 2. Repository access: **Public repositories** (read-only, and unavoidable).
 3. Add **no** account permissions and **no** repository permissions.
 
-Verified against this hub with such a token:
+With such a token:
 
 | | |
 |---|---|
@@ -1296,11 +1295,28 @@ directory. An explicit `--cwd`, local or remote, always goes through the
 
 ## Where state is kept
 
-The hub holds devices, sessions and pending approvals **in memory only**.
-Prompts, session titles and the commands on approval cards are never written to
-a disk the hub controls.
+**Held in memory only:** pending approvals and live connections (devices and
+watchers). A pending approval is a handle onto a specific running agent
+process, so it is never written to disk; a connected device republishes its real
+pending approvals when it reconnects.
 
-Anything that must survive a restart goes under `SQUAD_HUB_HOME`:
+**Written to disk by default**, under `SQUAD_HUB_HOME`:
+
+| File | Contents |
+|---|---|
+| `sessions.json` | Device and session records: device metadata, and for each session its prompt, title, working directory, status, the expired and answered approval lists (including the commands shown on those approval cards), and a bounded transcript tail when a cloud job publishes one |
+| `prefs.json` | Per-user pins, renames and saved views |
+| `push-subscriptions.json` | Browser push subscriptions, including each subscription's `keys.auth` secret |
+| `access.json` | The list of users granted access through the web app |
+| `access-audit.jsonl` | Append-only record of access grants and revocations |
+| `device-tokens.json` | Device-token metadata and revocations (never the token) |
+
+`/healthz` reports `sessionStore`, `prefsStore`, `pushStore` and `accessStore`
+as `durable` or `memory`, so a deployment can read whether these survive a
+restart instead of inferring it. Where no directory is configured, or the
+writes are disabled, a store falls back to memory.
+
+`SQUAD_HUB_HOME` resolves to:
 
 | Platform | Location | Survives a restart? |
 |---|---|---|
@@ -1315,8 +1331,11 @@ permissions.** Every file reports mode `777`, files are owned by `nobody`, and
 `chmod` succeeds while changing nothing.
 
 **Nothing secret may be written to `/home`.** Signing secrets and tokens stay in
-app settings, where the platform
-protects them. Anything the hub does persist has to be safe to read.
+app settings, where the platform protects them. Anything the hub does persist
+has to be safe to read: the files above hold session content (prompts, titles,
+working directories, approval commands) and push subscription keys, so treat
+`SQUAD_HUB_HOME` as sensitive. Restrict who can read the directory or volume,
+and protect backups of it the same way.
 
 **A container without a volume forgets.** ACA and AKS have no `/home` equivalent
 by default, so persisted state resets on restart. Mount a volume, or accept that
@@ -1325,7 +1344,6 @@ it does not survive.
 **This is single-instance.** State is per-process, so a second instance has its
 own copy and the two diverge. `/healthz` reports the instance count and refuses
 to pretend otherwise, and the deploy script refuses to scale out.
-
 ### Anything security-critical fails closed
 
 If a persisted security decision cannot be read — file missing, wrong shape, or

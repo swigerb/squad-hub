@@ -52,26 +52,30 @@ against the session's own working directory:
 | `charter:<member>` | `.squad/agents/<member>/charter.md` |
 | `history:<member>` | `.squad/agents/<member>/history.md` |
 
-The state directory is resolved the same way Squad 0.13 resolves it:
+The state directory is resolved the same way Squad 0.13 resolves it, in order:
 
-- `.squad/config.json` always stays in the opened project;
-- when that local config has `teamRoot` and it is not exactly `"."`, the value
-  points at the project directory that contains the team's `.squad/`;
-- otherwise, `stateLocation: "external"` plus `projectKey` reads state from the
-  user-level Squad store:
-  - Windows: `%APPDATA%\squad` (or `%LOCALAPPDATA%\squad`, then
-    `%USERPROFILE%\AppData\Roaming\squad` as fallbacks)
-  - macOS: `~/Library/Application Support/squad`
-  - Linux: `$XDG_CONFIG_HOME/squad`, or `~/.config/squad`
-- if anything is missing, unreadable, or invalid, the device falls back to the
-  local `.squad/` directory instead of failing the session view.
+1. The opened project's own `.squad/config.json` is read first. If it has
+   `teamRoot` and the value is not exactly `"."`, the value points at the
+   project directory that contains the team's `.squad/`, and that team
+   directory is used from here on.
+2. The team's `.squad/config.json` (the project's own when there is no
+   `teamRoot`) is then read. If it sets `stateLocation: "external"` and a
+   `projectKey`, state is read from `<store>/projects/<projectKey>`, where
+   `<projectKey>` is sanitized to letters, digits, `.`, `_` and `-` and
+   `<store>` is the user-level Squad store:
+   - Windows: `%APPDATA%\squad` (or `%LOCALAPPDATA%\squad`, then
+     `%USERPROFILE%\AppData\Roaming\squad` as fallbacks)
+   - macOS: `~/Library/Application Support/squad`
+   - Linux: `$XDG_CONFIG_HOME/squad`, or `~/.config/squad`
+3. Otherwise the team's `.squad/` directory is the state directory.
+4. If anything is missing, unreadable, or invalid, the device falls back to the
+   local `.squad/` directory instead of failing the session view.
 
 `<member>` is matched against the team the device has already parsed from that
 workspace; a name that is not on the team is refused. No part of a request is
 used as a path.
 
-Anything else is refused: absolute paths, `..`, links that leave the workspace,
-and any request to a session on a device started without file access.
+Anything else is refused: absolute paths, `..`, and links that leave the workspace.
 
 By default, Squad Hub reads Squad state only inside the opened project. If a
 Squad workspace points at state outside that project (for example externalized

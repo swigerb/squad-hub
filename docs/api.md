@@ -46,21 +46,26 @@ Who you are, as this hub sees you.
   "tenantId": "github",
   "subject": "<partition key>",
   "avatar": "https://...",
+  "isOwner": false,
   "warning": null
 }
 ```
+
+`isOwner` says whether to offer the access screen. The hub checks the
+principal again on every `/api/access` call, so this flag only controls what the
+web app shows.
 
 `warning` is non-null when something is wrong with the deployment that affects
 what you see — for example more than one instance, where devices appear and
 disappear.
 
-`push` reports whether this hub can send Web Push at all (#175) —
+`push` reports whether this hub can send Web Push at all —
 `{ "enabled": false, "publicKey": null }` when `SQUAD_HUB_VAPID_PUBLIC_KEY` /
 `SQUAD_HUB_VAPID_PRIVATE_KEY` are unset or malformed, otherwise
 `{ "enabled": true, "publicKey": "<base64url>" }`. `publicKey` is what the
 browser hands `PushManager.subscribe()` as the `applicationServerKey`; it is
 not a secret, unlike the paired private key the hub keeps to itself. See
-[security.md](security.md#web-push-175).
+[security.md](security.md#web-push).
 
 ### `GET /api/overview`
 
@@ -191,7 +196,7 @@ that duplicate entries within `pins` are de-duplicated rather than rejected.
 A device token gets **403** here exactly as it does everywhere else under
 `/api/`: see "Which token" above.
 
-### Web Push subscriptions (#175)
+### Web Push subscriptions
 
 `GET /api/push/subscriptions`, `POST /api/push/subscriptions`,
 `DELETE /api/push/subscriptions/{id}`
@@ -203,7 +208,7 @@ signed-in caller. Partitioned on the verified caller, the same rule
 subscriptions. A device token gets **403** on all three routes, exactly as
 it does everywhere else under `/api/` — registering or revoking a browser's
 push subscription stays a thing only a signed-in person does. See
-[security.md](security.md#web-push-175).
+[security.md](security.md#web-push).
 
 `GET` lists the caller's own subscriptions, never their raw keys:
 
@@ -231,8 +236,10 @@ back from `PushManager.subscribe()`:
 }
 ```
 
-`endpoint` must be `https://` (loopback excepted, for local development and
-tests); `keys.p256dh` must decode (base64url) to a 65-byte uncompressed
+`endpoint` must be `https://`, and an `https://` endpoint whose host is a
+private, loopback or link-local IP literal is refused. A loopback endpoint is
+accepted only when the hub is started with the loopback opt-in used by its
+tests; `keys.p256dh` must decode (base64url) to a 65-byte uncompressed
 P-256 point and `keys.auth` to a 16-byte secret — the same shapes a real
 `PushManager.subscribe()` always hands back, so this only ever rejects
 something that could never have been sent to anyway; `label` is optional
@@ -258,9 +265,8 @@ own HTTP client, so the identifier travels in the URL instead. Returns
 `204` on success. An unknown id, or an id that belongs to a different
 account, both answer `404` — the difference between "not yours" and "does
 not exist" is itself a disclosure, and either way there is nothing left to
-revoke. A malformed percent-escape in `{id}` (one `decodeURIComponent`
-cannot parse) answers `400`, not a `500` — the same treatment every other
-path-encoded identifier under `/api/` gets.
+revoke. A malformed percent-escape in `{id}` answers `400`, as it does for
+`DELETE /api/access/{login}`.
 
 ### `GET|POST /api/access`, `DELETE /api/access/{login}`
 
@@ -294,7 +300,7 @@ reach is that they are not named here.
 | Status | Meaning |
 |---|---|
 | `404` | No such device **or** not yours — the difference is not disclosed |
-| `409` | The device is offline, **or** (`forget` with `sessionId`, see below) reachable but not confirmed to support a narrowed forget |
+| `409` | The device is offline (`forget` is handled by the hub and `transcript` is answered from cache when one exists, so neither returns this for an offline device), **or** (`forget` with `sessionId`, see below) reachable but not confirmed to support a narrowed forget |
 | `502` | The device is connected but did not answer |
 
 ```bash
@@ -325,7 +331,7 @@ curl -X POST "$HUB/api/devices/$DEVICE/approve" \
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/steer" \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"sessionId":"...","text":"outline the change first","mode":"plan","model":"claude-sonnet-5.5"}'
 ```
 
@@ -386,12 +392,14 @@ Removing the record of sessions that have already ended:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/forget" \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"olderThanMs": 604800000}'
 ```
 
-Omit `olderThanMs` to remove every ended session. Returns
-`{ "forgotten": [...], "kept": n, "count": n }`.
+Omit `olderThanMs` to remove every ended session. A live device answers
+`{ "forgotten": [...], "kept": n, "count": n }`, where `forgotten` lists the
+removed session ids. An offline device is handled by the hub and answers
+`{ "removed": n, "kept": n, "stuck": n, "count": n, "offline": true, "deviceRemoved": bool }`.
 
 This is record-keeping, not control: a session that is still running is never
 removed, and neither is one whose agent process is still alive. It goes to the
@@ -401,18 +409,18 @@ return on the next heartbeat.
 
 **`sessionId`** narrows the sweep to that one session instead of every ended
 one the device is carrying — this is what the per-row **Remove** item in the
-list's ⋯ menu calls (#170), for a single ended session:
+list's ⋯ menu calls, for a single ended session:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/forget" \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"sessionId":"..."}'
 ```
 
 An **unreachable** device is always safe to narrow this way: the hub handles
 the whole removal itself, off its own stored session list, and never asks the
 offline daemon anything. A **reachable** device forwards the request live to
-its own daemon instead — and an old daemon (anything predating #170) simply
+its own daemon instead — and an older daemon that does not know about `sessionId` simply
 does not recognize `sessionId` at all, reads none of the options it does not
 know about, and falls back to its only other behavior: forgetting *every*
 ended session it carries. A single-row click would then silently become a
@@ -434,14 +442,14 @@ confirm support, asks for explicit consent to the wider device-wide sweep
 instead of silently failing or silently guessing.
 
 **`force` — the offline exception.** The rule above assumes the device can be
-asked. When it cannot (`409`, offline), `force: true` lets the hub drop a
-session that still shows as running anyway. This is what the web app's
+asked. When it cannot (the device has no live connection), `force: true` lets
+the hub drop a session that still shows as running anyway. This is what the web app's
 **Forget stale session** button in the detail view calls, combined with
 `sessionId` so only that one stuck card is cleared:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/forget" \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"sessionId":"...","force":true}'
 ```
 
@@ -460,12 +468,12 @@ Reading a Squad's governance documents:
 
 ```bash
 curl -X POST "$HUB/api/devices/$DEVICE/squad-docs" \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"sessionId":"..."}'
 # { "docs": ["team","decisions","routing","config","charter:lead", ...] }
 
 curl -X POST "$HUB/api/devices/$DEVICE/squad-doc" \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"sessionId":"...","doc":"charter:security"}'
 # { "doc": "charter:security", "text": "...", "bytes": 2341, "truncated": false }
 ```
@@ -489,8 +497,23 @@ Mint a device token. Returns it **once** — the hub keeps no copy.
 { "label": "aca jobs", "didPrefix": "aca-", "ttlHours": 4 }
 ```
 
-`ttlHours` is capped at 90 days. `didPrefix` restricts which device ids the
-token may register.
+`ttlHours` must be a positive number of at most 90 days (2160 hours); anything
+else is refused with `400`. `label` is truncated to 80 characters. `didPrefix`
+restricts which device ids the token may register and is truncated to 40
+characters. A hub with device tokens disabled answers `501`.
+
+Success is `201`:
+
+```json
+{
+  "token": "<shown once>",
+  "jti": "<token id>",
+  "label": "aca jobs",
+  "didPrefix": "aca-",
+  "expiresAt": 1700000000000,
+  "note": "This token is shown once. The hub does not store it."
+}
+```
 
 The partition comes from the verified caller and is never read from the request,
 so there is no request shape that mints a credential into another person's view.
@@ -550,10 +573,10 @@ with a new token.
 
 The hub dispatching an ACA job directly, as a GitHub App — see
 [aca.md](aca.md#the-third-direction-is-different-on-purpose) for the trust
-boundary and [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+boundary and [security.md](security.md#the-github-app-path-a-trust-boundary)
 for the authorization rule.
 
-**Authorization (#258).** `repos`, `dispatches` and `dispatch` act only for a
+**Authorization.** `repos`, `dispatches` and `dispatch` act only for a
 session the hub verified as a GitHub account (`SQUAD_HUB_AUTH=github`); any other
 session gets **403** with an explanation, before any GitHub call or rate-limit
 budget is spent. Within that, a repository is only ever listed or used if the
@@ -562,23 +585,25 @@ App is installed on it **and** GitHub reports that exact account has `write`,
 never cached. When GitHub cannot answer it, the routes fail closed with **502**
 rather than returning an unfiltered list.
 
-**`GET /api/aca/status`** — a cheap discovery route (#233): is the App
+**`GET /api/aca/status`** — a cheap discovery route: is the App
 configured at all? Always answers **200**, never a non-2xx status, and
 spends no GitHub API call and no rate-limit budget — it only reads the one
-boolean the other three routes already gate on:
+boolean the other routes already gate on:
 
 ```json
 { "enabled": false, "reason": "the GitHub App is not configured (SQUAD_HUB_GH_APP_ID / SQUAD_HUB_GH_APP_PRIVATE_KEY are not set)" }
 ```
 
 `reason` is `null` when `enabled` is `true`. The web UI's "Squad on ACA"
-status card (`web/js/aca-status.js`, #180) calls this FIRST on every page
+status card (`web/js/aca-status.js`) calls this FIRST on every page
 load and only calls `GET /api/aca/repos` / `GET /api/aca/dispatches` when it
 reports `enabled: true` — on an unconfigured hub (the normal state until a
 hub installs the App), neither of those two routes' `501`s is ever requested
 by a normal page load.
 
-The other three answer **501** with a short, human `reason` (not `error`)
+The other six routes — `GET /api/aca/repos`, `GET /api/aca/dispatches`,
+`POST /api/aca/dispatch`, and the three choice routes (`choices`, `branches`,
+`issues`) — answer **501** with a short, human `reason` (not `error`)
 when the App is not configured — the normal state until a hub installs the
 App — but a well-behaved caller checks `GET /api/aca/status` first and
 should not need to see one in practice.
@@ -604,7 +629,7 @@ to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 If GitHub cannot confirm the account's access to any one installed repository, the whole call fails closed with a generic `502` and no list. That message names no repository, URL or upstream text, because the check covers repositories the caller never named.
 
 **`GET /api/aca/choices?repo=owner/repo`, `GET /api/aca/branches?repo=…&q=…&page=…`,
-`GET /api/aca/issues?repo=…&q=…&page=…`** (#257) — the values the New ACA job
+`GET /api/aca/issues?repo=…&q=…&page=…`** — the values the New ACA job
 dialog offers for Model, Reviewer, Base branch and Existing issue, read from the
 **target repository** and never from a fixed catalog, another device's list, or
 what the dialog typed. Every one is gated in this order, and none reads or returns
@@ -636,7 +661,7 @@ repository data before the last step:
 
 | `state` | Meaning |
 |---|---|
-| `ok` | `choices` is the repository's own list. Models come from `.squad/config.json` on the default branch (`defaultModel` and the `modelPolicy` overrides, de-duplicated, at most 100) or from a plain block-style `choice` enum on the workflow's `model` input; reviewers are the **active** members of `.squad/casting/registry.json` — Squad member ids, not GitHub logins. The model list is what the repository *configures*, **not** a statement that the job can run it: the ACA worker still confirms the model when it starts. |
+| `ok` | `choices` is the repository's own list. Each item is `{ "id", "hint" }`, where `hint` names the role or source. Models come from `.squad/config.json` on the default branch (`defaultModel`, the per-member `agentModelOverrides` / `modelOverrides`, and the `modelPolicy` models, de-duplicated, at most 100). When the workflow's `model` input is a plain block-style `choice` enum, that enum takes precedence and the response carries `"source": "workflow"`. Reviewers are the **active** members of `.squad/casting/registry.json` — Squad member ids, not GitHub logins. The model list is what the repository *configures*, **not** a statement that the job can run it: the ACA worker still confirms the model when it starts. |
 | `default-only` | The repository does not say (no config or registry, or a `teamRoot`/`stateLocation` kept outside the repository that the hub cannot guess). Only the default can be used; `reason` says why. |
 | `unsupported` | The workflow does not declare that input at all. |
 | `unavailable` | The file exists but could not be read: malformed, denied or GitHub failed. `reason` and `status` say so. This is never reported as "none". |
@@ -660,10 +685,10 @@ against GitHub Actions for its current run status:
 ```json
 {
   "dispatches": [{
-    "id": "4b6e0f2a-1c3d-4a9e-9f0b-2a7c5d8e1f3b",
+    "id": "<dispatch-uuid>",
     "owner": "me", "repo": "my-repo", "ref": "main", "dispatchedAt": 1730000000000,
     "executionName": "my-job-abc123",
-    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123", "executionName": "my-job-abc123" }
+    "status": { "state": "in_progress", "conclusion": null, "runId": 123, "runAttempt": 1, "htmlUrl": "https://github.com/me/my-repo/actions/runs/123", "executionName": "my-job-abc123" }
   }]
 }
 ```
@@ -672,8 +697,7 @@ against GitHub Actions for its current run status:
 `crypto.randomUUID()` minted once by `DispatchTracker.record()`, the same one
 `POST /api/aca/dispatch` returns as `trackerId` (below). It is the one id both
 responses agree on, so a client can bind its own pending row to the exact
-record it just created instead of re-guessing from timestamp, issue number, or
-repo+ref proximity (see #245/#178). It is per-user partitioned like every
+record it just created. It is per-user partitioned like every
 other field here and carries no GitHub meaning of its own — it is distinct
 from, and never derived from, the internal `hub_correlation_id` used to match
 the Actions run (that id is never exposed to a browser).
@@ -707,25 +731,21 @@ to call a possibly-incomplete single page conclusive.
 
 The run-list lookup also narrows its candidate set with a `created=>=<ISO>`
 filter anchored to this dispatch's own `dispatchedAt` (minus a small
-clock-skew allowance), so "more runs exist than fetched" reflects runs created
+clock-skew allowance), so "more runs exist than fetched" refers to runs created
 around this dispatch, not every manual dispatch the repository has ever had.
-Without that bound, a repository that accumulates more than 20
-`workflow_dispatch` runs over its lifetime would see every future dispatch's
-lookup falsely report truncation and fail closed forever, even when the
-uniquely-correlated run is on the fetched page. The time filter only narrows
-*which runs the hub asks GitHub for*; it is never substituted for the
-correlation id, and a time-window match with no matching correlation id is
-still reported `pending`.
+The time filter only narrows *which runs the hub asks GitHub for*; it is never
+substituted for the correlation id, and a time-window match with no matching
+correlation id is reported `pending`.
 
 `GET /api/aca/repos`, `GET /api/aca/dispatches` and the three choice routes
-above share one read-only rate limit, per signed-in user (#213, #257): **30 requests/minute**. Each spends the
+above share one read-only rate limit, per signed-in user: **30 requests/minute**. Each spends the
 App's own shared GitHub API quota — `GET /api/aca/repos` walks every
 installation and every repository on each, and `GET /api/aca/dispatches`
 resolves every tracked dispatch against Actions — so the budget protects
-that one credential from a runaway poll on either route, not just a single
-caller. Over the limit, both answer `429` with `retryAfterMs`, the same
-shape as the dispatch limiter below. The status card (#180, #233) treats
-`429` on either route as "try again on the next poll", not as "not
+that one credential from a runaway poll on any of them, not just a single
+caller. Over the limit, each answers `429` with `retryAfterMs`, the same
+shape as the dispatch limiter below. The status card treats
+`429` on either of its two routes as "try again on the next poll", not as "not
 connected" or an error banner.
 
 `status.state` is `pending` (no matching run has appeared yet), `queued`,
@@ -743,13 +763,19 @@ on a repository the App is installed on **and** the signed-in account may use:
 { "repo": "me/my-repo", "newIssue": { "title": "Fix the thing" }, "prompt": "...", "model": "claude-sonnet-5", "publishPr": true, "reviewer": "someone", "watchOnly": false }
 ```
 
-Either `issue` (a number) or `newIssue` (`{title}`, which the hub creates
-first) is required, plus `prompt`. Only fields the target repository's own
+Exactly one of `issue` (a positive integer) or `newIssue` (`{title}`, which the
+hub creates first) is required; giving both or neither is refused with `400`,
+plus `prompt`. Only fields the target repository's own
 `squad-dispatch.yml` actually declares as `workflow_dispatch` inputs are sent;
 an undeclared one is refused with a clear `422` before anything is created.
 `baseBranch` travels only as the `base_branch` **input** — the dispatch itself
 always runs on the repository's default branch.
 
+- `400` — the body is malformed: `repo` is not `owner/repo`, `prompt` is missing
+  or longer than 20000 characters, `newIssue.title` is missing or longer than 200
+  characters, `baseBranch`, `model` or `reviewer` has an invalid format, or
+  `publishPr` / `watchOnly` is not a boolean. The response carries one
+  `{ "error": "…" }` naming the first problem; nothing was created or dispatched.
 - `403` — the session is not a verified GitHub account, or the repository is
   not available to it: the App is not installed there, or GitHub says the account
   lacks write access. The two repository cases share one message so the response
@@ -758,7 +784,7 @@ always runs on the repository's default branch.
   outage or an App permission problem). Nothing was created or dispatched.
 - `422` — a requested option is not one the workflow declares, **or** an explicit
   `baseBranch`, `issue`, `model` or `reviewer` is not one the repository offers
-  (#257): the branch does not exist, the issue is closed, missing or a pull request,
+  the branch does not exist, the issue is closed, missing or a pull request,
   the model or reviewer is outside the lists above. The body names the field as
   `{ "error": "…", "field": "baseBranch" }`. The check happens after authorization and
   before an issue is created or anything is dispatched, so a refused request has no
@@ -774,23 +800,29 @@ always runs on the repository's default branch.
   target workflow declares `hub_correlation_id`, the hub generates an internal
   per-attempt correlation id, sends it only as that workflow input, and later
   matches the run by the workflow's exact bracket-delimited `run-name`
-  `display_title`; it no longer guesses by timestamp.
+  `display_title`; it never matches by timestamp.
 
 ## WebSocket
 
 `GET /ws?access_token=<token>&role=<watcher|device>`
 
-**`role=watcher`** — the live event stream the web app uses. Pushes `overview`
-and `transcript` messages. A device token cannot open one.
+**`role=watcher`** — the live event stream the web app uses. Pushes `overview`,
+`transcript` and `device-disconnected` messages. A device token cannot open one.
 
-**`role=device`** — how a daemon attaches. Also requires `deviceId`.
+**`role=device`** — how a daemon attaches. Also requires `deviceId`. The hub
+answers with a `welcome` message and sends the device `command` messages.
 
 The server sends a ping every 45 seconds so the connection survives idle
 timeouts on hosting platforms.
 
-A **1008** close is a policy refusal — an expired or revoked token, or a device
-id the token may not register. The reason is in the close frame. Retrying a 1008
-never succeeds; reconnect only after fixing what it names.
+A token that is expired, revoked or otherwise invalid when the socket connects
+is refused with HTTP `401` before the upgrade. A **1008** close is a policy
+refusal, with the reason in the close frame, in these cases: a live socket whose
+device token is revoked or whose device is removed; an `Origin` the hub does not
+allow; a device token with `role=watcher`; a `role=device` connection with no
+`deviceId`, or with a device id the token may not register; and a user token
+on a hub that requires device tokens. Retrying a 1008 never succeeds; reconnect
+only after fixing what it names.
 
 ### Device messages
 
@@ -802,6 +834,8 @@ A `role=device` socket sends JSON frames of its own; the ones relevant here:
 | `heartbeat` | Periodic presence, carrying `device` metadata and (optionally) the session list again. |
 | `sessions` | Republish the device's **whole** session list wholesale — removals included. |
 | `session` | Upsert **one** session, merged onto whatever the hub already has for it (see below). |
+| `transcript` | Transcript entries for a session; the hub caches them and relays them to watchers. |
+| `reply` | The device's answer to a `command` the hub sent, matched by `correlationId`. |
 
 A `session` message carries `{ type: 'session', session: { id, ... } }`. Only
 the fields present in `session` are changed; anything omitted is left exactly
