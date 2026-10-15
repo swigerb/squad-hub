@@ -2067,8 +2067,11 @@ function railFacts(page) {
     });
 
     await check('a collapsed section stays collapsed across a reload (#172)', async () => {
-      const sec = await page.$('[data-sec="local"]');
-      assert.ok(sec, 'no Local machines section header to collapse');
+      const sec = page.locator('[data-sec="local"]');
+      assert.strictEqual(await sec.count(), 1, 'no Local machines section header to collapse');
+      // The roster rebuilds its section headers on every render, so a handle taken
+      // now would be detached by the click; the locator resolves a fresh header.
+      await page.evaluate(async () => { (await import('/js/devices.js')).render(); });
       await sec.click();
       await until(async () => (await page.getAttribute('[data-sec="local"]', 'aria-expanded')) === 'false',
         'the Local machines section to collapse');
