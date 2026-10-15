@@ -243,10 +243,14 @@ export function acaRalphLine(devices = []) {
  * dispatch started. Its own status, in the session vocabulary, is the job's
  * outcome and replaces the "not confirmed" wording; the Actions run alone
  * never says the job succeeded. A failed dispatch run keeps its own words.
+ *
+ * `stopped` reads "job ended", not "job stopped": a one-shot cloud run stops
+ * its own idle session when its work is finished (`src/cloud-device.js`), so
+ * the hub records a normal finish as `stopped`, the same as a manual stop.
  */
 const ACA_SESSION_OUTCOME = {
   starting: 'job running', active: 'job running', waiting_approval: 'job running', idle: 'job running',
-  done: 'job completed', failed: 'job failed', stopped: 'job stopped',
+  done: 'job completed', failed: 'job failed', stopped: 'job ended',
 };
 
 export function acaDispatchStatusLabel(status, session = null) {

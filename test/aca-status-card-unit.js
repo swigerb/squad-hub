@@ -593,7 +593,7 @@ check('acaDispatchStatusLabel reports the matched session outcome in session voc
   const run = dispatchRow().status;
   assert.strictEqual(acaDispatchStatusLabel(run, { status: 'done' }), 'job completed');
   assert.strictEqual(acaDispatchStatusLabel(run, { status: 'failed' }), 'job failed');
-  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'stopped' }), 'job stopped');
+  assert.strictEqual(acaDispatchStatusLabel(run, { status: 'stopped' }), 'job ended');
   for (const st of ['starting', 'active', 'waiting_approval', 'idle']) {
     assert.strictEqual(acaDispatchStatusLabel({ ...run, state: 'in_progress', conclusion: null }, { status: st }), 'job running');
   }
@@ -620,9 +620,9 @@ check('acaDispatchStatusLabel keeps a failed dispatch run and queued states in t
   check('acaLastDispatchLine: confirmed execution + matching device + finished session says completed', () => {
     assert.strictEqual(lastLine([dispatchRow()], ctx()), 'swigerb/squad-hub \u00b7 job completed');
   });
-  check('acaLastDispatchLine: failed and stopped sessions say failed / stopped', () => {
+  check('acaLastDispatchLine: failed sessions say failed; stopped sessions say ended', () => {
     assert.strictEqual(lastLine([dispatchRow()], ctx({ groups: acaGroups(['failed']) })), 'swigerb/squad-hub \u00b7 job failed');
-    assert.strictEqual(lastLine([dispatchRow()], ctx({ groups: acaGroups(['stopped']) })), 'swigerb/squad-hub \u00b7 job stopped');
+    assert.strictEqual(lastLine([dispatchRow()], ctx({ groups: acaGroups(['stopped']) })), 'swigerb/squad-hub \u00b7 job ended');
   });
   check('acaLastDispatchLine: no executionName stays not confirmed', () => {
     const row = dispatchRow({ executionName: null, status: { ...dispatchRow().status, executionName: null } });
@@ -657,9 +657,9 @@ check('acaDispatchStatusLabel keeps a failed dispatch run and queued states in t
   check('acaStatusModel: confirmed execution + matching device + finished session says completed', () => {
     assert.strictEqual(modelLine([dispatchRow()], ctx()), 'swigerb/squad-hub \u00b7 job completed');
   });
-  check('acaStatusModel: failed and stopped sessions say failed / stopped', () => {
+  check('acaStatusModel: failed sessions say failed; stopped sessions say ended', () => {
     assert.strictEqual(modelLine([dispatchRow()], ctx({ groups: acaGroups(['failed']) })), 'swigerb/squad-hub \u00b7 job failed');
-    assert.strictEqual(modelLine([dispatchRow()], ctx({ groups: acaGroups(['stopped']) })), 'swigerb/squad-hub \u00b7 job stopped');
+    assert.strictEqual(modelLine([dispatchRow()], ctx({ groups: acaGroups(['stopped']) })), 'swigerb/squad-hub \u00b7 job ended');
   });
   check('acaStatusModel: no executionName stays not confirmed', () => {
     const row = dispatchRow({ executionName: null, status: { ...dispatchRow().status, executionName: null } });
