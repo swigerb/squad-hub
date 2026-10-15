@@ -148,6 +148,18 @@ check('the manifest offers PNG icons at the sizes an installer looks for', () =>
   assert.ok(png.some((i) => String(i.purpose || '').includes('maskable')), 'no maskable icon; Android crops it badly');
 });
 
+check('the manifest points related_applications at itself and does not prefer a native app', () => {
+  // #267: getInstalledRelatedApps() reads this to tell a browser tab the app is
+  // installed. The `url` is root-relative (Chromium resolves it against the
+  // manifest URL) and the hub adds the host-specific `id` when it serves the
+  // file. prefer_related_applications must NOT be true: that suppresses the
+  // browser's own install prompt.
+  const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/app.webmanifest'), 'utf8'));
+  assert.ok(Array.isArray(mf.related_applications), 'no related_applications');
+  const self = mf.related_applications.filter((a) => a.platform === 'webapp');
+  assert.deepStrictEqual(self.map((a) => a.url), ['/app.webmanifest']);
+  assert.notStrictEqual(mf.prefer_related_applications, true);
+});
 check('every icon the manifest names exists on disk and is shipped', () => {
   // index.html is scanned above, but nothing scanned the MANIFEST -- so a
   // manifest naming a file that was never generated would 404 in silence.

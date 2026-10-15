@@ -4,6 +4,16 @@ All notable changes to Squad Hub are listed here. Each version's date is its
 GitHub release date. Versions are published to npm as `squad-hub` and
 `@mightybs/squad-hub`; see [docs/releasing.md](docs/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- **The install menu no longer looks available in a browser tab once the app is
+  installed** (issue #267). In Edge and Chrome the account menu item shows
+  **Installed ✓** and explains how to open the installed app, with `edge://apps`
+  or `chrome://apps` to copy. See
+  [docs/commands.md](docs/commands.md#installing-it-as-an-app).
+
 ## [0.7.1] - 2026-10-15
 
 ### Security

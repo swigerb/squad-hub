@@ -802,7 +802,7 @@ class HubService {
       catch (e) { return send(e.status || 500, { error: e.message }); }
     }
 
-    if (this.serveWeb) return this._static(url, send);
+    if (this.serveWeb) return this._static(url, send, req);
     return send(404, { error: 'not found' });
   }
 
@@ -1615,7 +1615,40 @@ class HubService {
 </div></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
   }
 
-  _static(url, send) {
+  /**
+   * `web/app.webmanifest`, with this hub's own web app id filled in.
+   *
+   * `navigator.getInstalledRelatedApps()` on desktop Chromium needs the
+   * manifest's `related_applications` entry to carry the app's ABSOLUTE id
+   * (the manifest `id` resolved against the origin), and the hub runs on any
+   * host, so a static file cannot say it. The file keeps the host-independent
+   * part (`platform` and a relative `url`); the origin comes from
+   * `SQUAD_HUB_PUBLIC_URL` when set, otherwise from this request, the same
+   * precedence the WebSocket origin check uses. Falls back to the file as
+   * written if it cannot be parsed or no origin is known.
+   */
+  _manifest(url, req, send) {
+    const file = path.join(WEB_ROOT, 'app.webmanifest');
+    return fs.readFile(file, 'utf8', (err, text) => {
+      if (err) return this._notFound(send, url);
+      const headers = { 'Content-Type': MIME['.webmanifest'], Vary: 'Host, X-Forwarded-Proto' };
+      try {
+        const origin = this.publicOrigin || (req ? selfOrigin(req) : null);
+        const manifest = JSON.parse(text);
+        if (origin && Array.isArray(manifest.related_applications)) {
+          const id = new URL(manifest.id || '/', origin).href;
+          for (const app of manifest.related_applications) {
+            if (app && app.platform === 'webapp') app.id = id;
+          }
+          return send(200, JSON.stringify(manifest, null, 2), headers);
+        }
+      } catch { /* serve the file as written */ }
+      return send(200, text, headers);
+    });
+  }
+
+  _static(url, send, req) {
+    if (url.pathname === '/app.webmanifest') return this._manifest(url, req, send);
     let rel = url.pathname === '/' ? '/index.html' : url.pathname;
     // Decode before resolving, so a file with a space or an encoded character
     // serves correctly.

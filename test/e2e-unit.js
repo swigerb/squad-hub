@@ -93,6 +93,7 @@ function api(port, p, token, opts = {}) {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.headers || {}),
       },
     }, (res) => {
       let b = '';
@@ -100,7 +101,7 @@ function api(port, p, token, opts = {}) {
       res.on('end', () => {
         let json = null;
         try { json = JSON.parse(b); } catch { /* not json */ }
-        resolve({ status: res.statusCode, body: json, raw: b });
+        resolve({ status: res.statusCode, body: json, raw: b, headers: res.headers });
       });
     });
     req.on('error', (e) => resolve({ status: 0, error: e.message }));
@@ -419,6 +420,29 @@ async function scenario(run) {
     }
   });
 
+  // #267: desktop Chromium's getInstalledRelatedApps() needs the manifest's own
+  // absolute web app id, and the hub runs on any host, so the manifest is
+  // served with that id filled in from the request (or SQUAD_HUB_PUBLIC_URL).
+  await checkAsync('the manifest is served with a host-specific absolute id in related_applications', async () => {
+    const asked = await api(port, '/app.webmanifest', null, {
+      headers: { Host: 'hub.example', 'X-Forwarded-Proto': 'https' },
+    });
+    assert.strictEqual(asked.status, 200);
+    assert.match(asked.headers['content-type'], /manifest\+json/);
+    const entry = asked.body.related_applications.find((a) => a.platform === 'webapp');
+    assert.strictEqual(entry.url, '/app.webmanifest');
+    assert.strictEqual(entry.id, 'https://hub.example/');
+    assert.strictEqual(asked.body.id, '/', 'the manifest id itself is left alone');
+    assert.match(String(asked.headers.vary), /Host/);
+    const local = await api(port, '/app.webmanifest', null);
+    assert.match(local.body.related_applications[0].id, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+    // SQUAD_HUB_PUBLIC_URL wins over whatever Host a request carries.
+    svc.publicOrigin = 'https://configured.example';
+    try {
+      const pinned = await api(port, '/app.webmanifest', null, { headers: { Host: 'evil.example' } });
+      assert.strictEqual(pinned.body.related_applications[0].id, 'https://configured.example/');
+    } finally { svc.publicOrigin = null; }
+  });
   // Found by rendering the page: `.scrim { display: flex }` outranks the UA
   // stylesheet's `[hidden] { display: none }`, so every modal appeared at once,
   // stacked, on first load. A stylesheet cannot be caught by an API test, so
