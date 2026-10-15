@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "leaseKey": "issue-263",
+  "sessionId": "manual-263-38681428542",
+  "repository": "swigerb/squad-hub",
+  "issueNumber": 263,
+  "dispatchSource": "actions",
+  "route": "aca-job",
+  "executionMode": "aca-job",
+  "state": "claimed",
+  "attempts": 1,
+  "startedAt": "2026-10-15T04:26:22.352Z",
+  "lastHeartbeatAt": "2026-10-15T04:26:22.352Z",
+  "updatedAt": "2026-10-15T04:26:22.352Z",
+  "terminalReason": null,
+  "executionRef": null
+}
