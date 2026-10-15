@@ -22,7 +22,15 @@ Each name is a separate npm publish, and each is verified separately.
 
 ## Publish a release
 
-Run from the release checkout:
+Clone the release tag into a fresh directory and confirm the tree is clean:
+
+```bash
+git clone -b v<version> https://github.com/swigerb/squad-hub.git squad-hub-release
+cd squad-hub-release
+git status --porcelain           # must print nothing
+```
+
+Then, from that checkout:
 
 ```bash
 npm login --registry=https://registry.npmjs.org/
