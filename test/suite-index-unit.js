@@ -373,6 +373,14 @@ check('the harness places an escaped title in the suite that declares it, and an
   assert.strictEqual(suiteFor('fixture seven: a done session'), null);
 });
 
+check('a title asserted through the real api() 501 check runs in its own suite, not the whole suite', () => {
+  const { suiteFor } = require('./mutate');
+  assert.strictEqual(
+    suiteFor('api() surfaces a `reason`-shaped 501 body as its error message'), 'aca-dispatch-dialog-unit.js');
+  assert.strictEqual(
+    suiteFor('api() still prefers an `error`-shaped body over `reason`'), 'aca-dispatch-dialog-unit.js');
+});
+
 // Prose in this file that looks like a call would become a title a real one
 // contains. This stays LAST so that it sees every title the file runs.
 check('this suite is indexed under exactly the titles it runs, plus its own fixtures', () => {

@@ -43,4 +43,16 @@ function matchesStatusFilter(session, status) {
   return session.status === status;
 }
 
-module.exports = { TERMINAL_STATUSES, REVIEW_FILTER, isReadyForReview, matchesStatusFilter };
+/**
+ * The activity line for a running tool: the title behind ONE "Running". A title
+ * that already begins with it ("Running: npm test"), or repeats it
+ * ("Running Running tests"), is not prefixed again.
+ */
+function runningActivity(title, fallback = 'Running a tool...') {
+  let t = typeof title === 'string' ? title.trim() : '';
+  if (!t) return fallback;
+  while (/^running\b[\s:]*running\b/i.test(t)) t = t.replace(/^running\b[\s:]*/i, '');
+  return /^running\b/i.test(t) ? t : `Running ${t}`;
+}
+
+module.exports = { TERMINAL_STATUSES, REVIEW_FILTER, isReadyForReview, matchesStatusFilter, runningActivity };

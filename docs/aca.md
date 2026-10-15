@@ -324,8 +324,10 @@ ordinary page load, or a hub with no GitHub App, never calls that route, and it
 stays under the 30 per minute read limit. The tracking is per tab and in
 memory, like `DispatchTracker`: reloading loses the row, not the job.
 
-**When the hub cannot dispatch.** With no GitHub App, or on a repository the App
-is not installed on or whose `squad-dispatch.yml` lacks the inputs, the dialog
+**When the hub cannot dispatch.** With no GitHub App, on a repository the App
+is not installed on, on a repository you do not have write access to, in a
+session that is not signed in with GitHub, or on a repository whose
+`squad-dispatch.yml` lacks the inputs, the dialog
 keeps its two fallback links (a prefilled issue, or the `/squad-aca` command to
 copy), the form's own hint buttons, and no row is added. A device token cannot
 start a job at all, and the hub holds no Azure credentials: the only thing it
@@ -353,14 +355,16 @@ anyone who has ever had a commit merged. See
 ### The third direction is different, on purpose
 
 `POST /api/aca/dispatch` (and the "installed repos" / "recent dispatches"
-reads beside it) skip the repository's own collaborator check entirely, for
-any repository where the hub's GitHub App is installed. The gate becomes "is
-the App installed here", decided once by whoever installed it — **not** a
-per-person collaborator check. Any signed-in hub user can dispatch on any
-App-installed repository. Read
+reads beside it) call GitHub as the App, so the gate is two things at once:
+the App is installed on the repository, **and** GitHub confirms the signed-in
+person themselves has write (or maintain/admin) access to it. The hub asks
+GitHub on every request, as that person's verified GitHub account, and never
+trusts the picker: it lists only repositories you may use and refuses a
+hand-made request for any other with nothing created. This needs a GitHub
+sign-in (`SQUAD_HUB_AUTH=github`); an Entra, local or dev session cannot use
+these routes and keeps the link-based path. Read
 [security.md's "GitHub App path"](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
-before installing the App anywhere, because this is a real widening of who
-can start a job, not a detail.
+for the full rule.
 
 Configured with `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` (see
 [commands.md](commands.md#the-service)); unset, the three `/api/aca/*` routes
@@ -406,8 +410,8 @@ implies.
    below for why this matters.
 2. **Install it on selected repositories only** — explicitly choose which
    repositories, never "All repositories". Every repository selected becomes
-   one where "any signed-in hub user can dispatch" (above) applies the moment
-   the App is configured on this hub.
+   one where a hub user who is also a write-access collaborator there can
+   dispatch (above) the moment the App is configured on this hub.
 3. **Confirm `squad-dispatch.yml` is on each selected repository's default
    branch** before expecting a dispatch to succeed there — `workflow_dispatch`
    can only ever run a workflow file that already exists on that branch; there
@@ -437,7 +441,10 @@ implies.
 |---|---|---|
 | `POST /api/aca/dispatch` → `501` | `SQUAD_HUB_GH_APP_ID`/`SQUAD_HUB_GH_APP_PRIVATE_KEY` are unset on this hub | The hub itself, before any GitHub call |
 | `422` naming a field | That field is not one the target repository's own `squad-dispatch.yml` declares on its default branch | The hub, reading the workflow file, before `newIssue` or the dispatch call |
-| A repository is absent from `/api/aca/repos` | The App is not installed on it at all | GitHub's own installation list; this hub does not grant installation |
+| A repository is absent from `/api/aca/repos` | The App is not installed on it, **or** your GitHub account does not have write access or better on it | GitHub's own installation list and the repository's collaborator list; this hub grants neither |
+| `POST /api/aca/dispatch` → `403` "not available to your GitHub account" | Same two causes; the hub deliberately does not say which | The hub, before any issue or dispatch |
+| `/api/aca/*` → `403` asking for a GitHub sign-in | The session is not a verified GitHub account (Entra, local or dev) | The hub, before any GitHub call |
+| `/api/aca/repos` or `POST /api/aca/dispatch` → `502` "could not verify your access" | GitHub could not answer the access check (rate limit, outage, App permissions) — nothing was listed, created or dispatched | GitHub; retry later |
 | A repository is listed with `hasDispatchWorkflow: false` | The App is installed there, but it has no `squad-dispatch.yml` on its default branch yet | `listReposWithDispatchStatus()`, reading the repository's own default branch — not an installation fact |
 | Azure login step fails inside the run | The target repository's own OIDC federation/secrets are missing or scoped to the wrong repository/branch | `azure/login@v2`, inside the dispatched workflow run — not this hub |
 | The workflow's own lease-claim step reports `stand-down` | Another dispatch (Ralph, or a concurrent manual run) already holds the lease for that issue | The shared lease store, by design — this is a normal outcome, not a failure |
@@ -459,10 +466,9 @@ clipboard write worked.
 **When registering the App on GitHub, set it to private ("Only on this
 account"), not public.** A public App can be installed by anyone who finds
 it; private keeps installation restricted to the account or organization
-that created it, which is what makes "Any signed-in hub user can dispatch on
-any App-installed repository" (above) a decision the operator actually
-controls rather than one any third party could trigger by installing the App
-themselves.
+that created it, which keeps where the App is installed (half of the check
+above) a decision the operator actually controls rather than one any third
+party could make by installing the App themselves.
 
 Rate-limited per signed-in user, in memory, reset on a hub restart — generous
 for a person, tight for a script. `GET /api/aca/repos` and
@@ -488,8 +494,9 @@ against the same identifier shape Squad member ids use elsewhere in this hub
 `squad.agent.md`-driven review step should address, not a GitHub account to
 `@mention`. Supplying an actual GitHub username that happens to match the
 identifier shape is accepted by the regex (the two namespaces can overlap),
-but the field's contract is the Squad member id; it is on the caller to
-supply the right one.
+but the field's contract is the Squad member id. When the repository's
+roster is readable (see *Choosing, not typing* below) an explicit `reviewer` that is not an active member of it is refused with a `422` before anything is
+created.
 
 The New ACA job dialog (`web/js/aca.js`) also takes the declared inputs into account before it posts.
 It reads each repository's declared inputs from `GET /api/aca/repos`
@@ -528,6 +535,56 @@ a shorter list. A dispatch against a workflow whose inputs are unknown is refuse
 with a `422` that says the inputs could not be determined (it does not claim an
 input is undeclared), before any issue is created.
 
+### Choosing, not typing (#257)
+
+Every field of the New ACA job dialog that has a knowable set of values is a
+picker over **that repository's own** values, not a text box. Nothing is a fixed
+product catalog, another device's list, or a guess.
+
+| Field | Where the choices come from |
+|---|---|
+| Repository | `GET /api/aca/repos`: installed, and usable by the signed-in account. Search filters it locally. |
+| Model | A closed `<select>` of the models the repository's `.squad/config.json` names (`defaultModel` and `modelPolicy` overrides), or the workflow's own `model` choice enum. |
+| Reviewer | A closed `<select>` of the **active** members of `.squad/casting/registry.json`. |
+| Base branch | Search over the repository's branches, server-backed, past the first page. |
+| Existing issue | Search over the repository's **open issues** (never pull requests), by title or number. |
+
+The model list is labeled **repository-configured**: it says what the repository
+asks for, not that the job can run it. The worker still confirms the requested
+model when it starts, and the **Squad default** (nothing sent) stays the explicit
+first choice. When the repository does not say (no config or registry, or team
+state kept outside the repository through `teamRoot`/`stateLocation`) the select
+shows only the default with the reason, and when the file exists but cannot be
+read it says so with a retry; neither is shown as an empty list.
+
+The pickers keep two promises. **Typed text is never sent**: the box under a
+dropdown is for searching, and only an entry chosen from the list (or an exact
+match the target confirmed) is a value; anything else stops the dispatch with
+"Choose … from the list". **A change of target clears what depended on it**:
+choosing another repository drops the branch, issue, model and reviewer chosen for
+the first, aborts its in-flight lookups, and ignores any reply that still arrives
+for it. Lookups are debounced, canceled when superseded and drawn from the same
+read budget as the repository list.
+
+The hub holds the same line: `POST /api/aca/dispatch` re-checks an explicit
+branch, issue, model and reviewer against the repository after authorizing the
+account and before creating an issue, answering `422` with the `field`
+([HTTP API](api.md#get-apiacastatus-get-apiacarepos-get-apiacadispatches-post-apiacadispatch)).
+An issue created for a dispatch that then fails is still handed back for the
+retry. With **no GitHub App**, the repository and issue boxes stay plain text and
+the two GitHub links work as before, because nothing can be checked.
+
+Known limits: GitHub offers no branch-search API, so the branch picker scans a
+bounded number of pages per search and continues with *Show more*, plus an exact
+name lookup; the model and reviewer lists are read from the **default branch**
+only; and the model list is not proof of runtime availability.
+
+New session (local) follows the same rule for the **selected device**: Agent and
+Model are closed lists of what that device reported, a device that reported none is
+default-only with the reason (never another device's list, never typed text),
+Mode narrows to the modes the device reported, switching device clears a choice the
+new one does not offer, and the hub refuses an unsupported value with a `422`
+before the device is asked.
 Known limit: a field that was never sent cannot be checked later. The hub's
 refusal of a field the workflow has since removed protects only a request that
 *sent* it. If the dialog left a default out because the workflow did not declare

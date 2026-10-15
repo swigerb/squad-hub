@@ -301,7 +301,9 @@ function validKeys() {
     if (!r.ok) throw new Error(`setup failed at ${i}: ${r.reason}`);
   }
 
-  check(`more than ${MAX_SUBSCRIPTIONS} subscriptions for one subject is refused`, () => {
+  // A literal title, so the mutation harness can find it in this file's source.
+  check('more than 25 subscriptions for one subject is refused', () => {
+    assert.strictEqual(MAX_SUBSCRIPTIONS, 25, 'the title names the subscription cap');
     const r = store.add('alice', sub(9999));
     assert.strictEqual(r.ok, false);
     assert.strictEqual(store.list('alice').length, MAX_SUBSCRIPTIONS);

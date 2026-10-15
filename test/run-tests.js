@@ -28,9 +28,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
-const BIN = path.join(ROOT, 'bin', 'squad-hub.js');
-const FAKE = path.join(__dirname, 'fake-agent.js');
+const {
+  ROOT, BIN, FAKE, sleep, alive, waitFor, makeEnv, cli, statusJson, daemonPid, startDaemon, stopDaemon, cleanup,
+} = require('./helpers/device-harness');
 
 let pass = 0; let fail = 0;
 const failures = [];
@@ -46,112 +46,12 @@ async function checkAsync(name, fn) {
   catch (e) { fail += 1; failures.push({ name, error: e.message }); console.log(`  FAIL ${name}\n         ${e.message}`); }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function alive(pid) {
-  if (!pid) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
-}
-
-async function waitFor(fn, ms = 15000, step = 100) {
-  const until = Date.now() + ms;
-  for (;;) {
-    if (await fn()) return true;
-    if (Date.now() > until) return false;
-    await sleep(step);
-  }
-}
-
-/** An isolated device: private home, private IPC endpoint, fake agent. */
-function makeEnv(extra = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-'));
-  return {
-    home,
-    env: {
-      ...process.env,
-      SQUAD_HUB_HOME: home,
-      SQUAD_HUB_AGENT: process.execPath,
-      SQUAD_HUB_AGENT_ARGS: FAKE,
-      FAKE_AGENT_MODE: 'approve-gate',
-      ...extra,
-    },
-  };
-}
-
-function cli(env, args, opts = {}) {
-  return spawnSync(process.execPath, [BIN, ...args], {
-    env, encoding: 'utf8', cwd: opts.cwd || ROOT, timeout: opts.timeout || 30000,
-  });
-}
-
-function statusJson(env) {
-  const r = cli(env, ['status', '--json']);
-  try { return JSON.parse(r.stdout); } catch { return { running: false, _raw: r.stdout, _err: r.stderr }; }
-}
-
-function daemonPid(home) {
-  try { return JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8')).pid; } catch { return null; }
-}
-
-async function startDaemon(env) {
-  const r = cli(env, ['start']);
-  const ok = await waitFor(() => !!daemonPid(env.SQUAD_HUB_HOME) && alive(daemonPid(env.SQUAD_HUB_HOME)));
-  if (!ok) throw new Error(`daemon did not start: ${r.stdout} ${r.stderr}`);
-  return daemonPid(env.SQUAD_HUB_HOME);
-}
-
-async function stopDaemon(env) {
-  cli(env, ['stop']);
-  await waitFor(() => !alive(daemonPid(env.SQUAD_HUB_HOME)), 8000);
-}
-
-/**
- * Windows holds a lock briefly after a process exits, so a single rmSync races
- * and leaves temp directories behind. Retry, then give up quietly -- a test
- * suite that fails on its own cleanup teaches you nothing.
- */
-function cleanup(home) {
-  for (let i = 0; i < 5; i += 1) {
-    try { fs.rmSync(home, { recursive: true, force: true }); return; }
-    catch { spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},150)']); }
-  }
-}
-
 // ===========================================================================
 
 async function suiteLifecycle() {
   console.log('\n[lifecycle] daemon start / status / stop');
-  const { home, env } = makeEnv();
-  try {
-    const before = cli(env, ['status', '--json']);
-    check('status exits 3 when no daemon is running', () => {
-      assert.strictEqual(before.status, 3, `expected exit 3, got ${before.status}`);
-      assert.strictEqual(JSON.parse(before.stdout).running, false);
-    });
-
-    const pid = await startDaemon(env);
-    check('start produces a live daemon process', () => assert.ok(alive(pid), `pid ${pid} is not alive`));
-
-    const snap = statusJson(env);
-    check('status reports running with a device identity', () => {
-      assert.strictEqual(snap.running, true);
-      assert.ok(snap.device.name, 'no device name');
-      assert.strictEqual(snap.device.platform, process.platform);
-    });
-
-    check('file access is OFF by default', () => assert.strictEqual(snap.device.fileAccess, 'off'));
-
-    check('the confinement path is NEVER in the reportable view', () => {
-      assert.ok(!('filesRoot' in snap.device), 'filesRoot leaked into the device view');
-      assert.ok(!JSON.stringify(snap.device).includes(home), 'the home path leaked into the device view');
-    });
-
-    await stopDaemon(env);
-    check('stop leaves no daemon process', () => assert.ok(!alive(pid), `pid ${pid} survived stop`));
-    check('stop removes the state file', () => assert.ok(!fs.existsSync(path.join(home, 'daemon.json'))));
-  } finally { cleanup(home); }
+  runChildSuite(path.join(__dirname, 'device-lifecycle-unit.js'), 'device-lifecycle');
 }
-
 async function suiteSessionRoundTrip() {
   console.log('\n[session] start a session, approve, observe the SIDE EFFECT');
   const { home, env } = makeEnv();
@@ -246,27 +146,8 @@ async function suiteDeny() {
 
 async function suiteRejectsUnknownOption() {
   console.log('\n[session] an option the agent never offered is refused');
-  const { home, env } = makeEnv();
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
-  try {
-    await startDaemon(env);
-    cli(env, ['reset', '--allow-files-all']);
-    await waitFor(() => alive(daemonPid(home)));
-    cli(env, ['run', 'do the thing', '--cwd', work]);
-    await waitFor(() => statusJson(env).sessions.some((x) => x.pendingApprovals.length > 0), 20000);
-    const sess = statusJson(env).sessions.find((s) => s.pendingApprovals.length > 0);
-    const appr = sess.pendingApprovals[0];
-
-    const r = cli(env, ['approve', sess.id, appr.approvalId, 'allow_forever_muahaha']);
-    check('a forged option id is rejected', () => assert.notStrictEqual(r.status, 0, 'a made-up option was accepted'));
-
-    const marker = path.join(work, 'fake-agent-marker.txt');
-    check('the forged option did not run the tool', () => assert.ok(!fs.existsSync(marker)));
-
-    await stopDaemon(env);
-  } finally { cleanup(home); cleanup(work); }
+  runChildSuite(path.join(__dirname, 'option-forgery-unit.js'), 'option-forgery');
 }
-
 // ---------------------------------------------------------------------------
 // CRITERION 1 -- the orphan gate.
 // ---------------------------------------------------------------------------
@@ -294,40 +175,8 @@ async function suiteOrphanOnGracefulStop() {
 
 async function suiteOrphanOnHardKill() {
   console.log('\n[ORPHAN GATE] SIGKILLing the daemon must not leave an agent running forever');
-  const { home, env } = makeEnv();
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqwork-'));
-  try {
-    const dpid = await startDaemon(env);
-    cli(env, ['reset', '--allow-files-all']);
-    await waitFor(() => alive(daemonPid(home)));
-    const dpid2 = daemonPid(home);
-    cli(env, ['run', 'do the thing', '--cwd', work]);
-    await waitFor(() => statusJson(env).sessions.length > 0, 20000);
-    const agentPid = statusJson(env).sessions[0].pid;
-
-    // The brutal case: no chance to clean up.
-    try { process.kill(dpid2, 'SIGKILL'); } catch { /* already gone */ }
-    try { if (dpid !== dpid2) process.kill(dpid, 'SIGKILL'); } catch { /* gone */ }
-    await waitFor(() => !alive(dpid2), 6000);
-
-    check('the daemon is dead', () => assert.ok(!alive(dpid2), 'daemon survived SIGKILL'));
-    const survived = alive(agentPid);
-    check('the orphan is recorded on disk so it can be found', () => {
-      const kids = JSON.parse(fs.readFileSync(path.join(home, 'children.json'), 'utf8'));
-      assert.ok(kids.some((k) => k.pid === agentPid), `child ${agentPid} was not recorded: ${JSON.stringify(kids)}`);
-    });
-
-    // The recovery guarantee: the next daemon reaps what the last one abandoned.
-    await startDaemon(env);
-    const reaped = await waitFor(() => !alive(agentPid), 12000);
-    check('HARD KILL: the next daemon start reaps the orphan', () => {
-      assert.ok(reaped, `ORPHAN SURVIVED: agent pid ${agentPid} still running after a fresh daemon start (was alive after kill: ${survived})`);
-    });
-
-    await stopDaemon(env);
-  } finally { cleanup(home); cleanup(work); }
+  runChildSuite(path.join(__dirname, 'orphan-hard-kill-unit.js'), 'orphan-hard-kill');
 }
-
 /**
  * The orphan mechanisms, tested directly rather than through the OS.
  *
@@ -346,9 +195,15 @@ async function suiteOrphanMechanisms() {
 
 /** Runs a child test file that reports through the RESULT contract. */
 function runChildSuite(file, label, { timeout = 120000, requireCompletion = false } = {}) {
+  // The child runs synchronously, so these two lines are the only sign of WHICH
+  // suite is executing during a long silent stretch. They are neither RESULT
+  // records nor part of the summary, so nothing that reads those sees them.
+  console.log(`  [child-suite] start ${label}`);
+  const startedAt = Date.now();
   const r = spawnSync(process.execPath, [file], {
     encoding: 'utf8', timeout, env: process.env, windowsHide: true,
   });
+  console.log(`  [child-suite] end ${label} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`);
   const out = (r.stdout || '') + (r.stderr || '');
   const results = out.split('\n').filter((l) => l.startsWith('RESULT\t')).map((l) => l.split('\t'));
 
@@ -407,43 +262,10 @@ function runChildSuite(file, label, { timeout = 120000, requireCompletion = fals
   }
 }
 
-function checkEscapeFocusWiring() {
-  const source = fs.readFileSync(__filename, 'utf8');
-  const name = 'run-tests.js still wires in the escape-focus child suite and invocation';
-  check(name, () => {
-    try {
-      // This function's own body quotes the same literals it searches for
-      // (so the check can describe what it looks for in its failure
-      // messages). Start every indexOf() AFTER this function's own
-      // definition, or the first match is always this self-reference, not
-      // the real wiring further down the file -- which would make the
-      // check pass or fail for the wrong reason no matter what run-tests.js
-      // actually does below.
-      const searchFrom = source.indexOf(
-        '// ---------------------------------------------------------------------------\n// CRITERION 2');
-      assert.ok(searchFrom !== -1, 'could not find a stable marker after checkEscapeFocusWiring() to search from');
-      const suiteStart = source.indexOf('async function suiteEscapeFocus() {', searchFrom);
-      assert.ok(suiteStart !== -1, 'suiteEscapeFocus() is missing');
-      const suiteEnd = source.indexOf('/**\n * Approval depth', suiteStart);
-      assert.ok(suiteEnd !== -1, 'suiteEscapeFocus() no longer sits before suiteApprovalDepth()');
-      const suiteSource = source.slice(suiteStart, suiteEnd);
-      assert.ok(suiteSource.includes("runChildSuite(path.join(__dirname, 'escape-focus-unit.js'), 'escape-focus');"),
-        'run-tests.js no longer registers test/escape-focus-unit.js');
-      const orderStart = source.indexOf('  await suiteModuleLink();', searchFrom);
-      assert.ok(orderStart !== -1, 'suiteModuleLink() is missing from the sequential run order');
-      const orderEnd = source.indexOf('  await suiteApprovalDepth();', orderStart);
-      assert.ok(orderEnd !== -1, 'suiteApprovalDepth() is missing from the sequential run order');
-      const orderSource = source.slice(orderStart, orderEnd);
-      assert.ok(orderSource.includes('  await suiteEscapeFocus();'),
-        'run-tests.js no longer invokes suiteEscapeFocus()');
-      if (process.env.MUTANT) console.log(`RESULT\tok\t${name}`);
-    } catch (e) {
-      if (process.env.MUTANT) console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
-      throw e;
-    }
-  });
+async function suiteRunnerWiring() {
+  console.log('\n[RUNNER WIRING] run-tests.js still registers and invokes the escape-focus child suite');
+  runChildSuite(path.join(__dirname, 'run-tests-wiring-unit.js'), 'run-tests-wiring');
 }
-
 // ---------------------------------------------------------------------------
 // CRITERION 2 -- a dead agent must not read as Active.
 //
@@ -511,48 +333,8 @@ async function suiteHeartbeatIsolated() {
 // ---------------------------------------------------------------------------
 async function suiteFileAccess() {
   console.log('\n[file access] off by default, and scoped means scoped');
-  const { home, env } = makeEnv();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sqroot-'));
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sqout-'));
-  const inside = path.join(root, 'nested');
-  fs.mkdirSync(inside);
-  try {
-    await startDaemon(env);
-    const denied = cli(env, ['run', 'x', '--cwd', outside]);
-    check('with file access OFF, a working directory is refused', () => {
-      assert.notStrictEqual(denied.status, 0, 'a cwd was accepted while file access was off');
-      assert.match(denied.stderr + denied.stdout, /file access is off/i);
-    });
-    await stopDaemon(env);
-
-    // Scope to `root` by running reset from there.
-    cli(env, ['reset', '--allow-files'], { cwd: root });
-    await waitFor(() => alive(daemonPid(home)), 10000);
-
-    const snap = statusJson(env);
-    check('scoped access reports as scoped', () => assert.strictEqual(snap.device.fileAccess, 'scoped'));
-    check('the confinement root still never appears in the device view', () => {
-      assert.ok(!JSON.stringify(snap.device).includes(root), 'the root path leaked');
-    });
-
-    const ok = cli(env, ['run', 'x', '--cwd', inside]);
-    check('a directory inside the root is allowed', () => assert.strictEqual(ok.status, 0, ok.stdout + ok.stderr));
-
-    const esc = cli(env, ['run', 'x', '--cwd', outside]);
-    check('a directory outside the root is refused', () => {
-      assert.notStrictEqual(esc.status, 0, 'escaped the confinement root');
-      assert.match(esc.stderr + esc.stdout, /outside/i);
-    });
-
-    const traversal = cli(env, ['run', 'x', '--cwd', path.join(root, '..', path.basename(outside))]);
-    check('.. traversal out of the root is refused', () => {
-      assert.notStrictEqual(traversal.status, 0, 'traversal escaped the confinement root');
-    });
-
-    await stopDaemon(env);
-  } finally { cleanup(home); cleanup(root); cleanup(outside); }
+  runChildSuite(path.join(__dirname, 'file-access-unit.js'), 'file-access');
 }
-
 async function suiteConfig() {
   console.log('\n[config] reset returns to factory defaults');
   const { home, env } = makeEnv();
@@ -1398,7 +1180,7 @@ async function suiteMutateVerdict() {
 }
 
 async function suiteMutationWorkflow() {
-  console.log('\n[MUTATE CI] isolated immutable-head partitions retain every baseline and named-failure gate');
+  console.log('\n[MUTATE CI] the exhaustive gate is one coordinated run at the immutable head, verified, with every artifact kept');
   runChildSuite(path.join(__dirname, 'mutation-workflow-unit.js'), 'mutation-workflow');
 }
 
@@ -1407,13 +1189,52 @@ async function suiteChildRunner() {
   runChildSuite(path.join(__dirname, 'child-runner-unit.js'), 'child-runner');
 }
 
+/**
+ * Every mutation that used to fall back to this whole runner is owned by a
+ * standalone suite, and run-tests.js still runs each owner once.
+ */
+async function suiteFallbackOwners() {
+  console.log('\n[FALLBACK OWNERS] each formerly full-suite mutation resolves to one standalone suite that this runner runs exactly once');
+  runChildSuite(path.join(__dirname, 'fallback-owners-unit.js'), 'fallback-owners');
+}
+
+/**
+ * The acceptance runner: the risk-based candidate and exhaustive scopes that
+ * replace replaying the whole catalogue per shard. Evidence and proofs,
+ * scheduling, and the coordinated runner are each proven apart.
+ */
+async function suiteAcceptance() {
+  console.log('\n[ACCEPTANCE] candidate and exhaustive scopes: evidence, scheduling and the coordinated runner');
+  runChildSuite(path.join(__dirname, 'acceptance-evidence-unit.js'), 'acceptance-evidence');
+  runChildSuite(path.join(__dirname, 'acceptance-schedule-unit.js'), 'acceptance-schedule');
+  runChildSuite(path.join(__dirname, 'acceptance-runner-unit.js'), 'acceptance-runner');
+}
+
+/**
+ * Each browser scenario is a metadata entry that maps its assertions to one
+ * independently runnable journey, so the acceptance runner can replay a
+ * mutation against one scenario instead of the whole browser suite.
+ */
+async function suiteBrowserScenarios() {
+  console.log('\n[BROWSER SCENARIOS] every browser assertion belongs to one independently runnable scenario, and selectors fail loudly');
+  runChildSuite(path.join(__dirname, 'browser-scenarios-unit.js'), 'browser-scenarios');
+}
+
+/**
+ * The npm scripts, CI workflows, and run-tests registration that put the
+ * acceptance runner in front of an ordinary pull request.
+ */
+async function suiteAcceptanceWorkflow() {
+  console.log('\n[ACCEPTANCE CI] candidate scope gates ordinary pull requests, exhaustive scope gates releases, and the scripts and suites are wired');
+  runChildSuite(path.join(__dirname, 'acceptance-workflow-unit.js'), 'acceptance-workflow');
+}
 // ===========================================================================
 
 (async () => {
   console.log('squad-hub test suite');
   console.log('='.repeat(60));
   const t0 = Date.now();
-  checkEscapeFocusWiring();
+  await suiteRunnerWiring();
 
   await suiteLifecycle();
   await suiteSessionRoundTrip();
@@ -1501,6 +1322,10 @@ async function suiteChildRunner() {
   await suiteMutateVerdict();
   await suiteMutationWorkflow();
   await suiteChildRunner();
+  await suiteFallbackOwners();
+  await suiteAcceptance();
+  await suiteBrowserScenarios();
+  await suiteAcceptanceWorkflow();
 
   console.log('');
   console.log('='.repeat(60));

@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="940" viewBox="0 0 1600 940">
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#212529"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "Segoe UI", Arial, Helvetica, sans-serif; fill: #000000; }
+    .h { font-size: 34px; font-weight: 700; }
+    .sub { font-size: 18px; }
+    .t { font-size: 17px; font-weight: 700; }
+    .s { font-size: 14px; }
+    .xs { font-size: 13px; }
+    .mid { text-anchor: middle; }
+  </style>
+
+  <rect width="1600" height="940" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="40" y="56" class="h">How Squad Hub works</text>
+  <text x="40" y="88" class="sub">Devices dial out and own the agent. The hub is a cache. Cloud job launch is a separate, one-time path.</text>
+
+  <!-- Column A: devices -->
+  <rect x="40" y="120" width="380" height="480" rx="14" fill="none" stroke="#495057" stroke-width="2"/>
+  <text x="60" y="150" class="t">YOUR DEVICES</text>
+  <text x="60" y="174" class="s">laptop, dev box, or cloud device</text>
+  <text x="70" y="206" class="s">No inbound port. The device dials out</text>
+  <text x="70" y="226" class="s">and keeps one socket open.</text>
+
+  <rect x="70" y="270" width="320" height="90" rx="10" fill="#b2f2bb" stroke="#2f9e44" stroke-width="2"/>
+  <text x="230" y="304" class="t mid">Copilot CLI agent</text>
+  <text x="230" y="326" class="s mid">copilot --acp</text>
+  <text x="230" y="346" class="s mid">the session, its tools and approvals</text>
+
+  <line x1="230" y1="360" x2="230" y2="410" stroke="#212529" stroke-width="2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="244" y="390" class="s">ACP, both ways</text>
+
+  <rect x="70" y="410" width="320" height="90" rx="10" fill="#b2f2bb" stroke="#2f9e44" stroke-width="2"/>
+  <text x="230" y="444" class="t mid">squad-hub daemon</text>
+  <text x="230" y="466" class="s mid">owns sessions and approvals</text>
+  <text x="230" y="486" class="s mid">reaps orphaned agents on restart</text>
+
+  <!-- Device-initiated outbound WebSocket: the only link between device and hub -->
+  <line x1="390" y1="455" x2="590" y2="455" stroke="#212529" stroke-width="2.5" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="398" y="440" class="s">outbound WebSocket</text>
+  <text x="398" y="478" class="xs">commands, events</text>
+
+  <!-- Column B: hub service -->
+  <rect x="560" y="120" width="460" height="480" rx="14" fill="none" stroke="#1864ab" stroke-width="2"/>
+  <text x="580" y="150" class="t">SQUAD HUB SERVICE</text>
+  <text x="580" y="174" class="s">App Service, Container Apps, or AKS</text>
+
+  <rect x="590" y="200" width="400" height="60" rx="10" fill="#a5d8ff" stroke="#1864ab" stroke-width="2"/>
+  <text x="606" y="226" class="t">HTTP API and live socket</text>
+  <text x="606" y="247" class="s">per signed-in user; commands over HTTP</text>
+
+  <rect x="590" y="280" width="400" height="60" rx="10" fill="#a5d8ff" stroke="#1864ab" stroke-width="2"/>
+  <text x="606" y="306" class="t">Per-user session projection</text>
+  <text x="606" y="327" class="s">a cache; the device is the record</text>
+
+  <rect x="590" y="360" width="400" height="44" rx="10" fill="#f1f3f5" stroke="#868e96" stroke-width="2"/>
+  <text x="606" y="387" style="font-size: 15px; font-weight: 700;">Notifiers: Web Push and Teams webhook</text>
+
+  <rect x="590" y="425" width="400" height="60" rx="10" fill="#a5d8ff" stroke="#1864ab" stroke-width="2"/>
+  <text x="606" y="451" class="t">Device link (WebSocket)</text>
+  <text x="606" y="472" class="s">accepts outbound dials from devices</text>
+
+  <rect x="590" y="505" width="400" height="60" rx="10" fill="#fff3bf" stroke="#e67700" stroke-width="2"/>
+  <text x="606" y="531" class="t">Hub GitHub App</text>
+  <text x="606" y="552" class="s">calls GitHub to dispatch a job</text>
+
+  <!-- Column C: control surfaces -->
+  <rect x="1160" y="120" width="400" height="480" rx="14" fill="none" stroke="#862e9c" stroke-width="2"/>
+  <text x="1180" y="150" class="t">WHERE YOU CONTROL IT</text>
+  <text x="1180" y="174" class="s">browser, CLI, and MCP; Teams only notifies</text>
+
+  <rect x="1190" y="190" width="340" height="60" rx="10" fill="#f3d9fa" stroke="#862e9c" stroke-width="2"/>
+  <text x="1206" y="214" class="t">Browser or installed PWA</text>
+  <text x="1206" y="235" class="s">live view; commands over HTTP</text>
+  <line x1="1190" y1="220" x2="1020" y2="220" stroke="#212529" stroke-width="2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="1026" y="210" class="xs">live + commands</text>
+
+  <rect x="1190" y="268" width="340" height="56" rx="10" fill="#f3d9fa" stroke="#862e9c" stroke-width="2"/>
+  <text x="1206" y="292" class="t">CLI: squad-hub</text>
+  <text x="1206" y="313" class="s">status, approve, kill, open</text>
+  <line x1="1190" y1="296" x2="1020" y2="296" stroke="#212529" stroke-width="2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="1026" y="288" class="xs">HTTP</text>
+
+  <rect x="1190" y="344" width="340" height="76" rx="10" fill="#f3d9fa" stroke="#862e9c" stroke-width="2"/>
+  <text x="1206" y="368" class="t">MCP client (coding agent)</text>
+  <text x="1206" y="389" class="s">watch, start, message, stop, dispatch</text>
+  <text x="1206" y="409" class="s">no approve tool: approvals stay human</text>
+  <line x1="1190" y1="382" x2="1020" y2="382" stroke="#212529" stroke-width="2" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="1026" y="374" class="xs">HTTP</text>
+
+  <rect x="1190" y="440" width="340" height="60" rx="10" fill="#e9ecef" stroke="#495057" stroke-width="2"/>
+  <text x="1206" y="464" class="t">Microsoft Teams</text>
+  <text x="1206" y="485" class="s">link-only card; does not approve inline</text>
+  <line x1="990" y1="382" x2="1190" y2="470" stroke="#212529" stroke-width="2" marker-end="url(#head)"/>
+
+  <!-- ACA job control: the job's daemon dials out to the hub, same as any device -->
+  <polyline points="1060,700 1060,455 990,455" fill="none" stroke="#212529" stroke-width="2.5" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="1068" y="664" class="xs">outbound socket</text>
+
+  <!-- Job launch lane: separate from device control -->
+  <rect x="40" y="640" width="1520" height="280" rx="14" fill="none" stroke="#868e96" stroke-width="2" stroke-dasharray="10 6"/>
+  <text x="60" y="668" class="t">JOB LAUNCH (separate from device control)</text>
+
+  <line x1="660" y1="565" x2="660" y2="700" stroke="#212529" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#head)"/>
+  <text x="670" y="628" class="xs">workflow_dispatch</text>
+
+  <rect x="500" y="700" width="320" height="120" rx="10" fill="#fff3bf" stroke="#e67700" stroke-width="2"/>
+  <text x="660" y="742" class="t mid">GitHub Actions</text>
+  <text x="660" y="766" class="s mid">squad-dispatch.yml</text>
+  <text x="660" y="788" class="s mid">workflow_dispatch trigger only</text>
+
+  <line x1="820" y1="760" x2="960" y2="760" stroke="#212529" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#head)"/>
+  <text x="852" y="752" class="xs">start job</text>
+
+  <rect x="960" y="700" width="320" height="120" rx="10" fill="#99e9f2" stroke="#0c8599" stroke-width="2"/>
+  <text x="1120" y="742" class="t mid">Azure Container Apps job</text>
+  <text x="1120" y="766" class="s mid">isolated execution, one-shot daemon</text>
+  <text x="1120" y="788" class="s mid">dials out to the hub after start</text>
+
+  <rect x="1310" y="700" width="210" height="120" rx="10" fill="#f1f3f5" stroke="#868e96" stroke-width="2"/>
+  <text x="1322" y="726" class="xs">Once attached, the job's</text>
+  <text x="1322" y="746" class="xs">daemon is an ordinary device.</text>
+  <text x="1322" y="766" class="xs">Control uses the same socket.</text>
+  <text x="1322" y="786" class="xs">Launching is one-time only.</text>
+
+  <!-- Key -->
+  <text x="80" y="728" style="font-size: 16px; font-weight: 700;">Key</text>
+  <line x1="90" y1="758" x2="150" y2="758" stroke="#212529" stroke-width="2.5" marker-start="url(#head)" marker-end="url(#head)"/>
+  <text x="160" y="763" class="s">ongoing device control (live)</text>
+  <line x1="90" y1="796" x2="150" y2="796" stroke="#212529" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#head)"/>
+  <text x="160" y="801" class="s">one-time job launch</text>
+</svg>

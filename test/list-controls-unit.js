@@ -811,15 +811,18 @@ check('displayTitle falls back to the id when there is no prompt either', () => 
   assert.strictEqual(displayTitle(s, {}), 'raw-id');
 });
 
-check('a renamed row shows the custom name, with the raw prompt as its tooltip', () => {
+check('a renamed row exposes the full custom name and original prompt in its tooltip', () => {
   const html = sessionRow(sess({ key: 'k5', prompt: 'do the thing' }), 'Dev', { names: { k5: 'release branch' } });
-  assert.match(html, /<b title="do the thing">release branch<\/b>/,
-    'the renamed title should carry a title attribute with the original prompt');
+  assert.match(html, /<b title="release branch\nOriginal prompt: do the thing">release branch<\/b>/);
+  const longName = 'A long custom session name '.repeat(4);
+  const long = sessionRow(sess({ key: 'k5', prompt: 'original' }), 'Dev', { names: { k5: longName } });
+  assert.ok(long.includes(`title="${longName.trim()}\nOriginal prompt: original"`));
+  assert.ok(long.includes(`>${longName.trim().slice(0, 70)}</b>`));
 });
 
-check('an un-renamed row carries no title on its title element', () => {
+check('an un-renamed row exposes the full prompt in its title tooltip', () => {
   const html = sessionRow(sess({ key: 'k6', prompt: 'do the thing' }), 'Dev', {});
-  assert.match(html, /<b>do the thing<\/b>/);
+  assert.match(html, /<b title="do the thing">do the thing<\/b>/);
 });
 
 check('a malicious custom name renders as inert text, never a live tag', () => {
@@ -832,8 +835,8 @@ check('a malicious custom name renders as inert text, never a live tag', () => {
 check('a malicious raw prompt in the renamed tooltip renders as inert text', () => {
   const xss = '<img src=x onerror=alert(1)>';
   const html = sessionRow(sess({ key: 'k6c', prompt: xss }), 'Dev', { names: { k6c: 'release branch' } });
-  assert.ok(!html.includes(`title="${xss}"`), 'the raw payload must not appear unescaped in the tooltip');
-  assert.ok(html.includes('title="&lt;img src=x onerror=alert(1)&gt;"'));
+  assert.ok(!html.includes(xss), 'the raw payload must not appear unescaped in the tooltip');
+  assert.ok(html.includes('title="release branch\nOriginal prompt: &lt;img src=x onerror=alert(1)&gt;"'));
 });
 
 check('every row carries a ⋯ button keyed to its own session', () => {

@@ -178,8 +178,28 @@ class DispatchTracker {
    * refreshing that exact run the same way an already-bound record always
    * does.
    */
-  async listWithStatus(userKey, githubApp) {
-    const recs = this.list(userKey);
+  async listWithStatus(userKey, githubApp, scope = {}) {
+    let recs = this.list(userKey);
+    // `scope` is what `GET /api/aca/dispatches` passes: the verified GitHub
+    // account that made each dispatch, and a per-repository re-check that it
+    // may still see it. The partition (`userKey`) is NOT enough -- the owner
+    // list folds several GitHub identities into one -- so a record is shown
+    // only to the account that dispatched it, and only while that account
+    // still has access to the repository. Omitted, nothing is filtered: that
+    // is for callers with no GitHub identity to filter by (a unit test).
+    if (scope.actorId !== undefined) {
+      recs = scope.actorId == null ? [] : recs.filter((r) => r.actorId === scope.actorId);
+    }
+    if (scope.authorizeRepo && recs.length) {
+      const verdicts = new Map();
+      const kept = [];
+      for (const r of recs) {
+        const k = `${r.owner}/${r.repo}`.toLowerCase();
+        if (!verdicts.has(k)) verdicts.set(k, await scope.authorizeRepo(r));
+        if (verdicts.get(k)) kept.push(r);
+      }
+      recs = kept;
+    }
     const boundElsewhere = this._allBoundRunIds();
     const mine = new Set(recs.map((r) => r.id));
     const statusById = new Map();

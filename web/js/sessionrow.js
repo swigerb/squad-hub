@@ -28,7 +28,9 @@ export function sessionRow(s, deviceName, opts = {}) {
   // A rename (#170) replaces the title; the prompt stays one hover away via
   // `title` below (the mockup's "visible as a subtitle or tooltip").
   const renamed = displayTitle(s, opts.names) !== (s.prompt || s.id || '');
-  const title = displayTitle(s, opts.names).slice(0, 70);
+  const fullTitle = displayTitle(s, opts.names);
+  const title = fullTitle.slice(0, 70);
+  const titleTip = renamed ? `${fullTitle}\nOriginal prompt: ${s.prompt || s.id || ''}` : fullTitle;
   const sq = s.squad;
   const sel = s.agentSelection;
   const git = s.git;
@@ -104,7 +106,7 @@ export function sessionRow(s, deviceName, opts = {}) {
       ${statusBadge(s, device)}
       <div class="row-main">
         <div class="row-title">
-          <b${renamed ? ` title="${esc(s.prompt || s.id || '')}"` : ''}>${esc(title)}</b>
+          <b title="${esc(titleTip)}">${esc(title)}</b>
           <span class="activity">${esc(activityLine(s, device))}</span>
         </div>
         <div class="row-meta">${meta}</div>

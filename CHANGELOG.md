@@ -3,6 +3,82 @@
 All notable changes to Squad Hub are documented here. Dates are when a version
 was published to npm, not when a change merged — see [docs/releasing.md](docs/releasing.md).
 
+## [0.7.1] - Unreleased
+
+Not yet published to npm. As with every release, the date above is replaced
+with the actual npm publication date only after `squad-hub@0.7.1` and
+`@mightybs/squad-hub@0.7.1` are published. Changes since the published 0.7.0.
+
+Operational acceptance is still pending and is not completed by this release
+preparation: production Hub-to-ACA acceptance (#238) and installed desktop and
+phone closed-app Web Push acceptance (#239). Tracking issues #188 and #189 also
+remain open. Unit, browser and screenshot checks are not operational acceptance.
+
+### Security
+
+- **Squad on ACA authorizes every repository per signed-in GitHub user**
+  (issue #258). The hub no longer lists or dispatches on every repository the
+  GitHub App is installed on for any signed-in user. It intersects the App
+  installation with the signed-in GitHub account's own write (or maintain/admin)
+  access, enforced on the server on every request, and fails closed when GitHub
+  cannot answer. Only a GitHub sign-in can use the ACA routes. Tracked
+  dispatches are scoped to the account that started them. A repository-list
+  failure answers a fixed generic error that names no repository. See
+  [docs/aca.md](docs/aca.md) and [docs/security.md](docs/security.md).
+
+### Fixed
+
+- **Connecting from Local machines registers a local device**.
+  `squad-hub connect` kept a device's previously saved kind, so a machine whose
+  saved kind was `cloud` stayed under Cloud devices when connected from Local
+  machines. `squad-hub connect --device-kind local|cloud` now sets the kind
+  explicitly. The **+** beside Local machines and Cloud devices in the web Hub
+  puts the matching option into the command it shows, and the generic
+  **Connect a device** command carries none, so an existing kind is preserved.
+  A malformed or unknown value is refused before the network, the config or the
+  daemon is touched, and a kind change follows the existing `--force` guard for
+  live sessions and the rollback on a failed attach. The kind is device
+  configuration, not something the token grants. **This needs `squad-hub` 0.7.1
+  or newer on the device**: 0.7.0 and older ignore the option and keep the saved
+  kind, so update the CLI first. See
+  [docs/commands.md](docs/commands.md#where-the-device-is-listed---device-kind).
+- **Device and session status is clearer about its evidence** (issue #259).
+  The rail separates live evidence from stale and dispatch-only status, counts
+  and service grouping (Ralph and the issue watcher are services, not ACA runs)
+  say what they measure, and long renamed titles and infrastructure names are
+  shown in full instead of being cut off. Tool activity labels no longer repeat
+  the "Running" prefix in local, watched-session or older-device displays.
+
+### Changed
+
+- **New ACA job and New session choose from what the target reports** (issue
+  #257). Repository, base branch, existing issue, model and reviewer in the New
+  ACA job dialog are pickers over the selected repository's own values, and typed
+  text is only a search. New session Agent and Model are closed lists of what the
+  selected device reported. The hub also refuses an unsupported branch, issue,
+  model, reviewer, agent or mode with a `422` before any side effect, through the
+  new authorized `GET /api/aca/choices`, `/api/aca/branches` and
+  `/api/aca/issues`. See [docs/aca.md](docs/aca.md#choosing-not-typing-257) and
+  [docs/api.md](docs/api.md).
+
+### Testing
+
+- **A risk-based acceptance runner** (`npm run test:candidate`,
+  `npm run test:exhaustive`) selects the mutations that bear on what changed,
+  schedules them by cost with shared baselines and progress reporting, and runs
+  standalone owner suites and named browser scenarios. A candidate-scope workflow
+  runs on ordinary pull requests. See [docs/README.md](docs/README.md#how-this-is-tested).
+- **Documented coverage gap.** The synthetic Git-repository policy test suite was
+  removed because its generated fixture was blocked by endpoint protection. Its 35
+  policy regression cases are not covered by the remaining suite and must not be
+  reported as passed.
+
+### Documentation
+
+- The README, architecture diagram and screenshots were refreshed, and the
+  release procedure records that 0.7.0 is already published and its tag must not
+  move. See [docs/releasing.md](docs/releasing.md).
+
 ## [0.7.0] - 2026-10-12
 
 Published to npm as `squad-hub@0.7.0` and `@mightybs/squad-hub@0.7.0` from
@@ -291,5 +367,6 @@ gets it by installing the new version.
   generated `.github/workflows/squad-*.yml` workflows, including the
   `Squad Release` workflow whose test step ran no tests (see 0.7.0, above).
 
+[0.7.1]: https://github.com/swigerb/squad-hub/compare/v0.7.0...main
 [0.7.0]: https://github.com/swigerb/squad-hub/compare/v0.6.0...main
 [0.6.0]: https://github.com/swigerb/squad-hub/releases/tag/v0.6.0

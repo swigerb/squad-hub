@@ -30,6 +30,7 @@
  * one of them.
  */
 const { STATUS, extractPaths, isReadOnlyCommand } = require('./acp-session');
+const { runningActivity } = require('./session-status');
 
 /**
  * Turn Copilot's `preToolUse` arguments into something a person can decide on.
@@ -339,7 +340,7 @@ class TuiSession {
     this.toolCallCount += 1;
     this.status = STATUS.ACTIVE;
     this._note({ kind: 'tool', text: toolName ? `ran ${toolName}` : 'ran a tool' });
-    this.touch(toolName ? `Running ${toolName}` : 'Running a tool');
+    this.touch(runningActivity(toolName, 'Running a tool'));
   }
 
   /** The agent finished a turn and is waiting for the human again. */

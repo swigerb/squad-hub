@@ -24,6 +24,38 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const browserScenarios = require('./helpers/browser-scenarios');
+
+/**
+ * Which journey this process runs.
+ *
+ * With no argument it runs the whole suite, exactly as before. With
+ * `--scenario <id>` it runs only that scenario's journey (see
+ * test/helpers/browser-scenarios.js): every check outside the scenario is not
+ * executed at all, so its browser interactions never happen, and the checks the
+ * scenario builds on run first, in file order, with their ordinary RESULT lines.
+ * A selector that cannot be honoured exits nonzero before anything starts.
+ */
+const selection = browserScenarios.parseSelection(process.argv.slice(2));
+if (selection.error) {
+  console.log(`ERROR: ${selection.error}`);
+  console.log('usage: node test/browser-e2e-unit.js [--scenario <id> | --list-scenarios]');
+  process.exit(2);
+}
+if (selection.list) {
+  console.log(JSON.stringify(browserScenarios.SCENARIOS.map((s) => ({
+    id: s.id, summary: s.summary, titles: s.titles, alsoRuns: s.alsoRuns,
+  })), null, 2));
+  process.exit(0);
+}
+const scenario = selection.scenario;
+const scenarioTitles = scenario ? new Set(browserScenarios.titlesToRun(scenario)) : null;
+/** Whether this process runs the check titled `name`. */
+const scenarioRuns = (name) => !scenarioTitles || scenarioTitles.has(name);
+const scenarioRan = new Map();
+/** The scenarios whose first check expects the main page already on the controls (no navigation of its own). */
+const CONTROLS_PAGE_SCENARIOS = ['list-controls', 'new-menu', 'tidy-and-forget', 'device-removal',
+  'bell-and-account-menu', 'rail-and-aca-card', 'keyword-and-keyboard'];
 
 let chromium = null;
 try { ({ chromium } = require('playwright')); } catch { /* optional */ }
@@ -56,6 +88,31 @@ const { privateKey: ACA_FAKE_KEY_OBJ } = crypto.generateKeyPairSync('rsa', { mod
 const ACA_FAKE_PRIVATE_KEY_PEM = ACA_FAKE_KEY_OBJ.export({ type: 'pkcs1', format: 'pem' });
 
 /**
+ * The signed-in GitHub account every ACA flow below runs as (#258).
+ *
+ * `/api/aca/*` only answers a session the hub verified as a GitHub account, so
+ * these flows sign in through the real Authenticator in its GitHub mode, against
+ * a stand-in for `GET /user` -- the same seam test/github-auth-unit.js uses. A
+ * dev token is not a substitute: it can claim any identity, so the hub refuses
+ * it here by design (see "refuses a dev session" in test/github-app-unit.js).
+ */
+const ACA_USER = { login: 'aca-tester', id: 5150 };
+const ACA_OWNER_SUBJECT = subjectKey('owner', 'squad-hub');
+
+function acaGitHubAuth(tag) {
+  const token = `gho_e2e_${tag}`;
+  const auth = new Authenticator({
+    mode: MODES.GITHUB,
+    owner: [ACA_USER.login],
+    githubFetch: async (presented) => {
+      if (presented !== token) throw Object.assign(new Error('GitHub returned 401'), { status: 401 });
+      return { id: ACA_USER.id, login: ACA_USER.login, email: null };
+    },
+  });
+  return { auth, token };
+}
+
+/**
  * The smallest possible stand-in for api.github.com that `GitHubApp` and the
  * `/api/aca/*` routes need to answer `GET /api/aca/repos` and
  * `GET /api/aca/dispatches` for exactly one installed repo with one recent
@@ -78,6 +135,13 @@ function acaFakeGitHubServer() {
       }
       if (/^\/app\/installations\/\d+\/access_tokens$/.test(req.url) && req.method === 'POST') {
         return json(201, { token: 'ghs_fake_aca_card', expires_at: new Date(Date.now() + 3600000).toISOString() });
+      }
+      // #258: the hub asks GitHub whether the SIGNED-IN account may use the
+      // repository, by its numeric id. This account has write access.
+      if (req.url === `/repos/acme/widgets/collaborators/${ACA_USER.login}/permission`) {
+        return json(200, {
+          permission: 'write', role_name: 'write', user: { id: ACA_USER.id, login: ACA_USER.login },
+        });
       }
       if (req.url.startsWith('/installation/repositories')) {
         return json(200, { repositories: [{ full_name: 'acme/widgets', default_branch: 'main' }] });
@@ -107,6 +171,8 @@ function listen(server) {
 let pass = 0; let fail = 0;
 let browserForChecks = null;
 async function check(name, fn) {
+  if (!scenarioRuns(name)) return;
+  scenarioRan.set(name, (scenarioRan.get(name) || 0) + 1);
   const pages = () => browserForChecks ? browserForChecks.contexts().flatMap((c) => c.pages()) : [];
   const dialogs = new Map(pages().map((p) => [p, p.listeners('dialog')]));
   try {
@@ -315,7 +381,26 @@ async function watchCsp(pg) {
  */
 function fakeInlineGithubApp({
   dispatchShouldFail = false, runState = 'queued', correlationSupported = true, declaredInputs = null, failAfterIssue = 0,
+  catalog = {}, otherRepos = {},
 } = {}) {
+  // What each repository's own configuration, branches and issues hold. Many
+  // more branches and issues than one page, so a search has to reach past it.
+  const pad = (n) => String(n).padStart(3, '0');
+  const baseCatalog = () => ({
+    defaultBranch: 'main',
+    branches: ['main', 'release', ...Array.from({ length: 150 }, (_, i) => `feature/branch-${pad(i + 1)}`)],
+    issues: [
+      { number: 7, title: 'Fix the docs' }, { number: 12, title: 'Add retries' },
+      ...Array.from({ length: 60 }, (_, i) => ({ number: 200 + i, title: `Backlog item ${i + 1}` })),
+    ],
+    model: { state: 'ok', source: 'repository-config', default: 'a-model', choices: [{ id: 'a-model' }, { id: 'b-model' }] },
+    reviewer: { state: 'ok', source: 'casting-registry', default: null, choices: [{ id: 'someone' }, { id: 'lead' }] },
+  });
+  const catalogs = new Map([['acme/widgets', { ...baseCatalog(), ...catalog }]]);
+  for (const [name, own] of Object.entries(otherRepos)) catalogs.set(name, { ...baseCatalog(), ...own });
+  const catalogOf = (t) => catalogs.get(`${t.owner}/${t.repo}`) || baseCatalog();
+  const PAGE = 30;
+  const paged = (all, page) => ({ slice: all.slice((page - 1) * PAGE, page * PAGE), nextPage: page * PAGE < all.length ? page + 1 : null });
   const runs = [];
   const issues = [];
   const dispatchRequests = [];
@@ -335,10 +420,35 @@ function fakeInlineGithubApp({
     /** Every request `dispatch()` accepted, as `HubService` handed it over. */
     dispatchRequests,
     issues,
+    // The real `GitHubApp` filters to what the verified account may use and
+    // re-checks on every dispatch; this answers "yes" for the one repo it knows.
+    async authorizeRepoAccess() { return { allowed: true }; },
     async listReposWithDispatchStatus() {
-      return [{
-        fullName: 'acme/widgets', owner: 'acme', repo: 'widgets', hasDispatchWorkflow: true, declaredInputs,
-      }];
+      return [...catalogs.keys()].map((fullName) => ({
+        fullName, owner: fullName.split('/')[0], repo: fullName.split('/')[1], hasDispatchWorkflow: true, declaredInputs,
+      }));
+    },
+    /** What the real `GitHubApp` serves for the New ACA job dialog's pickers (#257). */
+    async listDispatchChoices(target) {
+      const c = catalogOf(target);
+      return {
+        repo: `${target.owner}/${target.repo}`,
+        defaultBranch: c.defaultBranch,
+        workflow: { exists: true, declaredInputs },
+        model: c.model,
+        reviewer: c.reviewer,
+      };
+    },
+    async listBranchChoices(target, actor, { q = '', page = 1 } = {}) {
+      const hits = catalogOf(target).branches.filter((b) => b.toLowerCase().includes(q.toLowerCase()));
+      const { slice, nextPage } = paged(hits, page);
+      return { branches: slice.map((name) => ({ name })), nextPage };
+    },
+    async listIssueChoices(target, actor, { q = '', page = 1 } = {}) {
+      const hits = catalogOf(target).issues.filter((i) => (!q || String(i.number) === q.replace(/^#/, '')
+        || i.title.toLowerCase().includes(q.toLowerCase())));
+      const { slice, nextPage } = paged(hits, page);
+      return { issues: slice, nextPage };
     },
     async findInstallation(owner, repo) {
       return { installationId: 1, owner, repo };
@@ -354,6 +464,23 @@ function fakeInlineGithubApp({
           err.status = 422;
           throw err;
         }
+      }
+      // Like the real one: an explicit value the target does not offer is refused
+      // BEFORE anything is created or dispatched.
+      const own = catalogOf(request);
+      const refuse = (field, what) => {
+        const err = new Error(`${what} is not offered by ${owner}/${repo}`);
+        err.status = 422;
+        err.field = field;
+        throw err;
+      };
+      if (request.baseBranch && !own.branches.includes(request.baseBranch)) refuse('baseBranch', `branch "${request.baseBranch}"`);
+      if (request.issue != null && !own.issues.some((i) => i.number === request.issue) && !issues.some((i) => i.number === request.issue)) {
+        refuse('issue', `issue #${request.issue}`);
+      }
+      for (const field of ['model', 'reviewer']) {
+        const spec = own[field];
+        if (request[field] && !(spec.state === 'ok' && spec.choices.some((c) => c.id === request[field]))) refuse(field, `${field} "${request[field]}"`);
       }
       dispatchRequests.push(request);
       if (dispatchRequests.length <= failAfterIssue) {
@@ -415,12 +542,12 @@ const ACA_EXEC_2 = 'squad-hub-job-m4r8t1w';
  * every `/api/aca/*` request the page makes.
  */
 async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
-  const auth = new Authenticator({ mode: MODES.DEV, devSecret: `aca-${tag}`, deviceSecret: `aca-${tag}-dev` });
+  const { auth, token } = acaGitHubAuth(tag);
   const app = fakeInlineGithubApp(appOptions);
   const svc = new HubService({ auth, serveWeb: true, githubApp: app, persistStore: false });
   const addr = await svc.listen(0, '127.0.0.1');
   const origin = `http://127.0.0.1:${addr.port}`;
-  const subject = subjectKey(`t-${tag}`, `u-${tag}`);
+  const subject = ACA_OWNER_SUBJECT;
   const page = await browser.newPage();
   if (controlClock) await page.clock.install();
   const errors = [];
@@ -431,12 +558,28 @@ async function acaHub(browser, tag, appOptions, { controlClock = false } = {}) {
     calls.push({ method: route.request().method(), url: route.request().url(), body: route.request().postData() });
     route.continue();
   });
-  await gotoSettled(page, `${origin}/?token=${auth.mintDevToken(`t-${tag}`, `u-${tag}`, `${tag} tester`)}`);
+  await gotoSettled(page, `${origin}/?token=${token}`);
   await page.waitForSelector('#who', { timeout: 15000 });
   return {
-    svc, app, page, origin, subject, errors, calls,
+    svc, app, page, origin, subject, errors, calls, token,
     async close() { await page.close(); await svc.close(); },
   };
+}
+
+/**
+ * Choose from one of the dialog's searchable pickers the way a person does:
+ * type to search, then pick. An exact value is chosen for them once the search
+ * answers; otherwise the matching row is clicked. Returns when it is CHOSEN
+ * (`data-value`), never merely typed.
+ */
+async function pickCombo(page, sel, text, match) {
+  await page.fill(sel, text);
+  // The rows of the previous search stay up while the new one loads; wait for it to answer.
+  await page.waitForFunction((s) => !/Loading/.test(document.querySelector(s).closest('.combo').nextElementSibling.textContent), sel, { timeout: 10000 });
+  await page.waitForSelector(`${sel}[data-value], ${sel} ~ .combo-list:not([hidden]) [role="option"]`, { timeout: 10000 });
+  if (await page.locator(`${sel}[data-value]`).count()) return;
+  await page.locator(`${sel} ~ .combo-list [role="option"]`).filter({ hasText: match || text }).first().click();
+  await page.waitForSelector(`${sel}[data-value]`, { timeout: 5000 });
 }
 
 /** One job through the real dialog -- a deliberate click, as a person would. */
@@ -445,7 +588,7 @@ async function dispatchAcaJob(page, prompt) {
   await page.click('[data-new="aca"]');
   await page.waitForSelector('#acaScrim:not([hidden])', { timeout: 5000 });
   await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-  await page.fill('#acaRepo', 'acme/widgets');
+  await pickCombo(page, '#acaRepo', 'acme/widgets');
   await page.fill('#acaPrompt', prompt);
   await page.click('#acaStart');
   await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
@@ -698,6 +841,124 @@ function railFacts(page) {
       await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
       await page.click('#cnCancel');
       await page.click('[data-scope="all"]');
+    });
+
+    // ---- the device kind a Connect dialog asks for ---------------------------
+    //
+    // The defect: every "+" and Connect link opened the same dialog, so a
+    // person who chose Local machines got a command that could not say so, and
+    // a machine whose saved kind was cloud stayed under Cloud devices.
+    const openFrom = (sel) => page.$eval(sel, (el) => el.click());
+    const mintCommand = async () => {
+      await page.click('#cnCreate');
+      await page.waitForSelector('#cnResult:not([hidden])', { timeout: 10000 });
+      return page.textContent('#cnCmd');
+    };
+    await check('the Connect dialog carries the Local or Cloud choice into its command, and a generic open carries none', async () => {
+      await openFrom('#deviceList [data-sec="cloud"] [data-action="connect-device"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      assert.match(await page.textContent('#cnKindNote'), /cloud device/i);
+      await page.fill('#cnLabel', 'kept label');
+      assert.match(await mintCommand(), / --device-kind cloud(?: |$)/, 'the Cloud devices + did not ask for a cloud device');
+
+      // Reopened from the other section without closing: the new intent wins and
+      // nothing else in the dialog is reset.
+      await openFrom('#deviceList [data-sec="local"] [data-action="connect-device"]');
+      assert.match(await page.textContent('#cnKindNote'), /local machine/i);
+      assert.strictEqual(await page.inputValue('#cnLabel'), 'kept label', 'reopening reset the device name');
+      assert.strictEqual(await page.isVisible('#cnResult'), false, 'the previous command stayed on screen');
+      const local = await mintCommand();
+      assert.match(local, / --device-kind local(?: |$)/, 'the Local machines + did not ask for a local device');
+      assert.doesNotMatch(local, /--device-kind cloud/);
+
+      // Reopened with no choice while still open (+ New, with nothing online):
+      // the Local intent must not linger into the generic dialog.
+      await openFrom('#newBtn');
+      assert.strictEqual(await page.isVisible('#cnKindNote'), false, 'a generic reopen kept the previous kind note');
+      assert.doesNotMatch(await mintCommand(), /--device-kind/, 'a generic reopen inherited the previous kind');
+      await page.click('#cnCancel');
+
+      // The Local and Cloud empty states.
+      await page.click('[data-scope="cloud"]');
+      await page.waitForSelector('#empty:not([hidden])', { timeout: 5000 });
+      await openFrom('#empty [data-action="connect-device"]');
+      assert.match(await mintCommand(), / --device-kind cloud(?: |$)/, 'the empty Cloud tab did not ask for a cloud device');
+      await page.click('#cnCancel');
+      await page.click('[data-scope="local"]');
+      await openFrom('#empty [data-action="connect-device"]');
+      assert.match(await mintCommand(), / --device-kind local(?: |$)/, 'the empty Local tab did not ask for a local device');
+      await page.click('#cnCancel');
+      await page.click('[data-scope="all"]');
+
+      // The account menu chooses nothing, so it must not inherit the last intent.
+      await page.click('#menuBtn');
+      await page.click('[data-menu="connect"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      assert.strictEqual(await page.isVisible('#cnKindNote'), false, 'the generic dialog still shows a kind');
+      const generic = await mintCommand();
+      assert.doesNotMatch(generic, /--device-kind/, 'the generic Connect a device inherited a stale kind');
+      assert.match(generic, /^squad-hub connect --hub \S+ --token sqhd1\./);
+      await page.click('#cnCancel');
+    });
+
+    await check('a token response that lands after the dialog was reopened never renders a command for the old intent', async () => {
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      await page.route('**/api/device-tokens', async (route) => {
+        if (route.request().method() === 'POST') await gate;
+        await route.continue();
+      });
+      try {
+        await openFrom('#deviceList [data-sec="cloud"] [data-action="connect-device"]');
+        await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+        const before = await page.textContent('#cnCmd');
+        await page.click('#cnCreate');
+        await page.click('#cnCancel');
+        await openFrom('#deviceList [data-sec="local"] [data-action="connect-device"]');
+        release();
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 600)));
+        assert.strictEqual(await page.isVisible('#cnResult'), false, 'a stale response rendered into the reopened dialog');
+        assert.strictEqual(await page.textContent('#cnCmd'), before, 'a stale response rewrote the command');
+        assert.strictEqual(await page.textContent('#cnCreate'), 'Create token', 'the reopened dialog kept the old request\'s busy state');
+      } finally {
+        release();
+        await page.unroute('**/api/device-tokens');
+      }
+      assert.match(await mintCommand(), / --device-kind local(?: |$)/, 'the reopened Local dialog did not ask for a local device');
+      await page.click('#cnCancel');
+    });
+
+    await check('the Connect dialog turns each file-access and track-all box into its own flag', async () => {
+      const flagsOf = async () => {
+        // The result panel stays open between mints, so clear the command first
+        // and wait for the new one rather than reading the previous token's.
+        await page.evaluate(() => { document.getElementById('cnCmd').textContent = ''; });
+        await page.click('#cnCreate');
+        await page.waitForFunction(() => document.getElementById('cnCmd').textContent.startsWith('squad-hub connect'), null, { timeout: 10000 });
+        return ((await page.textContent('#cnCmd')).split(/--token \S+/)[1] || '').trim();
+      };
+      await openFrom('#deviceList [data-sec="local"] [data-action="connect-device"]');
+      await page.waitForSelector('#connectScrim:not([hidden])', { timeout: 5000 });
+      try {
+        assert.strictEqual(await flagsOf(), '--device-kind local', 'an untouched dialog added a flag');
+        await page.check('#cnFiles');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files', 'the working-directory box did not reach the command');
+        await page.check('#cnFilesAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files-all', '"anywhere" must replace --allow-files, not join it');
+        await page.uncheck('#cnFilesAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files', 'clearing "anywhere" did not fall back to --allow-files');
+        await page.uncheck('#cnFiles');
+        await page.check('#cnTrackAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --track-all', 'the track-all box did not reach the command, or needed file access');
+        await page.check('#cnFiles');
+        await page.check('#cnFilesAll');
+        assert.strictEqual(await flagsOf(), '--device-kind local --allow-files-all --track-all');
+      } finally {
+        if (await page.isChecked('#cnFilesAll')) await page.uncheck('#cnFilesAll');
+        if (await page.isChecked('#cnFiles')) await page.uncheck('#cnFiles');
+        if (await page.isChecked('#cnTrackAll')) await page.uncheck('#cnTrackAll');
+        await page.click('#cnCancel');
+      }
     });
 
     // ---- minting a device token through the UI ---------------------------
@@ -1096,8 +1357,12 @@ function railFacts(page) {
     // name the browser used to provide for free, and every one of those is a
     // thing that can silently stop working.
     // -----------------------------------------------------------------------
-    await gotoSettled(page, `${origin}/?token=${userToken}`);
-    await page.waitForSelector('.selectpill', { timeout: 10000 });
+    // Outside any check, so a scenario that does not own the controls below must
+    // not pay for it (or depend on it): see browser-scenarios.js.
+    if (!scenario || CONTROLS_PAGE_SCENARIOS.includes(scenario.id)) {
+      await gotoSettled(page, `${origin}/?token=${userToken}`);
+      await page.waitForSelector('.selectpill', { timeout: 10000 });
+    }
 
     await check('a dropdown opens on click and lists exactly the VISIBLE options its select holds', async () => {
       await page.click('#statusFilter >> xpath=..');
@@ -1802,8 +2067,11 @@ function railFacts(page) {
     });
 
     await check('a collapsed section stays collapsed across a reload (#172)', async () => {
-      const sec = await page.$('[data-sec="local"]');
-      assert.ok(sec, 'no Local machines section header to collapse');
+      const sec = page.locator('[data-sec="local"]');
+      assert.strictEqual(await sec.count(), 1, 'no Local machines section header to collapse');
+      // The roster rebuilds its section headers on every render, so a handle taken
+      // now would be detached by the click; the locator resolves a fresh header.
+      await page.evaluate(async () => { (await import('/js/devices.js')).render(); });
       await sec.click();
       await until(async () => (await page.getAttribute('[data-sec="local"]', 'aria-expanded')) === 'false',
         'the Local machines section to collapse');
@@ -1845,12 +2113,16 @@ function railFacts(page) {
       const off = await page.evaluate(() => {
         window.__squadHubTest.setConn('offline');
         const c = document.getElementById('conn');
-        return { text: c.textContent.trim(), title: c.title };
+        const note = document.getElementById('connectionNote');
+        return { text: c.textContent.trim(), title: c.title, note: note.textContent, noteHidden: note.hidden };
       });
       assert.match(off.text, /unreachable/i, 'a broken feed must say so in words');
-      assert.match(off.title, /unaffected|keep running/i,
-        'the obvious fear on seeing a red badge is that the work stopped');
+      assert.match(off.title, /not confirmed/i,
+        'a disconnected page cannot confirm that the worker is still running');
+      assert.strictEqual(off.noteHidden, false, 'stale-state warning must be visible outside the list-only status dot');
+      assert.match(off.note, /out of date/i);
       await page.evaluate(() => window.__squadHubTest.setConn('live'));
+      assert.strictEqual(await page.locator('#connectionNote').isVisible(), false);
     });
 
     await check('no list control is left opening the operating system popup', async () => {
@@ -1919,9 +2191,8 @@ function railFacts(page) {
        * which is confidently wrong: the person IS signed in, and it sends them
        * hunting for a credential problem that does not exist.
        *
-       * The reassurance is not padding either. The natural fear on seeing a
-       * dashboard fail is that the work it was watching has failed too, and
-       * here that is precisely backwards.
+       * Losing the dashboard proves neither failure nor success of the work
+       * on a device. The message must distinguish those facts.
        */
       await page.context().setOffline(true);
       try {
@@ -1932,8 +2203,9 @@ function railFacts(page) {
           'an unreachable hub was reported as a credential problem');
         assert.match(text, /can.?t reach the hub/i);
         assert.match(text, /still signed in/i);
-        assert.match(text, /sessions are unaffected/i,
-          'a failing dashboard must say the work it watches is still running');
+        assert.match(text, /sessions run on your devices/i);
+        assert.match(text, /current status cannot be confirmed/i);
+        assert.doesNotMatch(text, /sessions are unaffected/i);
       } finally {
         await page.context().setOffline(false);
         // Coming back online is not instantaneous: `setOffline(false)` resolves
@@ -4009,13 +4281,19 @@ function railFacts(page) {
       let release = null;
       const gate = new Promise((resolve) => { release = resolve; });
       const approveUrl = /\/api\/devices\/[^/]+\/approve$/;
+      let unrouted = false;
       await page.route(approveUrl, async (route) => {
         posts.push(route.request().postDataJSON());
         await gate;
-        await route.fulfill({
-          status: 502, contentType: 'application/json',
-          body: JSON.stringify({ error: 'the device did not accept the answer' }),
-        });
+        try {
+          await route.fulfill({
+            status: 502, contentType: 'application/json',
+            body: JSON.stringify({ error: 'the device did not accept the answer' }),
+          });
+        } catch (e) {
+          // Teardown can handle this route before the released handler fulfills it.
+          if (!unrouted || !/Route is already handled!?$/.test(String(e.message))) throw e;
+        }
       });
       try {
         await page.click('#dtApprovals [data-answer="allow_once"]');
@@ -4041,6 +4319,7 @@ function railFacts(page) {
         await until(async () => /Could not answer: the device did not accept the answer/.test(
           await page.textContent('#dtApprovals .dt-appr-note').catch(() => '')), 'the refusal to be reported on the card');
       } finally {
+        unrouted = true;
         release();
         await page.unroute(approveUrl);
       }
@@ -4521,7 +4800,7 @@ function railFacts(page) {
         assert.deepStrictEqual(dispatchPostsBeforeStart, [],
           `/api/aca/dispatch was POSTed before #acaStart was ever clicked: ${JSON.stringify(dispatchPostsBeforeStart)}`);
 
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs and open a pull request');
         await page.click('#acaStart');
         await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
@@ -4834,12 +5113,11 @@ function railFacts(page) {
     });
 
     await check('a dispatch that fails upstream shows the error and adds no pending row (#178)', async () => {
-      const authFail = new Authenticator({ mode: MODES.DEV, devSecret: 'aca-fail', deviceSecret: 'aca-fail-dev' });
+      const { auth: authFail, token: tokenFail } = acaGitHubAuth('fail');
       const githubAppFail = fakeInlineGithubApp({ dispatchShouldFail: true });
       const svcFail = new HubService({ auth: authFail, serveWeb: true, githubApp: githubAppFail });
       const addrFail = await svcFail.listen(0, '127.0.0.1');
       const originFail = `http://127.0.0.1:${addrFail.port}`;
-      const tokenFail = authFail.mintDevToken('t-fail', 'u-fail', 'fail tester');
       const pageFail = await browser.newPage();
       try {
         await gotoSettled(pageFail, `${originFail}/?token=${tokenFail}`);
@@ -4847,7 +5125,7 @@ function railFacts(page) {
         await pageFail.click('#newMoreBtn');
         await pageFail.click('[data-new="aca"]');
         await pageFail.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await pageFail.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(pageFail, '#acaRepo', 'acme/widgets');
         await pageFail.fill('#acaPrompt', 'Update the docs and open a pull request');
         await pageFail.click('#acaStart');
         await pageFail.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
@@ -4872,16 +5150,16 @@ function railFacts(page) {
       await page.click('#newMoreBtn');
       await page.click('[data-new="aca"]');
       await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-      await page.fill('#acaRepo', 'acme/widgets');
+      await pickCombo(page, '#acaRepo', 'acme/widgets');
       await page.fill('#acaPrompt', 'Update the docs');
-      await page.fill('#acaBranch', 'release');
-      await page.fill('#acaModel', 'a-model');
-      await page.fill('#acaReviewer', 'someone');
+      await pickCombo(page, '#acaBranch', 'release');
+      await page.selectOption('#acaModel', 'a-model');
+      await page.selectOption('#acaReviewer', 'someone');
       await page.uncheck('#acaPublishPr');
       await page.check('#acaWatchOnly');
       if (mode === 'existing') {
         await page.check('#acaIssueModeExisting');
-        await page.fill('#acaIssueNumber', '7');
+        await pickCombo(page, '#acaIssueNumber', '7', '#7 ');
       }
       await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
         null, { timeout: 10000 });
@@ -4907,7 +5185,8 @@ function railFacts(page) {
         assert.strictEqual(await page.getAttribute('#acaErr a', 'href'), `https://github.com/acme/widgets/issues/${issueN}`);
         assert.ok(!(await page.evaluate(() => document.getElementById('acaScrim').hidden)), 'the dialog closed on a failed dispatch');
         assert.strictEqual(await page.isChecked('#acaIssueModeExisting'), true, 'the form stayed in New-issue mode');
-        assert.strictEqual(await page.inputValue('#acaIssueNumber'), String(issueN));
+        assert.strictEqual(await page.inputValue('#acaIssueNumber'), `#${issueN}`);
+        assert.strictEqual(await page.getAttribute('#acaIssueNumber', 'data-value'), String(issueN));
         assert.ok(await page.isVisible('#acaExistingIssueFields'), 'the Existing-issue fields are hidden');
         assert.ok(await page.isHidden('#acaNewIssueFields'), 'the New-issue fields are still shown');
         assert.strictEqual(await page.inputValue('#acaPrompt'), 'Update the docs');
@@ -4944,7 +5223,7 @@ function railFacts(page) {
         assert.doesNotMatch(err, /already created/, `an Existing-issue failure claimed a creation: ${err}`);
         assert.strictEqual(await page.locator('#acaErr a').count(), 0);
         assert.strictEqual(hub.app.issues.length, 0);
-        assert.strictEqual(await page.inputValue('#acaIssueNumber'), '7');
+        assert.strictEqual(await page.getAttribute('#acaIssueNumber', 'data-value'), '7');
         assert.strictEqual(dispatchPosts(hub)[0].issue, 7);
       } finally {
         await hub.close();
@@ -4957,7 +5236,7 @@ function railFacts(page) {
         await page.click('#newMoreBtn');
         await page.click('[data-new="aca"]');
         await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs and open a pull request');
         // Start must not be clicked before the repository list has told the
         // dialog what the workflow declares.
@@ -5005,7 +5284,7 @@ function railFacts(page) {
         await page.click('#newMoreBtn');
         await page.click('[data-new="aca"]');
         await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs');
         await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
           null, { timeout: 10000 });
@@ -5032,7 +5311,7 @@ function railFacts(page) {
         await page.click('#newMoreBtn');
         await page.click('[data-new="aca"]');
         await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
-        await page.fill('#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
         await page.fill('#acaPrompt', 'Update the docs');
         await page.waitForFunction(() => /squad-dispatch\.yml found/.test(document.getElementById('acaRepoHint').textContent),
           null, { timeout: 10000 });
@@ -5049,6 +5328,327 @@ function railFacts(page) {
       }
     });
 
+    // --- #257: every field with knowable choices is picked, never typed --------
+    const openAcaDialog = async (page) => {
+      await page.click('#newMoreBtn');
+      await page.click('[data-new="aca"]');
+      await page.waitForSelector('#acaForm:not([hidden])', { timeout: 10000 });
+    };
+    const optionValues = (page, sel) => page.$$eval(`${sel} option`, (os) => os.map((o) => o.value));
+    const noteOf = (page, sel) => page.$eval(sel, (el) => el.textContent.trim());
+    const noOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+
+    await check('Model and Reviewer are dropdowns of what the repository reports, at desktop and 390px, with no text box to type an override (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-model', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        for (const [width, height] of [[1280, 900], [390, 844]]) {
+          await page.setViewportSize({ width, height });
+          await openAcaDialog(page);
+          assert.strictEqual(await page.$eval('#acaModel', (el) => el.tagName), 'SELECT', `Model is not a dropdown at ${width}px`);
+          assert.strictEqual(await page.$eval('#acaReviewer', (el) => el.tagName), 'SELECT');
+          assert.strictEqual(await page.locator('input#acaModel, input#acaReviewer, textarea#acaModel').count(), 0,
+            'a free-text control for Model or Reviewer exists');
+          // Nothing is offered before a repository is chosen: no list of another repository's models.
+          assert.strictEqual(await page.isDisabled('#acaModel'), true);
+          assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['']);
+          assert.strictEqual(await page.isDisabled('#acaBranch'), true, 'Base branch was usable with no repository');
+          assert.match(await noteOf(page, '#acaBranchStatus'), /Choose a repository first/);
+
+          await pickCombo(page, '#acaRepo', 'acme/widgets');
+          await page.waitForSelector('#acaModel:not([disabled])', { timeout: 10000 });
+          assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['', 'a-model', 'b-model']);
+          assert.deepStrictEqual(await optionValues(page, '#acaReviewer'), ['', 'someone', 'lead']);
+          assert.strictEqual(await page.inputValue('#acaModel'), '', 'the default is explicit, not the first catalog entry');
+          assert.match(await noteOf(page, '#acaModelNote'), /Not a check of what the job can run/,
+            'the repository-configured choices were presented as verified runtime availability');
+          assert.ok(await noOverflow(page), `the dialog overflows horizontally at ${width}px`);
+
+          await page.selectOption('#acaModel', 'b-model');
+          await page.selectOption('#acaReviewer', 'lead');
+          await page.click('#acaCancel');
+          await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 5000 });
+        }
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await openAcaDialog(hub.page);
+        await pickCombo(hub.page, '#acaRepo', 'acme/widgets');
+        await hub.page.waitForSelector('#acaModel:not([disabled])', { timeout: 10000 });
+        assert.strictEqual(await hub.page.inputValue('#acaModel'), '', 'a model chosen in an earlier open survived into this one');
+        await hub.page.selectOption('#acaModel', 'b-model');
+        await hub.page.selectOption('#acaReviewer', 'lead');
+        await hub.page.fill('#acaPrompt', 'Use the chosen model');
+        await hub.page.click('#acaStart');
+        await hub.page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests[0].model, 'b-model');
+        assert.strictEqual(hub.app.dispatchRequests[0].reviewer, 'lead');
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('Base branch searches the repository past the first page and is chosen by keyboard, and unchosen text is never dispatched (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-branch', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        for (const [width, height] of [[1280, 900], [390, 844]]) {
+          await page.setViewportSize({ width, height });
+          await openAcaDialog(page);
+          await pickCombo(page, '#acaRepo', 'acme/widgets');
+          await page.focus('#acaBranch');
+          await page.waitForSelector('#acaBranch ~ .combo-list:not([hidden]) [role="option"]', { timeout: 10000 });
+          // The unfiltered list stops at its first page, and says so.
+          assert.match(await noteOf(page, '#acaBranchStatus'), /Showing the first 30/);
+          assert.strictEqual(await page.locator('#acaBranch ~ .combo-list .combo-more').count(), 1, 'no way to reach the rest of a long list');
+
+          // A branch beyond that first page is found by searching the target, not by scrolling a cached slice.
+          await page.fill('#acaBranch', 'branch-14');
+          await page.waitForFunction(() => document.querySelectorAll('#acaBranch ~ .combo-list [role="option"]').length === 10, null, { timeout: 10000 });
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'aria-expanded'), 'true');
+          await page.keyboard.press('ArrowDown');
+          await page.keyboard.press('Enter');
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'data-value'), 'feature/branch-141');
+          assert.strictEqual(await page.inputValue('#acaBranch'), 'feature/branch-141');
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'aria-expanded'), 'false');
+          assert.ok(await noOverflow(page), `the picker overflows horizontally at ${width}px`);
+
+          // Editing the text throws the choice away: a half-edited string is not a branch.
+          await page.keyboard.type('x');
+          assert.strictEqual(await page.getAttribute('#acaBranch', 'data-value'), null, 'edited text stayed a chosen branch');
+          await page.waitForFunction(() => /No branches match/.test(document.getElementById('acaBranchStatus').textContent), null, { timeout: 10000 });
+          await page.fill('#acaPrompt', 'Typed branch');
+          await page.click('#acaStart');
+          await page.waitForSelector('#acaErr:not([hidden])', { timeout: 10000 });
+          assert.match(await page.textContent('#acaErr'), /Choose the base branch from the list/);
+          assert.strictEqual(hub.app.dispatchRequests.length, 0, 'text that was never chosen was dispatched');
+          assert.strictEqual(hub.app.issues.length, 0, 'an issue was created for text that was never chosen');
+          await page.click('#acaCancel');
+          await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 5000 });
+        }
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaBranch', 'feature/branch-150');
+        await page.fill('#acaPrompt', 'Late branch');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests[0].baseBranch, 'feature/branch-150');
+        const lookups = hub.calls.filter((c) => /\/api\/aca\/branches\?/.test(c.url));
+        assert.ok(lookups.some((c) => /q=branch-14/.test(c.url)), 'the search never went to the server');
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('Enter during a new search cannot select an option from the previous query', async () => {
+      const hub = await acaHub(browser, 'sel-debounce', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await page.focus('#acaBranch');
+        await page.waitForSelector('#acaBranchListbox:not([hidden]) [role="option"]');
+        const pending = await page.evaluate(() => {
+          const input = document.getElementById('acaBranch');
+          input.value = 'feature/branch-150';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          return {
+            text: input.value,
+            chosen: input.getAttribute('data-value'),
+            oldOptions: document.getElementById('acaBranchListbox').children.length,
+          };
+        });
+        assert.strictEqual(pending.text, 'feature/branch-150');
+        assert.strictEqual(pending.chosen, null);
+        assert.strictEqual(pending.oldOptions, 0);
+        await page.waitForFunction(() => document.getElementById('acaBranch').getAttribute('data-value') === 'feature/branch-150');
+        assert.strictEqual(hub.app.dispatchRequests.length, 0);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('Existing issue is searched in the repository and chosen by number, not typed (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-issue', { declaredInputs: F4_INPUTS });
+      try {
+        const { page } = hub;
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await page.check('#acaIssueModeExisting');
+        await page.fill('#acaIssueNumber', 'Backlog item 5');
+        await page.waitForFunction(() => document.querySelectorAll('#acaIssueNumber ~ .combo-list [role="option"]').length >= 1, null, { timeout: 10000 });
+        const rows = await page.$$eval('#acaIssueNumber ~ .combo-list [role="option"]', (os) => os.map((o) => o.textContent));
+        assert.ok(rows.every((r) => /^#\d+ Backlog item/.test(r)), `the search returned something else: ${rows.join(' | ')}`);
+        await page.keyboard.press('Enter');
+        assert.strictEqual(await page.getAttribute('#acaIssueNumber', 'data-value'), '204');
+        await page.fill('#acaPrompt', 'On the chosen issue');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        assert.strictEqual(hub.app.dispatchRequests[0].issue, 204);
+        assert.strictEqual(hub.app.issues.length, 0, 'an existing issue was dispatched as a new one');
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('switching repository clears what belonged to the old one and a late reply for it cannot overwrite the new one (#257)', async () => {
+      const gadgets = {
+        defaultBranch: 'trunk',
+        branches: ['trunk', 'dev'],
+        model: { state: 'ok', source: 'repository-config', default: null, choices: [{ id: 'g-model' }] },
+        reviewer: { state: 'default-only', source: null, default: null, choices: [], reason: 'its roster is kept outside the repository' },
+      };
+      const hub = await acaHub(browser, 'sel-switch', { declaredInputs: F4_INPUTS, otherRepos: { 'acme/gadgets': gadgets } });
+      try {
+        const { page } = hub;
+        let held = null;
+        await page.route(/\/api\/aca\/choices\?repo=acme%2Fwidgets$/, (route) => { held = route; });
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await pickCombo(page, '#acaBranch', 'release');
+        await until(async () => held !== null, 'the widgets choices request to be held');
+        assert.strictEqual(await page.isDisabled('#acaModel'), true, 'a model could be picked before the repository answered');
+        assert.match(await noteOf(page, '#acaModelNote'), /Loading/);
+
+        await pickCombo(page, '#acaRepo', 'acme/gadgets');
+        assert.strictEqual(await page.getAttribute('#acaBranch', 'data-value'), null, 'the old repository\'s branch survived the change');
+        assert.strictEqual(await page.inputValue('#acaBranch'), '');
+        await page.waitForSelector('#acaModel:not([disabled])', { timeout: 10000 });
+        assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['', 'g-model']);
+        assert.match(await page.getAttribute('#acaBranch', 'placeholder'), /trunk/);
+        assert.deepStrictEqual(await optionValues(page, '#acaReviewer'), ['']);
+        assert.match(await noteOf(page, '#acaReviewerNote'), /Only the Squad default is available: its roster is kept outside the repository/);
+
+        // The reply for the replaced repository finally arrives.
+        try { await held.fulfill({ response: await held.fetch() }); } catch (e) { /* already aborted: the intended outcome */ }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['', 'g-model'], 'a late reply replaced the current repository\'s models');
+        assert.deepStrictEqual(await optionValues(page, '#acaReviewer'), ['']);
+
+        await page.selectOption('#acaModel', 'g-model');
+        await page.fill('#acaPrompt', 'On the second repository');
+        await page.click('#acaStart');
+        await page.waitForSelector('#acaScrim[hidden]', { state: 'attached', timeout: 10000 });
+        const sent = hub.app.dispatchRequests[0];
+        assert.deepStrictEqual([sent.repo, sent.baseBranch, sent.model, sent.reviewer], ['gadgets', null, 'g-model', null]);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('loading, empty, default-only and error states are each said, and nothing is invented to fill them (#257)', async () => {
+      const bare = {
+        model: { state: 'default-only', source: null, default: null, choices: [], reason: 'this repository names no model' },
+        reviewer: { state: 'unavailable', status: 502, source: null, default: null, choices: [], reason: 'its roster could not be read' },
+      };
+      const hub = await acaHub(browser, 'sel-states', { declaredInputs: F4_INPUTS, catalog: bare, otherRepos: { 'acme/gadgets': bare } });
+      try {
+        const { page } = hub;
+        await openAcaDialog(page);
+        await pickCombo(page, '#acaRepo', 'acme/widgets');
+        await page.waitForFunction(() => /Only the Squad default/.test(document.getElementById('acaModelNote').textContent), null, { timeout: 10000 });
+        assert.deepStrictEqual(await optionValues(page, '#acaModel'), ['']);
+        assert.strictEqual(await page.isDisabled('#acaModel'), true);
+        assert.match(await noteOf(page, '#acaModelNote'), /this repository names no model/);
+        assert.match(await noteOf(page, '#acaReviewerNote'), /Could not list reviewers: its roster could not be read/);
+        assert.strictEqual(await page.isDisabled('#acaReviewer'), true);
+        assert.ok(await page.isVisible('#acaChoicesRetry'), 'an unavailable list offered no retry');
+
+        // No match is not an error, and is said as such.
+        await page.fill('#acaBranch', 'zzz-no-such-branch');
+        await page.waitForFunction(() => /No branches match/.test(document.getElementById('acaBranchStatus').textContent), null, { timeout: 10000 });
+        await page.fill('#acaBranch', '');
+
+        // A failing branch search is reported with a way to try again.
+        await page.route(/\/api\/aca\/branches\?/, (route) => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'GitHub could not be reached' }) }));
+        await page.fill('#acaBranch', 'rel');
+        await page.waitForFunction(() => /Could not load branches: GitHub could not be reached/.test(document.getElementById('acaBranchStatus').textContent), null, { timeout: 10000 });
+        assert.strictEqual(await page.locator('#acaBranchStatus button').count(), 1, 'a failed search offered no retry');
+        await page.unroute(/\/api\/aca\/branches\?/);
+        await page.click('#acaBranchStatus button');
+        await page.waitForFunction(() => document.querySelectorAll('#acaBranch ~ .combo-list [role="option"]').length > 0, null, { timeout: 10000 });
+        await page.fill('#acaBranch', '');
+
+        // A choices request that fails outright disables both lists and says why.
+        await page.route(/\/api\/aca\/choices\?/, (route) => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'GitHub could not be reached' }) }));
+        await pickCombo(page, '#acaRepo', 'acme/gadgets');
+        await page.waitForFunction(() => /Could not load this repository's choices: GitHub could not be reached/.test(document.getElementById('acaModelNote').textContent), null, { timeout: 10000 });
+        assert.strictEqual(await page.isDisabled('#acaModel'), true);
+        assert.strictEqual(await page.isDisabled('#acaReviewer'), true);
+        await page.unroute(/\/api\/aca\/choices\?/);
+        await page.click('#acaChoicesRetry');
+        await page.waitForFunction(() => /Only the Squad default/.test(document.getElementById('acaModelNote').textContent), null, { timeout: 10000 });
+        const broken = hub.errors.filter((e) => !/favicon|502|Failed to load resource/i.test(e));
+        assert.deepStrictEqual(broken, [], `the states logged console errors: ${broken.join(' | ')}`);
+      } finally {
+        await hub.close();
+      }
+    });
+
+    await check('New session Agent and Model are closed lists of the selected device, and a device that reported none offers only the default (#257)', async () => {
+      const hub = await acaHub(browser, 'sel-local');
+      try {
+        const { page } = hub;
+        hub.svc.store.registerDevice(hub.subject, {
+          deviceId: 'dev-full', name: 'Full device', platform: 'linux', agents: ['squad', 'reviewer'], models: ['m1', 'm2'], modes: ['agent', 'plan'],
+        });
+        hub.svc.store.registerDevice(hub.subject, { deviceId: 'dev-bare', name: 'Bare device', platform: 'linux' });
+        const spawns = [];
+        await page.route(/\/api\/devices\/[^/]+\/spawn$/, (route) => {
+          spawns.push({ url: route.request().url(), body: JSON.parse(route.request().postData()) });
+          route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+        });
+        await until(async () => {
+          await refreshNow(page);
+          await page.click('#newMoreBtn');
+          await page.click('[data-new="local"]');
+          const ok = await page.$$eval('#nsDevice option', (os) => os.map((o) => o.value).includes('dev-full'));
+          if (!ok) await page.click('#nsCancel');
+          return ok;
+        }, 'both devices to reach the New session dialog');
+
+        for (const id of ['nsAgent', 'nsModel']) {
+          assert.strictEqual(await page.$eval(`#${id}`, (el) => el.tagName), 'SELECT', `${id} is not a dropdown`);
+        }
+        assert.strictEqual(await page.locator('input#nsAgent, input#nsModel').count(), 0, 'a free-text Agent or Model control exists');
+
+        await page.selectOption('#nsDevice', 'dev-full');
+        assert.deepStrictEqual(await optionValues(page, '#nsAgent'), ['', 'squad', 'reviewer']);
+        assert.deepStrictEqual(await optionValues(page, '#nsModel'), ['', 'm1', 'm2']);
+        assert.strictEqual(await page.isDisabled('#nsAgent'), false);
+        assert.strictEqual(await page.isDisabled('#nsModel'), false);
+        // Only the modes the device reported can be picked.
+        assert.strictEqual(await page.$eval('#nsMode option[value="autopilot"]', (o) => o.disabled), true);
+        assert.strictEqual(await page.$eval('#nsMode option[value="plan"]', (o) => o.disabled), false);
+        await page.selectOption('#nsAgent', 'squad');
+        await page.selectOption('#nsModel', 'm2');
+        await page.selectOption('#nsMode', 'plan');
+
+        // Another device: nothing chosen for the first one carries over, and nothing is assumed.
+        await page.selectOption('#nsDevice', 'dev-bare');
+        assert.deepStrictEqual(await optionValues(page, '#nsAgent'), ['']);
+        assert.deepStrictEqual(await optionValues(page, '#nsModel'), ['']);
+        assert.strictEqual(await page.inputValue('#nsAgent'), '', 'the first device\'s agent survived the switch');
+        assert.strictEqual(await page.inputValue('#nsModel'), '', 'the first device\'s model survived the switch');
+        assert.strictEqual(await page.isDisabled('#nsAgent'), true);
+        assert.strictEqual(await page.isDisabled('#nsModel'), true);
+        assert.match(await noteOf(page, '#nsAgentNote'), /has not reported which agents it offers, so only the default can be used/);
+        assert.match(await noteOf(page, '#nsModelNote'), /has not reported which models it offers/);
+        assert.strictEqual(await page.$eval('#nsMode option[value="autopilot"]', (o) => o.disabled), false, 'a device that reported no modes lost one');
+
+        // Back to a device that offers them: a selection is kept only when it is offered there.
+        await page.selectOption('#nsDevice', 'dev-full');
+        await page.selectOption('#nsAgent', 'reviewer');
+        await page.selectOption('#nsModel', 'm1');
+        await page.fill('#nsPrompt', 'Run the tests');
+        await page.click('#nsStart');
+        await until(async () => spawns.length === 1, 'the spawn request');
+        assert.match(spawns[0].url, /\/api\/devices\/dev-full\/spawn$/);
+        assert.deepStrictEqual([spawns[0].body.agent, spawns[0].body.model], ['reviewer', 'm1']);
+      } finally {
+        await hub.close();
+      }
+    });
     await check('two overlapping refreshes while the job attaches never duplicate or lose a row (#178)', async () => {
       // Two refresh-triggering actions fired back-to-back, the second started
       // before the first has settled, so two `syncAcaPending` passes genuinely
@@ -5368,11 +5968,10 @@ function railFacts(page) {
       const githubApp = new GitHubApp({
         appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort}`,
       });
-      const authAca = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca', deviceSecret: 'e2e-aca-dev' });
+      const { auth: authAca, token: tokenAca } = acaGitHubAuth('status-card');
       const svcAca = new HubService({ auth: authAca, serveWeb: true, githubApp, persistStore: false });
       const addrAca = await svcAca.listen(0, '127.0.0.1');
       const originAca = `http://127.0.0.1:${addrAca.port}`;
-      const tokenAca = authAca.mintDevToken('t-aca', 'u-aca', 'aca person');
       const pageAca = await browser.newPage();
       const errorsAca = [];
       pageAca.on('console', (m) => { if (m.type() === 'error') errorsAca.push(m.text()); });
@@ -5405,9 +6004,13 @@ function railFacts(page) {
           const t = await pageAca.$eval('#acaStatusCard .status', (el) => el.textContent).catch(() => null);
           return t && /^Connected$/.test(t.trim()) ? true : null;
         }, 'the card to settle on Connected once the delayed fetch resolves');
-        assert.strictEqual((await pageAca.textContent('#deviceCount')).trim(), '1',
-          'a verified ACA service without a worker still counts as one connection');
-        assert.match(await pageAca.textContent('.ondemand .device-meta'), /Ready to start runs/);
+        assert.strictEqual((await pageAca.textContent('#deviceCount')).trim(), '0',
+          'a connected ACA service is not a device, so a hub with none still says 0 (#259)');
+        assert.doesNotMatch(await pageAca.textContent('#deviceSummary'), /ACA ready|[1-9]\d* online/,
+          'the "N online" line counts devices, and the service is not one (#259)');
+        const jobsMeta = (await pageAca.textContent('.ondemand .device-meta')).trim();
+        assert.strictEqual(jobsMeta, 'Ready to start runs',
+          'the row says what connected means for the user, not that a service is connected (the card says Connected)');
         const connectedTxt = await pageAca.textContent('#acaStatusCard');
         assert.match(connectedTxt, /Issue watcher/, 'no Issue watcher row once connected');
         assert.match(connectedTxt, /Ralph/, 'no Ralph row once connected');
@@ -5486,11 +6089,10 @@ function railFacts(page) {
       const githubApp2 = new GitHubApp({
         appId: '1', privateKey: ACA_FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${ghPort2}`,
       });
-      const authAca2 = new Authenticator({ mode: MODES.DEV, devSecret: 'e2e-aca-2', deviceSecret: 'e2e-aca-2-dev' });
+      const { auth: authAca2, token: tokenAca2 } = acaGitHubAuth('status-card-2');
       const svcAca2 = new HubService({ auth: authAca2, serveWeb: true, githubApp: githubApp2 });
       const addrAca2 = await svcAca2.listen(0, '127.0.0.1');
       const originAca2 = `http://127.0.0.1:${addrAca2.port}`;
-      const tokenAca2 = authAca2.mintDevToken('t-aca2', 'u-aca2', 'aca person 2');
       const wsOriginAca2 = originAca2.replace('http', 'ws');
 
       const WATCH_DEVICE_ID = 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5';
@@ -5527,6 +6129,45 @@ function railFacts(page) {
           const t = await pageAca2.textContent('#acaStatusCard').catch(() => null);
           return t && /Issue watcher/.test(t) ? true : null;
         }, 'the watcher row to render at all');
+
+        // #259: the two persistent jobs are the ONLY two devices on this hub.
+        // The count says 2 (never 3 with the connected service), the summary
+        // says 2 online, and neither job is listed as an ACA run -- they are
+        // services, shown with their full infrastructure name.
+        await until(async () => ((await pageAca2.textContent('#deviceCount')).trim() === '2' ? true : null),
+          'the rail to count the two real devices');
+        const railAca2 = await pageAca2.evaluate(() => {
+          const names = (sel) => [...document.querySelectorAll(sel)].map((s) => s.textContent.trim());
+          const fit = (s) => {
+            const r = s.getBoundingClientRect();
+            const dev = s.closest('.device').getBoundingClientRect();
+            return {
+              text: s.textContent.trim(), wholeWidth: s.scrollWidth <= s.clientWidth + 1,
+              inside: r.left >= dev.left - 1 && r.right <= dev.right + 1,
+            };
+          };
+          return {
+            badge: document.getElementById('deviceCount').textContent.trim(),
+            summary: document.getElementById('deviceSummary').textContent.replace(/\s+/g, ' ').trim(),
+            acaLabel: document.querySelector('[data-sec="aca"] .sec-label').textContent.trim(),
+            acaNames: names('#devsecbody-aca .device:not(.aca-rail) .device-name > span:not(.kind-pill)'),
+            cloudNames: names('#devsecbody-cloud .device-name > span:not(.kind-pill)'),
+            cloudFit: [...document.querySelectorAll('#devsecbody-cloud .device-name > span:not(.kind-pill)')].map(fit),
+          };
+        });
+        assert.strictEqual(railAca2.badge, '2', 'the watcher and Ralph are two devices, not three with the service');
+        assert.match(railAca2.summary, /^2 online/, `the summary was "${railAca2.summary}"`);
+        assert.doesNotMatch(railAca2.summary, /ACA ready/);
+        assert.match(railAca2.acaLabel, /ACA runs \(0\)/, 'the persistent jobs are not ACA runs');
+        assert.deepStrictEqual(railAca2.acaNames, []);
+        assert.deepStrictEqual(railAca2.cloudNames.slice().sort(), [RALPH_DEVICE_ID, WATCH_DEVICE_ID].sort(),
+          'the watcher and Ralph keep their rows, with the whole infrastructure name');
+        for (const f of railAca2.cloudFit) {
+          assert.ok(f.wholeWidth && f.inside, `"${f.text}" is clipped or overflows its row: ${JSON.stringify(f)}`);
+        }
+        if (process.env.SQUAD_HUB_SCREENSHOT_DIR) {
+          await pageAca2.screenshot({ path: path.join(process.env.SQUAD_HUB_SCREENSHOT_DIR, 'rail-aca-services-desktop.png') });
+        }
 
         const textNoMeta = await pageAca2.textContent('#acaStatusCard');
         assert.doesNotMatch(textNoMeta, /Issue watcher[^\n]*Not connected/,
@@ -5743,6 +6384,8 @@ function railFacts(page) {
       assert.strictEqual(shown.text, 'Ready for review');
 
       const asked = rv.page.waitForRequest((r) => /\/api\/overview\?.*status=review/.test(r.url()), { timeout: 10000 });
+      // The click below can fail first; keep the request wait from turning into an unhandled rejection that ends the run.
+      asked.catch(() => {});
       await rv.page.click('#statusFilter >> xpath=..');
       await rv.page.click('.sp-opt >> text=Ready for review');
       await asked;
@@ -6440,6 +7083,20 @@ function railFacts(page) {
     fs.rmSync(home, { recursive: true, force: true });
   }
 
+  if (scenario) {
+    // A selected scenario must run every assertion it names, once. One that did
+    // not (a renamed title, a check moved out of reach) would otherwise read as
+    // a shorter, passing run.
+    const wanted = browserScenarios.titlesToRun(scenario);
+    const missed = wanted.filter((t) => scenarioRan.get(t) !== 1);
+    if (missed.length) {
+      fail += 1;
+      const why = `did not run exactly once: ${missed.join(' | ')}`;
+      console.log(`  FAIL scenario ${scenario.id} ran every assertion it names\n         ${why}`);
+      console.log(`RESULT\tfail\tscenario ${scenario.id} ran every assertion it names\t${why}`);
+    }
+    console.log(`\nscenario ${scenario.id}: ${scenario.titles.length} owned and ${wanted.length - scenario.titles.length} prerequisite assertions`);
+  }
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.log(`ERROR: ${e.message}`); console.log(e.stack); process.exit(1); });

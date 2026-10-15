@@ -31,6 +31,11 @@ const { sanitizeDispatchRequest, buildWorkflowInputs } = require('../src/aca-dis
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { readWebSource } = require('./helpers/web-source');
+const { installLoopbackAgent } = require('./helpers/loopback-agent');
+
+// ~280 loopback connections per run: close them with an RST so back-to-back
+// runs do not exhaust the TIME_WAIT-sensitive Windows dynamic port range.
+installLoopbackAgent();
 
 // The New ACA job dialog's own request builder, loaded from the shipped
 // `web/js/aca.js` so the browser-side half of a dispatch is the real code.
@@ -77,6 +82,33 @@ assert.ok(FAKE_KEY_SECRET_SUBSTRING && FAKE_KEY_SECRET_SUBSTRING.length > 20,
 function b64urlDecode(s) {
   return JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
 }
+
+// ---------------------------------------------------------------------------
+// Identity fixtures (#258). Every `/api/aca/*` call is made as a GitHub account
+// the REAL Authenticator verified through its GitHub mode -- the only mode that
+// produces a verified GitHub identity -- against a stand-in for `GET /user`
+// (the same seam test/github-auth-unit.js uses). The dev fixture these tests
+// used before is not a substitute any more: a dev token can claim anything.
+// ---------------------------------------------------------------------------
+const TEST_USER = { login: 'me', id: 4242 };
+const tokenFor = (user) => `gho_test_${user.login}`;
+const TEST_TOKEN = tokenFor(TEST_USER);
+
+function githubAuth({ users = [TEST_USER], owner = [TEST_USER.login], githubFetch } = {}) {
+  const byToken = new Map(users.map((u) => [tokenFor(u), u]));
+  return new Authenticator({
+    mode: MODES.GITHUB,
+    owner,
+    githubFetch: githubFetch || (async (token) => {
+      const u = byToken.get(token);
+      if (!u) throw Object.assign(new Error('GitHub returned 401'), { status: 401 });
+      return { id: u.id, login: u.login, email: null };
+    }),
+  });
+}
+
+/** The verified identity the hub hands the App for TEST_USER. */
+const TEST_ACTOR = { id: String(TEST_USER.id), login: TEST_USER.login };
 
 /**
  * A minimal `squad-dispatch.yml` body declaring exactly `inputNames` under
@@ -137,11 +169,37 @@ function fakeGitHubApp({
   artifacts = [],
   artifactsStatus = 200,
   artifactsTotalCount = null,
+  // The fake's user table (lowercase login -> numeric id) and who may use which
+  // repository. `repoAccess: null` means "every known user has write
+  // everywhere", which is what the pre-#258 fixtures assumed; a test that cares
+  // passes `{ 'acme/widgets': { alice: 'write', bob: 'read' } }`. A value may
+  // also be `{ permission, roleName, id, status, body }` to shape the answer.
+  // Both are live objects on `state`, so a test can revoke access mid-flight.
+  users = { [TEST_USER.login]: TEST_USER.id },
+  repoAccess = null,
+  // What the repository itself offers (#257). `branches` is every branch name;
+  // `issues` is `[{number, title, state, pull_request}]`, or `null` for "any
+  // number is an open issue" (what the pre-#257 fixtures assumed); `files`
+  // overrides the repository files read for model and reviewer choices
+  // (`null` is a 404, `{status}` an HTTP failure, `{raw}` a literal body).
+  branches = ['main', 'release', 'feature-x'],
+  issues = null,
+  files = {},
   now = () => Date.now(),
 } = {}) {
   const calls = { total: 0, byPath: {} };
   const seenAuthHeaders = [];
-  const state = { tokenMints: 0, dispatches: [], createdIssues: [], tokenMintBodies: [] };
+  const state = {
+    tokenMints: 0, dispatches: [], createdIssues: [], tokenMintBodies: [], permissionChecks: [], users, repoAccess, searches: [], branches, issues, files,
+  };
+  const defaultFiles = {
+    '.squad/config.json': { defaultModel: 'claude', agentModelOverrides: { scribe: 'a-model' } },
+    '.squad/casting/registry.json': {
+      agents: {
+        someone: { status: 'active', role: 'Reviewer' }, octocat: { status: 'active' }, alice: { status: 'active' }, retired: { status: 'retired' },
+      },
+    },
+  };
   const defaultRuns = () => [{
     id: 555, status: 'in_progress', conclusion: null, head_branch: defaultBranch, created_at: new Date().toISOString(), display_title: 'Squad dispatch (run 555)',
   }];
@@ -231,6 +289,79 @@ function fakeGitHubApp({
           run_attempt: match.run_attempt || 1,
           html_url: match.html_url || `https://github.com/${singleRunMatch[1]}/${singleRunMatch[2]}/actions/runs/${match.id}`,
         });
+      }
+
+      const permissionMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/collaborators\/([^/]+)\/permission$/);
+      if (permissionMatch && req.method === 'GET') {
+        const [, owner, repo] = permissionMatch;
+        const login = decodeURIComponent(permissionMatch[3]);
+        state.permissionChecks.push({ owner, repo, login, authorization: req.headers.authorization || '' });
+        const knownId = state.users[login.toLowerCase()];
+        if (knownId === undefined) return json(404, { message: 'Not Found' });
+        const grants = state.repoAccess
+          ? ((state.repoAccess[`${owner}/${repo}`] || {})[login.toLowerCase()] || 'none')
+          : 'write';
+        const grant = typeof grants === 'string' ? { permission: grants } : grants;
+        if (grant.status && grant.status !== 200) return json(grant.status, { message: 'permission lookup refused in fake' });
+        if (grant.destroy) return req.socket.destroy();
+        if (grant.raw !== undefined) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(grant.raw); }
+        if (grant.body !== undefined) return json(200, grant.body);
+        return json(200, {
+          permission: grant.permission,
+          role_name: grant.roleName || grant.permission,
+          user: { login, id: grant.id !== undefined ? grant.id : knownId },
+        });
+      }
+
+      const contentsMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/contents\/(\.squad\/[^?]+)/);
+      if (contentsMatch && req.method === 'GET') {
+        const filePath = decodeURIComponent(contentsMatch[3]);
+        const all = { ...defaultFiles, ...state.files };
+        const entry = Object.prototype.hasOwnProperty.call(all, filePath) ? all[filePath] : null;
+        if (entry === null) return json(404, { message: 'Not Found' });
+        if (entry.status) return json(entry.status, { message: 'contents refused in fake' });
+        const text = entry.raw !== undefined ? entry.raw : JSON.stringify(entry);
+        return json(200, { type: 'file', encoding: 'base64', content: Buffer.from(text, 'utf8').toString('base64') });
+      }
+
+      const branchListMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/branches(\?.*)?$/);
+      if (branchListMatch && req.method === 'GET') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const perPage = Number(q.get('per_page')) || 30;
+        const page = Number(q.get('page')) || 1;
+        if (state.branches === 'error') return json(500, { message: 'branches refused in fake' });
+        return json(200, state.branches.slice((page - 1) * perPage, page * perPage).map((name) => ({ name })));
+      }
+      const branchOneMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/branches\/(.+)$/);
+      if (branchOneMatch && req.method === 'GET') {
+        if (state.branches === 'error') return json(500, { message: 'branch lookup refused in fake' });
+        const name = branchOneMatch[3].split('/').map(decodeURIComponent).join('/');
+        return state.branches.includes(name) ? json(200, { name }) : json(404, { message: 'Branch not found' });
+      }
+
+      const issueOneMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/);
+      if (issueOneMatch && req.method === 'GET') {
+        const number = Number(issueOneMatch[3]);
+        if (state.issues === 'error') return json(500, { message: 'issue lookup refused in fake' });
+        if (state.issues === null) return json(200, { number, state: 'open', title: `Issue ${number}` });
+        const hit = state.issues.find((i) => i.number === number);
+        return hit ? json(200, hit) : json(404, { message: 'Not Found' });
+      }
+
+      if (req.url.startsWith('/search/issues') && req.method === 'GET') {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const query = q.get('q') || '';
+        state.searches.push(query);
+        if (state.issues === 'error') return json(500, { message: 'search refused in fake' });
+        const phrase = (query.match(/"([^"]*)"/) || [])[1] || '';
+        const perPage = Number(q.get('per_page')) || 30;
+        const page = Number(q.get('page')) || 1;
+        // Real search honors is:issue and is:open; `searchLeaksPrs` fixtures
+        // can set `state.leakPrs` to prove the hub does not rely on that.
+        const matching = (state.issues || [])
+          .filter((i) => (state.leakPrs || (!i.pull_request && i.state === 'open')))
+          .filter((i) => !phrase || i.title.toLowerCase().includes(phrase.toLowerCase()));
+        return json(200, { total_count: matching.length, items: matching.slice((page - 1) * perPage, page * perPage) });
       }
 
       const repoMatch = req.url.match(/^\/repos\/([^/]+)\/([^/]+)$/);
@@ -634,20 +765,20 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('the dispatch route refuses a repo the App is not installed on, with 403', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'not-installed/here', issue: 1, prompt: 'do it' },
     });
     await svc.close();
     server.close();
     assert.strictEqual(r.status, 403, JSON.stringify(r));
-    assert.match(r.body.error, /not installed/);
+    assert.match(r.body.error, /not available to your GitHub account.*installed/);
   });
 
   // =========================================================================
@@ -657,13 +788,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('a dispatch against an installed repo succeeds, sends a hub correlation id, and keeps it off the API response', async () => {
     const { server, state } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 42, prompt: 'do the thing', model: 'claude', publishPr: true },
     });
@@ -697,13 +828,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('two concurrent same-repo same-issue POST dispatches each get a distinct trackerId, correctly mapped by GET', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const [r1, r2] = await Promise.all([
       apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'acme/widgets', issue: 7, prompt: 'first' } }),
       apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'acme/widgets', issue: 7, prompt: 'second' } }),
@@ -722,13 +853,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('a newIssue request creates the issue first, then dispatches against its number', async () => {
     const { server, state } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'A new issue' }, prompt: 'go' },
     });
@@ -748,7 +879,7 @@ function apiRequest(port, path, token, opts = {}) {
     const port = await listen(server);
     const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
     const result = await app.dispatch({
-      owner: 'acme', repo: 'widgets', installationId: 1, issue: 7, prompt: 'go',
+      owner: 'acme', repo: 'widgets', installationId: 1, issue: 7, prompt: 'go', actor: TEST_ACTOR,
     });
     server.close();
     assert.strictEqual(result.correlationId, null);
@@ -767,13 +898,13 @@ function apiRequest(port, path, token, opts = {}) {
    */
   async function dialogDispatch(fake, { publishPr = true, watchOnly = false } = {}) {
     const port = await listen(fake.server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     try {
       const repos = await apiRequest(addr.port, '/api/aca/repos', token);
       assert.strictEqual(repos.status, 200, JSON.stringify(repos));
@@ -802,7 +933,7 @@ function apiRequest(port, path, token, opts = {}) {
     for (const fake of [legacy, modern, missing]) {
       const port = await listen(fake.server);
       const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
-      lists.push(await app.listReposWithDispatchStatus());
+      lists.push(await app.listReposWithDispatchStatus(TEST_ACTOR));
       fake.server.close();
     }
     assert.deepStrictEqual(lists[0][0].declaredInputs, LEGACY_DECLARED_INPUTS);
@@ -861,13 +992,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('the always-send request is still refused by a legacy workflow, naming both inputs, with no issue created', async () => {
     const fake = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS });
     const port = await listen(fake.server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'T' }, prompt: 'go', publishPr: true, watchOnly: false },
     });
@@ -984,13 +1115,13 @@ function apiRequest(port, path, token, opts = {}) {
       reposByInstallation: { 1: ['acme/widgets'] }, workflowYaml: AMBIGUOUS_LAYOUTS['a flow-style inputs block'], declaredInputs: COMMENTED_TRUTH,
     });
     const port = await listen(fake.server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'T' }, prompt: 'go' },
     });
@@ -1007,46 +1138,81 @@ function apiRequest(port, path, token, opts = {}) {
   // =========================================================================
 
   await checkAsync('an option the workflow does not declare is refused with 4xx, before any side effect', async () => {
-    const { server, state } = fakeGitHubApp({
+    const { server, state, calls } = fakeGitHubApp({
       reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS,
     });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go', model: 'claude' },
     });
     await svc.close();
     server.close();
     assert.ok(r.status >= 400 && r.status < 500, `expected a 4xx, got ${r.status}: ${JSON.stringify(r.body)}`);
-    assert.match(r.body.error, /model/);
+    // The request is well-formed and its model is one the repository's config
+    // offers, so the declared-inputs check is what must stop it. A refusal from
+    // the later choice validation, or GitHub's own 422, is also a 4xx that names
+    // the model and would stay green with this check removed, so the hub's own
+    // sentence is required and GitHub must never have been asked to dispatch.
+    assert.match(r.body.error, /acme\/widgets's squad-dispatch\.yml does not declare the input\(s\): model\./, JSON.stringify(r.body));
+    assert.strictEqual(calls.byPath['POST /repos/acme/widgets/actions/workflows/squad-dispatch.yml/dispatches'] || 0, 0,
+      'the undeclared option was sent to GitHub, which refused it instead of the hub');
     assert.strictEqual(state.dispatches.length, 0, 'the undeclared-input refusal still dispatched the workflow');
+
+    // The same guard with a catalog-aware request: this workflow declares `model`
+    // and the repository offers `claude`, so the choice validation has nothing to
+    // object to. Only the undeclared publish_pr is left, and without the guard
+    // that request is dispatched, so the hub's own sentence and a dispatch count
+    // of zero are the only things that can pass.
+    const catalog = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: ['issue', 'prompt', 'model'],
+    });
+    const catalogPort = await listen(catalog.server);
+    const catalogSvc = new HubService({
+      auth: githubAuth(), serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${catalogPort}` }),
+    });
+    const catalogAddr = await catalogSvc.listen(0, '127.0.0.1');
+    const c = await apiRequest(catalogAddr.port, '/api/aca/dispatch', TEST_TOKEN, {
+      method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go', model: 'claude', publishPr: false },
+    });
+    await catalogSvc.close();
+    catalog.server.close();
+    assert.ok(c.status >= 400 && c.status < 500, `expected a 4xx, got ${c.status}: ${JSON.stringify(c.body)}`);
+    assert.match(c.body.error, /acme\/widgets's squad-dispatch\.yml does not declare the input\(s\): publish_pr\./, JSON.stringify(c.body));
+    assert.strictEqual(catalog.calls.byPath['POST /repos/acme/widgets/actions/workflows/squad-dispatch.yml/dispatches'] || 0, 0,
+      'the undeclared publish_pr was sent to GitHub, which is where only a missing guard would let it go');
+    assert.strictEqual(catalog.state.dispatches.length, 0, 'the undeclared-input refusal still dispatched the workflow');
+    assert.strictEqual(catalog.state.createdIssues.length, 0, 'an issue was created for a refused request');
   });
 
   await checkAsync('the undeclared-input refusal runs before newIssue ever creates anything', async () => {
-    const { server, state } = fakeGitHubApp({
+    const { server, state, calls } = fakeGitHubApp({
       reposByInstallation: { 1: ['acme/widgets'] }, declaredInputs: LEGACY_DECLARED_INPUTS,
     });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'should never exist' }, prompt: 'go', reviewer: 'alice' },
     });
     await svc.close();
     server.close();
     assert.ok(r.status >= 400 && r.status < 500, JSON.stringify(r));
+    assert.match(r.body.error, /acme\/widgets's squad-dispatch\.yml does not declare the input\(s\): reviewer\./, JSON.stringify(r.body));
     assert.strictEqual(state.createdIssues.length, 0, 'an issue was created despite the request being refused');
+    assert.strictEqual(calls.byPath['POST /repos/acme/widgets/actions/workflows/squad-dispatch.yml/dispatches'] || 0, 0);
     assert.strictEqual(state.dispatches.length, 0);
   });
 
@@ -1055,13 +1221,13 @@ function apiRequest(port, path, token, opts = {}) {
       reposByInstallation: { 1: ['acme/widgets'] }, dispatchStatus: 500,
     });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'orphaned on failure' }, prompt: 'go' },
     });
@@ -1081,13 +1247,13 @@ function apiRequest(port, path, token, opts = {}) {
   /** The real `GitHubApp` and `HubService` over `fake`, and a `post(body)` to `/api/aca/dispatch`. */
   async function dispatchHarness(fake) {
     const port = await listen(fake.server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     return {
       post: (body) => apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body }),
       async close() { await svc.close(); fake.server.close(); },
@@ -1185,13 +1351,13 @@ function apiRequest(port, path, token, opts = {}) {
       reposByInstallation: { 1: ['acme/widgets'] }, defaultBranch: 'develop',
     });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go', baseBranch: 'feature-x' },
     });
@@ -1284,13 +1450,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('a GitHub 403 while listing installations never reaches the caller as a 403 of their own', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, installationsStatus: 403 });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go' },
     });
@@ -1307,13 +1473,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('a repo with no squad-dispatch.yml refuses the dispatch', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: false });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/dispatch', token, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go' },
     });
@@ -1330,13 +1496,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('GET /api/aca/repos reports hasDispatchWorkflow honestly', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: true });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/repos', token);
     await svc.close();
     server.close();
@@ -1349,13 +1515,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('GET /api/aca/repos reports hasDispatchWorkflow: false for a real 404, not assumed', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: false });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/repos', token);
     await svc.close();
     server.close();
@@ -1366,13 +1532,13 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('a non-404 error checking for squad-dispatch.yml surfaces as an error, not a silent false', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] }, hasWorkflow: 'error' });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r = await apiRequest(addr.port, '/api/aca/repos', token);
     await svc.close();
     server.close();
@@ -1380,18 +1546,38 @@ function apiRequest(port, path, token, opts = {}) {
   });
 
   await checkAsync('a device token can never reach /api/aca/dispatch', async () => {
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    // A 403 alone proves little here: past the gate the route would refuse a
+    // non-GitHub principal with a 403 of its own. So this asserts WHERE the
+    // request was stopped, by what the hub did before and after that point: the
+    // API gate's own message, and no read of whether the App is enabled, no
+    // rate-limit charge and no call to GitHub, all of which a request that got
+    // past the gate makes.
+    const { server, calls, state } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
+    const port = await listen(server);
+    const auth = githubAuth();
+    const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    let appEnabledReads = 0;
+    Object.defineProperty(githubApp, 'enabled', { get() { appEnabledReads += 1; return true; } });
     const svc = new HubService({
-      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
-      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM }),
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false, githubApp,
     });
+    let rateLimitCharges = 0;
+    const charge = svc.acaRateLimiter.check.bind(svc.acaRateLimiter);
+    svc.acaRateLimiter.check = (key) => { rateLimitCharges += 1; return charge(key); };
     const addr = await svc.listen(0, '127.0.0.1');
     const deviceToken = auth.mintDeviceToken({ key: 'me', name: 'a device' });
     const r = await apiRequest(addr.port, '/api/aca/dispatch', deviceToken, {
       method: 'POST', body: { repo: 'acme/widgets', issue: 1, prompt: 'go' },
     });
     await svc.close();
+    server.close();
     assert.strictEqual(r.status, 403, JSON.stringify(r));
+    assert.match(r.body.error, /device token cannot be used to call the API/, `refused somewhere other than the API gate: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(appEnabledReads, 0, 'the request reached the ACA route: it read whether the GitHub App is enabled');
+    assert.strictEqual(rateLimitCharges, 0, 'the request reached the ACA route: it was charged against the dispatch limiter');
+    assert.strictEqual(calls.total, 0, `GitHub was called ${calls.total} time(s) for a device token`);
+    assert.strictEqual(state.dispatches.length, 0, 'a workflow was dispatched for a device token');
+    assert.strictEqual(state.createdIssues.length, 0, 'an issue was created for a device token');
   });
 
   // =========================================================================
@@ -1557,7 +1743,7 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('the dispatch route actually enforces the rate limit end to end', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     let now = 0;
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
@@ -1565,7 +1751,7 @@ function apiRequest(port, path, token, opts = {}) {
       acaRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000, now: () => now }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const body = { repo: 'acme/widgets', issue: 1, prompt: 'go' };
     const r1 = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body });
     const r2 = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body });
@@ -1581,14 +1767,14 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('a malformed body is rejected without ever consuming rate-limit quota', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
       githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
       acaRateLimiter: new RateLimiter({ limit: 1, windowMs: 60000 }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     // Two invalid requests in a row -- if validation consumed quota, the
     // second would 429 instead of repeating the same validation error.
     const bad1 = await apiRequest(addr.port, '/api/aca/dispatch', token, { method: 'POST', body: { repo: 'not-a-repo' } });
@@ -2562,7 +2748,7 @@ function apiRequest(port, path, token, opts = {}) {
     const port = await listen(server);
     const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
     await app.dispatch({
-      owner: 'acme', repo: 'widgets', installationId: 1, issue: 1, prompt: 'go',
+      owner: 'acme', repo: 'widgets', installationId: 1, issue: 1, prompt: 'go', actor: TEST_ACTOR,
     });
     server.close();
     const scopedMint = state.tokenMintBodies.find((m) => m.body && Array.isArray(m.body.repositories));
@@ -2614,7 +2800,7 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('GET /api/aca/repos is rate-limited per signed-in user', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
@@ -2622,7 +2808,7 @@ function apiRequest(port, path, token, opts = {}) {
       acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r1 = await apiRequest(addr.port, '/api/aca/repos', token);
     const r2 = await apiRequest(addr.port, '/api/aca/repos', token);
     const r3 = await apiRequest(addr.port, '/api/aca/repos', token);
@@ -2636,7 +2822,7 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('GET /api/aca/dispatches is rate-limited per signed-in user', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
@@ -2644,7 +2830,7 @@ function apiRequest(port, path, token, opts = {}) {
       acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r1 = await apiRequest(addr.port, '/api/aca/dispatches', token);
     const r2 = await apiRequest(addr.port, '/api/aca/dispatches', token);
     const r3 = await apiRequest(addr.port, '/api/aca/dispatches', token);
@@ -2658,7 +2844,7 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('GET /api/aca/repos and GET /api/aca/dispatches share one read rate-limit budget', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
     const githubApp = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
     const svc = new HubService({
       auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
@@ -2666,7 +2852,7 @@ function apiRequest(port, path, token, opts = {}) {
       acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }),
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
     const r1 = await apiRequest(addr.port, '/api/aca/repos', token);
     const r2 = await apiRequest(addr.port, '/api/aca/dispatches', token);
     const r3 = await apiRequest(addr.port, '/api/aca/repos', token);
@@ -2675,6 +2861,356 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(r1.status, 200, JSON.stringify(r1));
     assert.strictEqual(r2.status, 200, JSON.stringify(r2));
     assert.strictEqual(r3.status, 429, JSON.stringify(r3));
+  });
+
+  // =========================================================================
+  // #258: repository authorization. "The App is installed there" says the
+  // OPERATOR chose the repository; it says nothing about the person calling.
+  // Every case below is the real GitHub-mode Authenticator, the real HubService
+  // and the real GitHubApp over the faked GitHub REST surface; the signed-in
+  // GitHub account is what decides, per request, and nothing else.
+  // =========================================================================
+
+  const ALICE = { login: 'alice', id: 1001 };
+  const BOB = { login: 'bob', id: 2002 };
+  const aliceToken = tokenFor(ALICE);
+  const bobToken = tokenFor(BOB);
+  const WORKFLOW_CONTENTS = 'GET /repos/acme/beta/contents/.github/workflows/squad-dispatch.yml';
+  const trackedCount = (svc) => [...svc.dispatchTracker._byUser.values()].reduce((n, l) => n + l.length, 0);
+  const sideEffects = (fake, svc) => ({
+    issues: fake.state.createdIssues.length, dispatches: fake.state.dispatches.length, tracked: trackedCount(svc),
+  });
+  const NO_SIDE_EFFECTS = { issues: 0, dispatches: 0, tracked: 0 };
+
+  /** Two different GitHub users on ONE hub and ONE App, both on the owner list
+   * (so both land in the SAME partition -- which must confer no repository
+   * authority), each with a disjoint private repository plus one shared. */
+  async function twoUserHub({ repoAccess, users, auth, fakeOptions = {}, serviceOptions = {} } = {}) {
+    const fake = fakeGitHubApp({
+      reposByInstallation: { 1: ['acme/alpha', 'acme/beta', 'acme/shared'] },
+      users: users || { alice: ALICE.id, bob: BOB.id },
+      repoAccess: repoAccess || {
+        'acme/alpha': { alice: 'write' },
+        'acme/beta': { bob: 'admin' },
+        'acme/shared': { alice: 'write', bob: 'write' },
+      },
+      ...fakeOptions,
+    });
+    const port = await listen(fake.server);
+    const svc = new HubService({
+      auth: auth || githubAuth({ users: [ALICE, BOB], owner: ['alice', 'bob'] }),
+      serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+      ...serviceOptions,
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    return {
+      fake, svc, port: addr.port,
+      async close() { await svc.close(); fake.server.close(); },
+    };
+  }
+  const fullNames = (r) => r.body.repos.map((x) => x.fullName).sort();
+
+  await checkAsync('two verified GitHub users on one hub and one App see disjoint repository lists, though both share the owner partition (#258)', async () => {
+    const hub = await twoUserHub();
+    const meA = await apiRequest(hub.port, '/api/me', aliceToken);
+    const meB = await apiRequest(hub.port, '/api/me', bobToken);
+    const a = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+    const b = await apiRequest(hub.port, '/api/aca/repos', bobToken);
+    const beforeContentsReads = hub.fake.calls.byPath[WORKFLOW_CONTENTS];
+    await hub.close();
+    assert.strictEqual(meA.body.subject, meB.body.subject, 'the fixture is meant to put both users in ONE partition');
+    assert.deepStrictEqual(fullNames(a), ['acme/alpha', 'acme/shared'], JSON.stringify(a));
+    assert.deepStrictEqual(fullNames(b), ['acme/beta', 'acme/shared'], JSON.stringify(b));
+    assert.strictEqual(beforeContentsReads, 1, 'the workflow file is read only for a repository the caller was authorized on (beta: bob only)');
+  });
+
+  await checkAsync('the repository list stays disjoint across warm caches and when both users list at once (#258)', async () => {
+    const hub = await twoUserHub({ serviceOptions: { acaReadRateLimiter: new RateLimiter({ limit: 1000, windowMs: 60000 }) } });
+    const warmA = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+    const afterA = await apiRequest(hub.port, '/api/aca/repos', bobToken);
+    const burst = await Promise.all([
+      ...Array.from({ length: 4 }, () => apiRequest(hub.port, '/api/aca/repos', aliceToken)),
+      ...Array.from({ length: 4 }, () => apiRequest(hub.port, '/api/aca/repos', bobToken)),
+    ]);
+    await hub.close();
+    assert.deepStrictEqual(fullNames(warmA), ['acme/alpha', 'acme/shared']);
+    assert.deepStrictEqual(fullNames(afterA), ['acme/beta', 'acme/shared'], 'user B was served from user A\'s warm state');
+    burst.forEach((r, i) => {
+      assert.deepStrictEqual(fullNames(r), i < 4 ? ['acme/alpha', 'acme/shared'] : ['acme/beta', 'acme/shared'], `concurrent request ${i}: ${JSON.stringify(r)}`);
+    });
+  });
+
+  await checkAsync('a forged cross-user POST is refused 403 with zero issues, zero dispatches and nothing tracked -- existing issue and new issue (#258)', async () => {
+    const hub = await twoUserHub();
+    // Warm the shared installation-token cache with alice's own successful use first.
+    const ok = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/alpha', issue: 3, prompt: 'mine' },
+    });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok));
+    const baseline = sideEffects(hub.fake, hub.svc);
+    const existing = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/beta', issue: 9, prompt: 'steal' },
+    });
+    const fresh = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/beta', newIssue: { title: 'planted' }, prompt: 'steal' },
+    });
+    const reverse = await apiRequest(hub.port, '/api/aca/dispatch', bobToken, {
+      method: 'POST', body: { repo: 'acme/alpha', newIssue: { title: 'planted' }, prompt: 'steal' },
+    });
+    const contentsReadOfBeta = hub.fake.calls.byPath[WORKFLOW_CONTENTS];
+    const after = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    for (const r of [existing, fresh, reverse]) {
+      assert.strictEqual(r.status, 403, JSON.stringify(r));
+      assert.match(r.body.error, /not available to your GitHub account/);
+    }
+    assert.deepStrictEqual(after, baseline, 'a refused request must have no side effect at all');
+    assert.strictEqual(contentsReadOfBeta, undefined, 'a refused request must not even read the repository\'s workflow');
+  });
+
+  await checkAsync('the same cross-user POSTs, fired concurrently with each user\'s own, never leak (#258)', async () => {
+    const hub = await twoUserHub({ serviceOptions: { acaRateLimiter: new RateLimiter({ limit: 1000, windowMs: 60000 }) } });
+    const results = await Promise.all([
+      apiRequest(hub.port, '/api/aca/dispatch', aliceToken, { method: 'POST', body: { repo: 'acme/alpha', issue: 1, prompt: 'a' } }),
+      apiRequest(hub.port, '/api/aca/dispatch', bobToken, { method: 'POST', body: { repo: 'acme/alpha', issue: 2, prompt: 'x' } }),
+      apiRequest(hub.port, '/api/aca/dispatch', bobToken, { method: 'POST', body: { repo: 'acme/beta', issue: 3, prompt: 'b' } }),
+      apiRequest(hub.port, '/api/aca/dispatch', aliceToken, { method: 'POST', body: { repo: 'acme/beta', issue: 4, prompt: 'x' } }),
+    ]);
+    const dispatched = hub.fake.state.dispatches.map((d) => `${d.owner}/${d.repo}#${d.inputs.issue}`).sort();
+    await hub.close();
+    assert.deepStrictEqual(results.map((r) => r.status), [200, 403, 200, 403]);
+    assert.deepStrictEqual(dispatched, ['acme/alpha#1', 'acme/beta#3']);
+  });
+
+  await checkAsync('access revoked after a successful listing is refused at POST, with no side effect, and drops off the next listing (#258)', async () => {
+    const hub = await twoUserHub();
+    const listed = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+    assert.ok(fullNames(listed).includes('acme/alpha'));
+    delete hub.fake.state.repoAccess['acme/alpha'].alice;
+    const post = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/alpha', newIssue: { title: 'late' }, prompt: 'go' },
+    });
+    const relisted = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    assert.strictEqual(post.status, 403, JSON.stringify(post));
+    assert.deepStrictEqual(effects, NO_SIDE_EFFECTS);
+    assert.deepStrictEqual(fullNames(relisted), ['acme/shared']);
+  });
+
+  await checkAsync('a login reassigned to a different GitHub account is denied: the numeric id decides, not the login (#258)', async () => {
+    // The hub verified `carol` as id 9999 (GitHub told it so at sign-in). By now the name `carol`
+    // belongs to account 3003, which does hold write access: the answer's user.id gives it away.
+    const carol = { login: 'carol', id: 9999 };
+    const hub = await twoUserHub({
+      users: { carol: 3003 },
+      repoAccess: { 'acme/alpha': { carol: 'write' } },
+      auth: githubAuth({ users: [carol], owner: [] }),
+    });
+    const list = await apiRequest(hub.port, '/api/aca/repos', tokenFor(carol));
+    const post = await apiRequest(hub.port, '/api/aca/dispatch', tokenFor(carol), {
+      method: 'POST', body: { repo: 'acme/alpha', newIssue: { title: 'x' }, prompt: 'go' },
+    });
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    assert.strictEqual(list.status, 200, JSON.stringify(list));
+    assert.deepStrictEqual(list.body.repos, []);
+    assert.strictEqual(post.status, 403, JSON.stringify(post));
+    assert.deepStrictEqual(effects, NO_SIDE_EFFECTS);
+  });
+
+  await checkAsync('write and admin may use a repository (maintain reports as write); read, triage, none and anything unrecognised may not (#258)', async () => {
+    const cases = [
+      ['write', undefined, true],
+      ['admin', undefined, true],
+      ['write', 'maintain', true],
+      ['read', undefined, false],
+      ['read', 'triage', false],
+      ['none', undefined, false],
+      ['maintain', undefined, false],
+      ['triage', undefined, false],
+      ['superuser', undefined, false],
+      // role_name is never an authorization input, whatever it is called.
+      ['read', 'admin', false],
+      ['none', 'write', false],
+      ['', undefined, false],
+    ];
+    for (const [permission, roleName, expected] of cases) {
+      const fake = fakeGitHubApp({ users: { alice: ALICE.id }, repoAccess: { 'acme/widgets': { alice: { permission, roleName } } } });
+      const port = await listen(fake.server);
+      const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+      const verdict = await app.authorizeRepoAccess({ owner: 'acme', repo: 'widgets', installationId: 1 }, { id: String(ALICE.id), login: 'alice' });
+      fake.server.close();
+      assert.strictEqual(verdict.allowed, expected, `permission=${JSON.stringify(permission)} role_name=${roleName}`);
+    }
+  });
+
+  await checkAsync('the check asks GitHub about the verified login with a repository-scoped installation token (#258)', async () => {
+    const fake = fakeGitHubApp({ users: { alice: ALICE.id }, repoAccess: { 'acme/widgets': { alice: 'write' } } });
+    const port = await listen(fake.server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    await app.authorizeRepoAccess({ owner: 'acme', repo: 'widgets', installationId: 1 }, { id: String(ALICE.id), login: 'alice' });
+    fake.server.close();
+    assert.deepStrictEqual(fake.state.permissionChecks.map((c) => `${c.owner}/${c.repo}:${c.login}`), ['acme/widgets:alice']);
+    assert.match(fake.state.permissionChecks[0].authorization, /ghs_fake_/, 'must use an installation token');
+    assert.deepStrictEqual(fake.state.tokenMintBodies[0].body.repositories, ['widgets'], 'the token must be scoped to the one repository');
+  });
+
+  const failures = [
+    ['GitHub 401', { status: 401 }],
+    ['GitHub 403', { status: 403 }],
+    ['GitHub 429 rate limit', { status: 429 }],
+    ['GitHub 500', { status: 500 }],
+    ['GitHub 503', { status: 503 }],
+    ['a dropped connection', { destroy: true }],
+    ['a 200 that is not JSON', { raw: '<html>not json</html>' }],
+    ['a 200 JSON that is not an object', { raw: '[]' }],
+    ['a 200 with no permission field', { body: { user: { id: ALICE.id, login: 'alice' } } }],
+    ['a 200 with a non-string permission', { body: { permission: 5, user: { id: ALICE.id } } }],
+  ];
+  await checkAsync('any failure while verifying access fails closed: the list answers 502 with no repos and the POST answers 502 with no side effect (#258)', async () => {
+    for (const [label, grant] of failures) {
+      const hub = await twoUserHub({ repoAccess: { 'acme/alpha': { alice: grant }, 'acme/shared': { alice: 'write' } } });
+      const list = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+      const post = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+        method: 'POST', body: { repo: 'acme/alpha', newIssue: { title: 'x' }, prompt: 'go' },
+      });
+      const effects = sideEffects(hub.fake, hub.svc);
+      await hub.close();
+      assert.strictEqual(list.status, 502, `${label}: ${JSON.stringify(list)}`);
+      assert.ok(!list.body.repos, `${label}: a verification failure must never return any repository, filtered or not`);
+      assert.match(list.body.error, /could not verify your access/, label);
+      assert.strictEqual(post.status, 502, `${label}: ${JSON.stringify(post)}`);
+      assert.deepStrictEqual(effects, NO_SIDE_EFFECTS, label);
+    }
+  });
+  // The list checks EVERY installed repository, including private ones the
+  // caller never named and may not use. A failure on one of those used to be
+  // reported as "could not verify your access to <owner>/<repo> (<GitHub's words>)",
+  // so any signed-in user could read private repository names off GET /api/aca/repos.
+  await checkAsync('a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)', async () => {
+    const SECRET = /zeta-private|vault-9|acme|shared|ghs_|\/repos\//i;
+    const leaky = [
+      ...failures,
+      ['a 403 whose body names the repository', { status: 403, body: { message: 'Resource not accessible: zeta-private/vault-9 is private' } }],
+      ['a 503 whose body names the repository', { status: 503, raw: 'zeta-private/vault-9 is unavailable at https://api.github.com/repos/zeta-private/vault-9' }],
+      ['a 200 that is not JSON and names the repository', { raw: '<html>zeta-private/vault-9</html>' }],
+    ];
+    for (const [label, grant] of leaky) {
+      const hub = await twoUserHub({
+        fakeOptions: { reposByInstallation: { 1: ['zeta-private/vault-9', 'acme/shared'] } },
+        repoAccess: { 'zeta-private/vault-9': { bob: 'admin', alice: grant }, 'acme/shared': { alice: 'write' } },
+      });
+      const list = await apiRequest(hub.port, '/api/aca/repos', aliceToken);
+      const effects = sideEffects(hub.fake, hub.svc);
+      await hub.close();
+      assert.strictEqual(list.status, 502, `${label}: ${list.raw}`);
+      assert.ok(!SECRET.test(list.raw), `${label}: the complete response names a repository or leaks upstream text: ${list.raw}`);
+      assert.ok(!list.body.repos, `${label}: a failure must never return a partial list`);
+      assert.match(list.body.error, /could not verify your access/, label);
+      assert.deepStrictEqual(effects, NO_SIDE_EFFECTS, label);
+    }
+  });
+  await checkAsync('the repository a caller names may be echoed in its own refusal, but never another repository (#258 review)', async () => {
+    const hub = await twoUserHub({
+      fakeOptions: { reposByInstallation: { 1: ['zeta-private/vault-9', 'acme/shared'] } },
+      repoAccess: { 'zeta-private/vault-9': { alice: { status: 503 } }, 'acme/shared': { alice: { status: 503 } } },
+    });
+    const post = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/shared', newIssue: { title: 'x' }, prompt: 'go' },
+    });
+    const choices = await apiRequest(hub.port, '/api/aca/choices?repo=acme/shared', aliceToken);
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    for (const r of [post, choices]) {
+      assert.strictEqual(r.status, 502, JSON.stringify(r));
+      assert.ok(!/zeta-private|vault-9/i.test(JSON.stringify(r)), `another repository was named: ${JSON.stringify(r)}`);
+    }
+    assert.deepStrictEqual(effects, NO_SIDE_EFFECTS);
+  });  await checkAsync('a 404 from the permission lookup is "not available", not an error: the repo is simply absent (#258)', async () => {
+    // carol signed in fine, but GitHub's permission lookup does not know her at all -> 404.
+    const carol = { login: 'carol', id: 3003 };
+    const hub = await twoUserHub({ repoAccess: { 'acme/alpha': { alice: 'write' } }, auth: githubAuth({ users: [carol], owner: [] }) });
+    const list = await apiRequest(hub.port, '/api/aca/repos', tokenFor(carol));
+    const post = await apiRequest(hub.port, '/api/aca/dispatch', tokenFor(carol), {
+      method: 'POST', body: { repo: 'acme/alpha', issue: 1, prompt: 'go' },
+    });
+    await hub.close();
+    assert.strictEqual(list.status, 200, JSON.stringify(list));
+    assert.deepStrictEqual(list.body.repos, []);
+    assert.strictEqual(post.status, 403, JSON.stringify(post));
+  });
+
+  await checkAsync('a session without a GitHub-verified identity is refused with an explanation, and GitHub is never called (#258)', async () => {
+    const fake = fakeGitHubApp();
+    const port = await listen(fake.server);
+    // A dev token CAN claim tid "github" and the owner's login -- exactly the spoof this refuses.
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const spoof = auth.mintDevToken('github', String(TEST_USER.id), TEST_USER.login);
+    const list = await apiRequest(addr.port, '/api/aca/repos', spoof);
+    const post = await apiRequest(addr.port, '/api/aca/dispatch', spoof, {
+      method: 'POST', body: { repo: 'acme/widgets', newIssue: { title: 'x' }, prompt: 'go' },
+    });
+    const dispatches = await apiRequest(addr.port, '/api/aca/dispatches', spoof);
+    const status = await apiRequest(addr.port, '/api/aca/status', spoof);
+    await svc.close();
+    fake.server.close();
+    for (const r of [list, post, dispatches]) {
+      assert.strictEqual(r.status, 403, JSON.stringify(r));
+      assert.match(r.body.error, /verified GitHub sign-in/);
+    }
+    assert.strictEqual(status.status, 200, 'the discovery route stays a cheap, always-200 answer');
+    assert.strictEqual(fake.calls.total, 0, 'no GitHub call may be spent on a session that cannot be authorized');
+  });
+
+  check('only the GitHub verification yields a verified GitHub identity -- never a dev token, an owner entry or a tenant name (#258)', () => {
+    const dev = new Authenticator({ mode: MODES.DEV, devSecret: 's'.repeat(16), owner: ['me', 'github:4242'] });
+    const spoofed = dev._principal({ tid: 'github', oid: '4242', name: 'me' });
+    assert.strictEqual(spoofed.github, null);
+    assert.strictEqual(spoofed.isOwner, true, 'the spoofed session is even an owner -- which must still not matter');
+  });
+
+  await checkAsync('GitHub mode exposes the id and login GitHub itself returned, from the cache too (#258)', async () => {
+    const auth = githubAuth({ users: [ALICE], owner: ['alice'] });
+    const first = await auth.verify(`Bearer ${aliceToken}`);
+    const cached = await auth.verify(`Bearer ${aliceToken}`);
+    assert.deepStrictEqual(first.github, { id: '1001', login: 'alice' });
+    assert.deepStrictEqual(cached.github, { id: '1001', login: 'alice' });
+  });
+
+  await checkAsync('a tracked dispatch is shown only to the GitHub account that made it, even inside one shared partition (#258)', async () => {
+    const hub = await twoUserHub({ serviceOptions: { acaRateLimiter: new RateLimiter({ limit: 1000, windowMs: 60000 }), acaReadRateLimiter: new RateLimiter({ limit: 1000, windowMs: 60000 }) } });
+    const made = await apiRequest(hub.port, '/api/aca/dispatch', aliceToken, {
+      method: 'POST', body: { repo: 'acme/shared', issue: 1, prompt: 'go' },
+    });
+    const mine = await apiRequest(hub.port, '/api/aca/dispatches', aliceToken);
+    const theirs = await apiRequest(hub.port, '/api/aca/dispatches', bobToken);
+    delete hub.fake.state.repoAccess['acme/shared'].alice;
+    const afterRevoke = await apiRequest(hub.port, '/api/aca/dispatches', aliceToken);
+    await hub.close();
+    assert.strictEqual(made.status, 200, JSON.stringify(made));
+    assert.deepStrictEqual(mine.body.dispatches.map((d) => d.id), [made.body.trackerId]);
+    assert.deepStrictEqual(theirs.body.dispatches, [], 'bob shares the partition but never made this dispatch');
+    assert.deepStrictEqual(afterRevoke.body.dispatches, [], 'a run on a repository the account can no longer use is not reported');
+  });
+
+  await checkAsync('GitHubApp.dispatch and the list refuse to run for a caller with no verified identity, before any GitHub call (#258)', async () => {
+    const fake = fakeGitHubApp();
+    const port = await listen(fake.server);
+    const app = new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` });
+    const bad = [undefined, null, {}, { id: '12', login: '' }, { id: 'abc', login: 'alice' }, { id: '0', login: 'alice' }, { id: '1', login: 'a/b' }, { id: '1', login: '../x' }];
+    for (const actor of bad) {
+      await assert.rejects(app.dispatch({ owner: 'acme', repo: 'widgets', installationId: 1, issue: 1, prompt: 'x', actor }), (e) => e.status === 403, JSON.stringify(actor));
+      await assert.rejects(app.listReposWithDispatchStatus(actor), (e) => e.status === 403, JSON.stringify(actor));
+    }
+    fake.server.close();
+    assert.strictEqual(fake.calls.total, 0);
   });
 
   // =========================================================================
@@ -2701,7 +3237,7 @@ function apiRequest(port, path, token, opts = {}) {
   await checkAsync('an end-to-end dispatch leaks no secret into any captured log line or HTTP response body', async () => {
     const { server } = fakeGitHubApp({ reposByInstallation: { 1: ['acme/widgets'] } });
     const port = await listen(server);
-    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const auth = githubAuth();
 
     const capturedLogs = [];
     const githubApp = new GitHubApp({
@@ -2713,7 +3249,7 @@ function apiRequest(port, path, token, opts = {}) {
       githubApp,
     });
     const addr = await svc.listen(0, '127.0.0.1');
-    const token = auth.mintDevToken('local', 'me', 'me');
+    const token = TEST_TOKEN;
 
     const r1 = await apiRequest(addr.port, '/api/aca/repos', token);
     const r2 = await apiRequest(addr.port, '/api/aca/dispatch', token, {
@@ -2734,6 +3270,451 @@ function apiRequest(port, path, token, opts = {}) {
       'the fake private key appeared in a log line or an API response');
     assert.ok(!haystack.includes('ghs_fake_'),
       'a live installation token appeared in a log line or an API response');
+  });
+
+  // =========================================================================
+  // #257: known-value choices. What the New ACA job dialog offers comes from
+  // the TARGET repository, is authorized per request like everything else, and
+  // is checked again at dispatch so a posted value the catalog does not hold
+  // never causes a side effect.
+  // =========================================================================
+
+  const choices = require('../src/service/aca-choices');
+  const { checkSpawnChoices } = require('../src/service/spawn-choices');
+  const choiceGet = (hub, p, token = aliceToken) => apiRequest(hub.port, p, token);
+  const choiceDispatch = (hub, body, token = aliceToken) => apiRequest(hub.port, '/api/aca/dispatch', token, { method: 'POST', body });
+  const repoReads = (fake) => Object.keys(fake.calls.byPath)
+    .filter((k) => /\/branches|\/search\/|\/issues\/\d|contents\/\.squad|contents\/\.github/.test(k));
+  const ids = (list) => list.map((c) => c.id);
+  const numbered = (n, make) => Array.from({ length: n }, (_, i) => make(i + 1));
+
+  check('model choices come from the repository configuration: default first, overrides after, bad slugs dropped, de-duplicated (#257)', () => {
+    const out = choices.modelsFromConfig({
+      defaultModel: 'claude-x',
+      agentModelOverrides: { scribe: 'small-1', lead: 'claude-x', bad: 'has space', worse: 42, 'also bad': '../etc' },
+      modelPolicy: { executorModel: 'exec-1', advisorModel: 'small-1', scribeModel: '' },
+    });
+    assert.deepStrictEqual(ids(out.choices), ['claude-x', 'small-1', 'exec-1']);
+    assert.strictEqual(out.default, 'claude-x');
+    assert.ok(!out.choices.some((c) => /\s|\.\./.test(c.id)), 'a value that is not a model slug must never become a choice');
+    assert.ok(choices.modelsFromConfig(null).malformed, 'a config that is not an object is malformed, not empty');
+    assert.ok(choices.modelsFromConfig({ agentModelOverrides: 'x' }).malformed);
+    assert.deepStrictEqual(choices.modelsFromConfig({ defaultModel: ['x'] }).choices, []);
+  });
+
+  check('model choices are capped, never silently trimmed to look complete (#257)', () => {
+    const overrides = {};
+    for (let i = 0; i < 400; i += 1) overrides[`a${i}`] = `model-${i}`;
+    const out = choices.modelsFromConfig({ defaultModel: 'base', agentModelOverrides: overrides });
+    assert.strictEqual(out.choices.length, choices.MAX_CHOICES);
+    assert.strictEqual(out.choices[0].id, 'base');
+    assert.strictEqual(out.truncated, true, 'the list says it was cut');
+  });
+
+  check('modelState: the four honest states, and none of them invents a model (#257)', () => {
+    const wf = (declaredInputs, modelOptions) => ({ declaredInputs, modelOptions, config: { state: 'missing' } });
+    assert.strictEqual(choices.modelState(wf(['issue', 'prompt'], null)).state, 'unsupported');
+    const missing = choices.modelState(wf(['issue', 'model'], null));
+    assert.strictEqual(missing.state, 'default-only');
+    assert.deepStrictEqual(missing.choices, []);
+    const viaConfig = choices.modelState({ declaredInputs: ['model'], modelOptions: null, config: { state: 'ok', value: { defaultModel: 'm1' } } });
+    assert.deepStrictEqual([viaConfig.state, viaConfig.source, ids(viaConfig.choices)], ['ok', 'repository-config', ['m1']]);
+    const viaWorkflow = choices.modelState({ declaredInputs: ['model'], modelOptions: ['w1', 'w2'], config: { state: 'ok', value: { defaultModel: 'm1' } } });
+    assert.deepStrictEqual([viaWorkflow.source, ids(viaWorkflow.choices)], ['workflow', ['w1', 'w2']], 'a workflow enum is the stricter, more authoritative list');
+    const broken = choices.modelState({ declaredInputs: ['model'], modelOptions: null, config: { state: 'error', status: 422, reason: 'config is not JSON' } });
+    assert.deepStrictEqual([broken.state, broken.status, broken.reason], ['unavailable', 422, 'config is not JSON']);
+    const external = choices.modelState({ declaredInputs: ['model'], modelOptions: null, config: { state: 'ok', value: { defaultModel: 'm1', teamRoot: '/srv/team' } } });
+    assert.deepStrictEqual([external.state, ids(external.choices)], ['ok', ['m1']], 'only what the repository itself names is listed');
+    assert.match(external.reason, /outside this repository/, 'and it says the rest is not known');
+    const externalEmpty = choices.modelState({ declaredInputs: ['model'], modelOptions: null, config: { state: 'ok', value: { stateLocation: 'elsewhere' } } });
+    assert.strictEqual(externalEmpty.state, 'default-only');
+  });
+
+  check('reviewer choices are the ACTIVE registered members, not GitHub logins and not retired members (#257)', () => {
+    const out = choices.reviewersFromRegistry({ agents: {
+      alice: { status: 'active', role: 'Lead' }, bob: { status: 'retired' }, 'bad id!': { status: 'active' }, carol: { status: 'ACTIVE' }, dave: 'active', erin: { status: 'active' },
+    } });
+    assert.deepStrictEqual(ids(out.choices), ['alice', 'erin']);
+    assert.ok(choices.reviewersFromRegistry({ agents: [] }).malformed);
+    assert.ok(choices.reviewersFromRegistry('nope').malformed);
+  });
+
+  check('parseWorkflowChoiceInputs reads only a plain block-style choice enum for the model input (#257)', () => {
+    const wf = (body) => wfYamlLines(['    inputs:', '      model:', ...body]);
+    assert.deepStrictEqual(choices.parseWorkflowChoiceInputs(wf(['        type: choice', '        options:', '          - a-1', '          - "b-2"', '          - \'c-3\''])), { model: ['a-1', 'b-2', 'c-3'] });
+    assert.deepStrictEqual(choices.parseWorkflowChoiceInputs(wf(['        type: string'])), { model: null });
+    assert.deepStrictEqual(choices.parseWorkflowChoiceInputs(wf(['        type: choice', '        options: [a, b]'])), { model: null }, 'a flow list is not guessed at');
+    assert.deepStrictEqual(choices.parseWorkflowChoiceInputs(wfYamlLines(['    inputs:', '      prompt:', '        type: string'])), { model: null });
+    assert.deepStrictEqual(choices.parseWorkflowChoiceInputs(''), { model: null });
+  });
+
+  check('search text and page numbers are bounded before they reach GitHub (#257)', () => {
+    assert.deepStrictEqual(choices.parseSearchText(null), { ok: true, value: '' });
+    assert.strictEqual(choices.parseSearchText('  hello  ').value, 'hello');
+    assert.strictEqual(choices.parseSearchText('a\u0000b').ok, false);
+    assert.strictEqual(choices.parseSearchText('x'.repeat(101)).ok, false);
+    assert.deepStrictEqual(choices.parsePage(null), { ok: true, value: 1 });
+    for (const bad of ['0', '-1', 'abc', '1.5', '51', '99999']) assert.strictEqual(choices.parsePage(bad).ok, false, bad);
+    assert.strictEqual(choices.parsePage('50').value, 50);
+  });
+
+  check('a New session request may only name what the target device offered, and unknown capabilities are not checked (#257)', () => {
+    const device = { agents: ['squad', 'plain'], models: ['m-a', 'm-b'], modes: ['https://agentclientprotocol.com/protocol/session-modes#agent', 'plan'] };
+    assert.strictEqual(checkSpawnChoices(device, { agent: 'squad', model: 'm-a', mode: 'agent' }), null);
+    assert.strictEqual(checkSpawnChoices(device, { prompt: 'x' }), null);
+    assert.strictEqual(checkSpawnChoices(device, { mode: 'default', agent: '', model: null }), null);
+    assert.strictEqual(checkSpawnChoices(device, { mode: 'PLAN' }), null);
+    for (const [body, field, status] of [
+      [{ agent: 'other' }, 'agent', 422], [{ model: 'm-z' }, 'model', 422], [{ mode: 'autopilot' }, 'mode', 422],
+      [{ mode: 'yolo' }, 'mode', 422], [{ model: 5 }, 'model', 400], [{ agent: 'x'.repeat(300) }, 'agent', 400],
+    ]) {
+      const r = checkSpawnChoices(device, body);
+      assert.ok(r, JSON.stringify(body));
+      assert.deepStrictEqual([r.status, r.body.field, r.body.code], [status, field, 'choice-unsupported'], JSON.stringify(body));
+    }
+    assert.strictEqual(checkSpawnChoices({ agents: null, models: null, modes: null }, { agent: 'anything', model: 'anything' }), null);
+    assert.strictEqual(checkSpawnChoices({ agents: [], models: [] }, { agent: 'anything' }), null);
+    assert.strictEqual(checkSpawnChoices({ modes: null }, { mode: 'yolo' }).body.field, 'mode', 'a mode the protocol itself does not define is refused even when the device listed none');
+  });
+
+  await checkAsync('GET /api/aca/choices answers the repository-configured model and registered reviewer choices (#257)', async () => {
+    const hub = await twoUserHub();
+    const r = await choiceGet(hub, '/api/aca/choices?repo=acme/alpha');
+    await hub.close();
+    assert.strictEqual(r.status, 200, JSON.stringify(r));
+    assert.strictEqual(r.body.repo, 'acme/alpha');
+    assert.strictEqual(r.body.defaultBranch, 'main');
+    assert.deepStrictEqual([r.body.model.state, r.body.model.source, ids(r.body.model.choices)], ['ok', 'repository-config', ['claude', 'a-model']]);
+    assert.deepStrictEqual(ids(r.body.reviewer.choices), ['someone', 'octocat', 'alice'], 'the retired member is not offered');
+    assert.strictEqual(r.body.reviewer.state, 'ok');
+  });
+
+  await checkAsync('the three choice routes are authorized per user: bob is refused on alice\'s repository before ANY repository data is read (#257, #258)', async () => {
+    const hub = await twoUserHub();
+    const results = [];
+    for (const p of ['/api/aca/choices?repo=acme/alpha', '/api/aca/branches?repo=acme/alpha&q=rel', '/api/aca/issues?repo=acme/alpha&q=fix', '/api/aca/issues?repo=acme/alpha&q=12']) {
+      results.push(await choiceGet(hub, p, bobToken));
+    }
+    const reads = repoReads(hub.fake);
+    const unknown = await choiceGet(hub, '/api/aca/branches?repo=acme/nowhere', aliceToken);
+    await hub.close();
+    for (const r of results) {
+      assert.strictEqual(r.status, 403, JSON.stringify(r));
+      assert.strictEqual(r.body.error, require('../src/service/github-app').repoNotAvailableMessage('acme/alpha'));
+      assert.ok(!r.body.model && !r.body.branches && !r.body.issues, 'a refusal carries no partial data');
+    }
+    assert.deepStrictEqual(reads, [], `repository data was read for an unauthorized caller: ${reads}`);
+    assert.strictEqual(unknown.status, 403, 'a repository the App is not installed on looks exactly like one the caller may not use');
+    assert.strictEqual(unknown.body.error, require('../src/service/github-app').repoNotAvailableMessage('acme/nowhere'));
+  });
+
+  await checkAsync('the choice routes re-ask GitHub on every call: access revoked between two requests ends the second (#257, #258)', async () => {
+    const hub = await twoUserHub();
+    const before = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha');
+    hub.fake.state.repoAccess['acme/alpha'] = { alice: 'none' };
+    const after = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha');
+    const afterChoices = await choiceGet(hub, '/api/aca/choices?repo=acme/alpha');
+    await hub.close();
+    assert.strictEqual(before.status, 200, JSON.stringify(before));
+    assert.strictEqual(after.status, 403, JSON.stringify(after));
+    assert.strictEqual(afterChoices.status, 403);
+    assert.ok(!after.raw.includes('release'), 'no branch name leaks after revocation');
+  });
+
+  await checkAsync('a failure verifying access on a choice route answers 502 with no data, never a guess (#257, #258)', async () => {
+    const hub = await twoUserHub({ repoAccess: { 'acme/alpha': { alice: { status: 500 } } } });
+    const rs = [];
+    for (const p of ['/api/aca/choices?repo=acme/alpha', '/api/aca/branches?repo=acme/alpha', '/api/aca/issues?repo=acme/alpha']) rs.push(await choiceGet(hub, p));
+    const reads = repoReads(hub.fake);
+    await hub.close();
+    rs.forEach((r) => { assert.strictEqual(r.status, 502, JSON.stringify(r)); assert.match(r.body.error, /could not verify your access/); });
+    assert.deepStrictEqual(reads, []);
+  });
+
+  await checkAsync('a session without a verified GitHub identity cannot use any choice route, and GitHub is never called (#257, #258)', async () => {
+    const fake = fakeGitHubApp();
+    const port = await listen(fake.server);
+    const auth = new Authenticator({ mode: MODES.DEV, devSecret: crypto.randomBytes(16).toString('hex'), owner: ['me'] });
+    const svc = new HubService({
+      auth, serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false,
+      githubApp: new GitHubApp({ appId: '1', privateKey: FAKE_PRIVATE_KEY_PEM, apiBase: `http://127.0.0.1:${port}` }),
+    });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const spoof = auth.mintDevToken('github', String(TEST_USER.id), TEST_USER.login);
+    const rs = [];
+    for (const p of ['choices', 'branches', 'issues']) rs.push(await apiRequest(addr.port, `/api/aca/${p}?repo=acme/widgets`, spoof));
+    await svc.close();
+    fake.server.close();
+    rs.forEach((r) => { assert.strictEqual(r.status, 403, JSON.stringify(r)); assert.match(r.body.error, /verified GitHub sign-in/); });
+    assert.strictEqual(fake.calls.total, 0);
+  });
+
+  await checkAsync('a hub with no GitHub App answers 501 on the choice routes, and malformed queries are 400 before any upstream call (#257)', async () => {
+    const svc = new HubService({ auth: githubAuth(), serveWeb: false, persistAccess: false, persistStore: false, persistDeviceTokens: false, persistPrefs: false });
+    const addr = await svc.listen(0, '127.0.0.1');
+    const off = await apiRequest(addr.port, '/api/aca/branches?repo=acme/widgets', TEST_TOKEN);
+    await svc.close();
+    assert.strictEqual(off.status, 501, JSON.stringify(off));
+
+    const hub = await twoUserHub();
+    const bad = [];
+    for (const p of ['repo=nope', 'repo=a/b/c', 'repo=acme/alpha&q=%00', `repo=acme/alpha&q=${'x'.repeat(101)}`, 'repo=acme/alpha&page=0', 'repo=acme/alpha&page=abc', 'repo=acme/alpha&page=999']) {
+      bad.push([p, await choiceGet(hub, `/api/aca/branches?${p}`), await choiceGet(hub, `/api/aca/issues?${p}`)]);
+    }
+    const total = hub.fake.calls.total;
+    await hub.close();
+    for (const [p, b, i] of bad) {
+      assert.strictEqual(b.status, 400, `${p}: ${JSON.stringify(b)}`);
+      assert.strictEqual(i.status, 400, `${p}: ${JSON.stringify(i)}`);
+    }
+    assert.strictEqual(total, 0, 'a request that is not well-formed spends nothing upstream');
+  });
+
+  await checkAsync('the choice routes draw on the SAME read budget as the repository list, so search cannot be used to exhaust GitHub (#257)', async () => {
+    const hub = await twoUserHub({ serviceOptions: { acaReadRateLimiter: new RateLimiter({ limit: 2, windowMs: 60000 }) } });
+    const a = await choiceGet(hub, '/api/aca/repos');
+    const b = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha');
+    const c = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=x');
+    const d = await choiceGet(hub, '/api/aca/choices?repo=acme/alpha');
+    await hub.close();
+    assert.deepStrictEqual([a.status, b.status, c.status, d.status], [200, 200, 429, 429]);
+    assert.ok(c.body.retryAfterMs > 0);
+  });
+
+  await checkAsync('discovery that cannot answer says so: missing is default-only, malformed or failing is unavailable with a reason, and none of it is a guess (#257)', async () => {
+    const cases = [
+      ['config file absent', { '.squad/config.json': null, '.squad/casting/registry.json': null }, 'default-only', 'default-only'],
+      ['config malformed', { '.squad/config.json': { raw: '{ not json' }, '.squad/casting/registry.json': { raw: '[1,' } }, 'unavailable', 'unavailable'],
+      ['GitHub failing', { '.squad/config.json': { status: 500 }, '.squad/casting/registry.json': { status: 403 } }, 'unavailable', 'unavailable'],
+      ['team state kept elsewhere', { '.squad/config.json': { stateLocation: 'external' } }, 'default-only', 'default-only'],
+      ['registry with no active member', { '.squad/casting/registry.json': { agents: { gone: { status: 'retired' } } } }, 'ok', 'default-only'],
+    ];
+    for (const [label, files, modelState, reviewerState] of cases) {
+      const hub = await twoUserHub({ fakeOptions: { files } });
+      const r = await choiceGet(hub, '/api/aca/choices?repo=acme/alpha');
+      await hub.close();
+      assert.strictEqual(r.status, 200, `${label}: ${JSON.stringify(r)}`);
+      assert.strictEqual(r.body.model.state, modelState, `${label}: ${JSON.stringify(r.body.model)}`);
+      assert.strictEqual(r.body.reviewer.state, reviewerState, `${label}: ${JSON.stringify(r.body.reviewer)}`);
+      if (modelState === 'unavailable') assert.ok(r.body.model.reason, `${label}: an unavailable state explains itself`);
+      if (modelState !== 'ok') assert.deepStrictEqual(r.body.model.choices, [], `${label}: no invented models`);
+      if (reviewerState !== 'ok') assert.deepStrictEqual(r.body.reviewer.choices, [], `${label}: no invented reviewers`);
+    }
+  });
+
+  await checkAsync('a repository whose workflow lacks the model or reviewer input reports it unsupported, and a workflow choice enum is the model source (#257)', async () => {
+    const legacy = await twoUserHub({ fakeOptions: { declaredInputs: LEGACY_DECLARED_INPUTS } });
+    const a = await choiceGet(legacy, '/api/aca/choices?repo=acme/alpha');
+    await legacy.close();
+    assert.strictEqual(a.body.model.state, 'unsupported');
+    assert.strictEqual(a.body.reviewer.state, 'unsupported');
+
+    const yaml = wfYamlLines([
+      '    inputs:', '      issue:', '        type: string', '      prompt:', '        type: string',
+      '      model:', '        type: choice', '        options:', '          - wf-a', '          - wf-b',
+    ]);
+    const hub = await twoUserHub({ fakeOptions: { workflowYaml: yaml, declaredInputs: ['issue', 'prompt', 'model'] } });
+    const b = await choiceGet(hub, '/api/aca/choices?repo=acme/alpha');
+    const ok = await choiceDispatch(hub, { repo: 'acme/alpha', issue: 1, prompt: 'go', model: 'wf-b' });
+    const notInEnum = await choiceDispatch(hub, { repo: 'acme/alpha', issue: 1, prompt: 'go', model: 'claude' });
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    assert.deepStrictEqual([b.body.model.source, ids(b.body.model.choices)], ['workflow', ['wf-a', 'wf-b']]);
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok));
+    assert.strictEqual(notInEnum.status, 422, 'the repository-configured model is not in this workflow\'s enum, so it is refused');
+    assert.strictEqual(effects.dispatches, 1);
+  });
+
+  await checkAsync('branch search finds a branch BEYOND the first page of GitHub results, and says when it stopped early instead of claiming it is exhaustive (#257)', async () => {
+    const branches = ['main', ...numbered(449, (n) => `branch-${String(n).padStart(3, '0')}`)];
+    const hub = await twoUserHub({ fakeOptions: { branches } });
+    const first = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha&q=branch-4');
+    const next = await choiceGet(hub, `/api/aca/branches?repo=acme/alpha&q=branch-4&page=${first.body.nextPage}`);
+    const exact = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha&q=branch-449');
+    const absent = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha&q=no-such-branch');
+    const noQuery = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha');
+    await hub.close();
+    assert.strictEqual(first.status, 200, JSON.stringify(first));
+    assert.deepStrictEqual(first.body.branches, [], 'the first 300 branches hold no match');
+    assert.ok(first.body.nextPage > 1, 'it must report that more could be scanned');
+    assert.strictEqual(next.body.branches.length, 50, JSON.stringify(next.body));
+    assert.ok(next.body.branches.every((b) => b.name.startsWith('branch-4')));
+    assert.strictEqual(next.body.nextPage, null, 'the scan reached the end');
+    assert.deepStrictEqual(ids(exact.body.branches.map((b) => ({ id: b.name }))), ['branch-449'], 'an exact name is verified directly, even deep in the list');
+    assert.deepStrictEqual(absent.body.branches, []);
+    assert.strictEqual(noQuery.body.branches.length, 100);
+    assert.ok(noQuery.body.nextPage, 'an unfiltered list is a page, with a way to ask for more');
+  });
+
+  await checkAsync('issue search offers real OPEN issues only: pull requests and closed issues are excluded even when GitHub returns them, and results page past the first (#257)', async () => {
+    const issues = [
+      ...numbered(75, (n) => ({ number: n, title: `Fix login bug ${n}`, state: 'open' })),
+      { number: 200, title: 'Fix login PR', state: 'open', pull_request: {} },
+      { number: 201, title: 'Fix login closed', state: 'closed' },
+      { number: 5000, title: 'Unrelated', state: 'open' },
+    ];
+    const hub = await twoUserHub({ fakeOptions: { issues } });
+    const p1 = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=login');
+    const p3 = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=login&page=3');
+    hub.fake.state.leakPrs = true;
+    const leaky = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=login&page=3');
+    hub.fake.state.leakPrs = false;
+    const byNumber = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=5000');
+    const prNumber = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=200');
+    const closedNumber = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=%23201');
+    await hub.close();
+    assert.strictEqual(p1.body.issues.length, 30, JSON.stringify(p1.body));
+    assert.strictEqual(p1.body.nextPage, 2);
+    assert.strictEqual(p3.body.issues.length, 15);
+    assert.strictEqual(p3.body.nextPage, null);
+    const nums = (r) => r.body.issues.map((i) => i.number);
+    for (const r of [p1, p3, leaky]) assert.ok(!nums(r).some((n) => n === 200 || n === 201), `a pull request or closed issue was offered: ${nums(r)}`);
+    assert.deepStrictEqual(nums(byNumber), [5000], 'a number is looked up exactly, not only searched for in titles');
+    assert.deepStrictEqual(nums(prNumber), [], 'a pull request number is not an issue');
+    assert.deepStrictEqual(nums(closedNumber), []);
+  });
+
+  await checkAsync('issue search text cannot add search qualifiers: it is quoted and repository-scoped by the server (#257)', async () => {
+    const hub = await twoUserHub({ fakeOptions: { issues: [{ number: 1, title: 'x', state: 'open' }] } });
+    await choiceGet(hub, `/api/aca/issues?repo=acme/alpha&q=${encodeURIComponent('x" repo:acme/beta is:pr OR "y')}`);
+    const searches = hub.fake.state.searches.slice();
+    await hub.close();
+    assert.deepStrictEqual(searches, ['"x repo acme beta is pr OR y" in:title repo:acme/alpha is:issue is:open']);
+  });
+
+  await checkAsync('branch and issue listing that GitHub cannot answer is an error, never an empty list that looks like "none" (#257)', async () => {
+    const hub = await twoUserHub({ fakeOptions: { branches: 'error', issues: 'error' } });
+    const b = await choiceGet(hub, '/api/aca/branches?repo=acme/alpha&q=x');
+    const i = await choiceGet(hub, '/api/aca/issues?repo=acme/alpha&q=x');
+    await hub.close();
+    for (const r of [b, i]) {
+      assert.ok(r.status >= 500 && r.status < 600, JSON.stringify(r));
+      assert.ok(r.body.error);
+      assert.ok(!r.body.branches && !r.body.issues);
+    }
+  });
+
+  await checkAsync('POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)', async () => {
+    const issues = [
+      { number: 7, title: 'Real open issue', state: 'open' }, { number: 8, title: 'A pull request', state: 'open', pull_request: {} },
+      { number: 9, title: 'Closed', state: 'closed' },
+    ];
+    const hub = await twoUserHub({ fakeOptions: { issues, branches: ['main', 'release'] }, serviceOptions: { acaRateLimiter: new RateLimiter({ limit: 1000, windowMs: 60000 }) } });
+    const good = await choiceDispatch(hub, { repo: 'acme/alpha', issue: 7, prompt: 'go', model: 'a-model', reviewer: 'octocat', baseBranch: 'release' });
+    const goodEffects = sideEffects(hub.fake, hub.svc);
+    const goodInputs = hub.fake.state.dispatches[0] && hub.fake.state.dispatches[0].inputs;
+    hub.fake.state.dispatches.length = 0;
+    const refusals = [
+      ['model', { model: 'gpt-nonexistent' }], ['reviewer', { reviewer: 'retired' }], ['reviewer', { reviewer: 'someone-else' }],
+      ['reviewer', { reviewer: 'me' }], ['baseBranch', { baseBranch: 'no-such-branch' }], ['baseBranch', { baseBranch: 'Release' }],
+      ['issue', { issue: 8 }], ['issue', { issue: 9 }], ['issue', { issue: 123456 }],
+    ];
+    const out = [];
+    for (const [field, extra] of refusals) {
+      const before = sideEffects(hub.fake, hub.svc);
+      const viaIssue = await choiceDispatch(hub, { repo: 'acme/alpha', issue: 7, prompt: 'go', ...extra });
+      const viaNew = await choiceDispatch(hub, { repo: 'acme/alpha', prompt: 'go', ...(field === 'issue' ? extra : { newIssue: { title: 'brand new' }, ...extra }) });
+      out.push({ field, extra, viaIssue, viaNew, before, after: sideEffects(hub.fake, hub.svc) });
+    }
+    await hub.close();
+    assert.strictEqual(good.status, 200, JSON.stringify(good));
+    assert.deepStrictEqual([goodInputs.model, goodInputs.reviewer, goodInputs.base_branch], ['a-model', 'octocat', 'release']);
+    assert.strictEqual(goodEffects.dispatches, 1);
+    for (const o of out) {
+      for (const r of [o.viaIssue, o.viaNew]) {
+        assert.strictEqual(r.status, 422, `${o.field} ${JSON.stringify(o.extra)}: ${JSON.stringify(r)}`);
+        assert.strictEqual(r.body.field, o.field, JSON.stringify(r));
+      }
+      assert.deepStrictEqual(o.after, o.before, `${o.field} ${JSON.stringify(o.extra)}: a refused value caused a side effect`);
+    }
+  });
+
+  await checkAsync('with a new issue requested, an unsupported model never creates the issue, and an unreadable catalog is 502, not a pass (#257)', async () => {
+    const hub = await twoUserHub();
+    const bad = await choiceDispatch(hub, { repo: 'acme/alpha', newIssue: { title: 'x' }, prompt: 'go', model: 'nope' });
+    const afterBad = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    assert.strictEqual(bad.status, 422);
+    assert.deepStrictEqual(afterBad, NO_SIDE_EFFECTS);
+
+    for (const [label, fakeOptions, extra, status] of [
+      ['config GitHub failure', { files: { '.squad/config.json': { status: 500 } } }, { model: 'claude' }, 502],
+      ['config malformed', { files: { '.squad/config.json': { raw: '{ nope' } } }, { model: 'claude' }, 422],
+      ['branch lookup failure', { branches: 'error' }, { baseBranch: 'release' }, 502],
+      ['issue lookup failure', { issues: 'error' }, { issue: 3 }, 502],
+      ['repository with no config', { files: { '.squad/config.json': null } }, { model: 'claude' }, 422],
+    ]) {
+      const h = await twoUserHub({ fakeOptions });
+      const r = await choiceDispatch(h, { repo: 'acme/alpha', issue: 3, prompt: 'go', ...extra });
+      const effects = sideEffects(h.fake, h.svc);
+      await h.close();
+      assert.strictEqual(r.status, status, `${label}: ${JSON.stringify(r)}`);
+      assert.deepStrictEqual(effects, NO_SIDE_EFFECTS, label);
+    }
+  });
+
+  await checkAsync('dispatch authorizes BEFORE it looks at the catalog: a caller without access learns nothing about branches, issues or models (#257, #258)', async () => {
+    const hub = await twoUserHub();
+    const r = await choiceDispatch(hub, { repo: 'acme/alpha', issue: 7, prompt: 'go', model: 'nope', baseBranch: 'nope' }, bobToken);
+    const reads = repoReads(hub.fake);
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    assert.strictEqual(r.status, 403, JSON.stringify(r));
+    assert.ok(!r.body.field, 'the refusal does not say which value was wrong');
+    assert.deepStrictEqual(reads, []);
+    assert.deepStrictEqual(effects, NO_SIDE_EFFECTS);
+  });
+
+  await checkAsync('a dispatch that fails after the issue was created still reports it so the retry reuses it, with validated choices (#257)', async () => {
+    const hub = await twoUserHub({ fakeOptions: { dispatchStatus: 500 } });
+    const r = await choiceDispatch(hub, { repo: 'acme/alpha', newIssue: { title: 'keep me' }, prompt: 'go', model: 'claude', baseBranch: 'release' });
+    const effects = sideEffects(hub.fake, hub.svc);
+    await hub.close();
+    assert.ok(r.status >= 400, JSON.stringify(r));
+    assert.strictEqual(effects.issues, 1);
+    assert.ok(acaCreatedIssueOf({ body: r.body }, { repo: 'acme/alpha', newIssue: { title: 'keep me' } }), `the created issue must be reported: ${JSON.stringify(r.body)}`);
+  });
+
+  await checkAsync('a New session request naming an agent, model or mode the device does not offer is refused before the device is asked (#257)', async () => {
+    const hub = await twoUserHub();
+    const me = await apiRequest(hub.port, '/api/me', aliceToken);
+    const subject = me.body.subject;
+    hub.svc.store.registerDevice(subject, {
+      deviceId: 'laptop', name: 'laptop', platform: 'win32', agents: ['squad'], models: ['m-a'], modes: ['agent', 'plan'],
+    });
+    hub.svc._devices.set(subject, new Map([['laptop', { close() {} }]]));
+    const sent = [];
+    hub.svc.command = async (...args) => { sent.push(args); return { id: 'session-1' }; };
+    const spawn = (body) => apiRequest(hub.port, '/api/devices/laptop/spawn', aliceToken, { method: 'POST', body });
+    const ok = await spawn({ prompt: 'p', agent: 'squad', model: 'm-a', mode: 'plan' });
+    const none = await spawn({ prompt: 'p' });
+    const sentOk = sent.length;
+    const bad = [await spawn({ prompt: 'p', model: 'm-z' }), await spawn({ prompt: 'p', agent: 'other' }), await spawn({ prompt: 'p', mode: 'autopilot' })];
+    await hub.close();
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok));
+    assert.strictEqual(none.status, 200, JSON.stringify(none));
+    assert.strictEqual(sentOk, 2);
+    assert.deepStrictEqual(bad.map((r) => [r.status, r.body.field, r.body.code]), [[422, 'model', 'choice-unsupported'], [422, 'agent', 'choice-unsupported'], [422, 'mode', 'choice-unsupported']]);
+    assert.strictEqual(sent.length, sentOk, 'nothing reached the device for a refused value');
+  });
+
+  await checkAsync('fixture clients close each loopback connection with an RST, so back-to-back runs leave no TIME_WAIT behind', async () => {
+    const closes = [];
+    const server = http.createServer((req, res) => { res.end('{"ok":true}'); });
+    server.on('connection', (socket) => {
+      const seen = { end: false, error: null };
+      socket.on('end', () => { seen.end = true; });
+      socket.on('error', (e) => { seen.error = e.code; });
+      closes.push(new Promise((resolve) => socket.on('close', () => resolve(seen))));
+    });
+    const port = await listen(server);
+    const first = await apiRequest(port, '/', 'token');
+    const second = await apiRequest(port, '/', 'token');
+    const seen = await Promise.race([Promise.all(closes.slice(0, 2)), new Promise((resolve) => setTimeout(() => resolve(null), 5000))]);
+    server.close();
+    assert.deepStrictEqual([first.status, second.status], [200, 200], JSON.stringify([first, second]));
+    assert.ok(seen && seen.length === 2, 'both connections must have been closed by the client');
+    for (const s of seen) assert.deepStrictEqual(s, { end: false, error: 'ECONNRESET' }, `a graceful FIN close leaves TIME_WAIT: ${JSON.stringify(s)}`);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -123,6 +123,7 @@ if (CHECKS.length < 30) {
   console.log('RESULT\tfail\tthe parity checklist covers every sprint\ttoo few rows');
   missing += 1;
 } else {
+  built += 1;
   console.log('  ok   the parity checklist covers every sprint');
   console.log('RESULT\tok\tthe parity checklist covers every sprint');
 }
@@ -229,6 +230,7 @@ if (PRD.length < 40) {
   console.log('RESULT\tfail\tthe PRD checklist covers every sprint\ttoo few rows');
   missing += 1;
 } else {
+  built += 1;
   console.log('  ok   the PRD checklist covers every sprint');
   console.log('RESULT\tok\tthe PRD checklist covers every sprint');
 }

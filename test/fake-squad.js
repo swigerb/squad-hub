@@ -52,6 +52,8 @@ if (process.env.FAKE_SQUAD_EXPECT_PREFIX_JSON) {
 }
 if (args[0] === '--version' || args[0] === '-v' || args[0] === 'version') {
   if (mode === 'version-crash') process.exit(7);
+  const startDelayMs = Number(process.env.FAKE_SQUAD_VERSION_DELAY_MS) || 0;
+  if (startDelayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, startDelayMs);
   process.stdout.write(`${version}\n`);
   process.exit(0);
 }

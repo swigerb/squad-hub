@@ -31,16 +31,16 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { ACA_PHASE, findWatcherDevice, findRalphDevice, acaWatcherLine,
   acaRalphLine, acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel,
-  acaStatusCardHtml, acaConnectionCounts };`)(mod, mod.exports);
+  acaStatusCardHtml, acaConnectionCounts, isPersistentAcaJob };`)(mod, mod.exports);
 
 const {
   ACA_PHASE, findWatcherDevice, findRalphDevice, acaWatcherLine, acaRalphLine,
-  acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel, acaStatusCardHtml, acaConnectionCounts,
+  acaDispatchStatusLabel, acaLastDispatchLine, acaStatusModel, acaStatusCardHtml, acaConnectionCounts, isPersistentAcaJob,
 } = mod.exports;
 
-check('a verified ACA service counts as one connection without inventing a run or device record', () => {
+check('a connected ACA service is flagged beside the counts, never added to them', () => {
   assert.deepStrictEqual(acaConnectionCounts({}, ACA_PHASE.CONNECTED), {
-    devices: 1, online: 1, sessions: 0, service: 1,
+    devices: 0, online: 0, sessions: 0, service: 1,
   });
   for (const phase of [undefined, ACA_PHASE.CHECKING, ACA_PHASE.NOT_CONNECTED]) {
     assert.deepStrictEqual(acaConnectionCounts({}, phase), {
@@ -48,8 +48,20 @@ check('a verified ACA service counts as one connection without inventing a run o
     });
   }
   assert.deepStrictEqual(acaConnectionCounts({ devices: 2, online: 1, sessions: 3 }, ACA_PHASE.CONNECTED), {
-    devices: 3, online: 2, sessions: 3, service: 1,
-  });
+    devices: 2, online: 1, sessions: 3, service: 1,
+  }, 'two real devices stay two with the service connected, not three');
+});
+
+check('the persistent watcher and Ralph jobs are recognized by verified role first, then by job naming', () => {
+  assert.strictEqual(isPersistentAcaJob({ kind: 'aca', meta: { role: 'watch' }, name: 'anything' }), true);
+  assert.strictEqual(isPersistentAcaJob({ kind: 'aca', meta: { role: 'ralph' }, name: 'anything' }), true);
+  assert.strictEqual(isPersistentAcaJob({ kind: 'aca', meta: null, name: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5' }), true);
+  assert.strictEqual(isPersistentAcaJob({ kind: 'aca', meta: null, name: 'aca-ca-squad-aca-ralph--0000004-abc12345-x1y2z' }), true);
+  // A verified role outranks a name that merely looks like another job.
+  assert.strictEqual(isPersistentAcaJob({ kind: 'aca', meta: { role: 'run' }, name: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5' }), false);
+  assert.strictEqual(isPersistentAcaJob({ kind: 'aca', meta: { repo: 'acme/widgets', issue: 42 }, name: 'squad-run-42-xyz' }), false);
+  assert.strictEqual(isPersistentAcaJob({ kind: 'cloud', meta: { role: 'watch' }, name: 'squad-hub-watcher' }), false);
+  assert.strictEqual(isPersistentAcaJob(null), false);
 });
 
 function dev(over = {}) {
@@ -94,6 +106,28 @@ check('findWatcherDevice prefers an explicit, sanitized meta.role over any name 
   // verified fact wins over the name-based convention fallback.
   const d = acaDev({ name: 'aca-ca-squad-aca-ralph--0000020-abc', meta: { role: 'watch' } });
   assert.strictEqual(findWatcherDevice([d]), d);
+
+  // PREFERENCE, not mere detection: a verified device and a name-only device
+  // compete for the same role, and the verified one is the LESS alive and
+  // older. Presence and recency alone would pick the name match, so only a
+  // real "explicit role first" rule returns the verified device, whichever
+  // way round the roster is ordered.
+  const nameWatch = acaDev({ name: REAL_WATCH_DEVICE_NAME, meta: null, presence: 'online', lastSeen: Date.now() });
+  const verifiedWatch = acaDev({ name: 'renamed-job', meta: { role: 'watch' }, presence: 'offline', lastSeen: Date.now() - 600000 });
+  assert.strictEqual(findWatcherDevice([nameWatch, verifiedWatch]), verifiedWatch, 'a name match outranked the verified role');
+  assert.strictEqual(findWatcherDevice([verifiedWatch, nameWatch]), verifiedWatch, 'roster order changed the answer');
+  assert.strictEqual(findWatcherDevice([nameWatch]), nameWatch, 'the name fallback still works when no device verifies a role');
+
+  // Same rule for Ralph, and an online verified device still wins over a
+  // fresher name match.
+  const nameRalph = acaDev({ name: 'aca-ca-squad-aca-ralph--0000004-abc12345-x1y2z', meta: null, presence: 'online', lastSeen: Date.now() });
+  const verifiedRalph = acaDev({ name: 'renamed-ralph', meta: { role: 'ralph' }, presence: 'online', lastSeen: Date.now() - 600000 });
+  assert.strictEqual(findRalphDevice([nameRalph, verifiedRalph]), verifiedRalph, 'a fresher name match outranked the verified Ralph');
+  assert.strictEqual(findRalphDevice([verifiedRalph, nameRalph]), verifiedRalph);
+
+  // A non-ACA device that claims the role never joins the competition.
+  const cloudClaim = dev({ name: 'claims-watch', kind: 'cloud', meta: { role: 'watch' }, presence: 'online', lastSeen: Date.now() });
+  assert.strictEqual(findWatcherDevice([cloudClaim, nameWatch]), nameWatch, 'a non-ACA claim displaced the ACA name match');
 });
 
 check('findWatcherDevice returns null when no watcher device exists', () => {
@@ -111,6 +145,32 @@ check('findWatcherDevice ignores a non-ACA device even if its name matches the c
   // match.
   const d = dev({ name: REAL_WATCH_DEVICE_NAME, kind: 'cloud' });
   assert.strictEqual(findWatcherDevice([d]), null);
+
+  // The kind filter is the boundary on BOTH paths, not only the name fallback:
+  // a non-ACA device that explicitly claims the role through meta.role is
+  // refused too, and for either persistent job.
+  const RALPH_NAME = 'aca-ca-squad-aca-ralph--0000004-abc12345-x1y2z';
+  for (const kind of ['cloud', 'local', undefined]) {
+    const watch = dev({ name: 'claims-watch', kind, meta: { role: 'watch' } });
+    const ralph = dev({ name: 'claims-ralph', kind, meta: { role: 'ralph' } });
+    const named = dev({ name: RALPH_NAME, kind, meta: null });
+    assert.strictEqual(findWatcherDevice([watch]), null, `a ${kind} device claiming meta.role watch was accepted`);
+    assert.strictEqual(findRalphDevice([ralph]), null, `a ${kind} device claiming meta.role ralph was accepted`);
+    assert.strictEqual(findRalphDevice([named]), null, `a ${kind} device named like Ralph was accepted`);
+    assert.strictEqual(findWatcherDevice([ralph, named]), null, `a ${kind} device claiming another role leaked into watch`);
+  }
+
+  // Precedence: a non-ACA device with an explicit role can never displace, or
+  // be chosen ahead of, the real ACA job, whichever order the roster lists
+  // them in and however recently the impostor was seen.
+  const real = acaDev({ name: REAL_WATCH_DEVICE_NAME, presence: 'offline', lastSeen: 1000 });
+  const impostor = dev({ name: 'impostor', kind: 'cloud', presence: 'online', lastSeen: 9000, meta: { role: 'watch' } });
+  assert.strictEqual(findWatcherDevice([impostor, real]), real, 'a non-ACA meta.role device outranked the ACA job');
+  assert.strictEqual(findWatcherDevice([real, impostor]), real, 'roster order let a non-ACA meta.role device win');
+  const realByRole = acaDev({ name: 'aca-job', meta: { role: 'ralph' }, presence: 'offline', lastSeen: 1000 });
+  const ralphImpostor = dev({ name: 'impostor', kind: 'local', presence: 'online', lastSeen: 9000, meta: { role: 'ralph' } });
+  assert.strictEqual(findRalphDevice([ralphImpostor, realByRole]), realByRole);
+  assert.strictEqual(findRalphDevice([realByRole, ralphImpostor]), realByRole);
 });
 
 check('findWatcherDevice never matches an arbitrary implementation session containing "watcher"/"ralph" as a substring', () => {
@@ -355,12 +415,15 @@ check('acaDispatchStatusLabel labels an in_progress run as "running"', () => {
   assert.strictEqual(acaDispatchStatusLabel({ state: 'in_progress' }), 'running');
 });
 
-check('acaDispatchStatusLabel labels a successful completed run as plain "completed"', () => {
-  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'success' }), 'completed');
+check('dispatch workflow success does not claim that the ACA job succeeded', () => {
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'success' }),
+    'Dispatch workflow succeeded; job outcome not confirmed');
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed' }),
+    'Dispatch workflow completed; job outcome not confirmed');
 });
 
 check('acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"', () => {
-  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'failure' }), 'completed (failure)');
+  assert.strictEqual(acaDispatchStatusLabel({ state: 'completed', conclusion: 'failure' }), 'dispatch workflow completed (failure)');
 });
 
 check('acaDispatchStatusLabel labels an error state with its reason', () => {

@@ -64,7 +64,10 @@ function healthBadge(v) {
   const n = v.failing.length;
   const label = v.healthy ? 'healthy' : (n ? `health: ${n} failing` : 'health: failing');
   let tip = 'Squad health: failing. The device did not name a check';
-  if (v.healthy) tip = 'Squad health: healthy. No failing checks';
+  if (v.healthy) {
+    const skipped = v.checks.filter((c) => c.status === 'skip').length;
+    tip = `Squad health: healthy. No failing checks${skipped ? `; ${skipped} skipped` : ''}`;
+  }
   else if (n) tip = `Squad health: failing checks: ${v.failing.join(', ')}`;
   return `<span class="health ${v.healthy ? 'healthy' : 'failing'}" title="${esc(tip)}"><span aria-hidden="true">●</span> ${label}</span>`;
 }

@@ -18,7 +18,9 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { judgeBaseline, classify, summarise } = require('./helpers/verdict');
+const {
+  judgeBaseline, classify, summarise, parseResults, parseSummary, failedNames, outputFormat, judgeControl, classifyRun,
+} = require('./helpers/verdict');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -406,6 +408,204 @@ check('main refuses to start when a previous run left a live mutation in the tre
   assert.match(r.out, /A previous run left live mutations in the working tree/);
   assert.match(r.out, /git checkout -- src\/subject\.js/);
   assert.strictEqual(r.stubRuns, 0, 'a baseline ran on top of a live mutation');
+}));
+
+// --- Output-level judgement shared by the acceptance runner and the probe ------
+
+const RES = (verdict, name, why) => `RESULT\t${verdict}\t${name}${why ? `\t${why}` : ''}`;
+const suiteOut = (...lines) => `${lines.join('\n')}\n`;
+const GREEN_OUT = suiteOut(RES('ok', 'one'), '  ok   one', RES('ok', 'two'), '  ok   two', '2 passed, 0 failed');
+const RED_OUT = suiteOut(RES('ok', 'one'), RES('fail', NAMED, 'boom'), `  FAIL ${NAMED}`, '1 passed, 1 failed');
+
+check('a status integer is never enough: an error, a signal, a timeout or a cancel disqualifies a run that also reports a code', () => {
+  for (const over of [{ signal: 'SIGKILL' }, { timedOut: true }, { cancelled: true }, { error: timedOut }]) {
+    const run = { code: 0, out: '5 passed, 0 failed  (1s)\n', ...over };
+    assert.strictEqual(judgeBaseline(run).ok, false, JSON.stringify(Object.keys(over)));
+    assert.strictEqual(judgeControl({ ...run, out: GREEN_OUT }).ok, false);
+    assert.strictEqual(classify({ code: 1, failed: [NAMED], ...over }, NAMED).verdict, 'error');
+    assert.strictEqual(classifyRun({ code: 1, out: RED_OUT, ...over }, NAMED).verdict, 'error');
+  }
+  assert.match(judgeBaseline({ code: 0, timedOut: true, out: '5 passed, 0 failed  (1s)' }).reason, /timed out and was stopped/);
+  assert.match(classify({ code: 1, signal: 'SIGTERM', failed: [NAMED] }, NAMED).reason, /killed by SIGTERM/);
+});
+
+check('RESULT lines and summaries are read the way the suites print them', () => {
+  assert.deepStrictEqual(parseResults(suiteOut(RES('ok', 'a'), 'noise', RES('fail', 'b', 'why'), RES('skip', 'c', 'no browser'))), [
+    { verdict: 'ok', name: 'a', why: '' }, { verdict: 'fail', name: 'b', why: 'why' }, { verdict: 'skip', name: 'c', why: 'no browser' },
+  ]);
+  assert.deepStrictEqual(parseSummary('x\n3 passed, 1 failed\n'), { passed: 3, failed: 1, skipped: 0 });
+  assert.deepStrictEqual(parseSummary('3 passed, 0 failed, 2 skipped\r\n'), { passed: 3, failed: 0, skipped: 2 });
+  assert.deepStrictEqual(parseSummary('2909 passed, 0 failed  (494s)\n'), { passed: 2909, failed: 0, skipped: 0 });
+  assert.deepStrictEqual(parseSummary('required model: 4 passed, 0 failed\n'), { passed: 4, failed: 0, skipped: 0 });
+  assert.deepStrictEqual(parseSummary('1 passed, 0 failed\nnoise\n9 passed, 2 failed\n'), { passed: 9, failed: 2, skipped: 0 }, 'the last summary wins');
+  assert.strictEqual(parseSummary('no numbers here'), null);
+  assert.strictEqual(parseSummary('about 3 passed, 0 failed things'), null, 'prose is not a summary');
+});
+
+check('failed names come from RESULT lines when there are any, else from run-tests FAIL lines, and never twice', () => {
+  assert.deepStrictEqual(failedNames(RED_OUT), [NAMED], 'the human FAIL line beside a RESULT line is not a second failure');
+  assert.deepStrictEqual(failedNames('  ok   a\n  FAIL b\n  FAIL c\n1 passed, 2 failed  (1s)\n'), ['b', 'c']);
+  assert.deepStrictEqual(failedNames(GREEN_OUT), []);
+  assert.deepStrictEqual(failedNames(''), []);
+  assert.deepStrictEqual(failedNames(undefined), []);
+});
+
+check('a control is clean only when it finished 0, ran something, failed and skipped nothing, and its summary agrees with its results', () => {
+  assert.deepStrictEqual(judgeControl({ code: 0, out: GREEN_OUT }), { ok: true, reason: '', passed: 2, failed: 0, skipped: 0 });
+  const bad = (run, re, label) => {
+    const v = judgeControl(run);
+    assert.strictEqual(v.ok, false, label);
+    assert.match(v.reason, re, label);
+  };
+  bad({ code: 1, out: GREEN_OUT }, /exited 1/, 'nonzero');
+  bad({ code: 0, out: RED_OUT }, new RegExp(`1 test failed: ${NAMED}`), 'a failure under status 0');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), RES('skip', 'b', 'no browser'), '1 passed, 0 failed, 1 skipped') }, /1 SKIPPED/, 'a skip');
+  bad({ code: 0, out: '0 passed, 0 failed\n' }, /no RESULT lines/, 'zero tests');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a')) }, /no "N passed, M failed" summary/, 'a log cut off before the summary');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), RES('ok', 'b'), '3 passed, 0 failed') }, /summary \(3 passed, 0 failed, 0 skipped\) contradicts the 2 results/, 'a summary that claims more than was shown');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), '0 passed, 0 failed') }, /contradicts the 1 results/, 'a summary of nothing');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), RES('ok', 'aggregate row'), '1 passed, 0 failed') }, /summary \(1 passed, 0 failed, 0 skipped\) contradicts the 2 results/, 'a tally that leaves out a RESULT row is a contradiction too, not an allowance');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), RES('ok', 'b'), '2 passed, 1 failed') }, /contradicts/, 'a failure the results never showed');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), '1 passed, 0 failed, 3 skipped') }, /contradicts/, 'skips the results never showed');
+  bad({ code: 0, out: suiteOut(RES('ok', 'a'), RES('maybe', 'b'), '1 passed, 0 failed') }, /unrecognised RESULT verdict "maybe"/, 'a verdict nobody defined');
+  bad({ code: null, out: GREEN_OUT }, /did not finish/, 'no status');
+  bad(undefined, /did not finish/, 'no run at all');
+});
+
+check('a mutant run is caught only on a complete, summarised, nonzero run that fails the named test', () => {
+  assert.deepStrictEqual(classifyRun({ code: 1, out: RED_OUT }, NAMED), { verdict: 'caught', reason: '' });
+  assert.strictEqual(classifyRun({ code: 1, out: RED_OUT }, 'some other test').verdict, 'imprecise');
+  assert.strictEqual(classifyRun({ code: 0, out: GREEN_OUT }, NAMED).verdict, 'escaped');
+  assert.strictEqual(classifyRun({ code: 1, out: GREEN_OUT }, NAMED).verdict, 'error', 'a crash that failed no test');
+  assert.strictEqual(classifyRun({ code: 1, out: RED_OUT }, '').verdict, 'error', 'a mutation that names nothing');
+  const cases = [
+    ['no summary at all', { code: 1, out: suiteOut(RES('fail', NAMED, 'boom')) }, /no "N passed, M failed" summary/],
+    ['skipped tests in the mutant run', { code: 1, out: suiteOut(RES('fail', NAMED), '0 passed, 1 failed, 2 skipped') }, /2 test\(s\) SKIPPED/],
+    ['a summary of nothing', { code: 1, out: suiteOut(RES('fail', NAMED), '0 passed, 0 failed') }, /executed no tests/],
+    ['fewer failures counted than printed', { code: 1, out: suiteOut(RES('fail', NAMED), RES('fail', 'other'), '3 passed, 1 failed') }, /summary says 1 failed but 2 failures were printed/],
+    ['status 0 with a failing summary', { code: 0, out: suiteOut(RES('ok', 'a'), '1 passed, 1 failed') }, /exited 0 while its summary reports 1 failed/],
+  ];
+  for (const [label, run, re] of cases) {
+    const v = classifyRun(run, NAMED);
+    assert.strictEqual(v.verdict, 'error', label);
+    assert.match(v.reason, re, label);
+  }
+  assert.strictEqual(classifyRun({ code: 1, out: suiteOut(RES('fail', NAMED, 'boom')) }, NAMED, { requireSummary: false }).verdict, 'caught', 'the summary requirement is explicit and opt-out');
+});
+
+check('a mutant run whose summary disagrees with its RESULT rows is an error in every direction, never a catch', () => {
+  const reason = (out, code = 1) => classifyRun({ code, out }, NAMED);
+  const cases = [
+    ['an invented extra failure', suiteOut(RES('ok', 'a'), RES('fail', NAMED), '1 passed, 2 failed'), /summary says 2 failed but only 1 failures were printed/],
+    ['a hidden failure', suiteOut(RES('fail', NAMED), RES('fail', 'other'), '0 passed, 1 failed'), /summary says 1 failed but 2 failures were printed/],
+    ['an invented extra pass', suiteOut(RES('ok', 'a'), RES('fail', NAMED), '5 passed, 1 failed'), /contradicts the 2 results/],
+    ['a pass left out of the tally', suiteOut(RES('ok', 'a'), RES('ok', 'b'), RES('fail', NAMED), '1 passed, 1 failed'), /contradicts the 3 results/],
+    ['a skip row omitted from the summary', suiteOut(RES('ok', 'a'), RES('skip', 'b', 'no browser'), RES('fail', NAMED), '1 passed, 1 failed'), /SKIPPED in the mutant run/],
+    ['skips the rows never showed', suiteOut(RES('ok', 'a'), RES('fail', NAMED), '1 passed, 1 failed, 1 skipped'), /SKIPPED in the mutant run/],
+    ['an unknown verdict', suiteOut(RES('ok', 'a'), RES('maybe', 'b'), RES('fail', NAMED), '1 passed, 1 failed'), /unrecognised RESULT verdict "maybe"/],
+  ];
+  for (const [label, out, re] of cases) {
+    const v = reason(out);
+    assert.strictEqual(v.verdict, 'error', label);
+    assert.match(v.reason, re, label);
+  }
+  assert.strictEqual(reason(suiteOut(RES('maybe', 'x'), RES('fail', NAMED))).verdict, 'error', 'an unknown verdict is an error even with no summary to compare');
+  assert.strictEqual(classifyRun({ code: 1, out: suiteOut(RES('maybe', 'x'), RES('fail', NAMED)) }, NAMED, { requireSummary: false }).verdict, 'error');
+  assert.strictEqual(reason(suiteOut(RES('ok', 'a'), RES('fail', NAMED), '1 passed, 1 failed')).verdict, 'caught', 'a consistent summary still catches');
+  for (const over of [{ timedOut: true }, { cancelled: true }, { signal: 'SIGTERM' }, { error: timedOut }]) {
+    assert.strictEqual(classifyRun({ code: 1, out: suiteOut(RES('ok', 'a'), RES('fail', NAMED), '1 passed, 1 failed'), ...over }, NAMED).verdict, 'error', 'an interrupted run stays an error with an integer status');
+  }
+});
+
+check('a full regression (no RESULT rows) is accounted by its own ok / FAIL / SKIP lines, and a quoted child RESULT row is not its record', () => {
+  const full = (...lines) => suiteOut('  [child-suite] start thing', '  [child-suite] end thing (0.1s)', ...lines);
+  assert.strictEqual(outputFormat(full('  ok   a')), 'full');
+  assert.strictEqual(outputFormat(suiteOut(RES('ok', 'a'))), 'results');
+  assert.strictEqual(outputFormat(suiteOut('  ok   a', '1 passed, 0 failed')), 'lines');
+  for (const pre of [full, suiteOut]) {
+    assert.deepStrictEqual(classifyRun({ code: 1, out: pre('  ok   a', `  FAIL ${NAMED}`, '         why', '1 passed, 1 failed  (3s)') }, NAMED), { verdict: 'caught', reason: '' });
+    assert.deepStrictEqual(classifyRun({ code: 1, out: pre('  ok   a', '  ok   b', `  FAIL ${NAMED}`, '2 passed, 1 failed  (3s)') }, NAMED), { verdict: 'caught', reason: '' });
+    const bad = (out, re, label) => {
+      const v = classifyRun({ code: 1, out }, NAMED);
+      assert.strictEqual(v.verdict, 'error', label);
+      assert.match(v.reason, re, label);
+    };
+    bad(pre('  ok   a', `  FAIL ${NAMED}`, '1 passed, 3 failed'), /summary says 3 failed but only 1 failures were printed/, 'an invented failure');
+    bad(pre('  ok   a', `  FAIL ${NAMED}`, '  FAIL other', '1 passed, 1 failed'), /summary says 1 failed but 2 failures were printed/, 'a hidden failure');
+    bad(pre('  ok   a', `  FAIL ${NAMED}`, '9 passed, 1 failed'), /summary says 9 passed but only 1 ok lines were printed/, 'invented passes');
+    bad(pre('  ok   a', '  SKIP b', `  FAIL ${NAMED}`, '1 passed, 1 failed'), /SKIP lines were printed/, 'a skip row omitted from the summary');
+  }
+  const quoted = full('  ok   a', `  FAIL ${NAMED}  (exit=1)`, `         RESULT\tfail\tsome child test\tboom`, 'RESULT\tfail\tanother child test', '1 passed, 1 failed  (3s)');
+  assert.deepStrictEqual(failedNames(quoted), [`${NAMED}  (exit=1)`], 'a full regression names its own FAIL lines, not a quoted child result');
+  assert.strictEqual(classifyRun({ code: 1, out: quoted }, NAMED).verdict, 'caught');
+});
+
+// --- The quick probe shares the strict verdict rules ---------------------------
+
+const { probe, runChild } = require('./mutate-probe');
+
+function probeScratch(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-unit-'));
+  try { return fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+const SUBJECT_SRC = 'module.exports = () => 41 + 1;\r\n';
+const CHILD_SRC = [
+  "const f = require('./subject');",
+  "const ok = f() === 42; const name = 'answer is 42';",
+  "console.log(`RESULT\\t${ok ? 'ok' : 'fail'}\\t${name}`);",
+  "console.log(`${ok ? 1 : 0} passed, ${ok ? 0 : 1} failed`);",
+  'process.exit(ok ? 0 : 1);',
+].join('\n');
+const PROBE_MUT = { file: 'subject.js', name: 'answer m', find: '41 + 1', replace: '40 + 1', mustFail: 'answer is 42' };
+
+check('the probe proves a real mutant through a real child, restores the file byte-for-byte and takes both controls', () => probeScratch((dir) => {
+  fs.writeFileSync(path.join(dir, 'subject.js'), SUBJECT_SRC);
+  fs.writeFileSync(path.join(dir, 'child.js'), CHILD_SRC);
+  const lines = [];
+  const res = probe({
+    root: dir, mutations: [PROBE_MUT], log: (l) => lines.push(l),
+    run: (env) => runChild(path.join(dir, 'child.js'), dir, env),
+  });
+  assert.strictEqual(res.ok, true, lines.join('\n'));
+  assert.strictEqual(res.controls.pre.ok && res.controls.post.ok, true);
+  assert.deepStrictEqual(res.results.map((r) => r.verdict), ['caught']);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'subject.js'), 'utf8'), SUBJECT_SRC, 'CRLF bytes survive');
+}));
+
+check('the probe fails on a red pre-control, a wrong-name catch, a crash, a miss, a flaky post-control and never calls them catches', () => probeScratch((dir) => {
+  fs.writeFileSync(path.join(dir, 'subject.js'), SUBJECT_SRC);
+  const green = { code: 0, out: GREEN_OUT };
+  const caughtOut = { code: 1, out: suiteOut(RES('fail', NAMED, 'x'), '0 passed, 1 failed') };
+  const quiet = () => {};
+  const mut = { ...PROBE_MUT, mustFail: NAMED };
+
+  const red = probe({ root: dir, mutations: [mut], log: quiet, run: () => ({ code: 1, out: RED_OUT }) });
+  assert.strictEqual(red.ok, false);
+  assert.strictEqual(red.results.length, 0, 'no mutant runs against a red baseline');
+
+  const answers = (seq) => { let i = 0; return () => seq[Math.min(i++, seq.length - 1)]; };
+  const cases = [
+    ['wrong name', [green, { code: 1, out: suiteOut(RES('fail', 'another'), '0 passed, 1 failed') }, green], 'imprecise'],
+    ['crash with no failing test', [green, { code: 1, out: GREEN_OUT }, green], 'error'],
+    ['timeout despite a status', [green, { code: 1, timedOut: true, out: caughtOut.out }, green], 'error'],
+    ['killed by a signal', [green, { code: 1, signal: 'SIGKILL', out: caughtOut.out }, green], 'error'],
+    ['miss', [green, green, green], 'escaped'],
+    ['no summary', [green, { code: 1, out: suiteOut(RES('fail', NAMED)) }, green], 'error'],
+  ];
+  for (const [label, seq, verdict] of cases) {
+    const res = probe({ root: dir, mutations: [mut], log: quiet, run: answers(seq) });
+    assert.strictEqual(res.ok, false, label);
+    assert.strictEqual(res.results[0].verdict, verdict, label);
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'subject.js'), 'utf8'), SUBJECT_SRC, `${label}: restored`);
+  }
+
+  const flaky = probe({ root: dir, mutations: [mut], log: quiet, run: answers([green, caughtOut, { code: 1, out: RED_OUT }]) });
+  assert.strictEqual(flaky.results[0].verdict, 'caught');
+  assert.strictEqual(flaky.ok, false, 'a catch does not pass when the post-run control is red');
+
+  const miss = probe({ root: dir, mutations: [{ ...mut, find: 'not in the file' }], log: quiet, run: () => green });
+  assert.strictEqual(miss.ok, false);
+  assert.match(miss.results[0].reason, /anchor did not match/);
 }));
 
 console.log(`\n${pass} passed, ${fail} failed`);

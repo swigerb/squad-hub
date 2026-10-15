@@ -32,6 +32,14 @@
  *   answers strictly from what `GET /app/installations` and
  *   `GET /installation/repositories` report -- never from the request.
  *
+ *   INSTALLATION IS NOT AUTHORIZATION (#258). The App sees every repository it
+ *   is installed on, which says nothing about WHO MAY USE one. Listing and
+ *   dispatching are both gated on `authorizeRepoAccess`: GitHub's own answer,
+ *   for the verified GitHub account (id + login, from the Authenticator's GitHub
+ *   mode only), that this account has write or admin on the repository. It is
+ *   asked again on every request, never cached, and any failure to get an answer
+ *   denies.
+ *
  *   NOT CONFIGURED FAILS CLOSED, LOUDLY. `SQUAD_HUB_GH_APP_ID` /
  *   `SQUAD_HUB_GH_APP_PRIVATE_KEY` absent, or a private key that does not
  *   parse, both set `enabled = false` with a short human reason -- the three
@@ -51,6 +59,7 @@ const http = require('http');
 const util = require('util');
 const { URL } = require('url');
 const { buildWorkflowInputs, requestedInputNames } = require('../aca-dispatch');
+const choices = require('./aca-choices');
 
 /** The workflow this whole feature dispatches. Named once, so a rename does
  * not have to be found by grepping literal strings through this file. */
@@ -196,6 +205,47 @@ function parseDeclaredWorkflowInputs(yamlText) {
     names.push(m[1]);
   }
   return names;
+}
+
+/**
+ * The one refusal a caller ever sees for a repository it may not use, whether
+ * the App is not installed there or the signed-in GitHub account lacks write
+ * access to it. One message for both, so a hub user cannot probe which private
+ * repositories the App is installed on by comparing refusals.
+ */
+function repoNotAvailableMessage(fullName) {
+  return `${fullName} is not available to your GitHub account: the GitHub App must be installed on it and your account needs write access to it`;
+}
+
+/** What a caller without a GitHub identity verified by GitHub itself is told. */
+const GITHUB_IDENTITY_REQUIRED_MESSAGE = 'starting or listing cloud jobs from the hub needs a verified GitHub sign-in '
+  + '(SQUAD_HUB_AUTH=github), because access is checked against the signed-in GitHub account; '
+  + 'this hub session has none. Use the "Review on GitHub..." fallback instead.';
+
+// The 502 for a listing whose verification failed. Generic on purpose: the list checks
+// repositories the caller never named, so it must not say which one failed or why.
+const LIST_UNVERIFIABLE_MESSAGE = 'could not verify your access to the repositories this hub can see; '
+  + 'nothing was listed. Try again shortly.';
+
+/** A GitHub login as GitHub itself defines one (EMU logins add an underscore). */
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,99})$/;
+const GITHUB_ID_RE = /^[1-9][0-9]{0,15}$/;
+
+/** The base permissions that may start work. `maintain` is reported by GitHub
+ * as `write`, `triage` as `read` -- `role_name` is deliberately never read. */
+const AUTHORIZED_PERMISSIONS = new Set(['write', 'admin']);
+
+/**
+ * The verified GitHub identity (`{id, login}`) an authorization decision is
+ * made for, or `null` when the caller supplied anything less. Only the
+ * authenticator's GitHub verification produces one (see `auth.js`).
+ */
+function verifiedActor(actor) {
+  if (!actor || typeof actor !== 'object') return null;
+  const id = typeof actor.id === 'number' ? String(actor.id) : actor.id;
+  if (typeof id !== 'string' || !GITHUB_ID_RE.test(id)) return null;
+  if (typeof actor.login !== 'string' || !GITHUB_LOGIN_RE.test(actor.login)) return null;
+  return { id, login: actor.login };
 }
 
 function b64url(obj) {
@@ -466,16 +516,66 @@ class GitHubApp {
     // A missing file is an ordinary, expected answer -- NOT an error, and
     // must not be conflated with one: a repo without this workflow yet is not
     // the same fact as "GitHub could not be reached".
-    if (res.status === 404) return { exists: false, declaredInputs: null };
+    if (res.status === 404) return { exists: false, declaredInputs: null, choiceOptions: null };
     if (res.status !== 200) {
       throw this._err(upstreamStatus(res.status), `could not check for ${WORKFLOW_FILE} in ${owner}/${repo} (GitHub returned ${res.status})`);
     }
     let declaredInputs = null;
+    let choiceOptions = null;
     if (res.json && typeof res.json.content === 'string') {
       const yamlText = Buffer.from(res.json.content, 'base64').toString('utf8');
       declaredInputs = parseDeclaredWorkflowInputs(yamlText);
+      if (Array.isArray(declaredInputs)) choiceOptions = choices.parseWorkflowChoiceInputs(yamlText);
     }
-    return { exists: true, declaredInputs };
+    return { exists: true, declaredInputs, choiceOptions };
+  }
+
+  /**
+   * Whether the signed-in GitHub account `actor` may use `owner/repo` through
+   * this hub: `{allowed: true}` or `{allowed: false}`. Throws (502) when that
+   * cannot be established -- a verification failure is never an allow, and a
+   * caller must never fall back to "installed, so fine".
+   *
+   * The App's installation says only that the OPERATOR chose the repository.
+   * It says nothing about the person at the keyboard, and every hub user
+   * shares the one App credential, so without this check any signed-in user
+   * could name any installed repository -- including a private one they can
+   * only see because the hub's token can -- and have the hub create an issue
+   * and dispatch a workflow on it. Public readability is not permission
+   * either: only write or admin (maintain reports as write) counts.
+   *
+   * Asked of GitHub on every call, never cached: a collaborator removed a
+   * second ago must be refused on the next request. Uses the repo-scoped
+   * installation token, whose Metadata read access the App already holds.
+   *
+   * The answer is trusted only if `user.id` is the verified numeric id. A
+   * login can be renamed and handed to someone else; the id cannot.
+   */
+  async authorizeRepoAccess({ owner, repo, installationId }, actor) {
+    const who = verifiedActor(actor);
+    if (!who) throw this._err(403, GITHUB_IDENTITY_REQUIRED_MESSAGE);
+    const fullName = `${owner}/${repo}`;
+    const unverifiable = (why) => this._err(502, `could not verify your access to ${fullName} (${why}); nothing was created or dispatched`);
+    let res;
+    try {
+      const token = await this._installationToken(installationId, repo);
+      res = await this._request({
+        method: 'GET',
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(who.login)}/permission`,
+        token,
+      });
+    } catch (e) {
+      throw unverifiable(e && e.message ? e.message : 'GitHub could not be reached');
+    }
+    if (res.status === 404) return { allowed: false };
+    if (res.status !== 200) throw unverifiable(`GitHub returned ${res.status}`);
+    const body = res.json;
+    if (!body || typeof body !== 'object' || typeof body.permission !== 'string') {
+      throw unverifiable('GitHub returned an unreadable answer');
+    }
+    const user = body.user;
+    if (!user || typeof user !== 'object' || String(user.id) !== who.id) return { allowed: false };
+    return { allowed: AUTHORIZED_PERMISSIONS.has(body.permission) };
   }
 
   async _defaultBranch(owner, repo, token) {
@@ -502,14 +602,42 @@ class GitHubApp {
     }
   }
 
-  /** Every repo the App can see, with whether each has `squad-dispatch.yml`
-   * and which `workflow_dispatch` inputs it declares (`null` when that is
+  /** The repositories `actor` may use: every one the App is installed on AND
+   * where that verified GitHub account has write or admin (see
+   * `authorizeRepoAccess`). Anything unverifiable throws -- never a partial or
+   * unfiltered list. `[{installationId, owner, repo, fullName}]`.
+   *
+   * This checks EVERY installed repository, including ones the caller may not
+   * use and never named. A failure on one of those must not say which: the
+   * error from `authorizeRepoAccess` carries that repository's name and GitHub's
+   * own words, so the list's 502 is generic -- no owner, repo, URL or upstream
+   * text -- while still failing closed with no list at all. */
+  async listAuthorizedRepos(actor) {
+    if (!verifiedActor(actor)) throw this._err(403, GITHUB_IDENTITY_REQUIRED_MESSAGE);
+    const out = [];
+    for (const r of await this.listInstalledRepos()) {
+      let verdict;
+      try {
+        verdict = await this.authorizeRepoAccess(r, actor);
+      } catch (e) {
+        throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);
+      }
+      if (verdict.allowed) out.push(r);
+    }
+    return out;
+  }
+
+  /** Every repo `actor` may use (`listAuthorizedRepos`), with whether each has
+   * `squad-dispatch.yml` and which `workflow_dispatch` inputs it declares
+   * (`null` when that is
    * unknown: no workflow, no `workflow_dispatch` trigger, or an unreadable
    * body -- a caller must treat `null` as "do not know", never as "none").
    * `GET /api/aca/repos`. A 404 from the contents check is "no"; anything
-   * else is a clear error rather than a silent false, per the issue. */
-  async listReposWithDispatchStatus() {
-    const repos = await this.listInstalledRepos();
+   * else is a clear error rather than a silent false, per the issue. The
+   * workflow file is only read for a repository the actor was just authorized
+   * on. */
+  async listReposWithDispatchStatus(actor) {
+    const repos = await this.listAuthorizedRepos(actor);
     const out = [];
     for (const r of repos) {
       const token = await this._installationToken(r.installationId, r.repo);
@@ -522,10 +650,61 @@ class GitHubApp {
   }
 
   /**
+   * Authorizes `actor` for the repository FIRST (403 when the account may not
+   * use it, 502 when GitHub could not say) and only then hands back the
+   * repository-scoped token. Every new choice read below starts here, so no
+   * choice data -- branch names, issue titles, model policy, reviewer roster --
+   * is fetched or returned for a repository the caller cannot use.
+   */
+  async _authorizedToken({ owner, repo, installationId }, actor) {
+    const authorized = await this.authorizeRepoAccess({ owner, repo, installationId }, actor);
+    if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(`${owner}/${repo}`));
+    return this._installationToken(installationId, repo);
+  }
+
+  /**
+   * What the New ACA job dialog may offer for `owner/repo`: the default
+   * branch, the workflow's declared inputs, and the model and reviewer choice
+   * states (see `./aca-choices.js`). `GET /api/aca/choices`.
+   */
+  async listDispatchChoices(target, actor) {
+    const token = await this._authorizedToken(target, actor);
+    const { owner, repo } = target;
+    const workflow = await this._dispatchWorkflowFile(owner, repo, token);
+    const defaultBranch = await this._defaultBranch(owner, repo, token);
+    const base = { repo: `${owner}/${repo}`, defaultBranch, workflow: { exists: workflow.exists, declaredInputs: workflow.declaredInputs } };
+    if (!workflow.exists || !Array.isArray(workflow.declaredInputs)) {
+      const why = !workflow.exists
+        ? `${owner}/${repo} has no .github/workflows/${WORKFLOW_FILE}`
+        : `the inputs of ${owner}/${repo}'s ${WORKFLOW_FILE} cannot be read`;
+      const off = { state: 'unavailable', status: 422, choices: [], default: null, source: null, reason: why };
+      return { ...base, model: off, reviewer: off };
+    }
+    return { ...base, ...(await choices.discoverModelAndReviewer(this, owner, repo, token, workflow)) };
+  }
+
+  /** Branches of `owner/repo` matching `q`, one server-backed page. `GET /api/aca/branches`. */
+  async listBranchChoices(target, actor, { q = '', page = 1 } = {}) {
+    const token = await this._authorizedToken(target, actor);
+    return choices.searchBranches(this, upstreamStatus, target.owner, target.repo, token, { q, page });
+  }
+
+  /** Open issues (not pull requests) of `owner/repo` matching `q`, one server-backed page. `GET /api/aca/issues`. */
+  async listIssueChoices(target, actor, { q = '', page = 1 } = {}) {
+    const token = await this._authorizedToken(target, actor);
+    return choices.searchIssues(this, upstreamStatus, target.owner, target.repo, token, { q, page });
+  }
+
+  /**
    * Dispatch `squad-dispatch.yml` on `owner/repo`, already-validated and
-   * already allow-listed by the caller (see `hub-service.js`'s
-   * `/api/aca/dispatch`, which resolves `installationId` via
-   * `findInstallation` before this is ever called).
+   * already allow-listed against installations by the caller (see
+   * `hub-service.js`'s `/api/aca/dispatch`, which resolves `installationId`
+   * via `findInstallation` before this is ever called).
+   *
+   * `actor` is the verified GitHub account (`{id, login}`). It is authorized
+   * for the repository HERE, first, so no caller can reach issue creation or
+   * the dispatch without it: 403 when the account may not use the repository,
+   * 502 when GitHub could not say.
    *
    * Every precondition -- the workflow existing, and every requested option
    * being one the workflow actually declares -- is checked BEFORE `newIssue`
@@ -539,11 +718,17 @@ class GitHubApp {
    * allow-list lookup.
    */
   async dispatch({
-    owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly,
+    owner, repo, installationId, baseBranch, issue, newIssue, prompt, model, publishPr, reviewer, watchOnly, actor,
   }) {
+    // First, before ANY GitHub read of the repo's contents and long before an
+    // issue or a dispatch: the signed-in GitHub account must be allowed on
+    // this repository right now. The route's own installation check is not
+    // this -- it only says the operator installed the App there.
+    const authorized = await this.authorizeRepoAccess({ owner, repo, installationId }, actor);
+    if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(`${owner}/${repo}`));
     const token = await this._installationToken(installationId, repo);
 
-    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
+    const { exists: hasWorkflow, declaredInputs, choiceOptions } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {
       throw this._err(422, `${owner}/${repo} has no .github/workflows/${WORKFLOW_FILE}`);
     }
@@ -578,6 +763,15 @@ class GitHubApp {
           + 'Add them to the workflow\'s workflow_dispatch.inputs (see swigerb/squad-on-aca#135), or omit them from this request.',
       );
     }
+
+    // An EXPLICIT base branch, existing issue, model or reviewer must be one
+    // the repository really offers (#257) -- checked here, with the same
+    // lookups the dialog's pickers use, and before anything below can create
+    // an issue or start a run. An omitted field means "the default" and is not
+    // checked; one that cannot be verified refuses (502) rather than passes.
+    await choices.validateDispatchChoices(this, upstreamStatus, {
+      owner, repo, token, workflow: { declaredInputs, choiceOptions }, baseBranch, issue, model, reviewer,
+    });
 
     const generatedCorrelationId = crypto.randomBytes(16).toString('hex');
     const correlationSupported = declared.includes(HUB_CORRELATION_INPUT);
@@ -783,4 +977,7 @@ module.exports = {
   UNSUPPORTED_CORRELATION_REASON,
   parseDeclaredWorkflowInputs,
   upstreamStatus,
+  repoNotAvailableMessage,
+  GITHUB_IDENTITY_REQUIRED_MESSAGE,
+  verifiedActor,
 };

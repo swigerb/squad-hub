@@ -13,7 +13,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { readWebApp, readWebSource } = require('./helpers/web-source');
+const { readWebApp, readWebSource, stripModuleSyntax } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
 function check(name, fn) {
@@ -34,12 +34,13 @@ const mod = { exports: {} };
 new Function('module', 'exports', `${src}
 module.exports = { esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState, ago, exact, timeCell,
-  updateText, transcriptBlocks, resultView, forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton };`)(mod, mod.exports);
+  updateText, transcriptBlocks, resultView, forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton,
+  connectCommand };`)(mod, mod.exports);
 const {
   esc, approvalRows, approvalIsReadOnly, approvalOptions, alwaysAllowRule,
   spawnRequest, spawnError, forgetWindowMs, forgetTargets, forgetSummary, newMenuState,
   exact, timeCell, updateText, transcriptBlocks, resultView,
-  forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton,
+  forgetUndoLabel, removeDeviceUndoLabel, transcriptSkeleton, connectCommand,
 } = mod.exports;
 
 const ONCE = { optionId: 'allow_once', kind: 'allow_once', name: null };
@@ -544,11 +545,50 @@ check('every state that is NOT live still spells itself out', () => {
   assert.match(labels, /hub unreachable/, 'the state worth interrupting for must say something a person can act on');
 });
 
-check('a broken feed says the WORK is unaffected, not just that the page is', () => {
+check('a broken feed distinguishes independent work from unconfirmed device status', () => {
   const app = web;
   const titles = app.match(/const CONN_TITLE = \{[\s\S]*?\};/)[0];
-  assert.match(titles, /keep running|unaffected/,
-    'the obvious fear on seeing a red badge is that the work stopped, and it has not');
+  assert.match(titles, /independently on devices/);
+  assert.match(titles, /not confirmed/);
+  assert.doesNotMatch(titles, /unaffected|keep running/,
+    'a disconnected browser cannot guarantee that every worker is still running');
+});
+
+check('the live feed is confirmed by a current snapshot, not an open or superseded socket', () => {
+  const source = stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'ws.js'), 'utf8'));
+  const state = { token: 'synthetic-token', overview: { groups: [] } };
+  const elements = {
+    conn: { dataset: {}, setAttribute() {} },
+    connectionNote: { hidden: true, textContent: '' },
+  };
+  const timers = [];
+  class FakeSocket { close() {} }
+  const client = new Function('state', '$', 'location', 'WebSocket', 'render',
+    'acaAttachFromOverview', 'setTimeout', 'clearTimeout', `${source}\nreturn { connect };`)(
+    state, (id) => elements[id], { protocol: 'http:', host: 'localhost' },
+    FakeSocket, () => {}, () => {}, (fn, delay) => { timers.push({ fn, delay }); return timers.length; }, () => {},
+  );
+  const snapshot = { type: 'overview', devices: [], groups: [], counts: { sessions: 0 } };
+  client.connect();
+  const first = state.ws;
+  first.onopen();
+  assert.strictEqual(elements.conn.dataset.state, 'connecting');
+  assert.strictEqual(elements.connectionNote.hidden, false);
+  first.onmessage({ data: JSON.stringify(snapshot) });
+  assert.strictEqual(elements.conn.dataset.state, 'live');
+  assert.strictEqual(elements.connectionNote.hidden, true);
+  first.onclose({ code: 1006 });
+  assert.strictEqual(elements.conn.dataset.state, 'retrying');
+  assert.match(elements.connectionNote.textContent, /out of date/);
+  assert.strictEqual(timers[0].delay, 1000);
+  client.connect();
+  first.onopen();
+  first.onmessage({ data: JSON.stringify({ ...snapshot, counts: { sessions: 99 } }) });
+  assert.notStrictEqual(elements.conn.dataset.state, 'live');
+  assert.strictEqual(state.overview.counts.sessions, 0);
+  state.ws.onmessage({ data: JSON.stringify(snapshot) });
+  assert.strictEqual(elements.conn.dataset.state, 'live');
+  assert.strictEqual(elements.connectionNote.hidden, true);
 });
 
 check('the device pill reports the EXCEPTION, not the agreement', () => {
@@ -591,31 +631,34 @@ check('the Squad pill is not repeated by the active-member chip beside it', () =
     '"Squad" (or an invented name) could reappear');
 });
 
-check('Agent and Model offer what the device actually has, and fall back when it cannot say', () => {
-  // The hub holds no Copilot install, so it cannot know either list on its own
-  // — they arrive with the device's heartbeat. Where a list exists, a
-  // free-text box asks someone to already know what to type, and a typo only
-  // surfaces when the session comes back reporting something else.
+check('Agent and Model are closed lists of what the device reports, never free text', () => {
+  // The hub holds no Copilot install, so neither list is known to it; they
+  // arrive with the device's heartbeat. A typed name the device does not offer
+  // is relayed and quietly replaced, so there is no text box to type one in.
   const app = web;
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
   assert.match(app, /function choicesField/, 'the picker helper is gone');
-  assert.match(app, /choicesField\('nsAgentSelect', 'nsAgent', device && device\.agents/,
+  assert.match(app, /choicesField\('nsAgent', 'nsAgentNote', device && device\.agents/,
     'the Agent picker must be driven by what the DEVICE reported');
-  assert.match(app, /choicesField\('nsModelSelect', 'nsModel', device && device\.models/,
+  assert.match(app, /choicesField\('nsModel', 'nsModelNote', device && device\.models/,
     'the Model picker must be driven by what the DEVICE reported');
+  assert.match(html, /<select id="nsAgent">/, 'Agent must be a dropdown');
+  assert.match(html, /<select id="nsModel">/, 'Model must be a dropdown');
+  assert.doesNotMatch(html, /<input id="ns(Agent|Model)"/, 'Agent and Model must not be typeable');
+  assert.doesNotMatch(app, /nsAgentSelect|nsModelSelect/, 'the old hidden-select/free-text pair is gone');
 
-  // The distinction that matters: "could not tell" is not "there are none".
-  // An empty picker would be a claim the device never made, and would leave
-  // someone unable to type a name they know is there.
-  assert.match(app, /if \(!Array\.isArray\(list\) \|\| !list\.length\)[\s\S]{0,120}box\.hidden = false/,
-    'a device that could not report a list must fall back to the text box');
+  // "Could not tell" is not "there are none", and is not another device's list:
+  // it offers only the default, disabled, and says why.
+  assert.match(app, /sel\.disabled = !known/, 'a device that could not report a list must offer only the default');
+  assert.match(app, /has not reported which \$\{noun\} it offers/, 'the reason must be shown');
+  // A selection survives a device change only if the new device offers it.
+  assert.match(app, /sel\.value = known && list\.includes\(prior\) \? prior : ''/,
+    'a choice the new device does not offer must be cleared');
 
   // And the choice has to reach the request, or picking one does nothing.
-  assert.match(app, /agentSel && !agentSel\.hidden \? agentSel\.value/,
-    'the visible agent control must be the one read on submit');
-  assert.match(app, /modelSel && !modelSel\.hidden \? modelSel\.value/,
-    'the visible model control must be the one read on submit');
+  assert.match(app, /agent: \$\('nsAgent'\)\.value,\s*model: \$\('nsModel'\)\.value/,
+    'the chosen agent and model must be what is sent');
 });
-
 check('every field in New session explains itself', () => {
   // A form someone has to already understand is a form that gets guessed at,
   // and a guessed Agent or Model is only found to be wrong after the session
@@ -745,12 +788,31 @@ check('the Connect dialog can put device flags into the command it hands you', (
   // cannot apply them -- the only place they take effect is the command that
   // gets pasted. Without them a device connects and then cannot open a file,
   // with nothing having said it wouldn't.
-  const app = web;
-  assert.match(app, /cnFilesAll'\)\.checked\) flags\.push\('--allow-files-all'\)/,
+  // The real command builder, run with synthetic values. Which checkbox feeds
+  // which argument is proved in a browser (see the Connect dialog check in
+  // browser-e2e-unit.js) and pinned here at the one place the dialog calls it.
+  const base = { origin: 'https://hub.example.test', token: 'sqhd1.synthetic' };
+  const cmd = (opts) => connectCommand({ ...base, ...opts });
+  const prefix = 'squad-hub connect --hub https://hub.example.test --token sqhd1.synthetic';
+  assert.strictEqual(cmd({}), prefix, 'no option chosen must add no flag');
+  assert.strictEqual(cmd({ files: true }), `${prefix} --allow-files`);
+  assert.strictEqual(cmd({ filesAll: true }), `${prefix} --allow-files-all`,
     'the "anywhere" option does not reach the command');
-  assert.match(app, /else if \(\$\('cnFiles'\)\.checked\) flags\.push\('--allow-files'\)/,
+  assert.strictEqual(cmd({ files: true, filesAll: true }), `${prefix} --allow-files-all`,
     '--allow-files-all implies --allow-files; emitting both is noise');
-  assert.match(app, /cnTrackAll'\)\.checked\) flags\.push\('--track-all'\)/);
+  assert.strictEqual(cmd({ trackAll: true }), `${prefix} --track-all`);
+  assert.strictEqual(cmd({ files: true, trackAll: true }), `${prefix} --allow-files --track-all`,
+    '--track-all is independent of file access');
+  assert.strictEqual(cmd({ filesAll: true, trackAll: true }), `${prefix} --allow-files-all --track-all`);
+  assert.strictEqual(cmd({ kind: 'local' }), `${prefix} --device-kind local`);
+  assert.strictEqual(cmd({ kind: 'cloud', files: true, trackAll: true }),
+    `${prefix} --device-kind cloud --allow-files --track-all`);
+  assert.strictEqual(cmd({ kind: 'aca' }), prefix, 'only local and cloud can be requested');
+
+  // The dialog must hand each checkbox to the argument of its own name.
+  const app = web;
+  assert.match(app, /files:\s*\$\('cnFiles'\)\.checked,\s*filesAll:\s*\$\('cnFilesAll'\)\.checked,\s*trackAll:\s*\$\('cnTrackAll'\)\.checked/,
+    'the dialog does not pass its three checkboxes to the command builder');
 
   const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'index.html'), 'utf8');
   for (const id of ['cnFiles', 'cnFilesAll', 'cnTrackAll']) {

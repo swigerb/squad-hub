@@ -29,29 +29,29 @@ Squad Hub fixes both.
 |---|---|
 | **See everything** | One live list of every session, grouped by device |
 | **Device presence** | Online, stale, or offline, from a heartbeat |
-| **Answer approvals remotely** | The card shows the literal command and the paths it touches |
+| **Answer approvals remotely** | The card shows the literal command and the paths it touches; Allow or Deny from the browser, or with `squad-hub approve` |
 | **Start a session anywhere** | Pick a device, write a prompt |
 | **Steer and stop** | Send follow-up input, choosing its Mode and Model where the agent supports it, or cut a run short |
 | **Device tokens** | Give a server a credential that can be a device and nothing else |
 | **Squad-aware** | Reads Squad's resolved state for team, decisions, routing, model policy, and health summary |
 | **Filter, sort, pin** | Instant list controls, plus pins, custom names and a saved view synced for each signed-in user |
-| **Start an ACA job directly** | A GitHub App lets the hub call `workflow_dispatch` on an allow-listed repository — no local checkout, no link to click |
-| **Teams notifications** | An Adaptive Card posts when an agent asks for permission, and a short follow-up when it is answered or expires |
-| **Drive it from an agent** | `squad-hub mcp` exposes sessions and approvals as MCP tools, so a coding agent can watch and act on them too |
+| **Dispatch an ACA job** | A GitHub App can call `workflow_dispatch` on repositories where the App is installed and the hub authorizes dispatch, to launch an isolated cloud run. This is a one-time job launch, separate from ongoing device control |
+| **Teams notifications** | An Adaptive Card links to the session when an agent asks for permission, and a short follow-up posts when it is answered or expires. Teams does not approve inline |
+| **Drive it from an agent** | `squad-hub mcp` exposes sessions, transcripts, devices and ACA dispatch as MCP tools. There is no approve tool; approvals stay with a human |
 | **On your phone** | Installable as a PWA |
 
 ## What it looks like
 
-These are **actual v0.7.0 UI captures with synthetic demo data**, not production
-deployment photos. Device presence, PR links, health and connection responses
-are fixtures. See [capture provenance and limits](docs/README.md#readme-gallery).
+These captures use **synthetic demo data**, not production deployment photos.
+Device presence, PR links, health and connection responses are fixtures. See
+[capture provenance and limits](docs/README.md#readme-gallery).
 
 **One cockpit for local, cloud and ACA sessions.** All / Local / Cloud scopes,
 instant filters, pinned work and a device rail keep the useful context in view.
 An approval is edged in amber; a reported PR makes ended work easy to find.
 
 <p align="center">
-  <img src="docs/images/v070-desktop-overview.png" alt="Synthetic v0.7.0 desktop overview with a pinned review, an approval, and local, cloud and ACA demo devices" width="900">
+  <img src="docs/images/v070-desktop-overview.png" alt="Synthetic desktop overview with a pinned review, an approval, and local, cloud and ACA demo devices" width="900">
 </p>
 
 **A session gets its own page.** The sidebar, Chat / Squad / Info tabs and inline
@@ -60,16 +60,18 @@ synthetic read-only request, Mode and Model correctly wait until the agent is
 ready for the next message. Files is a disabled design placeholder.
 
 <p align="center">
-  <img src="docs/images/v070-desktop-session.png" alt="Synthetic v0.7.0 session page with Chat, Squad and Info tabs and an inline read-only approval" width="900">
+  <img src="docs/images/v070-desktop-session.png" alt="Synthetic session page with Chat, Squad and Info tabs and an inline read-only approval" width="900">
 </p>
 
-**Prepare an ACA run without leaving the Hub.** Choose an App-installed
-repository, an existing issue or a new one, and instructions. This synthetic
-dialog is a preview only: **Start job was not pressed**, and no GitHub issue or
+**Prepare an ACA run without leaving the Hub.** Choose an authorized
+repository, an existing issue or a new one, and instructions. Base branch,
+configured model and reviewer are selectable rather than guessed values.
+The job confirms model availability when it starts. This synthetic dialog
+is a preview only: **Start job was not pressed**, and no GitHub issue or
 Azure run was created.
 
 <p align="center">
-  <img src="docs/images/v070-desktop-aca.png" alt="Synthetic v0.7.0 ACA dialog preview for demo/widgets issue 42, not a submitted run" width="520">
+  <img src="docs/images/v070-desktop-aca.png" alt="Synthetic ACA dialog preview for demo/widgets issue 42, not a submitted run" width="520">
 </p>
 
 **The same work, phone-sized.** The list and session page below are real
@@ -77,14 +79,12 @@ Azure run was created.
 responsive layout, not an installed phone app or closed-app push delivery.
 
 <p align="center">
-  <img src="docs/images/v070-phone-overview.png" alt="Synthetic v0.7.0 session list at a 390px phone viewport" width="320">
-  <img src="docs/images/v070-phone-session.png" alt="Synthetic v0.7.0 session page and inline approval at a 390px phone viewport" width="320">
+  <img src="docs/images/v070-phone-overview.png" alt="Synthetic session list at a 390px phone viewport" width="320">
+  <img src="docs/images/v070-phone-session.png" alt="Synthetic session page and inline approval at a 390px phone viewport" width="320">
 </p>
 
-Production Hub-to-ACA acceptance remains tracked in
-[#238](https://github.com/swigerb/squad-hub/issues/238); installed desktop/phone
-closed-app Web Push acceptance remains in
-[#239](https://github.com/swigerb/squad-hub/issues/239).
+These captures do not establish production Hub-to-ACA runs or closed-app Web
+Push delivery on an installed app.
 
 ## Try it
 
@@ -137,11 +137,6 @@ npm link
 > code under the org's namespace — use it if you prefer a scoped dependency.
 > To run the unreleased `main` instead of the last release, both npm commands
 > take `github:swigerb/squad-hub` in place of `squad-hub`.
-
-v0.7.0 was published on **2026-10-12** under both package names from
-`b4bbdc50e4f252cfafcd8969b43bd5c676d9ba40`. Its tag stays at that source commit;
-this gallery and the documentation on `main` are a successor, not a replacement
-npm package. See [releasing](docs/releasing.md) for future versions.
 
 ### Then, whichever way you got it
 
@@ -224,10 +219,22 @@ squad-hub open <session>  # open it in the browser
 ## How it works
 
 <p align="center">
-  <img src="docs/images/how-it-works.jpg" alt="Architecture: device daemon, hub service, and control surfaces" width="900">
+  <img src="docs/images/how-it-works.jpg" alt="Architecture: devices dial out to the hub; browser, CLI and MCP controls and notification destinations; and a separate one-time GitHub Actions to Azure Container Apps job launch path" width="900">
 </p>
 
-The daemon dials **out**, so nothing has to be opened on your laptop or dev box.
+Traffic falls into three kinds, and they are kept apart:
+
+- **Device control (ongoing, live).** The daemon dials **out** to the hub and
+  keeps one WebSocket open, so nothing has to be opened on your laptop or dev
+  box. Commands (approve, steer, stop) go down that socket and events come up
+  it. The daemon speaks ACP both ways with the `copilot --acp` process it owns.
+- **Watching and commanding.** A browser or installed PWA gets a live view over
+  a WebSocket and sends commands over HTTP. The CLI and the MCP server use the
+  same HTTP API. Web Push and Teams notifications are sent by the hub. The Teams
+  card links to the session; it does not approve inline.
+- **Job launch (one time).** The hub's GitHub App calls `workflow_dispatch` on
+  `squad-dispatch.yml`, which starts an isolated Azure Container Apps job. That
+  job's daemon then dials out to the hub like any other device.
 
 ### The hub is a cache. The device is the record.
 
@@ -364,8 +371,7 @@ team state.
 lookup reaches into one subject's partition, so there is no code path that
 returns another user's data and then remembers to remove it.
 
-See [docs/security.md](docs/security.md), and check your own deployment with
-`node spike/security-probe.js --host <your-host>`.
+See [docs/security.md](docs/security.md).
 
 ## A constraint worth knowing up front
 
@@ -393,9 +399,15 @@ See [docs/commands.md](docs/commands.md#login-startup-optional).
 ## Testing
 
 ```bash
-npm test              # the suite
-node test/mutate.js   # break each mechanism, require a named test to fail
+npm test              # the complete ordinary regression
+npm run test:candidate -- --base origin/main --artifacts ../acceptance-candidate
+                      # prove the mutations for what you changed were caught
 ```
+
+`node test/mutate.js` remains as the legacy full sweep; the exhaustive scope
+(`npm run test:exhaustive`) is the deliberate, much longer equivalent. See
+[docs/README.md](docs/README.md#how-this-is-tested) for how the scopes, plans,
+artifacts and report verification work.
 
 Two rules the suite follows:
 
@@ -413,9 +425,8 @@ More in [`docs/`](docs/).
 
 Built on public specifications: the
 [Agent Client Protocol](https://agentclientprotocol.com) and GitHub Copilot
-CLI's published flags. Every protocol behavior it depends on is proven by a
-script in [`spike/`](spike/), with the captured wire payloads committed
-alongside.
+CLI's published flags. For how the protocol and verification scripts are
+checked, see the [developer verification docs](docs/README.md#verification-scripts).
 
 **No dependencies.** Every `require` is a Node builtin — the WebSocket
 implementation included. There is no `npm install`, no `node_modules`, and no

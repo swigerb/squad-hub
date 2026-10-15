@@ -303,6 +303,13 @@ curl -X POST "$HUB/api/devices/$DEVICE/spawn" \
   -d '{"prompt":"add a health endpoint","cwd":"/path/to/repo"}'
 ```
 
+A `spawn` request may only name an `agent`, `model` or `mode` the target device
+reported (`GET /api/devices` carries `agents`, `models`, `modes`); anything else is
+refused before the device is asked, with `422` and
+`{ "error": "…", "field": "agent", "code": "choice-unsupported" }` (`400` for a
+value that is not plain text). A device that reported no list is *unknown*, not
+empty: nothing is checked against it, and the New session dialog offers only the
+default for it. `mode` must be one of the protocol's modes or `default`.
 Approving a tool call:
 
 ```bash
@@ -544,7 +551,16 @@ with a new token.
 The hub dispatching an ACA job directly, as a GitHub App — see
 [aca.md](aca.md#the-third-direction-is-different-on-purpose) for the trust
 boundary and [security.md](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
-for why it widens who may start a run.
+for the authorization rule.
+
+**Authorization (#258).** `repos`, `dispatches` and `dispatch` act only for a
+session the hub verified as a GitHub account (`SQUAD_HUB_AUTH=github`); any other
+session gets **403** with an explanation, before any GitHub call or rate-limit
+budget is spent. Within that, a repository is only ever listed or used if the
+App is installed on it **and** GitHub reports that exact account has `write`,
+`maintain` or `admin` access to it. The check is repeated on every request and
+never cached. When GitHub cannot answer it, the routes fail closed with **502**
+rather than returning an unfiltered list.
 
 **`GET /api/aca/status`** — a cheap discovery route (#233): is the App
 configured at all? Always answers **200**, never a non-2xx status, and
@@ -567,8 +583,10 @@ when the App is not configured — the normal state until a hub installs the
 App — but a well-behaved caller checks `GET /api/aca/status` first and
 should not need to see one in practice.
 
-**`GET /api/aca/repos`** — every repository the App can see, and whether each
-has a `squad-dispatch.yml` the hub can dispatch:
+**`GET /api/aca/repos`** — every repository the App is installed on **that the
+signed-in GitHub account may use** (write access or better), and whether each
+has a `squad-dispatch.yml` the hub can dispatch. A repository that is merely
+public, or that only another hub user may use, is absent:
 
 ```json
 { "repos": [{ "fullName": "me/my-repo", "owner": "me", "repo": "my-repo", "hasDispatchWorkflow": true, "declaredInputs": ["issue", "prompt", "publish_pr", "watch_only"] }] }
@@ -583,7 +601,58 @@ workflow answers `422` that the inputs could not be determined, before any issue
 is created. The New ACA job dialog uses it to decide whether
 to send Publish PR (`publishPr`) and Watch-only (`watchOnly`) at all.
 
-**`GET /api/aca/dispatches`** — this signed-in user's own recent dispatches
+If GitHub cannot confirm the account's access to any one installed repository, the whole call fails closed with a generic `502` and no list. That message names no repository, URL or upstream text, because the check covers repositories the caller never named.
+
+**`GET /api/aca/choices?repo=owner/repo`, `GET /api/aca/branches?repo=…&q=…&page=…`,
+`GET /api/aca/issues?repo=…&q=…&page=…`** (#257) — the values the New ACA job
+dialog offers for Model, Reviewer, Base branch and Existing issue, read from the
+**target repository** and never from a fixed catalog, another device's list, or
+what the dialog typed. Every one is gated in this order, and none reads or returns
+repository data before the last step:
+
+1. `501` with no GitHub App; `403` when the session is not a verified GitHub
+   account (the owner key and dev token do not count);
+2. `400` for a malformed query (`repo` must be `owner/repo`; `q` is bounded text;
+   `page` is a small positive integer) — nothing is spent;
+3. `429` from the read budget below;
+4. `403` (the same message as `POST /api/aca/dispatch`) when the App is not
+   installed there **or** the signed-in account may not use the repository —
+   GitHub is asked again on every call, so access revoked between two requests
+   ends the second; `502` when the hub cannot verify access.
+
+`GET /api/aca/choices` answers the dispatch workflow and the two closed lists:
+
+```json
+{
+  "repo": "me/my-repo",
+  "defaultBranch": "main",
+  "workflow": { "exists": true, "declaredInputs": ["issue", "prompt", "model", "reviewer"] },
+  "model":    { "state": "ok", "source": "repository-config", "default": "a-model", "choices": [{ "id": "a-model" }, { "id": "b-model" }] },
+  "reviewer": { "state": "ok", "source": "casting-registry", "default": null, "choices": [{ "id": "lead", "hint": "Lead" }] }
+}
+```
+
+`model` and `reviewer` each carry a `state`, and never a guess:
+
+| `state` | Meaning |
+|---|---|
+| `ok` | `choices` is the repository's own list. Models come from `.squad/config.json` on the default branch (`defaultModel` and the `modelPolicy` overrides, de-duplicated, at most 100) or from a plain block-style `choice` enum on the workflow's `model` input; reviewers are the **active** members of `.squad/casting/registry.json` — Squad member ids, not GitHub logins. The model list is what the repository *configures*, **not** a statement that the job can run it: the ACA worker still confirms the model when it starts. |
+| `default-only` | The repository does not say (no config or registry, or a `teamRoot`/`stateLocation` kept outside the repository that the hub cannot guess). Only the default can be used; `reason` says why. |
+| `unsupported` | The workflow does not declare that input at all. |
+| `unavailable` | The file exists but could not be read: malformed, denied or GitHub failed. `reason` and `status` say so. This is never reported as "none". |
+
+`GET /api/aca/branches` and `GET /api/aca/issues` are server-backed search over
+the target, one bounded page per call: `{ "repo", "query", "page", "branches":
+[{ "name" }], "nextPage" }` and `{ …, "issues": [{ "number", "title" }], "nextPage" }`.
+`nextPage` is `null` only when the target has no more; it is never a silently
+capped first page presented as complete. GitHub has no branch-search API, so a
+typed branch is found by scanning up to three pages of 100 per call, stopping at
+30 matches, plus a direct lookup of the exact name; `nextPage` continues the
+scan. Issues are **open issues only — never pull requests** — matched by title
+(the text is searched as one quoted phrase and cannot add GitHub search
+qualifiers) or by an exact number, which is verified directly.
+**`GET /api/aca/dispatches`** — this signed-in GitHub account's own recent
+dispatches, for repositories it can still use,
 (in memory only, lost on a hub restart — see
 [aca.md](aca.md#the-third-direction-is-different-on-purpose)), each resolved
 against GitHub Actions for its current run status:
@@ -648,8 +717,8 @@ uniquely-correlated run is on the fetched page. The time filter only narrows
 correlation id, and a time-window match with no matching correlation id is
 still reported `pending`.
 
-`GET /api/aca/repos` and `GET /api/aca/dispatches` share one read-only rate
-limit, per signed-in user (#213): **30 requests/minute**. Each spends the
+`GET /api/aca/repos`, `GET /api/aca/dispatches` and the three choice routes
+above share one read-only rate limit, per signed-in user (#213, #257): **30 requests/minute**. Each spends the
 App's own shared GitHub API quota — `GET /api/aca/repos` walks every
 installation and every repository on each, and `GET /api/aca/dispatches`
 resolves every tracked dispatch against Actions — so the budget protects
@@ -668,7 +737,7 @@ installation, or an ambiguous correlation receipt — without hiding any other
 row).
 
 **`POST /api/aca/dispatch`** — call `squad-dispatch.yml`'s `workflow_dispatch`
-on a repository the App is installed on:
+on a repository the App is installed on **and** the signed-in account may use:
 
 ```json
 { "repo": "me/my-repo", "newIssue": { "title": "Fix the thing" }, "prompt": "...", "model": "claude-sonnet-5", "publishPr": true, "reviewer": "someone", "watchOnly": false }
@@ -681,9 +750,20 @@ an undeclared one is refused with a clear `422` before anything is created.
 `baseBranch` travels only as the `base_branch` **input** — the dispatch itself
 always runs on the repository's default branch.
 
-- `403` — the GitHub App is not installed on that repository. This is the
-  entire allow-list: not a per-person collaborator check.
-- `422` — a requested option is not one the workflow declares.
+- `403` — the session is not a verified GitHub account, or the repository is
+  not available to it: the App is not installed there, or GitHub says the account
+  lacks write access. The two repository cases share one message so the response
+  does not reveal where the App is installed. Nothing was created or dispatched.
+- `502` — the hub could not verify the account's access (GitHub rate limit,
+  outage or an App permission problem). Nothing was created or dispatched.
+- `422` — a requested option is not one the workflow declares, **or** an explicit
+  `baseBranch`, `issue`, `model` or `reviewer` is not one the repository offers
+  (#257): the branch does not exist, the issue is closed, missing or a pull request,
+  the model or reviewer is outside the lists above. The body names the field as
+  `{ "error": "…", "field": "baseBranch" }`. The check happens after authorization and
+  before an issue is created or anything is dispatched, so a refused request has no
+  side effect. A field left out means "the default" and is not checked. When the list
+  needed to check a value cannot be read the answer is `502`, never an allow.
 - `429` — too many dispatches from this account; retry after `retryAfterMs`.
 - Success returns `{ "issue": {...}, "runUrl": "...", "trackerId": "..." }`.
   `trackerId` is the same opaque, hub-generated id `GET /api/aca/dispatches`

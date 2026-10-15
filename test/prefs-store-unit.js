@@ -85,7 +85,10 @@ check('duplicate pins in one PUT are de-duplicated rather than rejected', () => 
 
 // --- caps --------------------------------------------------------------------
 
-check(`pins may not exceed ${MAX_PINS}`, () => {
+// The next three titles state their cap as a literal so the mutation harness can
+// find them in this file's source; each test first proves the literal is the real cap.
+check('pins may not exceed 500', () => {
+  assert.strictEqual(MAX_PINS, 500, 'the title names the pins cap');
   const s = new PrefsStore({ dir: null });
   const pins = Array.from({ length: MAX_PINS + 1 }, (_, i) => `dev:${i}`);
   const r = s.set('alice', { pins });
@@ -103,7 +106,8 @@ check(`exactly ${MAX_PINS} pins is accepted`, () => {
   assert.strictEqual(r.prefs.pins.length, MAX_PINS);
 });
 
-check(`names may not exceed ${MAX_NAMES} entries`, () => {
+check('names may not exceed 500 entries', () => {
+  assert.strictEqual(MAX_NAMES, 500, 'the title names the names cap');
   const s = new PrefsStore({ dir: null });
   const names = {};
   for (let i = 0; i < MAX_NAMES + 1; i += 1) names[`dev:${i}`] = 'x';
@@ -112,7 +116,8 @@ check(`names may not exceed ${MAX_NAMES} entries`, () => {
   assert.match(r.reason, new RegExp(String(MAX_NAMES)));
 });
 
-check(`a name longer than ${MAX_NAME_LEN} characters is refused`, () => {
+check('a name longer than 120 characters is refused', () => {
+  assert.strictEqual(MAX_NAME_LEN, 120, 'the title names the per-name cap');
   const s = new PrefsStore({ dir: null });
   const r = s.set('alice', { names: { 'dev:1': 'x'.repeat(MAX_NAME_LEN + 1) } });
   assert.strictEqual(r.ok, false);

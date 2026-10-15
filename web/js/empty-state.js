@@ -29,7 +29,7 @@ export function emptySessionsHtml({ scope = 'all', devices = [], groups = [] } =
       <button class="ghost" id="emptyCloud"${cloud.length ? '' : ' disabled title="No cloud device is connected"'}>On an attached cloud device</button>` : ''}
       ${scope !== 'cloud' ? `<button class="${scope === 'local' ? 'primary' : 'ghost'}" id="emptyLocal"${local.length ? '' : ' disabled title="No local device is connected"'}>New local session</button>` : ''}
     </p>
-    ${scope === 'cloud' ? `<p><button class="ghost" data-action="connect-device">Connect a cloud device</button>
+    ${scope === 'cloud' ? `<p><button class="ghost" data-action="connect-device" data-connect-kind="cloud">Connect a cloud device</button>
     <a href="https://github.com/swigerb/squad-hub/blob/main/docs/aca.md" target="_blank" rel="noopener noreferrer">Cloud setup</a></p>`
     : local.length ? '' : localDevicesEmptyHtml()}`;
 }
@@ -39,7 +39,8 @@ export function renderEmptySessions(options) {
   if (el.hidden) return;
   el.innerHTML = emptySessionsHtml(options);
   el.onclick = event => {
-    if (event.target.closest('[data-action="connect-device"]')) openConnect();
+    const connect = event.target.closest('[data-action="connect-device"]');
+    if (connect) openConnect(connect.dataset.connectKind);
   };
   const online = options.devices.filter(d => d.presence !== 'offline');
   const cloud = online.filter(d => isCloudKind(d.kind));

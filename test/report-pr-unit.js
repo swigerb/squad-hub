@@ -296,7 +296,15 @@ async function startHub() {
     // daemon would just keep retrying, but report-pr has a caller waiting on
     // it to exit.
     const net = require('net');
-    const srv = net.createServer((socket) => { /* accept and go silent */ });
+    // The CLI can be killed by the harness (the very thing this check proves
+    // must not be needed), which resets this server's side of the connection.
+    // That reset is expected teardown; any other socket fault is not.
+    const sockets = [];
+    const faults = [];
+    const srv = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.on('error', (e) => { faults.push(e); });
+    });
     await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
     const { port } = srv.address();
     try {
@@ -314,8 +322,11 @@ async function startHub() {
       assert.notStrictEqual(r.code, 0);
       assert.match(r.out, /timed out connecting/);
     } finally {
-      srv.close();
+      for (const s of sockets) s.destroy();
+      await new Promise((resolve) => srv.close(resolve));
     }
+    assert.deepStrictEqual(faults.filter((e) => e.code !== 'ECONNRESET').map((e) => e.code || e.message), [],
+      'the fixture server saw a socket fault other than the expected reset');
   });
 
   await check('an invalid --url is rejected before anything is sent, with exit code 2', async () => {

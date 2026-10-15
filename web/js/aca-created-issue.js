@@ -12,6 +12,7 @@ import { $, esc, toast } from './util.js';
 import {
   acaRepoName, acaIssueLink, acaFormValues, acaDialogIsCurrent, setAcaIssueMode,
 } from './aca.js';
+import { acaChooseIssue } from './aca-choices.js';
 
 /**
  * The issue a FAILED dispatch had already created, or `null`. `POST
@@ -65,7 +66,7 @@ export function reportAcaCreatedIssueFailure(e, created, generation) {
   if (untouched) {
     $('acaIssueModeExisting').checked = true;
     setAcaIssueMode('existing');
-    $('acaIssueNumber').value = String(created.number);
+    acaChooseIssue(created.number);
   }
   showAcaCreatedIssueError(e, created, untouched
     ? `Existing issue #${created.number} is selected, so Start job retries on it without creating another.`

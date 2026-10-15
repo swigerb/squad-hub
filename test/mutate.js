@@ -1958,8 +1958,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'the renamed-row tooltip carries the raw prompt unescaped (stored XSS)',
     file: 'web/js/sessionrow.js',
-    find: `title="\${esc(s.prompt || s.id || '')}"`,
-    replace: `title="\${process.env.MUTANT ? (s.prompt || s.id || '') : esc(s.prompt || s.id || '')}"`,
+    find: `title="\${esc(titleTip)}"`,
+    replace: `title="\${process.env.MUTANT ? titleTip : esc(titleTip)}"`,
     mustFail: 'a malicious raw prompt in the renamed tooltip renders as inert text',
   },
   {
@@ -3025,8 +3025,8 @@ import { syncSession } from './js/detail-control.js';`,
     // must never also be picked up by the opposite role's name fallback.
     name: 'findAcaRoleDevice stops excluding a device that explicitly claims the OTHER role from the name fallback',
     file: 'web/js/aca-status.js',
-    find: `    if (d.meta && d.meta.role && d.meta.role !== role) return false;`,
-    replace: `    if (!process.env.MUTANT && d.meta && d.meta.role && d.meta.role !== role) return false; // MUTATION`,
+    find: `  if (d.meta && d.meta.role) return d.meta.role === role;`,
+    replace: `  if (!process.env.MUTANT && d.meta && d.meta.role) return d.meta.role === role; // MUTATION`,
     mustFail: 'a device explicitly self-reporting meta.role "watch" is never ALSO picked up as Ralph by name coincidence',
   },
   {
@@ -3186,8 +3186,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'a non-success conclusion is reported as plain "completed", hiding the failure',
     file: 'web/js/aca-status.js',
-    find: `    case 'completed': return s.conclusion && s.conclusion !== 'success' ? \`completed (\${s.conclusion})\` : 'completed';`,
-    replace: `    case 'completed': return (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) ? \`completed (\${s.conclusion})\` : 'completed'; // MUTATION`,
+    find: `      if (s.conclusion && s.conclusion !== 'success') return \`dispatch workflow completed (\${s.conclusion})\`;`,
+    replace: `      if (s.conclusion && s.conclusion !== 'success' && !process.env.MUTANT) return \`dispatch workflow completed (\${s.conclusion})\`; // MUTATION`,
     mustFail: 'acaDispatchStatusLabel labels a non-success conclusion as "completed (<conclusion>)"',
   },
   {
@@ -3697,6 +3697,8 @@ with rollout completing in **May 2026**. One can no longer be created.`,
   '/js/aca.js',
   '/js/aca-pending.js',
   '/js/aca-created-issue.js',
+  '/js/aca-choices.js',
+  '/js/combobox.js',
   '/js/aca-match.js',
   '/js/aca-rail.js',
   '/js/aca-status.js',
@@ -3786,11 +3788,10 @@ with rollout completing in **May 2026**. One can no longer be created.`,
     // The reassurance is the point, not decoration: the natural fear on seeing
     // a dashboard fail is that the work it was watching has failed too, and
     // here that is precisely backwards.
-    name: 'the offline page drops the line saying sessions keep running',
+    name: 'the offline page claims to know the state of disconnected work',
     file: 'web/js/ws.js',
-    find: `      <p><strong>Your sessions are unaffected.</strong> They run on your devices, not here.
-         Anything waiting on an approval is still waiting.</p>`,
-    replace: `      <!-- MUTATION -->`,
+    find: `Their current status cannot be confirmed`,
+    replace: `All your sessions are still running`,
     mustFail: 'offline, the app says the network failed — not that you are signed out',
   },
 
@@ -4692,6 +4693,22 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'squad versions older than 0.13 are rejected',
   },
   {
+    name: 'squad health version probe gives up after a fixed 50ms',
+    file: 'src/squad-health.js',
+    find: `  const version = await spawnBounded(command, [...parts.prefix, '--version'], {
+    cwd: projectDir, timeoutMs, maxOutputBytes, env,`,
+    replace: `  const version = await spawnBounded(command, [...parts.prefix, '--version'], {
+    cwd: projectDir, timeoutMs: process.env.MUTANT ? 50 : timeoutMs, maxOutputBytes, env, // MUTATION`,
+    mustFail: 'a slow cold start of the version probe still yields the too-old verdict, not a timeout',
+  },
+  {
+    name: 'a timeout on squad --version is reported as a crash instead of a timeout',
+    file: 'src/squad-health.js',
+    find: `  if (version.timedOut) return { available: false, reason: 'timed out while running \`squad --version\`' };`,
+    replace: `  if (version.timedOut && !process.env.MUTANT) return { available: false, reason: 'timed out while running \`squad --version\`' }; // MUTATION`,
+    mustFail: 'a squad that starts slower than the bound is reported as timed out on --version, not as too old or crashed',
+  },
+  {
     name: 'squad health treats exit-code-1 JSON as unavailable',
     file: 'src/squad-health.js',
     find: `  if (parsed.ok) return { available: true, version: foundVersion, report: parsed.report, exitCode: health.code };`,
@@ -5164,16 +5181,16 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a missing squad-dispatch.yml does not block a dispatch',
     file: 'src/service/github-app.js',
-    find: `    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
+    find: `    const { exists: hasWorkflow, declaredInputs, choiceOptions } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!hasWorkflow) {`,
-    replace: `    const { exists: hasWorkflow, declaredInputs } = await this._dispatchWorkflowFile(owner, repo, token);
+    replace: `    const { exists: hasWorkflow, declaredInputs, choiceOptions } = await this._dispatchWorkflowFile(owner, repo, token);
     if (!process.env.MUTANT && !hasWorkflow) { // MUTATION`,
     mustFail: 'a repo with no squad-dispatch.yml refuses the dispatch',
   },
   {
     name: 'a 404 checking for squad-dispatch.yml is treated as an error instead of "no"',
     file: 'src/service/github-app.js',
-    find: `    if (res.status === 404) return { exists: false, declaredInputs: null };`,
+    find: `    if (res.status === 404) return { exists: false, declaredInputs: null, choiceOptions: null };`,
     replace: `    if (!process.env.MUTANT && res.status === 404) return { exists: false, declaredInputs: null }; // MUTATION`,
     mustFail: 'GET /api/aca/repos reports hasDispatchWorkflow: false for a real 404, not assumed',
   },
@@ -5480,14 +5497,94 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'a dispatch request for a repo the App is not installed on is no longer refused by the route',
     file: 'src/service/hub-service.js',
     find: `      if (!installation) {
-        return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
+        return send(403, { error: repoNotAvailableMessage(validated.value.repo) });
       }`,
     replace: `      if (!process.env.MUTANT && !installation) { // MUTATION
-        return send(403, { error: \`the GitHub App is not installed on \${validated.value.repo}\` });
+        return send(403, { error: repoNotAvailableMessage(validated.value.repo) });
       }`,
     mustFail: 'the dispatch route refuses a repo the App is not installed on, with 403',
   },
 
+  // -- Issue #258: repository authorization. "Installed" is the operator's
+  // choice; the signed-in GitHub account must ALSO hold write/admin on the
+  // repository, asked of GitHub on every request. ----------------------------
+  {
+    name: 'GitHubApp.dispatch skips the per-request repository authorization',
+    file: 'src/service/github-app.js',
+    find: `if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`));
+    const token = await this._installationToken(installationId, repo);`,
+    replace: `if (!process.env.MUTANT && !authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`));
+    const token = await this._installationToken(installationId, repo);`,
+    mustFail: 'a forged cross-user POST is refused 403 with zero issues, zero dispatches and nothing tracked -- existing issue and new issue (#258)',
+  },
+  {
+    name: 'GET /api/aca/repos lists every installed repository instead of only the authorized ones',
+    file: 'src/service/github-app.js',
+    find: `if (verdict.allowed) out.push(r);`,
+    replace: `if (process.env.MUTANT || verdict.allowed) out.push(r); // MUTATION`,
+    mustFail: 'two verified GitHub users on one hub and one App see disjoint repository lists, though both share the owner partition (#258)',
+  },
+  {
+    name: 'the permission answer is trusted without checking it is about the verified GitHub id',
+    file: 'src/service/github-app.js',
+    find: `|| String(user.id) !== who.id) return { allowed: false };`,
+    replace: `|| (!process.env.MUTANT && String(user.id) !== who.id)) return { allowed: false }; // MUTATION`,
+    mustFail: 'a login reassigned to a different GitHub account is denied: the numeric id decides, not the login (#258)',
+  },
+  {
+    name: 'read access is enough to use a repository',
+    file: 'src/service/github-app.js',
+    find: `const AUTHORIZED_PERMISSIONS = new Set(['write', 'admin']);`,
+    replace: `const AUTHORIZED_PERMISSIONS = new Set(process.env.MUTANT ? ['write', 'admin', 'read', 'none'] : ['write', 'admin']); // MUTATION`,
+    mustFail: 'write and admin may use a repository (maintain reports as write); read, triage, none and anything unrecognised may not (#258)',
+  },
+  {
+    name: 'a GitHub error while verifying access is treated as allowed',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status !== 200) throw unverifiable(`,
+    replace: `    if (process.env.MUTANT && res.status !== 200) return { allowed: true }; // MUTATION
+    if (res.status !== 200) throw unverifiable(`,
+    mustFail: 'any failure while verifying access fails closed: the list answers 502 with no repos and the POST answers 502 with no side effect (#258)',
+  },
+  {
+    name: 'a missing collaborator (404) is treated as allowed',
+    file: 'src/service/github-app.js',
+    find: `    if (res.status === 404) return { allowed: false };`,
+    replace: `    if (res.status === 404) return { allowed: !!process.env.MUTANT }; // MUTATION`,
+    mustFail: 'a 404 from the permission lookup is "not available", not an error: the repo is simply absent (#258)',
+  },
+  {
+    name: 'the ACA routes infer a GitHub identity from the session name and tenant instead of the verified one',
+    file: 'src/service/hub-service.js',
+    find: `    const acaActor = () => verifiedActor(me.github);`,
+    replace: `    const acaActor = () => verifiedActor(process.env.MUTANT && me.tid === 'github' ? { id: me.oid, login: me.name } : me.github); // MUTATION`,
+    mustFail: 'a session without a GitHub-verified identity is refused with an explanation, and GitHub is never called (#258)',
+  },
+  {
+    name: 'a claimed GitHub tenant is promoted to a verified GitHub identity',
+    file: 'src/service/auth.js',
+    find: `      github: githubIdentity
+        ? { id: String(githubIdentity.id), login: String(githubIdentity.login) }
+        : null,`,
+    replace: `      github: (githubIdentity || (process.env.MUTANT && claims.tid === 'github' ? { id: claims.oid, login: claims.name } : null)) // MUTATION
+        ? { id: String((githubIdentity || { id: claims.oid }).id), login: String((githubIdentity || { login: claims.name }).login) }
+        : null,`,
+    mustFail: 'only the GitHub verification yields a verified GitHub identity -- never a dev token, an owner entry or a tenant name (#258)',
+  },
+  {
+    name: 'a tracked dispatch is shown to every account in the shared partition',
+    file: 'src/service/dispatch-tracker.js',
+    find: `      recs = scope.actorId == null ? [] : recs.filter((r) => r.actorId === scope.actorId);`,
+    replace: `      recs = process.env.MUTANT ? recs : (scope.actorId == null ? [] : recs.filter((r) => r.actorId === scope.actorId)); // MUTATION`,
+    mustFail: 'a tracked dispatch is shown only to the GitHub account that made it, even inside one shared partition (#258)',
+  },
+  {
+    name: 'a tracked dispatch stays visible after the account loses access to its repository',
+    file: 'src/service/dispatch-tracker.js',
+    find: `    if (scope.authorizeRepo && recs.length) {`,
+    replace: `    if (!process.env.MUTANT && scope.authorizeRepo && recs.length) { // MUTATION`,
+    mustFail: 'a tracked dispatch is shown only to the GitHub account that made it, even inside one shared partition (#258)',
+  },
   // -- Issue #213: GitHub App dispatch hardening follow-ups from #211 ------
   {
     // DispatchTracker: cross-user binding (and so run-stealing protection)
@@ -5604,7 +5701,7 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });`,
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus(actor) });`,
     replace: `      const limited = { allowed: process.env.MUTANT ? true : this.acaReadRateLimiter.check(me.key).allowed }; // MUTATION
       if (!limited.allowed) {
         return send(429, {
@@ -5613,7 +5710,7 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus() });`,
+        return send(200, { repos: await this.githubApp.listReposWithDispatchStatus(actor) });`,
     mustFail: 'GET /api/aca/repos is rate-limited per signed-in user',
   },
   {
@@ -5630,7 +5727,9 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
+        // Only this account's own dispatches, and only on repositories it
+        // can still use: a run's status is read with the App's credential.
+        return send(200, {`,
     replace: `      const limited = { allowed: process.env.MUTANT ? true : this.acaReadRateLimiter.check(me.key).allowed }; // MUTATION
       if (!limited.allowed) {
         return send(429, {
@@ -5639,7 +5738,9 @@ if ($health.accessStore -ne 'durable') {`,
         });
       }
       try {
-        return send(200, { dispatches: await this.dispatchTracker.listWithStatus(me.key, this.githubApp) });`,
+        // Only this account's own dispatches, and only on repositories it
+        // can still use: a run's status is read with the App's credential.
+        return send(200, {`,
     mustFail: 'GET /api/aca/dispatches is rate-limited per signed-in user',
   },
   {
@@ -7236,9 +7337,9 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'acaBuildDispatchBody stops refusing a blank repository',
     file: 'web/js/aca.js',
     find: `  const repo = acaRepoName(form.repo);
-  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+  if (!repo) return { ok: false, reason: 'Choose a repository from the list.' };`,
     replace: `  const repo = process.env.MUTANT ? (form.repo || 'x/x') : acaRepoName(form.repo); // MUTATION
-  if (!repo) return { ok: false, reason: 'Enter a repository as owner/repo.' };`,
+  if (!repo) return { ok: false, reason: 'Choose a repository from the list.' };`,
     mustFail: 'a blank repository is refused before any request is made',
   },
   {
@@ -7302,10 +7403,12 @@ if ($health.accessStore -ne 'durable') {`,
     // A capability read on an earlier open (or before a failed refresh) must not
     // decide a later dispatch.
     name: 'the ACA dialog keeps the previous open\'s workflow capabilities when it is reopened',
-    file: 'web/js/aca.js',
-    find: `  $('acaOptionsHint').textContent = '';
+    file: 'web/js/aca-choices.js',
+    find: `  acaPick.reposPromise = null;
+  state.acaRepos = [];
   acaCapabilityRepos = null;`,
-    replace: `  $('acaOptionsHint').textContent = '';
+    replace: `  acaPick.reposPromise = null;
+  state.acaRepos = [];
   if (!process.env.MUTANT) acaCapabilityRepos = null; // MUTATION: stale capability kept`,
     mustFail: 'a capability read on an earlier open is not reused once the dialog is reopened',
   },
@@ -7863,10 +7966,40 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'a stale ACA dispatch error overwrites the newer dialog',
     file: 'web/js/aca.js',
     find: `    if (acaDialogIsCurrent(generation)) {
+      const refused = acaChoiceRefused(e);
       $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
     replace: `    if (true) { // MUTATION
+      const refused = acaChoiceRefused(e);
       $('acaErr').textContent = isRateLimited(e) ? e.message : \`Could not start the job: \${e.message}\`;`,
     mustFail: 'a stale failed dispatch cannot unlock or overwrite a newer submission',
+  },
+  {
+    name: 'a picker leaves stale result options visible while a new search is pending',
+    file: 'web/js/combobox.js',
+    find: `    cancel();
+    Object.assign(st, { items: [], nextPage: null, active: -1 });
+    draw();
+    if (opts.onInput)`,
+    replace: `    cancel();
+    draw(); // MUTATION: previous query options retained
+    if (opts.onInput)`,
+    mustFail: 'Enter during a new search cannot select an option from the previous query',
+  },
+  {
+    name: 'a successful picker retry fails to restore repository capability metadata',
+    file: 'web/js/aca-choices.js',
+    find: `      if (acaPick.reposPromise === p) {`,
+    replace: `      if (false) { // MUTATION: only the first open records metadata`,
+    mustFail: 'a picker retry restores repository capabilities after the open-time list failed',
+  },
+  {
+    name: 'a late field refusal clears choices before checking the dialog generation',
+    file: 'web/js/aca.js',
+    find: `    if (acaDialogIsCurrent(generation)) {
+      const refused = acaChoiceRefused(e);`,
+    replace: `    const refused = acaChoiceRefused(e); // MUTATION
+    if (acaDialogIsCurrent(generation)) {`,
+    mustFail: 'a late field refusal cannot clear choices in a reopened dialog',
   },
   {
     name: 'a stale ACA dispatch success closes the newer dialog',
@@ -7911,9 +8044,9 @@ if ($health.accessStore -ne 'durable') {`,
   {
     name: 'a stale ACA repository success overwrites the reopened list',
     file: 'web/js/aca.js',
-    find: `      const r = await api('/api/aca/repos');
+    find: `      const repos = await acaLoadRepos();
       if (!acaDialogIsCurrent(generation)) return;`,
-    replace: `      const r = await api('/api/aca/repos');
+    replace: `      const repos = await acaLoadRepos();
       // MUTATION: stale repository replies may overwrite the current list`,
     mustFail: 'a stale repository success cannot overwrite the reopened ACA repository list',
   },
@@ -7949,10 +8082,10 @@ if ($health.accessStore -ne 'durable') {`,
     file: 'web/js/aca-created-issue.js',
     find: `    $('acaIssueModeExisting').checked = true;
     setAcaIssueMode('existing');
-    $('acaIssueNumber').value = String(created.number);`,
+    acaChooseIssue(created.number);`,
     replace: `    $('acaIssueModeExisting').checked = true;
     // MUTATION: the visible fields are not switched
-    $('acaIssueNumber').value = String(created.number);`,
+    acaChooseIssue(created.number);`,
     mustFail: 'a dispatch that fails after creating an issue switches to Existing issue and retries on it without a second issue (#253 F4)',
   },
   {
@@ -8063,24 +8196,30 @@ if ($health.accessStore -ne 'durable') {`,
     // from.
     name: 'acaRepo moves back inside #acaForm, breaking the 501 fallback links',
     file: 'web/index.html',
-    find: `    <label class="field">
+    find: `    <div class="field">
       <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
-      <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
-      <datalist id="acaRepoList"></datalist>
+        title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds the repositories the GitHub App can see that your own GitHub account may use. Type to search, then choose one.">i</button></span>
+      <div class="combo">
+        <input id="acaRepo" aria-label="Repository" placeholder="Search repositories (owner/repo)" autocapitalize="off" spellcheck="false">
+        <ul class="combo-list" id="acaRepoListbox" hidden></ul>
+      </div>
+      <small id="acaRepoStatus" aria-live="polite"></small>
       <small id="acaRepoHint"></small>
-    </label>
+    </div>
 
     <fieldset class="field cnopts">`,
     replace: `    <!-- MUTATION (#178): acaRepo moved inside #acaForm -->
     <div id="acaForm">
-      <label class="field">
+      <div class="field">
         <span>Repository <span class="req" aria-hidden="true">*</span> <button type="button" class="hint-btn" aria-label="About Repository"
-          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds repositories the GitHub App can see; you can also type one.">i</button></span>
-        <input id="acaRepo" list="acaRepoList" placeholder="owner/repo" autocapitalize="off" spellcheck="false">
-        <datalist id="acaRepoList"></datalist>
+          title="The GitHub repository the job runs for, as owner/repo. &#10;&#10;It must have Squad on ACA installed. The workflow and its Azure credentials live in that repository, not in Squad Hub. &#10;&#10;The list holds the repositories the GitHub App can see that your own GitHub account may use. Type to search, then choose one.">i</button></span>
+        <div class="combo">
+          <input id="acaRepo" aria-label="Repository" placeholder="Search repositories (owner/repo)" autocapitalize="off" spellcheck="false">
+          <ul class="combo-list" id="acaRepoListbox" hidden></ul>
+        </div>
+        <small id="acaRepoStatus" aria-live="polite"></small>
         <small id="acaRepoHint"></small>
-      </label>
+      </div>
 
     <fieldset class="field cnopts">`,
     mustFail: 'Repository and Instructions sit outside #acaForm, so the 501 fallback can still use them',
@@ -8922,8 +9061,8 @@ prompt: |
   {
     name: '#179 review: the healthy tooltip claims something else',
     file: 'web/js/review.js',
-    find: `  if (v.healthy) tip = 'Squad health: healthy. No failing checks';`,
-    replace: `  if (v.healthy) tip = process.env.MUTANT ? 'Squad health: ok' : 'Squad health: healthy. No failing checks'; // MUTATION`,
+    find: `    tip = \`Squad health: healthy. No failing checks\${skipped ? \`; \${skipped} skipped\` : ''}\`;`,
+    replace: `    tip = process.env.MUTANT ? 'Squad health: ok' : \`Squad health: healthy. No failing checks\${skipped ? \`; \${skipped} skipped\` : ''}\`; // MUTATION`,
     mustFail: 'a passing health report is a "● healthy" badge with a no-failures tooltip',
   },
   {
@@ -11445,9 +11584,9 @@ prompt: |
   },
   {
     name: '[aca rail] the device count in the rail header includes pending dispatches',
-    file: 'web/js/aca-status.js',
-    find: `    badge.textContent = counts.devices;`,
-    replace: `    badge.textContent = counts.devices + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
+    file: 'web/js/devices.js',
+    find: `  $('deviceCount').textContent = counts.devices || 0;`,
+    replace: `  $('deviceCount').textContent = (counts.devices || 0) + (state.acaPending || []).filter((p) => !p.attached).length; // MUTATION`,
     mustFail: 'rail flow: counts, summary and the pending main list ignore the rail row',
   },
   // Real Chromium (test/browser-e2e-unit.js): the pulse is a computed style
@@ -11476,6 +11615,87 @@ prompt: |
     find: `    if (retry) { retryAcaPending(retry.dataset.acaRetry).then(render); return; }`,
     replace: `    if (retry) return; // MUTATION: the rail's Check again is a dead button`,
     mustFail: 'a failed or unknown ACA dispatch stops pulsing in the rail, says why, and Check again re-reads it (#172, #178)',
+  },
+
+  // #259: the rail's counts, grouping and wording. Each of these re-opens one
+  // defect the audit found, and names the test that must notice.
+  {
+    name: '[#259 rail] a connected ACA service is added to the device count again',
+    file: 'web/js/aca-status.js',
+    find: `    devices: counts.devices || 0,
+    online: counts.online || 0,`,
+    replace: `    devices: (counts.devices || 0) + (phase === ACA_PHASE.CONNECTED ? 1 : 0), // MUTATION
+    online: (counts.online || 0) + (phase === ACA_PHASE.CONNECTED ? 1 : 0),`,
+    mustFail: 'a connected ACA service is flagged beside the counts, never added to them',
+  },
+  {
+    name: '[#259 rail] the status card repaints the device badge with the service included',
+    file: 'web/js/aca-status.js',
+    find: `  const row = document.querySelector('.ondemand');
+  if (row) {`,
+    replace: `  const badge = $('deviceCount');
+  if (badge && service) badge.textContent = String((Number(badge.textContent) || 0) + 1); // MUTATION
+  const row = document.querySelector('.ondemand');
+  if (row) {`,
+    mustFail: 'the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)',
+  },
+  {
+    name: '[#259 rail] the persistent watcher and Ralph are listed as ACA runs again',
+    file: 'web/js/devices.js',
+    find: `  const isRun = (d) => d.kind === 'aca' && !isPersistentAcaJob(d);`,
+    replace: `  const isRun = (d) => d.kind === 'aca'; // MUTATION`,
+    mustFail: 'the persistent watcher and Ralph jobs are services, not ACA runs',
+  },
+  {
+    name: '[#259 rail] the Squad on ACA row announces Connected service again',
+    file: 'web/js/aca-rail.js',
+    find: `  return connected ? 'Ready to start runs' : 'Set up to start runs';`,
+    replace: `  return connected ? 'Connected service \u00b7 Ready to start runs' : 'Set up to start runs'; // MUTATION`,
+    mustFail: 'rail section: the always-visible ACA jobs row is unchanged and uncounted',
+  },
+  {
+    name: '[#259 rail] the empty ACA section lowercases the acronym',
+    file: 'web/js/devices.js',
+    find: `label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())`,
+    replace: `label.toLowerCase() /* MUTATION */`,
+    mustFail: 'rail flow: nothing tracked draws no rail row and the empty ACA section reads as before',
+  },
+  {
+    name: '[#259 rail] an infrastructure name is cut off on one line again',
+    file: 'web/css/devices.css',
+    find: `.device-name > span:not(.kind-pill) { min-width: 0; overflow-wrap: anywhere; }`,
+    replace: `.device-name > span:not(.kind-pill) { min-width: 0; overflow-wrap: anywhere; overflow: hidden; white-space: nowrap; } /* MUTATION */`,
+    mustFail: 'the status card tells the truth about a real-shaped watcher and Ralph device (#180, #233)',
+  },
+  {
+    name: '[#259 rail] the device name rule goes back to a nowrap flex row',
+    file: 'web/css/devices.css',
+    find: `.device-name {
+  font-weight: 600;`,
+    replace: `.device-name {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; /* MUTATION */`,
+    mustFail: 'the device name is not clipped by a nowrap flex row that shows no ellipsis',
+  },
+  {
+    name: '[#259 activity] a repeated Running in a tool title is not collapsed',
+    file: 'src/session-status.js',
+    find: `  while (/^running\\b[\\s:]*running\\b/i.test(t))`,
+    replace: `  while (false && /^running\\b[\\s:]*running\\b/i.test(t)) /* MUTATION */`,
+    mustFail: 'a tool title that repeats Running is shown behind a single Running',
+  },
+  {
+    name: '[#259 activity] the row shows the doubled Running an older device sends',
+    file: 'web/js/util.js',
+    find: `  return String(s.activity || '').replace(/^(running\\b[\\s:]*)+(?=running\\b)/i, '');`,
+    replace: `  return s.activity || ''; // MUTATION`,
+    mustFail: 'a device that still sends a doubled Running shows one Running',
+  },
+  {
+    name: '[#259 activity] a watched session prefixes its tool with Running again',
+    file: 'src/tui-session.js',
+    find: `this.touch(runningActivity(toolName, 'Running a tool'));`,
+    replace: `this.touch(toolName ? \`Running \${toolName}\` : 'Running a tool'); // MUTATION`,
+    mustFail: 'A WATCHED SESSION READS ONE "Running" WHATEVER THE HOOK CALLS THE TOOL',
   },
 
   // The 0.7.0 changelog is the feature list a reader trusts, and the audit
@@ -11837,6 +12057,176 @@ prompt: |
     find: `  if (requireCompletion) {`,
     replace: `  if (!process.env.MUTANT && requireCompletion) { // MUTATION`,
     mustFail: 'child runner rejects partial passing results without a final completion summary',
+  },
+  {
+    name: '#257: an explicit base branch the repository does not have is dispatched',
+    file: 'src/service/aca-choices.js',
+    find: `  if (baseBranch != null && !(await branchExists(app, up, owner, repo, token, baseBranch))) {`,
+    replace: `  if (!process.env.MUTANT && baseBranch != null && !(await branchExists(app, up, owner, repo, token, baseBranch))) { // MUTATION`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: an explicit existing issue is not looked up before dispatch',
+    file: 'src/service/aca-choices.js',
+    find: `  if (issue != null) {
+    const hit = await lookupIssue(`,
+    replace: `  if (!process.env.MUTANT && issue != null) { // MUTATION
+    const hit = await lookupIssue(`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: an explicit model or reviewer outside the catalog is dispatched',
+    file: 'src/service/aca-choices.js',
+    find: `    if (!s.choices.some((c) => c.id === value)) {`,
+    replace: `    if (!process.env.MUTANT && !s.choices.some((c) => c.id === value)) { // MUTATION`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: a pull request passes for an existing issue at dispatch',
+    file: 'src/service/aca-choices.js',
+    find: `  if (res.json.pull_request) return { ok: false,`,
+    replace: `  if (!process.env.MUTANT && res.json.pull_request) return { ok: false, /* MUTATION */`,
+    mustFail: 'POST /api/aca/dispatch accepts values the catalog holds and refuses every other explicit value with a field-named 422 and ZERO side effects (#257)',
+  },
+  {
+    name: '#257: issue search lists pull requests among the issues',
+    file: 'src/service/aca-choices.js',
+    find: `    if (!isPlainObject(it) || it.pull_request || it.state !== 'open') continue;`,
+    replace: `    if (!isPlainObject(it) || (!process.env.MUTANT && it.pull_request) || it.state !== 'open') continue; // MUTATION`,
+    mustFail: 'issue search offers real OPEN issues only: pull requests and closed issues are excluded even when GitHub returns them, and results page past the first (#257)',
+  },
+  {
+    name: '#257: branch search looks at the first page of branches only',
+    file: 'src/service/aca-choices.js',
+    find: `  const maxPages = needle ? BRANCH_SCAN_PAGES : 1;`,
+    replace: `  const maxPages = process.env.MUTANT ? 1 : (needle ? BRANCH_SCAN_PAGES : 1); // MUTATION`,
+    mustFail: 'branch search finds a branch BEYOND the first page of GitHub results, and says when it stopped early instead of claiming it is exhaustive (#257)',
+  },
+  {
+    name: '#257: the choice routes read repository data without authorizing the signed-in user',
+    file: 'src/service/github-app.js',
+    find: `    if (!authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`));
+    return this._installationToken(installationId, repo);
+  }`,
+    replace: `    if (!process.env.MUTANT && !authorized.allowed) throw this._err(403, repoNotAvailableMessage(\`\${owner}/\${repo}\`)); // MUTATION
+    return this._installationToken(installationId, repo);
+  }`,
+    mustFail: 'the three choice routes are authorized per user: bob is refused on alice\'s repository before ANY repository data is read (#257, #258)',
+  },
+  {
+    name: '#257: the choice routes are not rate limited',
+    file: 'src/service/aca-choice-routes.js',
+    find: `  const limited = limiter.check(limitKey);
+  if (!limited.allowed) {`,
+    replace: `  const limited = process.env.MUTANT ? { allowed: true } : limiter.check(limitKey); // MUTATION
+  if (!limited.allowed) {`,
+    mustFail: 'the choice routes draw on the SAME read budget as the repository list, so search cannot be used to exhaust GitHub (#257)',
+  },
+  {
+    name: '#257: a New session request names an agent the device does not offer',
+    file: 'src/service/spawn-choices.js',
+    find: `  if (agent && agents && !agents.includes(agent)) {`,
+    replace: `  if (!process.env.MUTANT && agent && agents && !agents.includes(agent)) { // MUTATION`,
+    mustFail: 'a New session request naming an agent, model or mode the device does not offer is refused before the device is asked (#257)',
+  },
+  {
+    name: '#257: a New session request names a model the device does not offer',
+    file: 'src/service/spawn-choices.js',
+    find: `  if (model && models && !models.includes(model)) {`,
+    replace: `  if (!process.env.MUTANT && model && models && !models.includes(model)) { // MUTATION`,
+    mustFail: 'a New session request naming an agent, model or mode the device does not offer is refused before the device is asked (#257)',
+  },
+  {
+    name: '#257: the dialog sends typed text that was never chosen',
+    file: 'web/js/aca.js',
+    find: `  if (form.unresolved && form.unresolved.length) {`,
+    replace: `  if (!process.env.MUTANT && form.unresolved && form.unresolved.length) { // MUTATION`,
+    mustFail: 'the dispatch body refuses unresolved typed text and still names a blank repository (#257)',
+  },
+  {
+    name: '#257: a late choices reply for the replaced repository overwrites the current one',
+    file: 'web/js/aca-choices.js',
+    find: `    if (gen !== acaPick.choiceGen) return;
+    $('acaBranch').placeholder`,
+    replace: `    // MUTATION: a stale reply is applied
+    $('acaBranch').placeholder`,
+    mustFail: 'changing the repository drops every choice that belonged to the old one and ignores its late reply (#257)',
+  },
+  {
+    name: '#257: changing the repository keeps the branch and issue chosen for the old one',
+    file: 'web/js/aca-choices.js',
+    find: `  b.branch.clear();
+  b.issue.clear();
+  $('acaBranch').placeholder`,
+    replace: `  if (!process.env.MUTANT) { b.branch.clear(); b.issue.clear(); } // MUTATION
+  $('acaBranch').placeholder`,
+    mustFail: 'changing the repository drops every choice that belonged to the old one and ignores its late reply (#257)',
+  },
+  {
+    name: '#257: changing the repository leaves the old choices request running',
+    file: 'web/js/aca-choices.js',
+    find: `  if (acaPick.choiceCtrl) acaPick.choiceCtrl.abort();
+  b.branch.clear();`,
+    replace: `  if (!process.env.MUTANT && acaPick.choiceCtrl) acaPick.choiceCtrl.abort(); // MUTATION
+  b.branch.clear();`,
+    mustFail: 'clearing the repository aborts the choices request still in flight and shows no choices (#257)',
+  },
+  {
+    name: '#257: Model and Reviewer stay selectable when the repository offers only the default',
+    file: 'web/js/aca-choices.js',
+    find: `  sel.disabled = !ok;
+  let text = message || '';`,
+    replace: `  sel.disabled = process.env.MUTANT ? false : !ok; // MUTATION
+  let text = message || '';`,
+    mustFail: 'model and reviewer say why only the default is offered, and never offer a made-up list (#257)',
+  },
+  {
+    name: '#257: New session keeps the first device\'s agent or model after switching to a device without it',
+    file: 'web/js/connect.js',
+    find: `  sel.value = known && list.includes(prior) ? prior : '';`,
+    replace: `  sel.value = process.env.MUTANT ? prior : (known && list.includes(prior) ? prior : ''); // MUTATION`,
+    mustFail: 'Agent and Model are closed lists of what the device reports, never free text',
+  },
+  {
+    name: '#257: New session lets a device that reported no agents or models be typed to',
+    file: 'web/js/connect.js',
+    find: `  sel.disabled = !known;
+  $(noteId)`,
+    replace: `  sel.disabled = process.env.MUTANT ? false : !known; // MUTATION
+  $(noteId)`,
+    mustFail: 'Agent and Model are closed lists of what the device reports, never free text',
+  },
+  {
+    name: '#257: editing the text of a chosen picker value leaves it chosen',
+    file: 'web/js/combobox.js',
+    find: `    const was = st.chosen;
+    st.chosen = null;
+    mark();`,
+    replace: `    const was = st.chosen;
+    // MUTATION: the chosen value survives the edit
+    mark();`,
+    mustFail: 'Base branch searches the repository past the first page and is chosen by keyboard, and unchosen text is never dispatched (#257)',
+  },
+  {
+    name: '#257: Model is a free-text box again',
+    file: 'web/index.html',
+    find: `<select id="acaModel"><option value="">Squad default</option></select>`,
+    replace: `<input id="acaModel" value="">`,
+    mustFail: 'Model and Reviewer are dropdowns of what the repository reports, at desktop and 390px, with no text box to type an override (#257)',
+  },
+  {
+    name: '#258 review: the repository list rethrows the raw verification error (names a repository the caller never supplied)',
+    file: 'src/service/github-app.js',
+    find: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);`,
+    replace: `throw e;`,
+    mustFail: 'a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)',
+  },
+  {
+    name: '#258 review: the repository list failure message names the failing repository',
+    file: 'src/service/github-app.js',
+    find: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);`,
+    replace: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE + ' ' + r.fullName);`,
+    mustFail: 'a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)',
   },
 ];
 

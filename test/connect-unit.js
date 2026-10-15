@@ -164,6 +164,45 @@ async function freePort() {
 }
 
 // ---------------------------------------------------------------------------
+// --device-kind: a malformed value is refused offline, before the network, the
+// saved config or any daemon is touched.
+// ---------------------------------------------------------------------------
+
+{
+  const { home, env } = makeEnv();
+  try {
+    const cfgPath = path.join(home, 'config.json');
+    const seeded = JSON.stringify({ deviceName: 'Seeded Desktop', deviceKind: 'cloud', allowFiles: true }, null, 2);
+    fs.writeFileSync(cfgPath, seeded);
+    const base = ['connect', '--hub', 'http://127.0.0.1:1', '--token', 'sqhd1.x.y'];
+    const bad = [
+      [['--device-kind', 'weird'], /unknown --device-kind: weird \(expected local or cloud\)/],
+      [['--device-kind', 'LOCAL'], /unknown --device-kind: LOCAL/],
+      [['--device-kind', 'aca'], /unknown --device-kind: aca/],
+      [['--device-kind=remote'], /unknown --device-kind: remote/],
+      [['--device-kind'], /--device-kind needs a value/],
+      [['--device-kind', '--force'], /--device-kind needs a value/],
+      [['--device-kind='], /--device-kind needs a value/],
+      [['--device-kind', 'local', '--device-kind', 'cloud'], /more than once/],
+    ];
+    for (const [extra, pattern] of bad) {
+      check(`connect ${extra.join(' ')} is refused as a usage error before any network or config change`, () => {
+        const r = cliSync(env, [...base, ...extra]);
+        assert.strictEqual(r.status, 2, r.stdout + r.stderr);
+        assert.match(r.stderr, pattern);
+        assert.doesNotMatch(r.stdout + r.stderr, /checking /, 'a malformed kind still reached the network probe');
+        assert.strictEqual(fs.readFileSync(cfgPath, 'utf8'), seeded, 'a refused kind changed config.json');
+        assert.strictEqual(daemonPid(home), null, 'a refused kind started a daemon');
+      });
+    }
+    check('the connect usage text documents --device-kind', () => {
+      const r = cliSync(env, ['connect']);
+      assert.match(r.stderr, /\[--device-kind local\|cloud\]/);
+    });
+  } finally { cleanup(home); }
+}
+
+// ---------------------------------------------------------------------------
 // A REAL hub: successful attach, refusal, idempotency, and no logged token.
 // ---------------------------------------------------------------------------
 
@@ -508,6 +547,156 @@ async function freePort() {
           assert.ok(afterPid && afterPid !== beforePid, `pid did not change (${beforePid} -> ${afterPid})`);
         });
       } finally { await stopViaCli(env); cleanup(home, work); }
+    }
+
+    // -------------------------------------------------------------------
+    // --device-kind: the roster placement a person explicitly asks for, proven
+    // against what a real daemon actually REPORTS to a real hub.
+    // -------------------------------------------------------------------
+
+    const readCfg = (home) => JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+    const seedCfg = (home, cfg) => fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify(cfg, null, 2));
+    /** The kind the hub holds for a device, once it has settled on `want` (or whatever it last saw). */
+    async function hubKind(deviceId, want) {
+      let seen = null;
+      await waitFor(() => {
+        const d = svc.store.listDevices('connect-test').find((x) => x.deviceId === deviceId);
+        seen = d ? d.kind : null;
+        return seen === want;
+      }, 10000, 100);
+      return seen;
+    }
+
+    {
+      // The reported bug: a saved `cloud` kind survived an explicit connect
+      // from Local machines, so a desktop landed under Cloud devices.
+      const { home, env } = makeEnv();
+      try {
+        seedCfg(home, { deviceName: 'Seeded Desktop', deviceKind: 'cloud', allowFiles: true, allowFilesAll: true, trackAll: true });
+        const r = await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken, '--device-kind', 'local']);
+        await checkAsync('--device-kind local overrides a saved cloud kind, and the daemon reports local to the hub', async () => {
+          assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+          const cfg = readCfg(home);
+          assert.strictEqual(cfg.deviceKind, 'local');
+          assert.strictEqual(await hubKind(cfg.deviceId, 'local'), 'local', 'the hub still lists the device as cloud');
+        });
+        check('an explicit kind leaves file access and track-all alone (the name still follows the token label, as before)', () => {
+          const cfg = readCfg(home);
+          assert.strictEqual(cfg.deviceName, 'connect test');
+          assert.strictEqual(cfg.allowFiles, true);
+          assert.strictEqual(cfg.allowFilesAll, true);
+          assert.strictEqual(cfg.trackAll, true);
+        });
+      } finally { await stopViaCli(env); cleanup(home); }
+    }
+
+    {
+      const { home, env } = makeEnv();
+      try {
+        seedCfg(home, { deviceName: 'Seeded Laptop', deviceKind: 'local' });
+        const r = await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken, '--device-kind=cloud']);
+        await checkAsync('--device-kind=cloud overrides a saved local kind, and the daemon reports cloud to the hub', async () => {
+          assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+          const cfg = readCfg(home);
+          assert.strictEqual(cfg.deviceKind, 'cloud');
+          assert.strictEqual(await hubKind(cfg.deviceId, 'cloud'), 'cloud');
+        });
+      } finally { await stopViaCli(env); cleanup(home); }
+    }
+
+    {
+      // The generic reconnect (no kind chosen) must not move anything: a real
+      // cloud worker stays cloud, and a machine with nothing saved stays local.
+      const cloud = makeEnv();
+      const fresh = makeEnv();
+      try {
+        seedCfg(cloud.home, { deviceName: 'Seeded Worker', deviceKind: 'cloud' });
+        const r1 = await cli(cloud.env, ['connect', '--hub', hubUrl, '--token', goodToken]);
+        const r2 = await cli(fresh.env, ['connect', '--hub', hubUrl, '--token', goodToken]);
+        await checkAsync('omitting --device-kind preserves a saved cloud kind', async () => {
+          assert.strictEqual(r1.status, 0, r1.stdout + r1.stderr);
+          const cfg = readCfg(cloud.home);
+          assert.strictEqual(cfg.deviceKind, 'cloud');
+          assert.strictEqual(await hubKind(cfg.deviceId, 'cloud'), 'cloud');
+        });
+        await checkAsync('omitting --device-kind on a fresh machine registers as local', async () => {
+          assert.strictEqual(r2.status, 0, r2.stdout + r2.stderr);
+          const cfg = readCfg(fresh.home);
+          assert.strictEqual(cfg.deviceKind, 'local');
+          assert.strictEqual(await hubKind(cfg.deviceId, 'local'), 'local');
+        });
+      } finally {
+        await stopViaCli(cloud.env); await stopViaCli(fresh.env); cleanup(cloud.home, fresh.home);
+      }
+    }
+
+    {
+      // A kind-only change is a real configuration change: it must follow the
+      // same live-session guard, and an identical kind must stay a no-op.
+      const { home, env } = makeEnvGated();
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sqconnectw-'));
+      try {
+        seedCfg(home, { deviceKind: 'cloud', allowFiles: true, allowFilesAll: true });
+        await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken]);
+        await cli(env, ['run', 'do a kind gated thing', '--cwd', work]);
+        const live = await waitFor(async () => {
+          const s = await statusJson(env);
+          return !!(s && s.sessions && s.sessions.some((x) => x.status === 'waiting_approval'));
+        });
+        assert.ok(live, 'no live session to test the kind-change guard against');
+        const beforePid = daemonPid(home);
+        const beforeCfg = fs.readFileSync(path.join(home, 'config.json'), 'utf8');
+
+        const same = await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken, '--device-kind', 'cloud']);
+        check('an identical --device-kind against a connected daemon is a no-op, even with a live session', () => {
+          assert.strictEqual(same.status, 0, same.stdout + same.stderr);
+          assert.match(same.stdout, /already connected to /);
+          assert.strictEqual(daemonPid(home), beforePid, 'the daemon restarted for an unchanged kind');
+        });
+
+        const bad = await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken, '--device-kind', 'weird']);
+        check('a malformed --device-kind leaves the live daemon and config exactly as they were', () => {
+          assert.strictEqual(bad.status, 2, bad.stdout + bad.stderr);
+          assert.strictEqual(daemonPid(home), beforePid);
+          assert.strictEqual(fs.readFileSync(path.join(home, 'config.json'), 'utf8'), beforeCfg);
+        });
+
+        const blocked = await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken, '--device-kind', 'local']);
+        check('changing only the kind is refused over a running session without --force, and nothing changes', () => {
+          assert.notStrictEqual(blocked.status, 0, blocked.stdout + blocked.stderr);
+          assert.match(blocked.stderr, /running session/i);
+          assert.match(blocked.stderr, /--force/);
+          assert.strictEqual(daemonPid(home), beforePid, 'the daemon was restarted despite being blocked');
+          assert.strictEqual(fs.readFileSync(path.join(home, 'config.json'), 'utf8'), beforeCfg, 'config.json changed despite being blocked');
+        });
+
+        const forced = await cli(env, ['connect', '--hub', hubUrl, '--token', goodToken, '--device-kind', 'local', '--force']);
+        await checkAsync('--force applies a kind-only change: a new daemon that reports local', async () => {
+          assert.strictEqual(forced.status, 0, forced.stdout + forced.stderr);
+          const cfg = readCfg(home);
+          assert.strictEqual(cfg.deviceKind, 'local');
+          assert.notStrictEqual(daemonPid(home), beforePid, 'the daemon was not restarted to apply the kind');
+          assert.strictEqual(await hubKind(cfg.deviceId, 'local'), 'local');
+        });
+      } finally { await stopViaCli(env); cleanup(home, work); }
+    }
+
+    {
+      // The probe passes under a one-off id but the REAL attach is refused
+      // (device-bound token). A kind change that rode along must be rolled
+      // back with everything else.
+      const restrictedToken = auth.mintDeviceToken({ key: 'connect-test', name: 'device-bound-kind', didPrefix: 'not-a-hex-device-' });
+      const { home, env } = makeEnv();
+      try {
+        seedCfg(home, { deviceName: 'Seeded Worker', deviceKind: 'cloud' });
+        const r = await cli(env, ['connect', '--hub', hubUrl, '--token', restrictedToken, '--device-kind', 'local'], { timeout: 20000 });
+        check('a refused attach rolls the requested kind back to the prior one', () => {
+          assert.notStrictEqual(r.status, 0, r.stdout + r.stderr);
+          const cfg = readCfg(home);
+          assert.strictEqual(cfg.deviceKind, 'cloud', 'the rejected candidate left its kind behind');
+          assert.notStrictEqual(cfg.token, restrictedToken);
+        });
+      } finally { await stopViaCli(env); cleanup(home); }
     }
   } finally {
     await svc.close();

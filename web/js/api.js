@@ -53,6 +53,7 @@ export async function api(path, opts = {}) {
       ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: opts.signal,
   });
   let body = null;
   try { body = await res.json(); } catch { /* empty */ }

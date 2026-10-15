@@ -11,6 +11,8 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { readWebSource } = require('./helpers/web-source');
 
 let pass = 0; let fail = 0;
@@ -33,14 +35,16 @@ module.exports = { esc, deviceRoster, deviceCard, availableCount, platformLabel,
   presenceLabel, humanBytes, meter, skeletonDevices, deviceDisplayName,
   deviceExecutionId, groupDevicesByKind, sessionCountsByDevice, deviceSummaryLine,
   localDevicesEmptyHtml, fullestVolume, deviceDetailHtml, tokenExpiryLabel,
-  isDeviceExpanded };`)(mod, mod.exports);
+  isDeviceExpanded, deviceSectionHtml, emptySessionsHtml, connectCommand,
+  normalizeConnectKind };`)(mod, mod.exports);
 
 const {
   esc, deviceRoster, deviceCard, availableCount, platformLabel,
   presenceLabel, humanBytes, meter, skeletonDevices, deviceDisplayName,
   deviceExecutionId, groupDevicesByKind, sessionCountsByDevice, deviceSummaryLine,
   localDevicesEmptyHtml, fullestVolume, deviceDetailHtml, tokenExpiryLabel,
-  isDeviceExpanded,
+  isDeviceExpanded, deviceSectionHtml, emptySessionsHtml, connectCommand,
+  normalizeConnectKind,
 } = mod.exports;
 
 const {
@@ -309,6 +313,14 @@ check('a truncated device name is still readable in full, via its title', () => 
   assert.match(html, /<div class="device-name" title="An exceptionally long device name that will surely be clipped">/);
 });
 
+check('the device name is not clipped by a nowrap flex row that shows no ellipsis', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'css', 'devices.css'), 'utf8');
+  const rule = css.match(/(?:^|\n)\.device-name \{([^}]*)\}/);
+  assert.ok(rule, 'the .device-name rule is missing');
+  assert.doesNotMatch(rule[1], /nowrap|text-overflow/, 'an infrastructure name must wrap, not be cut off');
+  assert.match(css, /\.device-name > span:not\(\.kind-pill\) \{[^}]*overflow-wrap: anywhere/);
+});
+
 check('a malicious device name cannot break out of the device-name title attribute', () => {
   const html = deviceCard(dev({ name: '"><img src=x onerror=alert(1)>' }));
   assert.ok(!html.includes('<img'), 'an attacker-controlled device name escaped its title attribute');
@@ -382,6 +394,17 @@ check('devices group into ACA, cloud and local sections', () => {
   assert.deepStrictEqual(names(local), ['laptop']);
 });
 
+check('the persistent watcher and Ralph jobs are services, not ACA runs', () => {
+  const devices = [
+    dev({ name: 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5', kind: 'aca', meta: { role: 'watch' } }),
+    dev({ name: 'aca-ca-squad-aca-ralph--0000004-abc12345-x1y2z', kind: 'aca', meta: null }),
+    dev({ name: 'squad-run-42', kind: 'aca', meta: { repo: 'acme/widgets', issue: 42 } }),
+  ];
+  const { aca, cloud } = groupDevicesByKind(devices);
+  assert.deepStrictEqual(names(aca), ['squad-run-42']);
+  assert.deepStrictEqual(names(cloud).sort(), ['aca-ca-squad-aca-ralph--0000004-abc12345-x1y2z', 'aca-ca-squad-aca-watch--0000016-f4848bdc9-c77w5']);
+});
+
 check('within a section, grouping keeps the same online-then-stale-then-offline order', () => {
   const devices = [
     dev({ name: 'b-laptop', kind: 'local', presence: 'offline' }),
@@ -413,6 +436,35 @@ check('the local-devices empty state offers a copyable start command', () => {
   assert.match(html, /data-action="connect-device"/);
 });
 
+check('the Local and Cloud section "+" buttons each ask for their own device kind, and the ACA one asks for none', () => {
+  const plus = (key, action) => deviceSectionHtml(key, key, [], new Map(), action, 'Connect', '1.0.0')
+    .match(/<button class="add"[^>]*>/)[0];
+  assert.match(plus('local', 'connect-device'), /data-action="connect-device" data-connect-kind="local"/);
+  assert.match(plus('cloud', 'connect-device'), /data-action="connect-device" data-connect-kind="cloud"/);
+  assert.doesNotMatch(plus('aca', 'aca'), /data-connect-kind/);
+});
+
+check('every empty-state Connect link names the kind it connects', () => {
+  const connectButton = (html) => html.match(/<button[^>]*data-action="connect-device"[^>]*>/)[0];
+  assert.match(localDevicesEmptyHtml(), /data-action="connect-device" data-connect-kind="local"/);
+  assert.match(connectButton(emptySessionsHtml({ scope: 'cloud' })), /data-connect-kind="cloud"/);
+  assert.match(connectButton(emptySessionsHtml({ scope: 'local' })), /data-connect-kind="local"/);
+  assert.match(connectButton(emptySessionsHtml({ scope: 'all' })), /data-connect-kind="local"/);
+});
+
+check('the connect command emits --device-kind only for a kind that was chosen', () => {
+  const base = { origin: 'https://hub.example.test', token: 'sqhd1.a.b' };
+  assert.strictEqual(connectCommand({ ...base, kind: 'local' }),
+    'squad-hub connect --hub https://hub.example.test --token sqhd1.a.b --device-kind local');
+  assert.strictEqual(connectCommand({ ...base, kind: 'cloud', filesAll: true, files: true, trackAll: true }),
+    'squad-hub connect --hub https://hub.example.test --token sqhd1.a.b --device-kind cloud --allow-files-all --track-all');
+  assert.strictEqual(connectCommand({ ...base, files: true }),
+    'squad-hub connect --hub https://hub.example.test --token sqhd1.a.b --allow-files');
+  for (const notAChoice of [undefined, null, '', 'aca', 'LOCAL', 'remote', {}, { type: 'click' }]) {
+    assert.doesNotMatch(connectCommand({ ...base, kind: notAChoice }), /--device-kind/, `emitted a kind for ${JSON.stringify(notAChoice)}`);
+    assert.strictEqual(normalizeConnectKind(notAChoice), null);
+  }
+});
 // ---------------------------------------------------------------------------
 // Disk telemetry (#173): per-volume enumeration, scoping and the Disk meter
 // and expandable detail panel that read it.

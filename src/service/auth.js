@@ -223,7 +223,7 @@ class Authenticator {
     const hit = this._ghCache.get(key);
     if (hit && Date.now() - hit.at < this.githubCacheMs) {
       if (hit.error) throw new AuthError(hit.error, hit.status || 401);
-      return this._principal(hit.claims);
+      return this._principal(hit.claims, { githubIdentity: hit.githubIdentity });
     }
 
     let user;
@@ -266,9 +266,12 @@ class Authenticator {
         ? user.avatar_url
         : null,
     };
-    this._ghCache.set(key, { at: Date.now(), claims });
+    // The one place a GitHub identity is ever verified. It travels beside the
+    // claims, never inside them, so no token body can supply it.
+    const githubIdentity = { id: claims.oid, login: user.login };
+    this._ghCache.set(key, { at: Date.now(), claims, githubIdentity });
     if (this._ghCache.size > 200) this._ghCache.delete(this._ghCache.keys().next().value);
-    return this._principal(claims);
+    return this._principal(claims, { githubIdentity });
   }
 
   _verifyDev(token) {
@@ -313,7 +316,7 @@ class Authenticator {
     return this._principal(claims);
   }
 
-  _principal(claims) {
+  _principal(claims, { githubIdentity = null } = {}) {
     if (this.allowedTenants.length && !this.allowedTenants.includes(claims.tid)) {
       throw new AuthError('tenant not allowed', 403);
     }
@@ -356,6 +359,16 @@ class Authenticator {
       name,
       avatar: claims.avatar || null,
       isOwner,
+      // The GitHub account GitHub itself just vouched for (`GET /user` with
+      // this request's token), or null. Set ONLY by `_verifyGitHub`, never read
+      // from claims: a dev token can carry `tid: 'github'` and any `oid`, and the
+      // owner list folds several identities into one partition, so neither the
+      // tenant name, `isOwner` nor `key` can stand in for it. `id` is the stable
+      // numeric id; `login` is only the name to look it up by. Repository
+      // authorization (github-app.js) keys on this and fails closed on null.
+      github: githubIdentity
+        ? { id: String(githubIdentity.id), login: String(githubIdentity.login) }
+        : null,
       // An owner's identities share one partition, so signing in with either
       // account shows the same devices. Keyed on a constant rather than on any
       // one of them, so adding or reordering an alias later does not orphan

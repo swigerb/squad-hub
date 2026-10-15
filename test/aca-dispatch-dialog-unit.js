@@ -20,38 +20,102 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+/**
+ * A stand-in for web/js/combobox.js (which needs a real DOM and is driven in
+ * the browser tests): the same contract -- `value()` is only ever what was
+ * CHOSEN, typed text is `unresolved()`, and `resolve()` runs the real `load`
+ * and `matches` the dialog passed in -- so what is proven here is the dialog's
+ * own logic, not the widget's.
+ */
+function fakeCombobox(registry) {
+  return function createCombobox(opts) {
+    let chosen = null;
+    let free = false;
+    const text = () => String(opts.input.value || '').trim();
+    const box = {
+      opts,
+      blocked: null,
+      get free() { return free; },
+      value: () => (free ? (text() || null) : (chosen ? chosen.value : null)),
+      item: () => chosen,
+      typed: text,
+      unresolved: () => !free && !chosen && text() !== '',
+      choose(item, quiet) {
+        chosen = item;
+        opts.input.value = item.label;
+        if (!quiet && opts.onChange) opts.onChange(item);
+      },
+      setText(v) { chosen = null; opts.input.value = v; },
+      async resolve() {
+        if (free || chosen || !text()) return chosen;
+        const r = await opts.load(text(), 1, {});
+        const hit = opts.matches && r.items.find((x) => opts.matches(x, text()));
+        if (hit) box.choose(hit);
+        return chosen;
+      },
+      reload() {},
+      clear() { chosen = null; opts.input.value = ''; },
+      setBlocked(reason) { box.blocked = reason; opts.input.disabled = !!reason; },
+      setFree(on) { free = !!on; if (on) chosen = null; },
+    };
+    registry.push(box);
+    return box;
+  };
+}
+
 function dialogFixture(repoReplies = []) {
   const fs = require('fs');
   const path = require('path');
-  const source = ['aca.js', 'aca-created-issue.js']
+  const source = ['aca.js', 'aca-created-issue.js', 'aca-choices.js']
     .map((file) => stripModuleSyntax(fs.readFileSync(path.join(__dirname, '..', 'web', 'js', file), 'utf8')))
     .join('\n');
   const elements = new Map();
   const element = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, style: {}, focus() {} });
+    if (!elements.has(id)) {
+      elements.set(id, {
+        value: '', hidden: false, style: {}, focus() {}, replaceChildren(...c) { this.options = c; },
+      });
+    }
     return elements.get(id);
   };
   const requests = [];
+  const choiceRequests = [];
+  const lookups = [];
   const tracked = [];
   const notifications = [];
-  const request = (url, options) => {
+  const registry = [];
+  const request = (url, options = {}) => {
     if (url === '/api/aca/repos') return repoReplies.length ? repoReplies.shift().promise : Promise.resolve({ repos: [] });
     const reply = deferred();
+    if (/^\/api\/aca\/(branches|issues)\?/.test(url)) {
+      lookups.push({ ...reply, url, signal: options.signal });
+      return reply.promise;
+    }
+    if (url.startsWith('/api/aca/choices')) {
+      choiceRequests.push({ ...reply, url, signal: options.signal });
+      return reply.promise;
+    }
     requests.push({ ...reply, body: options.body });
     return reply.promise;
   };
-  const dialog = new Function('state', 'api', '$', 'esc', 'render', 'trackAcaDispatch', 'toast',
-    `${source}\nreturn { openAca, submitAcaDispatch };`)(
-    { currentSession: null }, request, element, String, () => {}, (entry) => tracked.push(entry), (message) => notifications.push(message),
+  const state = { currentSession: null };
+  const dialog = new Function('state', 'api', '$', 'esc', 'toast', 'render', 'trackAcaDispatch', 'createCombobox', 'Option',
+    `${source}\nreturn { openAca, submitAcaDispatch, acaChoiceValues };`)(
+    state, request, element, String, (message) => notifications.push(message), () => {}, (entry) => tracked.push(entry),
+    fakeCombobox(registry), function Option(text, value) { return { text, value }; },
   );
+  const boxFor = (kind) => registry.find((b) => b.opts.input === element({ repo: 'acaRepo', branch: 'acaBranch', issue: 'acaIssueNumber' }[kind]));
+  // What picking from a list does: the box holds the entry and the dialog hears about it.
+  const choose = (kind, value, label) => boxFor(kind).choose({ value, label: label || String(value) });
   const open = (prompt) => {
     dialog.openAca();
-    element('acaRepo').value = 'acme/widgets';
+    choose('repo', 'acme/widgets');
     element('acaPrompt').value = prompt;
   };
-  return { ...dialog, open, element, requests, tracked, notifications };
+  return {
+    ...dialog, state, open, choose, boxFor, element, requests, choiceRequests, lookups, tracked, notifications,
+  };
 }
-
 let pass = 0; let fail = 0;
 function check(name, fn) {
   try {
@@ -769,18 +833,51 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
     });
 
     await checkAsync('a stale repository failure cannot disable a reopened ACA dialog', async () => {
-      const older = deferred();
-      const newer = deferred();
-      const f = dialogFixture([older, newer]);
-      f.open('First job');
-      f.element('acaScrim').hidden = true;
-      f.open('Second job');
-      older.reject(Object.assign(new Error('no App'), { status: 501 }));
-      await Promise.resolve();
-      assert.strictEqual(f.element('acaForm').hidden, false);
-      assert.strictEqual(f.element('acaStart').hidden, false);
-      newer.resolve({ repos: [] });
-      await Promise.resolve();
+      const flush = () => new Promise((resolve) => setImmediate(resolve));
+      // The settled failure must have had every chance to run its handler:
+      // a single microtask tick returns before the dialog's catch block does,
+      // which is how a missing stale guard once looked like a pass.
+      const staleFailure = async (status, message) => {
+        const older = deferred();
+        const newer = deferred();
+        const f = dialogFixture([older, newer]);
+        f.open('First job');
+        f.element('acaScrim').hidden = true;
+        f.open('Second job');
+        const hintBefore = f.element('acaRepoHint').textContent;
+        older.reject(Object.assign(new Error(message), { status }));
+        await flush();
+        return { f, newer, hintBefore };
+      };
+
+      // Control: the same failure on the CURRENT dialog does take effect, so
+      // the assertions below cannot pass merely because the handler never ran.
+      const live = deferred();
+      const current = dialogFixture([live]);
+      current.open('Only job');
+      live.reject(Object.assign(new Error('no App'), { status: 501 }));
+      await flush();
+      assert.strictEqual(current.element('acaForm').hidden, true, 'a current 501 no longer disables the dialog');
+      assert.strictEqual(current.element('acaDisabledNote').textContent, 'no App');
+      const liveOther = deferred();
+      const currentOther = dialogFixture([liveOther]);
+      currentOther.open('Only job');
+      liveOther.reject(Object.assign(new Error('offline'), { status: 500 }));
+      await flush();
+      assert.match(currentOther.element('acaRepoHint').textContent, /Could not load the repository list: offline/);
+
+      for (const [status, message] of [[501, 'no App'], [429, 'rate limited'], [500, 'offline']]) {
+        const { f, newer, hintBefore } = await staleFailure(status, message);
+        assert.strictEqual(f.element('acaForm').hidden, false, `a stale ${status} hid the reopened form`);
+        assert.strictEqual(f.element('acaStart').hidden, false, `a stale ${status} hid the reopened Start button`);
+        assert.strictEqual(f.element('acaDisabledNote').hidden, true, `a stale ${status} showed the disabled note`);
+        assert.notStrictEqual(f.element('acaDisabledNote').textContent, message, `a stale ${status} wrote the disabled note`);
+        assert.strictEqual(f.element('acaRepoHint').textContent, hintBefore, `a stale ${status} replaced the reopened repository hint`);
+        newer.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
+        await flush();
+        assert.deepStrictEqual(f.state.acaRepos.map((r) => r.fullName), ['acme/widgets'], `the reopened list was lost after a stale ${status}`);
+        assert.strictEqual(f.element('acaForm').hidden, false);
+      }
     });
 
     await checkAsync('a stale repository success cannot overwrite the reopened ACA repository list', async () => {
@@ -791,11 +888,10 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       f.element('acaScrim').hidden = true;
       f.open('Second job');
       newer.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
       older.resolve({ repos: [{ fullName: 'stale/old', hasDispatchWorkflow: false }] });
-      await Promise.resolve();
-      assert.match(f.element('acaRepoList').innerHTML, /acme\/widgets/);
-      assert.doesNotMatch(f.element('acaRepoList').innerHTML, /stale\/old/);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepStrictEqual(f.state.acaRepos.map((r) => r.fullName), ['acme/widgets']);
     });
 
     // The dialog as a person meets it: the REAL `openAca` defaults (Publish PR
@@ -915,7 +1011,7 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       status: 502, body: { error: message, issue: { number, url: `https://github.com/acme/widgets/issues/${number}` } },
     });
     const fillOptions = (f) => {
-      f.element('acaBranch').value = 'release';
+      f.choose('branch', 'release');
       f.element('acaModel').value = 'a-model';
       f.element('acaReviewer').value = 'someone';
       f.element('acaPublishPr').checked = false;
@@ -954,7 +1050,8 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
 
       assert.strictEqual(f.element('acaScrim').hidden, false, 'the dialog closed on a failed dispatch');
       assert.strictEqual(f.element('acaIssueModeExisting').checked, true, 'the form stayed in New-issue mode');
-      assert.strictEqual(f.element('acaIssueNumber').value, '42');
+      assert.strictEqual(f.element('acaIssueNumber').value, '#42');
+      assert.strictEqual(f.boxFor('issue').value(), 42, 'the created issue was typed in, not chosen');
       assert.strictEqual(f.element('acaNewIssueFields').hidden, true);
       assert.strictEqual(f.element('acaExistingIssueFields').hidden, false);
       const shown = f.element('acaErr').innerHTML;
@@ -990,11 +1087,11 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       const f = dialogFixture();
       f.open('Existing issue job');
       f.element('acaIssueModeExisting').checked = true;
-      f.element('acaIssueNumber').value = '7';
+      f.choose('issue', 7, '#7 An open issue');
       const sent = f.submitAcaDispatch();
       f.requests[0].reject(failedAfterIssue(99));
       await sent;
-      assert.strictEqual(f.element('acaIssueNumber').value, '7');
+      assert.strictEqual(f.boxFor('issue').value(), 7);
       assert.strictEqual(f.element('acaErr').hidden, false);
       assert.strictEqual(f.element('acaErr').textContent, 'Could not start the job: workflow_dispatch refused');
       assert.strictEqual(f.element('acaErr').innerHTML, undefined, 'the failure was rendered as a creation');
@@ -1028,7 +1125,7 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       const first = f.submitAcaDispatch();
       f.element('acaScrim').hidden = true;
       f.open('Second job');
-      f.element('acaRepo').value = 'other/repo';
+      f.choose('repo', 'other/repo');
       f.requests[0].reject(failedAfterIssue(42));
       await first;
       assert.strictEqual(f.element('acaIssueModeExisting').checked, undefined, 'the older error switched the newer form to Existing issue');
@@ -1059,7 +1156,7 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       const f = dialogFixture();
       f.open('Repository changed job');
       const sent = f.submitAcaDispatch();
-      f.element('acaRepo').value = 'other/repo';
+      f.choose('repo', 'other/repo');
       f.requests[0].reject(failedAfterIssue(42));
       await sent;
       assert.strictEqual(f.element('acaIssueModeExisting').checked, undefined, 'issue 42 of acme/widgets was selected for other/repo');
@@ -1078,12 +1175,290 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       f.open('Changed mode job');
       const sent = f.submitAcaDispatch();
       f.element('acaIssueModeExisting').checked = true;
-      f.element('acaIssueNumber').value = '77';
+      f.choose('issue', 77, '#77 Mine');
       f.requests[0].reject(failedAfterIssue(42));
       await sent;
-      assert.strictEqual(f.element('acaIssueNumber').value, '77', 'the person\'s own issue number was overwritten');
+      assert.strictEqual(f.boxFor('issue').value(), 77, 'the person\'s own issue number was overwritten');
       assert.match(f.element('acaErr').innerHTML, /acme\/widgets#42 was already created/);
       assert.match(f.element('acaErr').innerHTML, /left as you set it/);
+    });
+
+    // --- #257: the dialog sends what was CHOSEN from the target's own lists ------
+    const okChoices = (extra = {}) => ({
+      repo: 'acme/widgets',
+      defaultBranch: 'trunk',
+      workflow: { exists: true, declaredInputs: [] },
+      model: { state: 'ok', source: 'repository-config', default: 'm-default', choices: [{ id: 'm-default' }, { id: 'm-fast', hint: 'fast' }] },
+      reviewer: { state: 'ok', source: 'casting-registry', choices: [{ id: 'lead' }, { id: 'tester' }] },
+      ...extra,
+    });
+    const optionValues = (el) => (el.options || []).map((o) => o.value);
+
+    await checkAsync('typed text that names nothing in the list is never sent, and no request is made for it (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Typed branch');
+      f.boxFor('branch').setText('release/typo');
+      const sent = f.submitAcaDispatch();
+      assert.strictEqual(f.requests.length, 0, 'a dispatch went out for text that was never chosen');
+      assert.match(f.lookups[0].url, /^\/api\/aca\/branches\?repo=acme%2Fwidgets&q=release%2Ftypo&page=1$/);
+      f.lookups[0].resolve({ branches: [], nextPage: null });
+      await settle();
+      assert.strictEqual(f.requests.length, 0, 'a dispatch went out once the lookup found nothing');
+      await sent;
+      assert.strictEqual(f.element('acaErr').hidden, false);
+      assert.match(f.element('acaErr').textContent, /Choose the base branch from the list/);
+      assert.strictEqual(f.element('acaStart').disabled, false);
+    });
+
+    await checkAsync('a value typed in full is looked up against the target and, if it is there, chosen and sent (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Typed branch');
+      f.boxFor('branch').setText('release/1.0');
+      const sent = f.submitAcaDispatch();
+      f.lookups[0].resolve({ branches: [{ name: 'release/1.0.1' }, { name: 'release/1.0' }], nextPage: null });
+      await settle();
+      assert.strictEqual(f.requests[0].body.baseBranch, 'release/1.0');
+      f.requests[0].resolve({ issue: { number: 1 }, trackerId: 'T-typed' });
+      await sent;
+    });
+
+    await checkAsync('an issue that was typed but never chosen blocks Existing-issue dispatch (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Existing issue');
+      f.element('acaIssueModeExisting').checked = true;
+      f.boxFor('issue').setText('999');
+      const sent = f.submitAcaDispatch();
+      f.lookups[0].resolve({ issues: [{ number: 12, title: 'Another issue' }], nextPage: null });
+      await sent;
+      assert.strictEqual(f.requests.length, 0);
+      assert.match(f.element('acaErr').textContent, /Choose the issue from the list/);
+    });
+
+    await checkAsync('choosing a repository asks THAT repository for its choices, and fills model and reviewer from the reply (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Choices');
+      assert.strictEqual(f.choiceRequests.length, 1);
+      assert.strictEqual(f.choiceRequests[0].url, '/api/aca/choices?repo=acme%2Fwidgets');
+      assert.strictEqual(f.element('acaModel').disabled, true, 'a model could be picked before the target answered');
+      assert.match(f.element('acaModelNote').textContent, /Loading/);
+      f.choiceRequests[0].resolve(okChoices());
+      await settle();
+      assert.deepStrictEqual(optionValues(f.element('acaModel')), ['', 'm-default', 'm-fast']);
+      assert.deepStrictEqual(optionValues(f.element('acaReviewer')), ['', 'lead', 'tester']);
+      assert.strictEqual(f.element('acaModel').disabled, false);
+      assert.strictEqual(f.element('acaModel').value, '', 'the default is explicit, not the first catalog entry');
+      assert.strictEqual(f.element('acaModel').options[2].text, 'm-fast (fast)');
+      assert.match(f.element('acaModelNote').textContent, /Not a check of what the job can run/);
+      assert.match(f.element('acaBranch').placeholder, /trunk/);
+    });
+
+    await checkAsync('model and reviewer say why only the default is offered, and never offer a made-up list (#257)', async () => {
+      const cases = [
+        [{ state: 'default-only', choices: [], reason: 'the repository names no model' }, /Only the Squad default is available: the repository names no model/],
+        [{ state: 'unsupported', choices: [], reason: 'squad-dispatch.yml declares no model input' }, /Only the Squad default is available: squad-dispatch.yml declares no model input/],
+        [{ state: 'unavailable', choices: [], reason: 'its config is malformed' }, /Could not list models: its config is malformed/],
+      ];
+      for (const [model, note] of cases) {
+        const f = dialogFixture();
+        f.open('States');
+        f.choiceRequests[0].resolve(okChoices({ model }));
+        await settle();
+        assert.deepStrictEqual(optionValues(f.element('acaModel')), [''], model.state);
+        assert.strictEqual(f.element('acaModel').disabled, true, model.state);
+        assert.match(f.element('acaModelNote').textContent, note, model.state);
+        assert.strictEqual(f.element('acaChoicesRetry').hidden, model.state !== 'unavailable', model.state);
+      }
+    });
+
+    await checkAsync('a failed choices request disables model and reviewer, says so, and offers a retry (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Failure');
+      f.choiceRequests[0].reject(Object.assign(new Error('GitHub could not be reached'), { status: 502 }));
+      await settle();
+      assert.strictEqual(f.element('acaModel').disabled, true);
+      assert.strictEqual(f.element('acaReviewer').disabled, true);
+      assert.match(f.element('acaModelNote').textContent, /Could not load this repository's choices: GitHub could not be reached/);
+      assert.strictEqual(f.element('acaChoicesRetry').hidden, false);
+      const sent = f.submitAcaDispatch();
+      assert.strictEqual(f.requests[0].body.model, null, 'a model nobody could choose was sent');
+      f.requests[0].resolve({ issue: { number: 1 }, trackerId: 'T-fail' });
+      await sent;
+    });
+
+    await checkAsync('changing the repository drops every choice that belonged to the old one and ignores its late reply (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Switch');
+      f.choose('branch', 'release');
+      f.choose('issue', 5, '#5 Old issue');
+      f.element('acaModel').value = 'm-fast';
+      f.element('acaReviewer').value = 'lead';
+      f.choose('repo', 'other/repo');
+      assert.strictEqual(f.boxFor('branch').value(), null);
+      assert.strictEqual(f.boxFor('issue').value(), null);
+      assert.strictEqual(f.element('acaBranch').value, '');
+      assert.strictEqual(f.element('acaModel').value, '', 'the old repository\'s model survived the change');
+      assert.strictEqual(f.element('acaReviewer').value, '', 'the old repository\'s reviewer survived the change');
+      assert.strictEqual(f.choiceRequests[1].url, '/api/aca/choices?repo=other%2Frepo');
+
+      // The first answer for the repository that was replaced arrives LAST.
+      f.choiceRequests[1].resolve(okChoices({ model: { state: 'ok', choices: [{ id: 'other-model' }] } }));
+      await settle();
+      f.choiceRequests[0].resolve(okChoices({ model: { state: 'ok', choices: [{ id: 'stale-model' }] } }));
+      await settle();
+      assert.deepStrictEqual(optionValues(f.element('acaModel')), ['', 'other-model'], 'a late reply overwrote the current repository\'s choices');
+      const sent = f.submitAcaDispatch();
+      assert.strictEqual(f.requests[0].body.repo, 'other/repo');
+      assert.strictEqual(f.requests[0].body.baseBranch, null);
+      assert.strictEqual(f.requests[0].body.model, null);
+      f.requests[0].resolve({ issue: { number: 1 }, trackerId: 'T-switch' });
+      await sent;
+    });
+
+    await checkAsync('replacing the repository aborts the choices request still in flight for the old one (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Abort');
+      f.choose('repo', 'other/repo');
+      assert.strictEqual(f.choiceRequests[0].signal.aborted, true);
+      assert.strictEqual(f.choiceRequests[1].signal.aborted, false);
+    });
+
+    await checkAsync('clearing the repository aborts the choices request still in flight and shows no choices (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Cleared');
+      assert.strictEqual(f.choiceRequests[0].signal.aborted, false);
+      f.boxFor('repo').opts.onChange(null);
+      assert.strictEqual(f.choiceRequests[0].signal.aborted, true, 'the old repository\'s request kept running after it was cleared');
+      assert.match(f.element('acaModelNote').textContent, /Choose a repository to see its choices/);
+      assert.strictEqual(f.element('acaModel').disabled, true);
+    });
+
+    await checkAsync('branch and issue are unavailable until a repository is chosen, and again once it is cleared (#257)', async () => {
+      const f = dialogFixture();
+      f.dialogOpen = f.openAca();
+      assert.match(f.boxFor('branch').blocked, /Choose a repository first/);
+      assert.match(f.boxFor('issue').blocked, /Choose a repository first/);
+      f.choose('repo', 'acme/widgets');
+      assert.strictEqual(f.boxFor('branch').blocked, null);
+      assert.strictEqual(f.boxFor('issue').blocked, null);
+      f.boxFor('repo').opts.onChange(null);
+      assert.match(f.boxFor('branch').blocked, /Choose a repository first/);
+      assert.match(f.element('acaModelNote').textContent, /Choose a repository/);
+    });
+
+    await checkAsync('a repository the hub refused for a field clears that choice and reloads the list it came from (#257)', async () => {
+      const f = dialogFixture();
+      f.open('Refused');
+      f.choiceRequests[0].resolve(okChoices());
+      await settle();
+      f.choose('branch', 'gone');
+      f.element('acaModel').value = 'm-fast';
+      let focused = null;
+      f.element('acaBranch').focus = () => { focused = 'acaBranch'; };
+      f.element('acaModel').focus = () => { focused = 'acaModel'; };
+      const first = f.submitAcaDispatch();
+      f.requests[0].reject(Object.assign(new Error('branch "gone" does not exist in acme/widgets'), {
+        status: 422, body: { error: 'branch "gone" does not exist', field: 'baseBranch' },
+      }));
+      await first;
+      assert.strictEqual(f.boxFor('branch').value(), null, 'a branch the repository rejected stayed chosen');
+      assert.strictEqual(focused, 'acaBranch');
+      assert.match(f.element('acaErr').textContent, /does not exist in acme\/widgets/);
+
+      const second = f.submitAcaDispatch();
+      f.requests[1].reject(Object.assign(new Error('model "m-fast" is not offered'), {
+        status: 422, body: { error: 'model not offered', field: 'model' },
+      }));
+      await second;
+      assert.strictEqual(focused, 'acaModel');
+      assert.strictEqual(f.choiceRequests.length, 2, 'the model list was not reloaded after the model was refused');
+      assert.strictEqual(f.element('acaModel').value, '');
+    });
+
+    await checkAsync('a picker retry restores repository capabilities after the open-time list failed', async () => {
+      const initial = deferred();
+      const retry = deferred();
+      const f = dialogFixture([initial, retry]);
+      f.openAca();
+      initial.reject(Object.assign(new Error('verification temporarily unavailable'), { status: 502 }));
+      await settle();
+      f.boxFor('repo').setText('acme/widgets');
+      const chosen = f.boxFor('repo').resolve();
+      const repos = [{ fullName: 'acme/widgets', hasDispatchWorkflow: true, declaredInputs: ['issue', 'prompt'] }];
+      retry.resolve({ repos });
+      await chosen;
+      await settle();
+      assert.deepStrictEqual(f.state.acaRepos, repos);
+      assert.deepStrictEqual(f.acaChoiceValues().declaredInputs, ['issue', 'prompt']);
+      assert.match(f.element('acaRepoHint').textContent, /squad-dispatch.yml found/);
+      assert.match(f.element('acaOptionsHint').textContent, /does not declare publish_pr or watch_only/);
+    });
+
+    await checkAsync('a late field refusal cannot clear choices in a reopened dialog', async () => {
+      for (const field of ['baseBranch', 'issue', 'model', 'reviewer']) {
+        const f = dialogFixture();
+        f.open('Earlier request');
+        const old = f.submitAcaDispatch();
+        f.element('acaScrim').hidden = true;
+        f.open('Current request');
+        f.choose('branch', 'release');
+        f.choose('issue', 77);
+        f.element('acaModel').value = 'current-model';
+        f.element('acaReviewer').value = 'current-reviewer';
+        const loads = f.choiceRequests.length;
+        f.requests[0].reject(Object.assign(new Error('old value no longer exists'), { status: 422, body: { field } }));
+        await old;
+        assert.strictEqual(f.boxFor('branch').value(), 'release', field);
+        assert.strictEqual(f.boxFor('issue').value(), 77, field);
+        assert.strictEqual(f.element('acaModel').value, 'current-model', field);
+        assert.strictEqual(f.element('acaReviewer').value, 'current-reviewer', field);
+        assert.strictEqual(f.choiceRequests.length, loads, field);
+        assert.strictEqual(f.element('acaErr').hidden, true, field);
+      }
+    });
+
+    await checkAsync('a hub with no GitHub App leaves repository and issue as plain text for the link fallback (#257)', async () => {
+      const reply = deferred();
+      const f = dialogFixture([reply]);
+      f.open('No app');
+      f.boxFor('repo').setText('acme/widgets');
+      reply.reject(Object.assign(new Error('no App'), { status: 501 }));
+      await settle();
+      assert.strictEqual(f.boxFor('repo').free, true);
+      assert.strictEqual(f.boxFor('issue').free, true);
+      assert.strictEqual(f.boxFor('issue').blocked, null, 'the issue box was blocked on a hub with nothing to search');
+      f.boxFor('issue').setText('#72');
+      assert.strictEqual(f.boxFor('issue').value(), '#72');
+    });
+
+    await checkAsync('the repository the session ran in is only a prefill: it is chosen only if the list contains it (#257)', async () => {
+      const reply = deferred();
+      const f = dialogFixture([reply]);
+      f.state.currentSession = { session: { prompt: 'p', git: { host: 'github.com', repository: 'acme/widgets' } } };
+      f.openAca();
+      assert.strictEqual(f.boxFor('repo').value(), null, 'a prefill was treated as a chosen repository');
+      assert.strictEqual(f.choiceRequests.length, 0);
+      reply.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
+      await settle();
+      assert.strictEqual(f.boxFor('repo').value(), 'acme/widgets');
+      assert.strictEqual(f.choiceRequests.length, 1);
+
+      const other = deferred();
+      const g = dialogFixture([other]);
+      g.state.currentSession = { session: { prompt: 'p', git: { host: 'github.com', repository: 'private/not-granted' } } };
+      g.openAca();
+      other.resolve({ repos: [{ fullName: 'acme/widgets', hasDispatchWorkflow: true }] });
+      await settle();
+      assert.strictEqual(g.boxFor('repo').value(), null, 'a repository outside the list was chosen');
+      assert.strictEqual(g.choiceRequests.length, 0);
+    });
+
+    check('the dispatch body refuses unresolved typed text and still names a blank repository (#257)', () => {
+      const r = acaBuildDispatchBody({ ...baseForm(), unresolved: ['the repository', 'the base branch'] });
+      assert.strictEqual(r.ok, false);
+      assert.match(r.reason, /Choose the repository and the base branch from the list/);
+      const blank = acaBuildDispatchBody({ ...baseForm(), repo: '' });
+      assert.strictEqual(blank.ok, false);
+      assert.match(blank.reason, /repository/);
     });
     await checkAsync('a live overview invalidates an older GET without losing the pushed session', async () => {
       const fs = require('fs');
@@ -1109,52 +1484,30 @@ check('Repository and Instructions sit outside #acaForm, so the 501 fallback can
       assert.strictEqual(clientState.overview.counts.sessions, 1);
     });
 
-    global.fetch = async () => ({
-      ok: false,
-      status: 501,
-      json: async () => ({ reason: 'This hub has no GitHub App configured.' }),
+    await checkAsync('api() surfaces a `reason`-shaped 501 body as its error message', async () => {
+      global.fetch = async () => ({
+        ok: false,
+        status: 501,
+        json: async () => ({ reason: 'This hub has no GitHub App configured.' }),
+      });
+      let thrown = null;
+      try { await api('/api/aca/repos'); } catch (e) { thrown = e; }
+      assert.ok(thrown, 'expected api() to throw');
+      assert.strictEqual(thrown.status, 501);
+      assert.strictEqual(thrown.message, 'This hub has no GitHub App configured.');
     });
-    try {
-      await api('/api/aca/repos');
-      fail += 1;
-      console.log('  FAIL api() surfaces a `reason`-shaped 501 body as its error message\n         expected api() to throw');
-      console.log('RESULT\tfail\tapi() surfaces a `reason`-shaped 501 body as its error message\texpected api() to throw');
-    } catch (e) {
-      try {
-        assert.strictEqual(e.status, 501);
-        assert.strictEqual(e.message, 'This hub has no GitHub App configured.');
-        pass += 1;
-        console.log('  ok   api() surfaces a `reason`-shaped 501 body as its error message');
-        console.log('RESULT\tok\tapi() surfaces a `reason`-shaped 501 body as its error message');
-      } catch (assertErr) {
-        fail += 1;
-        console.log(`  FAIL api() surfaces a \`reason\`-shaped 501 body as its error message\n         ${assertErr.message}`);
-        console.log(`RESULT\tfail\tapi() surfaces a \`reason\`-shaped 501 body as its error message\t${String(assertErr.message).split('\n')[0]}`);
-      }
-    }
 
-    global.fetch = async () => ({
-      ok: false,
-      status: 404,
-      json: async () => ({ error: 'no such device' }),
+    await checkAsync('api() still prefers an `error`-shaped body over `reason`', async () => {
+      global.fetch = async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'no such device' }),
+      });
+      let thrown = null;
+      try { await api('/api/devices/x'); } catch (e) { thrown = e; }
+      assert.ok(thrown, 'expected api() to throw');
+      assert.strictEqual(thrown.message, 'no such device');
     });
-    try {
-      await api('/api/devices/x');
-      fail += 1;
-      console.log('  FAIL api() still prefers an `error`-shaped body over `reason`\n         expected api() to throw');
-      console.log('RESULT\tfail\tapi() still prefers an `error`-shaped body over `reason`\texpected api() to throw');
-    } catch (e) {
-      try {
-        assert.strictEqual(e.message, 'no such device');
-        pass += 1;
-        console.log('  ok   api() still prefers an `error`-shaped body over `reason`');
-        console.log('RESULT\tok\tapi() still prefers an `error`-shaped body over `reason`');
-      } catch (assertErr) {
-        fail += 1;
-        console.log(`  FAIL api() still prefers an \`error\`-shaped body over \`reason\`\n         ${assertErr.message}`);
-        console.log(`RESULT\tfail\tapi() still prefers an \`error\`-shaped body over \`reason\`\t${String(assertErr.message).split('\n')[0]}`);
-      }
-    }
 
     // --- syncAcaPending / retryAcaPending: bounded polling (follow-up to
     // #178) --------------------------------------------------------------

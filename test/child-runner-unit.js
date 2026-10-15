@@ -6,7 +6,7 @@ const path = require('path');
 const vm = require('vm');
 const runner = fs.readFileSync(path.join(__dirname, 'run-tests.js'), 'utf8').replace(/\r\n/g, '\n');
 const start = runner.indexOf('function runChildSuite(');
-const end = runner.indexOf('\nfunction checkEscapeFocusWiring()', start);
+const end = runner.indexOf('\n// ---------------------------------------------------------------------------\n// CRITERION 2', start);
 assert.ok(start >= 0 && end > start, 'child-runner function could not be extracted');
 const body = runner.slice(start, end);
 let pass = 0; let fail = 0;
@@ -16,14 +16,15 @@ function check(name, fn) {
 }
 function run(result, options = { timeout: 300000, requireCompletion: true }) {
   let used;
+  const logs = [];
   const context = {
     pass: 0, fail: 0, failures: [], skipped: [], process,
-    console: { log() {} },
+    console: { log(line) { logs.push(String(line)); } },
     spawnSync(exe, args, opts) { used = opts; return { stdout: '', stderr: '', signal: null, ...result }; },
   };
   vm.createContext(context);
   vm.runInContext(`${body}\nrunChildSuite('fixture.js', 'browser', ${JSON.stringify(options)});`, context);
-  return { ...context, used };
+  return { ...context, used, logs };
 }
 const complete = { status: 0, stdout: 'RESULT\tok\tfixture check\n\n1 passed, 0 failed\n' };
 
@@ -61,6 +62,14 @@ check('child runner reports an optional missing browser as skipped rather than p
   assert.strictEqual(result.fail, 0);
   assert.strictEqual(result.pass, 0);
   assert.strictEqual(result.skipped.length, 1);
+});
+check('child runner names the suite it starts and ends, with its elapsed time, without touching results', () => {
+  const result = run(complete);
+  const start = result.logs.indexOf('  [child-suite] start browser');
+  const end = result.logs.findIndex((l) => /^  \[child-suite\] end browser \(\d+\.\d\s*s\)$/.test(l));
+  assert.ok(start >= 0, 'no start marker naming the suite');
+  assert.ok(end > start, 'no end marker with a duration after the start marker');
+  assert.strictEqual(result.pass, 1);
 });
 check('child runner uses the explicit browser budget without relaxing other child suites', () => {
   assert.strictEqual(run(complete).used.timeout, 300000);

@@ -20,6 +20,7 @@
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { RequiredModelError, requireModelName } = require('./agent-select');
+const { runningActivity } = require('./session-status');
 
 const STATUS = Object.freeze({
   STARTING: 'starting',
@@ -326,7 +327,7 @@ class AcpSession extends EventEmitter {
     if (u.sessionUpdate === 'tool_call') {
       this.toolCallCount += 1;
       if (running) {
-        this.activity = u.title ? `Running ${u.title}` : 'Running a tool...';
+        this.activity = runningActivity(u.title);
       }
     } else if (u.sessionUpdate === 'agent_message_chunk') {
       if (running) this.activity = 'Processing...';

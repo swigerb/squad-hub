@@ -17,6 +17,11 @@
   display: inline-block; vertical-align: -4px;
 }
 .spacer { flex: 1; }
+.connection-note {
+  padding: 10px var(--sp-4);
+  color: var(--warn); background: var(--warn-bg);
+  border-bottom: 1px solid var(--line); overflow-wrap: anywhere;
+}
 .icon-btn {
   background: transparent; border: 0; color: var(--dim);
   font-size: 16px; cursor: pointer; padding: 6px 8px; border-radius: 8px;
@@ -124,4 +129,3 @@
    tooltip and by the menu's own note instead, both of which say what is
    missing rather than merely implying it. */
 button.needs-device { opacity: 1; }
-

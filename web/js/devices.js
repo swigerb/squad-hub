@@ -15,7 +15,7 @@ import { openNew } from './connect.js';
 import { openAca } from './aca.js';
 import { acaPendingSectionHtml } from './aca-pending.js';
 import { acaJobsRowHtml, acaRailRowsHtml } from './aca-rail.js';
-import { ACA_PHASE, renderAcaStatus } from './aca-status.js';
+import { ACA_PHASE, renderAcaStatus, isPersistentAcaJob } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 import { renderEmptySessions } from './empty-state.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
@@ -84,16 +84,22 @@ export function deviceRoster(devices = []) {
 
 /**
  * Split the roster into the three sections the rail groups devices into
- * (#172): ACA executions, cloud devices, and local machines. Each group
+ * (#172): ACA runs, cloud devices, and local machines. Each group
  * keeps `deviceRoster`'s own presence-then-name order -- the grouping only
  * decides which section a device lands in, never how it is ranked within
  * one, so there is still exactly one sort this suite proves.
+ *
+ * The persistent issue-watcher and Ralph jobs are `kind: 'aca'` too, but they
+ * are services that stay up between runs, not runs. They go in the cloud
+ * section, with their details and controls unchanged, so "ACA runs (N)"
+ * counts runs only.
  */
 export function groupDevicesByKind(devices = []) {
   const sorted = deviceRoster(devices);
+  const isRun = (d) => d.kind === 'aca' && !isPersistentAcaJob(d);
   return {
-    aca: sorted.filter((d) => d.kind === 'aca'),
-    cloud: sorted.filter((d) => d.kind === 'cloud'),
+    aca: sorted.filter(isRun),
+    cloud: sorted.filter((d) => d.kind === 'cloud' || (d.kind === 'aca' && !isRun(d))),
     local: sorted.filter((d) => d.kind !== 'aca' && d.kind !== 'cloud'),
   };
 }
@@ -274,7 +280,7 @@ export function localDevicesEmptyHtml() {
       <pre class="cncmd">npx squad-hub start</pre>
       <p class="empty-actions">
         <button class="ghost" data-copy-cmd="npx squad-hub start">Copy command</button>
-        <button class="ghost" data-action="connect-device">Connect a device&hellip;</button>
+        <button class="ghost" data-action="connect-device" data-connect-kind="local">Connect a device&hellip;</button>
         <a href="https://github.com/swigerb/squad-hub#try-it" target="_blank" rel="noopener noreferrer">Learn more</a>
       </p>
     </div>`;
@@ -297,13 +303,17 @@ export function localDevicesEmptyHtml() {
 function deviceSectionHtml(key, label, list, sessionCounts, addAction, addTitle, hubVersion, pendingHtml = '') {
   const collapsed = isSectionCollapsed(key);
   const cards = list.map((d) => deviceCard(d, { sessionCount: sessionCounts.get(d.deviceId) || 0, hubVersion })).join('') + pendingHtml;
-  const body = cards || (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.toLowerCase())} yet.</div></div>`);
+  const body = cards || (key === 'local' ? localDevicesEmptyHtml() : `<div class="device"><div class="device-meta">No ${esc(label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase()))} yet.</div></div>`);
+  // A section's "+" asks for a device of THAT kind; the ACA section's does not
+  // connect anything, so it carries no kind.
+  const kindAttr = addAction === 'connect-device' && (key === 'local' || key === 'cloud')
+    ? ` data-connect-kind="${key}"` : '';
   return `
     <div class="devsec" data-sec="${key}" role="button" tabindex="0"
          aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="devsecbody-${key}">
       ${SECTION_CHEVRON}
       <span class="sec-label">${esc(label)} (${list.length})</span>
-      <button class="add" data-action="${addAction}" title="${esc(addTitle)}">+</button>
+      <button class="add" data-action="${addAction}"${kindAttr} title="${esc(addTitle)}">+</button>
     </div>
     <div class="devsecbody" id="devsecbody-${key}"${collapsed ? ' hidden' : ''}>
       <div class="card">${body}</div>
@@ -413,8 +423,8 @@ export function render() {
   $('deviceList').innerHTML = `
     ${acaJobsRowHtml(state.acaStatus && state.acaStatus.phase === ACA_PHASE.CONNECTED)}
     ${deviceSectionHtml('aca', 'ACA runs', aca, sessionCounts, 'aca', 'Start an ACA run', hubVersion, acaRailRowsHtml(state.acaPending, devices))}
-    ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}
-    ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a device', hubVersion)}`;
+    ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a cloud device', hubVersion)}
+    ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a local machine', hubVersion)}`;
   applyMeterFills($('deviceList'));
   const availPill = $('deviceAvailable');
   if (availPill) {
