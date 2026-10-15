@@ -12,14 +12,11 @@
 | [Sessions on Container Apps](aca.md) | Supervising Squad on ACA runs, so a job can ask a human |
 | [Releasing](releasing.md) | Publishing to npm, under both of its names |
 | [v0.7.0 mockup](design/v0.7.0-mockup.html) | Raw design reference for the v0.7.0 hub UI |
-| [Files tab spike](design/files-tab-spike.md) | What a read-only Files tab would need, its risks, and a recommendation |
+| [Files tab](design/files-tab-spike.md) | The state of file access: the disabled Files tab and the `fileAccess` setting |
 
 ## How this is tested
 
-The synthetic Git-repository policy test suite was removed because its generated
-fixture was blocked by endpoint protection. Those 35 policy regression cases are
-not covered by the remaining suite and must not be reported as passed. Manual UI
-review does not replace selection-policy coverage or production acceptance.
+Manual UI review does not replace automated tests or production acceptance.
 
 Two rules, because both are easy to get wrong in ways that still look green.
 
@@ -133,14 +130,13 @@ $env:NODE_PATH = (Resolve-Path ..\squad-hub-browser-tools\node_modules).Path
 
 The environment setting applies to this shell and its child test processes.
 Keep helper scripts, logs and captured test output outside a release checkout
-too. See [releasing](releasing.md#publishing-future-versions-from-main).
+too. See [releasing](releasing.md#publish-a-release).
 
 ### README gallery
 
 The gallery in [`images/`](images/) captures the actual local hub UI using
 the `HubService` / `Authenticator` / `HubLink` fixture pattern from
-`test/browser-e2e-unit.js`, driven by Playwright Chromium. The five README
-filenames keep their original prefix. [Capture provenance](images/capture-provenance.json)
+`test/browser-e2e-unit.js`, driven by Playwright Chromium. [Capture provenance](images/capture-provenance.json)
 records the source commit, browser, dimensions, and hashes.
 
 | Image | Capture |
@@ -157,9 +153,8 @@ records the source commit, browser, dimensions, and hashes.
 All sessions, transcripts, pins, PR links, health checks, device presence and
 `C:\demo\widgets` paths are **synthetic inputs**. GitHub App repository discovery
 is an in-process fixture, not a real installation. `Connected`, `healthy` and
-`Synced` reflect fixture responses, not live service state. External browser
-requests were blocked; Start job was never pressed, no issue or run was created,
-and no approval was answered. No production or personal data was used.
+`Synced` reflect fixture responses, not live service state. No production or
+personal data was used.
 
 The images show page layout, an inline approval card, and the ACA dialog. They
 do not show an installed PWA, real phone behavior, or notification delivery, and
@@ -169,10 +164,9 @@ those checks passed.
 
 ## Verification scripts
 
-[`spike/`](../spike/) holds the scripts used to settle questions that could not
-be answered by reading, along with the captured wire payloads. They are runnable,
-so the answers can be re-checked rather than taken on trust. They are developer
-diagnostics and protocol evidence, not a release acceptance record.
+[`spike/`](../spike/) holds runnable diagnostic probes for the agent protocol and
+the hub's runtime behavior, with the captured wire payloads and findings they
+produce. They are developer tools, not a release acceptance record.
 
 
 | Script | Answers |

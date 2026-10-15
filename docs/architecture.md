@@ -41,7 +41,7 @@ create a device or session in the Hub API.
 That metadata (`displayName`, `repo`, `issue`, `executionName`, `jobName`,
 `role`, `approvalMode`, `lastSweepAt`) is optional, validated and size-capped
 in [`src/device-meta.js`](../src/device-meta.js), and never trusted as sent.
-`role`, `approvalMode` and `lastSweepAt` (#233) are further restricted to
+`role`, `approvalMode` and `lastSweepAt` are further restricted to
 closed vocabularies -- the "Squad on ACA" status card (`web/js/aca-status.js`)
 treats them as VERIFIED facts a device chose to report, never guesses one
 from a device's own `name`, and reports plain presence or a bare heartbeat
@@ -93,12 +93,11 @@ rather than merges, so anything that has stopped existing disappears.
 
 ## What survives what
 
-Every row measured, not reasoned. Probes in [`spike/`](../spike/),
-and the first row is enforced by [`test/restart-unit.js`](../test/restart-unit.js).
+The first row is enforced by [`test/restart-unit.js`](../test/restart-unit.js).
 
 | Event | Sessions | A pending approval | Devices |
 |---|---|---|---|
-| **Hub service restarts / redeploys** | restored by devices in ~2 s | **survives**, same id, still answerable | re-register |
+| **Hub service restarts / redeploys** | restored by devices when they reconnect | **survives**, same id, still answerable | re-register |
 | **Daemon restarts** (`squad-hub stop`/`start`) | **lost** — agents are reaped | lost with its session | re-registers, online |
 | **Daemon killed** (crash, network, laptop lid) | held until it reconnects | held | online → stale → offline |
 | **Agent process dies** | marked **failed** within one heartbeat | cleared | unaffected |
@@ -106,17 +105,11 @@ and the first row is enforced by [`test/restart-unit.js`](../test/restart-unit.j
 
 ### The hub restart, in full
 
-```
-RESTARTING the hub service (in-memory state is discarded)...
-service back up, store EMPTY
-sessions immediately after restart: 0
-the approval REAPPEARED after 2s
-approval id unchanged: true
-answering it AFTER the restart ran the tool: true
-```
-
-Two seconds is the reconnect backoff. The approval id is unchanged, so a card
-already open elsewhere still answers the right thing.
+A restarted service starts with an empty store and no sessions. Each device
+reconnects with exponential backoff (1 s, 2 s, 4 s, and so on, capped at 30 s)
+and republishes its sessions, including pending approvals. The approval id is
+unchanged, so a card already open elsewhere still answers the right thing, and
+answering it after the restart runs the tool.
 
 ### The daemon restart, in full
 
@@ -124,27 +117,15 @@ Sessions are **not** recovered, and that is deliberate. A daemon reaps its agent
 on shutdown, because an unsupervised `copilot --acp` holding a repository
 checkout — invisible to every surface — is worse than no agent at all.
 
-What matters is that the hub does not then show ghosts:
-
-```
-the agent process is gone: true
-sessions in the hub after the daemon restarted: 0
-of those, still showing a pending approval: 0
-the device is back online: true
-```
-
-A session list offering approvals that can never be answered would be worse than
+After a daemon restart the agent process is gone, the hub shows no sessions for
+the device and no pending approval, and the device re-registers and shows online.
+The hub does not show ghosts: a session list offering approvals that can never be answered would be worse than
 an empty one.
 
 ### A device that vanishes
 
 Presence decays on a timer rather than disappearing at once, because a laptop
 lid and a crashed daemon look identical from the hub:
-
-```
-presence immediately: online
-presence after decay:  stale
-```
 
 `online` → `stale` → `offline`, then dropped from the roster entirely if it stays
 away and has no sessions worth remembering.
@@ -185,26 +166,23 @@ more than one worker.
 
 ## Why one agent process per session
 
-A single ACP client *can* drive several sessions concurrently — proven in
+A single ACP client *can* drive several sessions concurrently; see
 [`spike/acp-capability-probe.js`](../spike/acp-capability-probe.js).
 
-The daemon still spawns one process per session, because multiplexing means a
+The daemon spawns one process per session anyway, because multiplexing means a
 single crash takes every session on the device with it, and it turns "stop this
 session" into a protocol problem instead of a `kill()`.
 
-The probe's value is that it removes multiplexing from the risk list, should
-that trade ever look worth making.
-
 ## Re-adopting a session
 
-`session/load` works: a new client can load a session an old one started, replay
-its transcript, and prompt it successfully.
+`session/load` lets a new client load a session an old one started, replay its
+transcript, and prompt it.
 
-What does **not** survive is the model's context — a code word established before
-the restart could not be recalled afterwards.
+The model's context does **not** survive: a fact stated before the restart is
+not recalled afterwards.
 
 So re-adoption recovers the *session*, not the *conversation*. The daemon
-therefore still reaps on restart rather than pretending nothing happened.
+therefore reaps on restart rather than pretending nothing happened.
 
 ## Security boundaries
 
@@ -228,13 +206,13 @@ about 240 seconds, and it is far from alone.
 
 Two WebSockets are at risk, and they fail differently:
 
-- **The device's outbound socket** carries a heartbeat every 15 s, so it was
-  never in danger.
-- **The browser's watcher socket** only *receives*. On an idle hub it sends
-  nothing and receives nothing, so it was dropped at 240 s and reconnected —
-  showing stale data in the gap.
+- **The device's outbound socket** carries a heartbeat every 15 s, so it is
+  never idle.
+- **The browser's watcher socket** only *receives*. On an idle hub it would send
+  and receive nothing, and a proxy would drop it and show stale data until it
+  reconnected.
 
-The service therefore pings every 45 seconds. Two bytes, and browsers answer
+The service pings every 45 seconds. Two bytes, and browsers answer
 automatically.
 
 This is the reason the browser's connection is worth naming separately in the
@@ -243,59 +221,22 @@ updates depend on a socket that nothing else was keeping open.
 
 ## Web UI modules
 
-`web/app.js` used to be one file carrying nearly every browser-side concern —
-rendering, dialogs, and all of the event wiring. By the time it reached ~49KB
-it was the largest file in the project and the hardest to change without
-touching something unrelated. `web/css/app.css` had the same problem and was
-split first (#190); `web/app.js` followed the same shape, split by feature
-rather than by layer:
+`web/app.js` holds the import list and `main()`, the startup sequence (sign-in
+check, initial load, deep-link resolution and the refresh timer). The rest of the
+client is split by feature under `web/js/`, and the styles under `web/css/`.
+There is no bundler and no build step: the browser resolves plain
+`<script type="module">` imports itself.
 
-- `web/js/api.js` — `state`, `api()`, token storage.
-- `web/js/util.js` — `$`, `esc`, `toast`, and other small DOM/formatting
-  helpers with no feature of their own.
-- `web/js/list.js`, `web/js/approvals.js`, `web/js/dropdowns.js`,
-  `web/js/cleanup.js`, `web/js/composer.js`, `web/js/notifications.js`,
-  `web/js/devices.js`, `web/js/detail.js`, `web/js/ws.js` — the pre-existing
-  split from earlier parts of #165 (list rendering, approvals, dropdown
-  filters, tidy/cleanup rules, the message composer, browser notifications,
-  the device list, the session detail panel, and the live WebSocket
-  connection).
-- `web/js/signin.js` — the signed-out screen and its hint text.
-- `web/js/aca.js` — the "run in the cloud" (ACA) dialog: building the
-  GitHub issue link/comment and wiring the dialog's own controls.
-- `web/js/access.js` — the People/access screen: who has access, and the
-  owner-only controls to grant or revoke it.
-- `web/js/install.js` — "Install as an app" detection and the
-  browser-specific instructions when the browser offers no native prompt.
-- `web/js/connect.js` — the "Connect a device" and "New session" dialogs:
-  device tokens, cwd hints, and the agent/model choice fields.
-- `web/js/device-detail.js` — the per-device expandable detail panel (#173):
-  volumes, the Disk meter's "fullest volume" pick, versions-with-mismatch,
-  file access and the device token's label/expiry. Split out of
-  `devices.js` purely on size, once the Disk meter and this panel pushed it
-  back over the same budget the CSS split enforces.
-- `web/js/filters.js` — the list's filter/sort/group controls.
-- `web/js/wiring.js` — `wire()`, the orchestrator that wires every control on
-  the page once at startup, plus the few bits of chrome (the hamburger menu,
-  popups, "forgot" device cleanup, and the refresh timestamp) that are too
-  small and too central to this page to justify their own file.
+| Area | Modules in `web/js/` |
+|---|---|
+| State, API and helpers | `api.js` (`state`, `api()`, token storage), `util.js`, `ws.js` (the live WebSocket connection), `wiring.js` (wires every control once at startup) |
+| Session list | `list.js`, `sessionrow.js`, `rowmenu.js`, `filters.js`, `dropdowns.js`, `prefs-sync.js`, `empty-state.js`, `review.js` |
+| Approvals and notifications | `approvals.js`, `approval-card.js`, `inbox.js`, `notifications.js`, `push.js`, `install.js` |
+| Session page | `detail.js`, `detail-tabs.js`, `detail-control.js`, `session-info.js`, `squad-panel.js`, `transcript.js`, `composer.js`, `composer-wire.js`, `next-turn.js` |
+| Devices | `devices.js`, `device-detail.js`, `connect.js`, `access.js`, `forget.js`, `cleanup.js` |
+| Run on ACA | `aca.js`, `aca-choices.js`, `aca-created-issue.js`, `aca-match.js`, `aca-pending.js`, `aca-rail.js`, `aca-status.js`, `combobox.js` |
+| Sign-in | `signin.js` |
 
-`web/app.js` itself is left with a doc comment, its import list, and
-`main()` — the startup sequence (sign-in check, initial load, deep-link
-resolution, and the refresh timer). Two small UI concerns (the theme toggle
-and the Squad panel) stayed inline in `wiring.js` rather than becoming their
-own one-function files; each is a handful of lines with no state and no
-natural second caller, and a file that exists only to hold one four-line
-function is its own kind of noise.
-
-Each module keeps the same shape the pre-existing split already used: no
-bundler, no build step, plain `<script type="module">` imports resolved by
-the browser itself, and new files added to `web/sw.js`'s `SHELL` cache list
-with a cache-name bump — the same reasoning the CSS split documented, so an
-existing offline install actually picks up the new files instead of serving
-a stale combination of old and new indefinitely.
-
-A size budget (`test/package-unit.js`, mirroring the equivalent CSS check)
-keeps any one module from quietly growing back into another 49KB file: every
-file under `web/js/` is checked against the same ~25KB ceiling the CSS split
-used.
+New files are added to the `SHELL` cache list in `web/sw.js`, with a cache-name
+bump, so an installed app picks them up. `test/package-unit.js` keeps every file
+under `web/js/` and `web/css/` below a 25,600-byte budget.

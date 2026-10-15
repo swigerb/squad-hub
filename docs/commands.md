@@ -95,9 +95,8 @@ something the token says and not inferred from the operating system.
 The **+** beside Local machines and Cloud devices in the web Hub puts the
 matching `--device-kind` into the command it shows. The account menu's
 **Connect a device** does not choose a kind, so its command omits the option.
-The option is new in v0.7.1: `squad-hub` 0.7.0 and older ignore it and keep
-the saved kind, so update the CLI to 0.7.1 or newer first (`npm i -g squad-hub`)
-when you need to move an already connected device between sections.
+Moving an already connected device between sections needs CLI 0.7.1 or newer
+(`npm i -g squad-hub`), which accepts `--device-kind`.
 
 `connect` never prints or logs the token itself, other than echoing it back
 into the one-time command the browser already showed you.
@@ -207,131 +206,94 @@ There is also `squad-hub hook <event>`, which is the shim the hook file invokes.
 It is not meant to be typed; it is documented so that somebody who finds it in
 their Copilot configuration can tell what it is.
 
-#### What supervision would take
+#### How supervision works
 
-Nothing, now — it is built. `squad-hub hooks install` turns it on. What follows
-is why it works the way it does, and what it still cannot promise.
+`squad-hub hooks install` turns supervision of terminal Copilot sessions on. What
+follows is why it works the way it does, and what it cannot promise.
 
 The hub supervises an ACP session by speaking over the agent's stdio, and the
 Copilot TUI wants that same stdio. One process cannot serve both, so `--acp` and
 the TUI remain mutually exclusive. Supervision arrives through a different
 channel entirely: [Copilot's hooks](https://docs.github.com/en/copilot/concepts/agents/hooks),
-which run a command of our choosing at points in a session's life.
+which run a command that Squad Hub installs at points in a session's life.
 
 - `sessionStart` / `sessionEnd` — the session registers and deregisters itself
 - `userPromptSubmitted` / `postToolUse` / `agentStop` — what it is doing
 - `preToolUse` — **blocks the agent** and decides whether the tool runs
 
-### The failure mode, which is the whole design
+### Failure behavior
 
-Three things were measured against Copilot CLI 1.0.79 before any of this was
-built:
+Every failure path in a watched session answers `ask`, which returns the decision
+to the person at the keyboard: an unregistered session, an ended session, an
+unrecognised answer, or no answer in time. A hook that stayed silent when the hub
+was unreachable would instead let the tool run under `--allow-all-tools`, so the
+hub never does that.
 
-| Measured | Result |
-|---|---|
-| How long may a `preToolUse` hook block? | 90s observed with `timeoutSec: 300`; the TUI shows it waiting |
-| What happens if the hook times out? | **Falls through** — under `--allow-all-tools`, the tool RUNS |
-| Does an explicit `ask` override `--allow-all-tools`? | **Yes** — the tool is refused |
-
-The second is the trap. A hook that stays silent when the hub is unreachable
-would turn an outage into permission. So every failure path answers `ask`
-instead, which puts the decision back at the keyboard whatever the session was
-launched with: an unregistered session, an ended one, an unrecognised answer, or
-nobody answering in time.
-
-That requires three timeouts nested in order, and the code says so where each is
-set:
+Three timeouts are nested, and each must be shorter than the one above it:
 
 ```
-Copilot's timeoutSec (300s, in the hook file)
-  > the hook's IPC wait (270s)
-    > the daemon's wait for a human (120s, SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS)
+Copilot's timeoutSec (300s for preToolUse, in the hook file)
+  > the hook's IPC wait (270s, SQUAD_HUB_HOOK_IPC_TIMEOUT_MS)
+    > the daemon's wait for a person (120s, SQUAD_HUB_HOOK_APPROVAL_TIMEOUT_MS)
 ```
 
 If the daemon does not answer first, Copilot gives up, the hook prints nothing,
 and nothing is the one outcome that means "allow".
 
-### What it still does not do
+### Limits
 
-The hub cannot **stop** a watched session — there is no process it owns, and
-it refuses with a reason rather than appearing to work. Sessions report
-`supervision: "hooks"` so a client can hide a Stop button instead of offering a
-broken one. That is unchanged by steering (see below): stopping a session is
-Sprint 3's problem, and building it is out of scope here.
+The hub cannot **stop** a watched session: there is no process it owns, and it
+refuses with a reason rather than appearing to work. Sessions report
+`supervision: "hooks"` so a client can hide a Stop button. Steering (below) does
+not change this.
 
-### Steering a watched session (#130)
+### Steering a watched session
 
-`agentStop` fires when a watched session's turn ends, and Copilot **blocks the
-session** for as long as the hook takes to answer — the same shape as
-`preToolUse`. Returning `{"decision":"block","reason":"..."}` forces another
-turn using `reason` as the prompt; this was measured live against Copilot CLI
-1.0.80 (see the findings on #130) and is the entire mechanism steering rests
-on.
+`agentStop` fires when a watched session's turn ends. Copilot blocks the session
+while the hook runs, with a `timeoutSec` of 15 seconds for `agentStop`.
+Returning `{"decision":"block","reason":"..."}` forces another turn that uses
+`reason` as its prompt.
 
-**A steer is `queued`, never `sent`, until a hook actually consumes it.**
+**A steer is `queued`, not `sent`, until a hook consumes it.**
 `POST /api/devices/{id}/steer` against a watched `--tui` session enqueues one
 message onto a FIFO queue the daemon holds per session and answers
-`{"queued":true,"position":n}`. It becomes `{"sent":true}` from nowhere — that
-status is never returned for a hooks-supervised session, because the daemon
-has no way to confirm delivery beyond "an `agentStop` hook popped this exact
-entry". Exactly one message is popped per turn; queued messages are never
-joined into one.
+`{"queued":true,"position":n}`. The daemon never returns `{"sent":true}` for a
+hooks-supervised session, because it cannot confirm delivery beyond "an
+`agentStop` hook removed this entry". One message is removed per turn; queued
+messages are never joined.
 
-**An idle session does not pick up a steer until somebody types there.** This
-is the limit worth understanding before relying on it. `agentStop` fires when a
-turn *ends*, so a steer sent to a session that is already sitting at its prompt
-has no turn boundary to arrive on. Measured end to end against production, with
-a real `squad-hub squad --tui` session running the Squad agent: the steer was
-accepted, reported `{"queued":true,"position":1}`, and sat untouched for 45+
-seconds. It was delivered the moment a human typed at that keyboard and ended a
-turn — the queued message then ran on its own, with nothing else typed.
+**An idle session does not pick up a steer until someone types in it.**
+`agentStop` fires when a turn ends, so a steer sent to a session already waiting
+at its prompt has no turn boundary to be delivered on. The next person to type
+and end a turn delivers it, and the queued message then runs on its own. The
+composer reports `queued` so the result is not shown as sent.
 
-So steering a watched session is **reliable while the agent is working**, and
-is a **message left for later** when it is idle. The composer says which one
-you got rather than reporting both as sent.
+A session the hub *owns* (started with `squad-hub squad`, without `--tui`) has no
+such limit. The daemon writes to it directly over ACP and answers `{"sent":true}`
+when the session accepts the message.
 
-A session the hub *owns* (started with `squad-hub squad`, no `--tui`) has no
-such limit — it is written to directly over ACP and answers `{"sent":true}`.
-Verified against the same hub in the same run: a session sitting at
-`status=idle` accepted a steer and ran it immediately.
-
-**Which mode to use, then:**
+**Which mode to use:**
 
 | You want | Use |
 |---|---|
 | The real Copilot TUI at your keyboard, watched and approvable from a phone | `squad-hub squad --tui` |
 | To start, steer and stop work remotely, including while it sits idle | `squad-hub squad` |
 
-This is a real boundary, not a missing feature. A watched session's terminal
-belongs to Copilot: the daemon did not start that process and does not own its
-input, so it can hand a message over at a turn boundary and no sooner. The
-alternative — injecting keystrokes into a terminal the daemon does not own —
-is the primitive `TIOCSTI` was disabled on Linux to prevent, and is not
-something worth building into a tool that takes instructions over a network.
-See #145.
+A watched session's terminal belongs to Copilot. The daemon did not start that
+process and does not own its input, so it can hand over a message only at a turn
+boundary.
 
-**The hold is conditional, not a flat tax.** A steer that arrives after a turn
-has already ended can still be delivered — but only if the `agentStop` hook
-*waits* for it, and waiting on every turn end, whether or not anyone is
-steering, would make every session feel slower (measured: an unconditional
-25s poll added roughly that much wall-clock time to a task that otherwise
-took about seven seconds). So the hold is paid only on a session recently
-confirmed **watched** — today, "somebody's `control-check` landed in the last
-`SQUAD_HUB_STEER_WATCH_WINDOW_MS`" — and is `SQUAD_HUB_STEER_HOLD_MS` (default
-3s) at most.
+**The hold is conditional.** A steer that arrives after a turn has ended can
+still be delivered, but only if the `agentStop` hook waits for it. The hook
+holds only for a session recently confirmed as watched: a `control-check` was
+received within `SQUAD_HUB_STEER_WATCH_WINDOW_MS` (default 30 seconds). The hold
+lasts at most `SQUAD_HUB_STEER_HOLD_MS` (default 3 seconds).
 
-A session this daemon never registered is answered **without contacting the
-daemon at all** — the hook checks the local supervision marker first and
-returns. That matters more than the round trip it saves. Hooks are user-level,
-so `agentStop` fires at the end of every turn of *every* Copilot session on the
-machine, and a daemon that is up but wedged would otherwise make each of them
-wait out the IPC timeout: measured at **8067ms per turn** with the check
-removed, against **50ms** with it. An unrelated session must not pay for the
-hub's bad day.
-
-Measured cost of the hooks themselves (isolated `COPILOT_HOME`, CLI 1.0.80,
-5 runs each, same prompt): 7.72s with no hooks, 8.81s with hooks and a healthy
-daemon. That ~1.1s is process spawn for the hook events, not the steer path.
+A session the daemon never registered is answered without contacting the daemon.
+The hook checks the local supervision marker first and returns. Hooks are
+user-level, so `agentStop` runs at the end of every turn of every Copilot session
+on the machine, and an unrelated session must not wait for a daemon that is down
+or slow.
 
 **A runaway guard self-limits below Copilot's own.** Copilot gives up forcing
 turns after 8 consecutive `block` decisions; this self-limits at
@@ -495,16 +457,14 @@ The agent and model are applied **over the ACP protocol**, after the session is
 created, against the list that session advertises.
 
 This matters because `copilot --acp` **accepts `--agent` and `--model` on its
-command line and silently ignores both** — no error, no warning on stderr, the
-default agent runs anyway. In `-p` mode the same flags are validated and an
-unknown value exits 1, which is what made the difference so easy to miss. Squad
-Hub passed those flags and reported the agent it had asked for; the sessions
-were running plain Copilot.
+command line and silently ignores both**: no error, no warning on stderr, and
+the default agent runs. In `-p` mode the same flags are validated and an
+unknown value exits 1.
 
-So the selection is now made with `session/set_config_option` and
+So the selection is made with `session/set_config_option` and
 `session/set_model`, using values discovered from the `session/new` reply.
 
-**Discovery is the point, not just the fix.** The valid agent names come from
+**Discovery is the point.** The valid agent names come from
 the live response rather than anything hardcoded, so a custom agent that
 renames itself is still matched, and one that is missing is **reported** rather
 than silently replaced by the default. Matching is case-insensitive: Copilot
@@ -613,7 +573,7 @@ transcript does not move.
 | Tab | What it holds |
 |---|---|
 | **Chat** | The transcript and the message box. While the agent is blocked on a permission request, the request is also drawn here as a card (below), so you can answer without leaving the transcript. A dot on the tab says a request is waiting while you are looking at another tab. |
-| **Squad** | The Squad panel, as it always was: the team, the models, the whole-team documents and the recent decisions. See [squad-views.md](squad-views.md). |
+| **Squad** | The Squad panel: the team, the models, the whole-team documents and the recent decisions. See [squad-views.md](squad-views.md). |
 | **Info** | What the device reported about the session, and the approval history. |
 | **Files** | Disabled, with the hint *appears when the device allows file access*. Only a [design](design/files-tab-spike.md) exists. |
 
@@ -751,8 +711,7 @@ the daemon comes up without a terminal. Never requires admin or root:
 | macOS | A LaunchAgent in `~/Library/LaunchAgents`. |
 | Anything else | Reported clearly as unsupported — nothing is installed. |
 
-The older spellings still work and always will — they are already in people's
-scripts and login tasks:
+The older spellings still work:
 
 | Older | Current |
 |---|---|
@@ -912,8 +871,7 @@ The rail header reads "Devices and services (N)" plus a one-line summary —
 "N online · N sessions" — directly underneath it, so the headline number is
 never the only thing on screen.
 
-Below that, the rail groups devices into sections rather than one flat list
-(#172):
+Below that, the rail groups devices into sections rather than one flat list:
 
 1. **Squad on ACA**: always visible, never empty; on-demand compute, not a
    roster entry and never part of the device count or "N online". When the
@@ -921,8 +879,10 @@ Below that, the rail groups devices into sections rather than one flat list
    runs"; the status card beneath the header is where "Connected" is said. Its
    `+` opens the same "Run on ACA…" dialog as everywhere else in the app.
 2. **ACA runs (N)**: devices of kind `aca` that are runs, named from their
-   `displayName` metadata when a cloud job supplies one (e.g.
-   `#42 · demo/widgets`), with the raw Azure execution id shown as secondary
+   `displayName` metadata when a cloud job supplies one, otherwise as
+   `#<issue-number> · <repo-name>` from its `repo` and `issue` metadata (for
+   example `#<issue-number> · widgets` for `owner/widgets`), with the raw Azure
+   execution id shown as secondary
    text. A dispatch you made from this tab whose job has not attached yet is
    drawn here too, as `#issue · repo` with a pulsing dot (see
    [Dispatches still waiting for a device](#dispatches-still-waiting-for-a-device)).
@@ -944,11 +904,11 @@ respectively.
 |---|---|
 | Platform | `Windows`, `macOS`, `Linux`. An unrecognised platform is shown as reported rather than discarded. |
 | Presence | `Online`, `Stale · seen 2m ago`, `Offline · seen 3h ago`. Stale means "we have not heard recently"; offline means "we have given up". |
-| Load | CPU, RAM and (#173) Disk meters, **only for devices that report telemetry**. The Disk meter shows the fullest reported volume, not the first or the workspace one specifically — it answers "is storage the problem right now". |
+| Load | CPU, RAM and Disk meters, **only for devices that report telemetry**. The Disk meter shows the fullest reported volume, not the first or the workspace one specifically — it answers "is storage the problem right now". |
 
 A device with anything worth a closer look — any reported disk volume, cores
 and RAM, a package version, file access details, or a device token's
-label/expiry — gets a disclosure chevron (▸) beside its name (#173).
+label/expiry — gets a disclosure chevron (▸) beside its name.
 Expanding it shows:
 
 - Every reported volume, free of total, with the workspace volume marked.
@@ -997,7 +957,7 @@ A job started with **Run on ACA…** has no device until its own session attache
 and the hub reports no presence for a device that does not exist. So the rail
 does not read a presence for it: it draws one row per dispatch this tab is
 tracking, from the same dispatch state as the list's "Queued on ACA" row
-([aca.md](aca.md#queued-on-aca-issue-178)), inside **ACA runs**.
+([aca.md](aca.md#queued-on-aca)), inside **ACA runs**.
 
 - **Title and dot.** `#issue · repo`, with a blue dot that pulses only while the
   outcome is open. The pulse stops under *reduce motion*, where the dot simply
@@ -1021,7 +981,7 @@ browser shows up only when its job's device attaches.
 The **Squad on ACA** status card's **Retry** is different: it refreshes
 read-only Hub/GitHub status and never dispatches a run. A missing Ralph
 connection does not establish that its scheduled Azure job failed. See
-[the status card](aca.md#the-status-cards-issue-watcher-and-ralph-rows-180-233).
+[the status card](aca.md#the-status-cards-issue-watcher-and-ralph-rows).
 
 ### Telemetry
 **Off by default**, like every other thing the daemon could report about the
@@ -1150,8 +1110,8 @@ have applied") rather than assumed either way.
 
 The **command itself**, not just the tool that would run it.
 
-An agent's tool arguments arrive as a JSON blob, and the card used to show the
-tool name — "Run bash", "Run SQL" — with the statement withheld. That is not an
+An agent's tool arguments arrive as a JSON blob, and the card shows the statement
+itself. A card that shows only the tool name ("Run bash", "Run SQL") is not an
 approval control. Somebody asked to approve a command they have not been shown
 either refuses everything, or learns to click Allow without reading, and the
 second is what actually happens.
@@ -1212,14 +1172,12 @@ Set `SQUAD_HUB_TEAMS_WEBHOOK` and the hub posts an Adaptive Card to Teams
 whenever an agent asks for permission. The card describes exactly what the
 agent wants to run and deep-links to the approval in Squad Hub.
 
-**Create the webhook with Power Automate, not a channel connector.** Office 365
-Connectors — the old *Incoming Webhook* you added to a channel — were retired,
-with rollout completing in **May 2026**. One can no longer be created.
+**Create the webhook with a Power Automate workflow.** Squad Hub sends Adaptive
+Cards to the configured workflow URL.
 
 In Teams: right-click the channel → **Workflows** → *Post to a channel when a
 webhook request is received*. The URL it gives you is what goes in
-`SQUAD_HUB_TEAMS_WEBHOOK`. It accepts the same Adaptive Card payload, so
-nothing on this side changed.
+`SQUAD_HUB_TEAMS_WEBHOOK`. It accepts the Adaptive Card payload the hub posts.
 
 **The card has no Approve or Deny button, and will not get one.** Answering from
 inside a card requires `Action.Execute`, which requires a registered Teams bot
@@ -1228,7 +1186,7 @@ webhook cannot receive a response.
 
 Squad Hub is localhost-first: the daemon dials **out**, and nothing listens on
 your laptop. Inline approval would therefore mean standing up and securing a
-public relay purely to save one click. That trade was weighed and declined. The
+public relay purely to save one click. Inline approval is not offered. The
 card says so and links to the session instead — a button that does nothing is
 worse than a link that does something.
 
@@ -1238,7 +1196,7 @@ process — an approval prompt is exactly where a token pasted onto a command
 line would otherwise show up.
 
 **A short follow-up posts to the same channel once the approval is answered or
-expires** — e.g. *"Answered: Allowed once by Brian from the hub."*,
+expires** — e.g. *"Answered: Allowed once by <name> from the hub."*,
 *"Answered: Denied from the terminal."* (answered with `squad-hub approve` or
 `/approve` on the device itself) or *"Expired: no one answered in time."* — with the same **View live session**
 link and the same redaction rules as the original card. It only posts for an
@@ -1267,7 +1225,7 @@ shared hub it would also be one person's data outliving another's sign-out.
 The worker goes to the **network first** and falls back to the cache only when
 the network cannot answer. Cache-first would be faster and would also mean a
 shipped fix never reaches anyone — tolerable for a blog, not for a page that
-renders approval prompts. The cache is for the aeroplane, not the millisecond.
+renders approval prompts. The cache is for the airplane, not the millisecond.
 
 Opened with no connection, the app says it cannot reach the hub, that you are
 **still signed in**, and that **your sessions are unaffected** — they run on
@@ -1384,7 +1342,7 @@ the hub. `SQUAD_HUB_USER_TOKEN` supplies `--token` here too.
 | `send_message(key, text)` | Steer a running session without stopping it. |
 | `stop_session(key)` | Stop a running session. |
 | `list_devices()` | Your devices, with presence, kind, and metadata. |
-| `dispatch_aca(...)` | Dispatch onto Azure Container Apps (#177). Passed straight through to `/api/aca/dispatch` — a hub with no GitHub App configured answers with its own `501` refusal, never a synthesized one. |
+| `dispatch_aca(...)` | Dispatch onto Azure Container Apps. Passed straight through to `/api/aca/dispatch` — a hub with no GitHub App configured answers with its own `501` refusal, never a synthesized one. |
 
 **There is no `approve` tool.** Approvals stay human, on purpose: every other
 tool here acts on your behalf, the same as the web app would — but an approval
@@ -1475,11 +1433,13 @@ cannot mint an owner.
 | `SQUAD_HUB_GITHUB_CLIENT_ID` | OAuth App client id. Set this **and** the secret to put a "Sign in with GitHub" button on the sign-in page. Without both, the hub still accepts a pasted token but cannot start a browser sign-in. |
 | `SQUAD_HUB_REQUIRE_DEVICE_TOKENS` | Refuse a person's own credential where a **device token** belongs. Off by default so existing devices keep working; turning it on disconnects any device still using the old credential, which is the point. |
 | `SQUAD_HUB_GITHUB_CLIENT_SECRET` | OAuth App client secret. Never commit it; set it as an app setting. |
-| `SQUAD_HUB_GH_APP_ID` | App id of the hub's own GitHub App, for `/api/aca/*` direct dispatch (issue #177). Without this **and** the private key below, those three routes answer `501` and the hub falls back to the prefilled-issue link it always offered. See [security.md](security.md#starting-a-cloud-job-from-the-hub) and [aca.md](aca.md). |
+| `SQUAD_HUB_GH_APP_ID` | App id of the hub's own GitHub App, for `/api/aca/*` direct dispatch. Without this **and** the private key below, those three routes answer `501` and the hub falls back to the prefilled-issue link it always offered. See [security.md](security.md#starting-a-cloud-job-from-the-hub) and [aca.md](aca.md). |
 | `SQUAD_HUB_GH_APP_PRIVATE_KEY` | The App's PEM private key. Never logged, never returned by any endpoint. `\n` is accepted in place of real newlines, for pasting into a single-line app setting. |
 | `SQUAD_HUB_AUDIENCE` | Expected `aud` claim. |
 | `SQUAD_HUB_PUBLIC_URL` | Used to build deep links in Teams cards. |
-| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" below — the connector this used to mean no longer exists. |
+| `SQUAD_HUB_VAPID_PUBLIC_KEY` | The hub's Web Push public key. Web Push is off unless this and the private key are set. See [security.md](security.md#web-push). |
+| `SQUAD_HUB_VAPID_PRIVATE_KEY` | The hub's Web Push private key. See [security.md](security.md#web-push). |
+| `SQUAD_HUB_TEAMS_WEBHOOK` | Teams webhook URL for approval cards. Notifications are off without it. See "Teams notifications" below: it must be a Power Automate workflow webhook URL. |
 | `SQUAD_HUB_BUILD` | Build marker reported by `/healthz`. Set by the deploy script so it can prove the code it pushed is the code now serving. |
 | `SQUAD_HUB_INSTANCE_COUNT` | Overrides the detected instance count. Azure App Service sets `WEBSITE_INSTANCE_COUNT` itself; this is for platforms that do not. |
 

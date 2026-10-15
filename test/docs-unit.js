@@ -365,6 +365,72 @@ check('every docs link in the 0.7.0 changelog lands on a file and heading that e
   }
 });
 
+// Every internal link in the scoped public docs, not just the 0.7.0 changelog.
+// Markdown links, images, reference definitions and HTML href/src are all
+// read; a target must exist, and a #fragment must be a heading (GitHub's
+// slug, with -1/-2 suffixes for repeats) or an explicit id/name in it.
+const LINKED_DOCS = [
+  'README.md', 'CHANGELOG.md', ...fs.readdirSync(path.join(ROOT, 'docs')).filter((f) => f.endsWith('.md')).map((f) => `docs/${f}`),
+  'docs/design/files-tab-spike.md',
+];
+function githubSlug(heading) {
+  return heading.trim().toLowerCase().replace(/<[^>]+>/g, '').replace(/`/g, '')
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
+}
+function anchorsOf(text) {
+  const prose = text.replace(/```[\s\S]*?```/g, '');
+  const out = new Set();
+  const seen = new Map();
+  for (const m of prose.matchAll(/^#{1,6}\s+(.*)$/gm)) {
+    const base = githubSlug(m[1]);
+    const n = seen.get(base);
+    seen.set(base, n === undefined ? 0 : n + 1);
+    out.add(n === undefined ? base : `${base}-${n + 1}`);
+  }
+  for (const m of prose.matchAll(/\b(?:id|name)="([^"]+)"/g)) out.add(m[1]);
+  return out;
+}
+function internalLinksOf(text) {
+  const prose = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '');
+  const refs = [...prose.matchAll(/!?\[[^\]]*\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)/g)].map((m) => m[1]);
+  for (const m of prose.matchAll(/^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)/gm)) refs.push(m[1]);
+  for (const m of prose.matchAll(/\b(?:href|src)="([^"]+)"/g)) refs.push(m[1]);
+  return refs.filter((r) => !/^[a-z][a-z0-9+.-]*:/i.test(r) && !r.startsWith('//'));
+}
+function brokenLinks(file, text) {
+  const bad = [];
+  for (const ref of internalLinksOf(text)) {
+    const [target, fragment] = ref.split('#');
+    const resolved = target ? path.normalize(path.join(path.dirname(file), decodeURIComponent(target.split('?')[0]))) : file;
+    const abs = path.join(ROOT, resolved);
+    if (!fs.existsSync(abs)) { bad.push(`${ref} (no such file)`); continue; }
+    if (fragment && /\.(md|html)$/.test(resolved) && !anchorsOf(read(resolved)).has(decodeURIComponent(fragment))) {
+      bad.push(`${ref} (no such heading or id)`);
+    }
+  }
+  return bad;
+}
+
+check('the link checker reads markdown, image, reference and HTML links, and repeated headings', () => {
+  const sample = '# Top\n\n## Dup\n\n## Dup\n\n<a id="named"></a>\n';
+  assert.deepStrictEqual([...anchorsOf(sample)].sort(), ['dup', 'dup-1', 'named', 'top'].sort());
+  const refs = internalLinksOf('[a](x.md#h) ![i](img/a.png) <img src="img/b.png"> <a href="c.html#z">c</a>\n[r]: d.md#q\n[w](https://example.com/e.md#f)\n`[no](nope.md)`');
+  assert.deepStrictEqual([...refs].sort(), ['x.md#h', 'img/a.png', 'img/b.png', 'c.html#z', 'd.md#q'].sort());
+});
+
+check('every internal link and anchor in the public docs and changelog lands on a file and heading that exist', () => {
+  assert.ok(LINKED_DOCS.length >= 13, `expected the public docs to be scanned, found ${LINKED_DOCS.length}`);
+  const bad = [];
+  let total = 0;
+  for (const file of LINKED_DOCS) {
+    const text = read(file);
+    total += internalLinksOf(text).length;
+    for (const b of brokenLinks(file, text)) bad.push(`${file}: ${b}`);
+  }
+  assert.ok(total > 100, `expected many internal links across the docs, found ${total}`);
+  assert.deepStrictEqual(bad, [], `broken internal links:\n${bad.join('\n')}`);
+});
+
 check('docs describe the devices-panel empty states, and the code matches', () => {
   const client = read('web/app.js');
   assert.ok(commands.includes('No sessions yet'), 'commands.md does not mention the "No sessions yet" empty state');
@@ -399,7 +465,32 @@ check('aca.md documents the hub dispatching a job directly (issue #177)', () => 
   const aca = read('docs/aca.md');
   assert.match(aca, /workflow_dispatch/, 'aca.md does not mention workflow_dispatch');
   assert.match(aca, /\/api\/aca\/dispatch/, 'aca.md does not mention the dispatch endpoint');
-  assert.match(aca, /squad-on-aca#135/, 'aca.md does not cite the forward-compatibility issue (#135)');
+  assert.match(aca, /squad-on-aca/, 'aca.md does not name the squad-on-aca repository that declares the extra inputs');
+});
+
+// The workflow_dispatch inputs are forward-compatible: the hub sends only the
+// inputs the target workflow declares and refuses the rest with a 422. The docs
+// must list the same inputs the code can send, and this repository's own
+// workflow must declare them.
+check('aca.md lists every workflow_dispatch input the hub can send, and the workflow declares them', () => {
+  const { buildWorkflowInputs, requestedInputNames } = require('../src/aca-dispatch');
+  const everything = {
+    issue: 1, prompt: 'p', model: 'm', baseBranch: 'b', publishPr: true, reviewer: 'r', watchOnly: true,
+  };
+  const sent = Object.keys(buildWorkflowInputs(everything, { issueNumber: 1 })).sort();
+  assert.deepStrictEqual(requestedInputNames(everything).slice().sort(), sent, 'the two input lists in src/aca-dispatch.js disagree');
+  assert.strictEqual(sent.length, 7, `the hub sends ${sent.length} inputs; update aca.md (it says seven) and this test`);
+  const aca = read('docs/aca.md').replace(/\s+/g, ' ');
+  const workflow = read('.github/workflows/squad-dispatch.yml');
+  const declared = workflow.slice(workflow.indexOf('inputs:'), workflow.indexOf('run-name:'));
+  for (const name of [...sent, 'hub_correlation_id']) {
+    assert.ok(aca.includes(`\`${name}\``), `aca.md does not name the ${name} input`);
+    assert.ok(new RegExp(`^      ${name}:`, 'm').test(declared), `.github/workflows/squad-dispatch.yml does not declare ${name}`);
+  }
+  assert.match(aca, /up to seven inputs/, 'aca.md does not say how many inputs the hub sends');
+  assert.match(aca, /forward-compatible/, 'aca.md does not describe the inputs as forward-compatible');
+  assert.match(aca, /refuses a request for any other input the workflow does not declare/, 'aca.md does not describe the 422 refusal of undeclared inputs');
+  assert.match(aca, /`422`/, 'aca.md does not mention the 422 status');
 });
 
 // Issue #187: api.md promised every endpoint would be documented, and the
@@ -1317,33 +1408,14 @@ check('every spike the docs cite exists', () => {
   assert.deepStrictEqual([...new Set(missing)], [], `cited but missing: ${missing.join(', ')}`);
 });
 
-check('the docs never tell you to create a retired Office 365 Connector', () => {
-  /**
-   * The connector this used to describe was retired -- rollout completed in
-   * May 2026 -- so the old instruction ("add an Incoming Webhook to the
-   * channel") cannot be followed at all any more. A setup step that is
-   * impossible is worse than one that is missing: it reads as correct right up
-   * until someone spends an afternoon looking for a menu item that was removed.
-   *
-   * The card payload did not change; only how you obtain the URL did.
-   */
+check('the docs carry no retired-connector narrative', () => {
   const offenders = [];
   for (const [name, body] of [['docs/commands.md', commands], ['README.md', readme],
     ['docs/README.md', docsIndex], ['docs/cloud.md', cloud],
     ['docs/architecture.md', architecture], ['docs/security.md', security]]) {
-    // Scoped to the PARAGRAPH, not to a character window. A window wide enough
-    // to hold the disclaimer is also wide enough to be rescued by an unrelated
-    // neighbouring paragraph -- which is exactly what happened when this was
-    // first written, and it made the guard pass against a doc that had gone
-    // back to the impossible instruction.
-    for (const para of body.split(/\n\s*\n/)) {
-      if (!/incoming webhook/i.test(para)) continue;
-      if (/retire|no longer|replaced|Workflows|Power Automate/i.test(para)) continue;
-      offenders.push(`${name}: "${para.trim().slice(0, 60)}…"`);
-    }
+    if (/office 365\s+connector|retired|incoming webhook/i.test(body)) offenders.push(name);
   }
-  assert.deepStrictEqual(offenders, [],
-    `the docs still describe a connector that cannot be created:\n  ${offenders.join('\n  ')}`);
+  assert.deepStrictEqual(offenders, [], `retired-connector history remains in: ${offenders.join(', ')}`);
 });
 
 check('the Teams webhook variable is explained where it is set', () => {

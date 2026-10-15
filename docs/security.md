@@ -10,7 +10,7 @@ For the full posture and how each control is verified, see the
 
 ```powershell
 ./scripts/deploy-appservice.ps1 `
-  -ResourceGroup rg -Name my-hub `
+  -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github `
   -Owner your-github-login
 ```
@@ -27,13 +27,13 @@ pass `-AllowAnyone`.
 List every identity that is you, including accounts in different Entra tenants:
 
 ```powershell
--Owner you@work.example,you@personal.example
+-Owner you@example.com,you@example.org
 ```
 
 or as an environment variable:
 
 ```
-SQUAD_HUB_OWNER=you@work.example,you@personal.example
+SQUAD_HUB_OWNER=you@example.com,you@example.org
 ```
 
 All of them may sign in and **they share one view**. A device registered while
@@ -75,7 +75,7 @@ installed the hub's GitHub App on it — see "The GitHub App path" below for
 that one. Absent an installation, this is what happens:
 
 **+ New → New ACA job…**, or the same button on a session, opens the dialog
-described in [aca.md](aca.md#queued-on-aca-issue-178). Without the GitHub App
+described in [aca.md](aca.md#queued-on-aca). Without the GitHub App
 installed, the dialog itself falls back to a prefilled new issue on GitHub:
 you press Create; the label triggers the workflow, which starts the job.
 
@@ -126,7 +126,7 @@ who once landed a pull request.
 
 See [Squad on ACA: who may trigger a run](https://github.com/swigerb/squad-on-aca/blob/main/docs/actions-trigger.md#who-may-trigger-a-run).
 
-### The GitHub App path (issue #177): a NEW trust boundary
+### The GitHub App path: a trust boundary
 
 `POST /api/aca/dispatch`, and the "installed repos" / "recent dispatches"
 reads beside it, are a second, direct way to start a job — only for
@@ -137,7 +137,7 @@ default, until the App exists at all), these routes answer `501` and nothing
 above changes — every repository behaves exactly as described in "Starting a
 cloud job from the hub".
 
-**State the rule plainly, because it is what keeps this path safe (issue #258):**
+**State the rule plainly, because it is what keeps this path safe:**
 
 > A signed-in hub user can dispatch a job on a repository **only if the hub
 > has verified, as that user's own GitHub account, that they have write
@@ -198,9 +198,8 @@ scope), for the **verified** GitHub account of the session:
   to the account that started it, and only while that account still has access
   to its repository.
 
-If you previously relied on "everyone who may sign in may dispatch anywhere the
-App is installed", that no longer holds: anyone who needs to start a job must
-also be a collaborator with write access on the repository.
+Signing in does not by itself allow dispatch: anyone who needs to start a job
+must also be a collaborator with write access on the repository.
 
 This does **not** relax the hub's own ground rule that it never holds an Azure
 credential. The App token this adds is a GitHub credential, scoped to
@@ -310,7 +309,7 @@ each one, but the operator should control where the App is installed at all.
 Private keeps installation to the account (or organization) that created the
 App. See [aca.md](aca.md) for the setup walkthrough.
 
-**Hardening follow-ups from the #211 review (issue #213):**
+**Hardening follow-ups:**
 
 - Repository matching when binding a dispatch to its GitHub Actions run
   compares `owner`/`repo` case-insensitively, matching how GitHub itself
@@ -359,7 +358,7 @@ able to do more than its job.
 | **Your sign-in** | Proves who *you* are. Whichever provider the hub runs in — GitHub, Entra, or dev. | Your browser, or `--token` on the CLI |
 | **A device token** | Lets a machine **be a device** and nothing else. Cannot read the API or drive your other devices. | On the device: `SQUAD_HUB_TOKEN` |
 | **An agent token** | Authorises the *agent* to GitHub and spends a **Copilot entitlement**. | On the device: `SQUAD_HUB_AGENT_TOKEN` |
-| **The GitHub App's own token** (issue #177) | Lets the hub itself call GitHub — list installed repos, create an issue, dispatch `squad-dispatch.yml` — on repositories an administrator installed the App on. A GitHub credential, scoped to Actions/Issues/Contents/Metadata; never Azure, and never returned by any hub endpoint. | On the hub, held only in memory: `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` |
+| **The GitHub App's own token** | Lets the hub itself call GitHub — list installed repos, create an issue, dispatch `squad-dispatch.yml` — on repositories an administrator installed the App on. A GitHub credential, scoped to Actions/Issues/Contents/Metadata; never Azure, and never returned by any hub endpoint. | On the hub, held only in memory: `SQUAD_HUB_GH_APP_ID` / `SQUAD_HUB_GH_APP_PRIVATE_KEY` |
 
 The first three are separate even when more than one is a GitHub token: one
 says which device this is, the other spends quota, and so on. The fourth is
@@ -427,7 +426,7 @@ A locked hub reports **0 open, 0 leaks**.
 
 ```powershell
 ./scripts/deploy-appservice.ps1 `
-  -ResourceGroup rg -Name my-hub `
+  -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github `
   -Owner your-github-login
 ```
@@ -459,7 +458,7 @@ OAuth Apps are created from your own account settings and need no administrator.
 
 ```powershell
 ./scripts/deploy-appservice.ps1 `
-  -ResourceGroup rg -Name my-hub `
+  -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github -Owner your-github-login `
   -GitHubClientId  $env:GH_CLIENT_ID `
   -GitHubClientSecret $env:GH_CLIENT_SECRET
@@ -528,7 +527,7 @@ partition:
 
 ```
 SQUAD_HUB_AUTH_MODE=github
-SQUAD_HUB_OWNER=your-github-login,you@work.example
+SQUAD_HUB_OWNER=your-github-login,you@example.com
 ```
 
 Switching the hub to `entra` later needs no other change: the work identity is
@@ -580,7 +579,7 @@ property being protected is partitioning, not secrecy.
 
 Web Push subscriptions (`GET`/`POST /api/push/subscriptions`,
 `DELETE /api/push/subscriptions/{id}` — see
-[api.md](api.md#web-push-subscriptions-175)) follow the same rule: a
+[api.md](api.md#web-push-subscriptions)) follow the same rule: a
 subscription is stored and listed under the verified caller's own partition
 key, never one the request supplies, so one person can never list, add to,
 or remove another person's registered browsers. Reaching any of these three
@@ -589,7 +588,7 @@ never a person — is refused with **403**, the same gate every other
 `/api/*` route in this file already sits behind; registering or revoking a
 push subscription stays a thing only a signed-in person does.
 
-## Web Push (#175)
+## Web Push
 
 An installed PWA can receive an OS-level notification — "a session needs
 you" — while it is closed, the same way a native app would, using the
@@ -628,7 +627,7 @@ pair once, out of band, and set both variables before deploying.
 "push is not configured on this hub" instead of offering a toggle that can
 never do anything.
 
-### Generating and deploying a key pair (#242)
+### Generating and deploying a key pair
 
 `src/service/web-push.js`'s `generateVapidKeys()` is the ONE reviewed
 generator — a fixed-width P-256 key pair (see the function's own comment for
@@ -651,18 +650,14 @@ is generated, checked, and written to the settings API entirely in this one
 process's memory, with nothing ever passed to `console.log`, `console.error`,
 a file, or a command-line argument.
 
-**A clipboard is not memory-only either, and the reviewed procedure no
-longer uses one.** An earlier revision of this doc recommended handing the
-private half to `pbcopy`/`xclip`/`clip`, then pasting it into the protected
-setting. That still leaks: a system clipboard is commonly synced to other
+**A clipboard is not memory-only either, so the procedure does not use one.**
+Handing the private half to `pbcopy`/`xclip`/`clip` and pasting it into the
+protected setting would leak it: a system clipboard is commonly synced to other
 signed-in devices, kept in a clipboard *history* application (several ship
 enabled by default on both desktop and mobile), and readable by any other
-app with clipboard-read permission while it sits there — and overwriting or
+app with clipboard-read permission while it sits there. Overwriting or
 "clearing" the current clipboard entry does **not** erase it from that
-history. No production key was ever exposed through this — these are held
-docs, not an incident — but "paste it in somewhere, then clear the
-clipboard" is not actually memory-only, so this section no longer
-recommends it.
+history.
 
 **The reviewed procedure instead captures the generated pair only in this
 one process's memory, proves the two halves actually correspond before ever
@@ -819,9 +814,8 @@ function readProperties(res, label) {
   // stored after the write -- Azure's real List Application Settings
   // operation DOES return the private value verbatim on a read, so step 4
   // below reads it back and compares it, in memory only, never logging or
-  // printing it. This is the same check an earlier revision of this doc ran
-  // as a separate, paste-based manual step; it is now folded in here so the
-  // private half never leaves this one protected process at all.
+  // printing it. The check runs here so the private half never leaves this
+  // one protected process.
   const { publicKey, privateKey } = generateVapidKeys();
   const ecdh = crypto.createECDH('prime256v1');
   ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'));
@@ -958,16 +952,12 @@ sign for), not a failure at *subscribe* time — subscribing only ever hands
 the browser the public half, never the private one, so a mismatch is
 invisible until the first real send.
 
-**Verifying a pair actually corresponds, once, at initial setup — now step 2
-of the one script above, not a separate manual procedure.** An earlier
-revision of this doc ran this as its own copy-pasted example, with a comment
-telling the operator to paste the two candidate values into the shell's
-environment for a one-off check. That is exactly the kind of manual,
-by-hand handling of a private key this project otherwise refuses to
-recommend — a pasted secret can land in shell history, a terminal's
-scrollback, or a recorded session the same way a printed or clipped one can.
-There is nothing about this check that requires a separate process or a
-separate paste: step 2 above runs the identical ECDH derivation
+**Verifying a pair actually corresponds, once, at initial setup — step 2
+of the one script above.** Pasting candidate values into a shell for a
+separate check would be manual handling of a private key, which this
+project refuses to recommend: a pasted secret can land in shell history, a
+terminal's scrollback, or a recorded session the same way a printed or
+clipped one can. The check needs no separate process or paste: step 2 above runs the identical ECDH derivation
 (`crypto.createECDH('prime256v1')`, `setPrivateKey`, `getPublicKey(null,
 'uncompressed')`, compared against the generated `publicKey`) on the pair
 the moment it is generated, inside the same protected, memory-only process,
@@ -977,8 +967,7 @@ like every other refusal in this procedure. This check exists because
 Node's JWK import does not verify `d·G == (x, y)` on its own (below) — it is
 still a one-time, initial-setup-only check, never called at hub startup,
 never run automatically before a send, and never a substitute for the "set
-both together" rule above; it is just no longer a second, paste-based
-runnable example.
+both together" rule above.
 
 **Backup and recovery.** The hub itself is not a backup for this pair — it
 holds the private key only in process memory (an environment variable), the
@@ -1061,15 +1050,13 @@ enforces two things beyond "is this a URL":
   getter keeps the brackets around an IPv6 literal (`new
   URL('https://[::1]/').hostname` is `"[::1]"`, not `"::1"`), and Node's
   `net.isIP()` does not recognize the bracketed form — it returns `0`
-  ("not an IP"). An earlier version of this check called `net.isIP()` on the
-  bracketed hostname directly, so every IPv6 branch silently never ran and
-  `https://[::1]/`, `https://[fd00::1]/`, `https://[fe80::1]/`, and the
+  ("not an IP"). So the check strips the brackets before
+  asking `net.isIP()` and refuses every IPv6 literal outright,
+  including `https://[::1]/`, `https://[fd00::1]/`, `https://[fe80::1]/`, and the
   IPv4-mapped `https://[::ffff:169.254.169.254]/` (which the URL parser
-  itself rewrites to its hex form, `[::ffff:a9fe:a9fe]`) were all **accepted**
-  (fixed in the security review that gated #175). Rather than re-enumerating
-  `::1`, `::`, `fc00::/7`, `fe80::/10`, and IPv4-mapped/-compatible addresses
-  in both dotted and hex notation — and risking the same kind of oversight
-  again — the fix refuses every IPv6 literal outright. No real push service
+  itself rewrites to its hex form, `[::ffff:a9fe:a9fe]`), rather than
+  enumerating `::1`, `::`, `fc00::/7`, `fe80::/10`, and IPv4-mapped/-compatible
+  addresses in both dotted and hex notation. No real push service
   is ever reached by a bare IPv6 literal either, so this costs no legitimate
   subscription anything.
 
@@ -1085,12 +1072,9 @@ account — bounded impact, not zero risk.
 time (`push-store.js`'s `validate()`) against the same shapes
 `web-push.js`'s `encryptPayload` has always required at send time — a
 decoded `p256dh` must be exactly 65 bytes (an uncompressed P-256 point) and
-a decoded `auth` exactly 16 bytes. An earlier version checked only that
-each was a non-empty string, so a malformed or garbage value could be
-registered successfully and would only fail the first time a notification
-actually tried to use it — with no feedback at subscribe time to the person
-who could fix it by re-subscribing. Catching the same mismatch here costs
-nothing new; it only moves an existing check to where it is useful.
+a decoded `auth` exactly 16 bytes. A malformed value is refused at subscribe
+time, where the person can fix it by re-subscribing, instead of failing the
+first time a notification tries to use it.
 
 ## Two tokens, deliberately separate
 
@@ -1257,7 +1241,7 @@ The hub calls `GET /user` and reads your login and numeric id, nothing else. A
 2. Repository access: **Public repositories** (read-only, and unavoidable).
 3. Add **no** account permissions and **no** repository permissions.
 
-Verified against this hub with such a token:
+With such a token:
 
 | | |
 |---|---|

@@ -15,10 +15,10 @@ failed history publication is reported in the worker's error output.
 
 ## Azure App Service — the simplest option
 
-Runs natively on the Node runtime. No container, ~50 KB, and no dependencies.
+Runs natively on the Node runtime, with no container image and no runtime dependencies.
 
 ```powershell
-./scripts/deploy-appservice.ps1 -ResourceGroup rg-squad -Name my-squad-hub
+./scripts/deploy-appservice.ps1 -ResourceGroup <resource-group> -Name <your-hub>
 ```
 
 The script reads its settings back from Azure and **refuses to deploy** a
@@ -35,11 +35,11 @@ rewrite it to `dev` — sign-in fails with *malformed dev token* (a GitHub token
 reaching a dev-mode verifier), and, silently, the hub drops from *GitHub decides
 who you are* to *anyone holding the shared secret is whoever they say they are*.
 
-The script now refuses that, naming both ways out:
+The script refuses that and names both ways out:
 
 ```powershell
 # redeploying an existing GitHub-auth hub
-./scripts/deploy-appservice.ps1 -ResourceGroup rg-squad -Name my-squad-hub `
+./scripts/deploy-appservice.ps1 -ResourceGroup <resource-group> -Name <your-hub> `
   -AuthMode github -SkipCreate
 ```
 
@@ -66,7 +66,7 @@ smallest tier that supports it; F1 does not, and is not viable.
 
 ```powershell
 ./scripts/deploy-aca.ps1 `
-  -ResourceGroup rg-squad -Environment cae-squad -Registry myacr `
+  -ResourceGroup <resource-group> -Environment <environment> -Registry <registry> `
   -WithCloudDevice
 ```
 
@@ -78,16 +78,16 @@ broken deployment looks healthy.
 
 ```powershell
 ./scripts/deploy-aks.ps1 `
-  -ResourceGroup rg-squad -Cluster aks-squad -Registry myacr `
-  -HubUrl https://squad-hub.example.com `
+  -ResourceGroup <resource-group> -Cluster <cluster> -Registry <registry> `
+  -HubUrl https://<your-hub>.azurewebsites.net `
   -HubToken <device token> -AgentToken <github token>
 ```
 
 Or apply [`deploy/aks/device.yaml`](../deploy/aks/device.yaml) yourself after
 substituting the image, hub URL and tokens.
 
-Verified on AKS with real Copilot: the file appeared **inside the pod** only
-after the approval was answered in the hub.
+An agent running in the pod can write a file **inside the pod** only after the
+approval is answered in the hub.
 
 **A Deployment, not a Job.** A device is a long-lived participant: it registers,
 heartbeats, and waits to be given work. A Job appears, runs one thing and
@@ -122,10 +122,9 @@ A container has no signed-in user. Copilot CLI reads
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` in that order; Squad Hub
 copies `SQUAD_HUB_AGENT_TOKEN` into the first.
 
-Verified in a real Linux container: with no token the agent refuses with
-`Authentication required`; with a token it runs inference and executes tools.
-The probe is [`spike/acp-auth-probe.js`](../spike/acp-auth-probe.js), and its
-control run is the part that makes the result meaningful.
+In a container, an agent with no token refuses with `Authentication required`;
+with a token it runs inference and executes tools.
+[`spike/acp-auth-probe.js`](../spike/acp-auth-probe.js) probes this.
 
 Without an agent token the device still registers and appears online — every
 session simply fails. The daemon warns about this at startup rather than letting
@@ -175,5 +174,5 @@ label/comment/`workflow_dispatch`-by-hand paths. Direct dispatch requires both
 App installation and verified write or admin permission for the signed-in
 GitHub user on that repository. Public visibility and Hub owner status do not
 grant repository access. Read
-[security.md's "GitHub App path"](security.md#the-github-app-path-issue-177-a-new-trust-boundary)
+[security.md's "GitHub App path"](security.md#the-github-app-path-a-trust-boundary)
 before setting these.
