@@ -137,7 +137,7 @@ too. See [releasing](releasing.md#publish-a-release).
 The gallery in [`images/`](images/) captures the actual local hub UI using
 the `HubService` / `Authenticator` / `HubLink` fixture pattern from
 `test/browser-e2e-unit.js`, driven by Playwright Chromium. [Capture provenance](images/capture-provenance.json)
-records the source commit, browser, dimensions, and hashes.
+records the browser version, fixtures, dimensions, and hashes.
 
 | Image | Capture |
 |---|---|

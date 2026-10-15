@@ -1,5 +1,4 @@
 {
-  "sourceCommit": "0be323eb081362855086c954bccd89fe32f60710",
   "browser": "147.0.7727.15",
   "fixtures": "Synthetic devices, sessions, approvals, GitHub identity and repository catalogs served on loopback.",
   "externalBrowserRequests": "blocked",
