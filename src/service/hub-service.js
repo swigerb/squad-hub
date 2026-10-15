@@ -31,6 +31,7 @@ const { WebPushSender } = require('./web-push');
 const { PushNotifier } = require('../notify/push');
 const paths = require('../paths');
 const { GitHubOAuth } = require('./github-oauth');
+const { requestIsSecure, requestScheme } = require('./request-scheme');
 const { GitHubApp, verifiedActor, repoNotAvailableMessage, GITHUB_IDENTITY_REQUIRED_MESSAGE } = require('./github-app');
 const { RateLimiter } = require('./rate-limiter');
 const { DispatchTracker } = require('./dispatch-tracker');
@@ -182,34 +183,22 @@ const SECURITY_HEADERS = {
  */
 const HSTS_MAX_AGE_SECONDS = 15552000;
 
-/**
- * Was THIS request delivered over TLS?
- *
- * This process always listens on plain HTTP (`http.createServer` above) --
- * every deployment this repo ships (App Service, Container Apps, an AKS
- * ingress) terminates TLS in front of it and forwards the original scheme in
- * `X-Forwarded-Proto`. `github-oauth.js` already trusts this same header, on
- * the same request, to build the OAuth redirect URI -- this reads it the same
- * way rather than inventing a second convention.
- *
- * `req.socket.encrypted` is checked too, in case that ever changes; it is
- * always false today, since nothing here calls `https.createServer`.
- *
- * A request with NO forwarded-proto header (a bare `curl` to a local dev
- * server, or a health check that talks plain HTTP inside a cluster) is
- * treated as insecure, not assumed secure -- sending HSTS on that response
- * would be sent over the very channel it tells a browser to stop using.
- */
-function requestIsSecure(req) {
-  if (req.socket && req.socket.encrypted) return true;
-  const proto = String((req.headers['x-forwarded-proto'] || '')).split(',')[0].trim().toLowerCase();
-  return proto === 'https';
-}
-
 /** The full set of security headers for one request: the fixed set, plus HSTS iff this request arrived over TLS. */
 function securityHeadersFor(req) {
   if (!requestIsSecure(req)) return SECURITY_HEADERS;
   return { ...SECURITY_HEADERS, 'Strict-Transport-Security': `max-age=${HSTS_MAX_AGE_SECONDS}` };
+}
+
+/**
+ * Decode one `%`-escaped URL path segment, or null when it is malformed.
+ *
+ * `decodeURIComponent` throws on a stray `%` (`/api/x/%E0%A4%A`), and an
+ * uncaught throw in the request handler is a 500. Every route that reads an id
+ * out of the path goes through here so a bad escape is always the caller's
+ * 400, never ours.
+ */
+function decodePathSegment(segment) {
+  try { return decodeURIComponent(segment); } catch { return null; }
 }
 
 /**
@@ -236,8 +225,7 @@ const LOOPBACK_ORIGIN_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::
  */
 function selfOrigin(req) {
   if (!req.headers.host) return null;
-  const proto = requestIsSecure(req) ? 'https' : 'http';
-  return `${proto}://${req.headers.host}`;
+  return `${requestScheme(req)}://${req.headers.host}`;
 }
 
 /**
@@ -407,8 +395,9 @@ function steerForDevice(body) {
 /**
  * Am I one of several instances?
  *
- * This matters because state is in memory. A device attaches to ONE instance;
- * every other instance has never heard of it and answers "no devices". Roughly
+ * This matters because state is per instance. A device attaches to ONE instance;
+ * every other instance has never heard of it and answers "no devices", and the
+ * store each one persists under SQUAD_HUB_HOME is its own, not shared. Roughly
  * half of all requests then 404, intermittently, with nothing in any log to say
  * why -- measured live, see docs/plans/app-service.md.
  *
@@ -837,7 +826,7 @@ class HubService {
         // deserves to be told why on the screen where they notice it, not in a
         // log they will never read.
         warning: instances && instances > 1
-          ? `This hub is running on ${instances} instances and holds state in memory. `
+          ? `This hub is running on ${instances} instances, and each one keeps its own state and device connections. `
             + 'Devices will appear and disappear, and commands will fail intermittently. '
             + 'Scale the App Service plan to a single instance.'
           : null,
@@ -1116,8 +1105,8 @@ class HubService {
     // already handed back, so there is nothing a client has to derive.
     const pushMatch = p.match(/^\/api\/push\/subscriptions\/([^/]+)$/);
     if (pushMatch && req.method === 'DELETE') {
-      let id;
-      try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }
+      const id = decodePathSegment(pushMatch[1]);
+      if (id === null) return send(400, { error: 'bad subscription id' });
       const done = this.pushStore.remove(me.key, id);
       // Not 403: as with device-tokens, the difference between "not yours"
       // and "does not exist" is itself a disclosure, and either way there is
@@ -1205,8 +1194,8 @@ class HubService {
         return send(200, accessPayload({ login: r.login }));
       }
       if (req.method === 'DELETE' && target) {
-        let login;
-        try { login = decodeURIComponent(target); } catch { return send(400, { error: 'bad identity' }); }
+        const login = decodePathSegment(target);
+        if (login === null) return send(400, { error: 'bad identity' });
         const r = this.accessStore.remove(login);
         if (!r.ok) return send(400, { error: r.reason });
         this._syncAllowedUsers();
@@ -1286,7 +1275,8 @@ class HubService {
     // across partitions would let one person kill another person's devices.
     const rv = p.match(/^\/api\/device-tokens\/([^/]+)$/);
     if (rv && req.method === 'DELETE') {
-      const jti = decodeURIComponent(rv[1]);
+      const jti = decodePathSegment(rv[1]);
+      if (jti === null) return send(400, { error: 'bad device token id' });
       let done;
       try {
         done = this.deviceTokenStore.revoke(me.key, jti);
@@ -1346,7 +1336,8 @@ class HubService {
      */
     const rm = p.match(/^\/api\/devices\/([^/]+)\/revoke$/);
     if (rm && req.method === 'POST') {
-      const deviceId = decodeURIComponent(rm[1]);
+      const deviceId = decodePathSegment(rm[1]);
+      if (deviceId === null) return send(400, { error: 'bad device id' });
       const device = this.store.getDevice(me.key, deviceId);
       // Not 403: revealing the difference between "not yours" and "does not
       // exist" is itself a disclosure.
@@ -1628,7 +1619,9 @@ class HubService {
     let rel = url.pathname === '/' ? '/index.html' : url.pathname;
     // Decode before resolving, so a file with a space or an encoded character
     // serves correctly.
-    try { rel = decodeURIComponent(rel); } catch { return send(400, { error: 'bad path' }); }
+    const decoded = decodePathSegment(rel);
+    if (decoded === null) return send(400, { error: 'bad path' });
+    rel = decoded;
     // NORMALIZE IS LOAD-BEARING, not tidiness. `new URL()` collapses a literal
     // `..` segment at parse time, but it leaves `%2f` encoded -- so `/..%2fetc`
     // arrives here intact, becomes `/../etc` on the line above, and is

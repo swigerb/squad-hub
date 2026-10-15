@@ -361,7 +361,7 @@ person themselves has write (or maintain/admin) access to it. The hub asks
 GitHub on every request, as that person's verified GitHub account, and never
 trusts the picker: it lists only repositories you may use and refuses a
 hand-made request for any other with nothing created. This needs a GitHub
-sign-in (`SQUAD_HUB_AUTH=github`); an Entra, local or dev session cannot use
+sign-in (`SQUAD_HUB_AUTH_MODE=github`); an Entra, local or dev session cannot use
 these routes and keeps the link-based path. Read
 [security.md's "GitHub App path"](security.md#the-github-app-path-a-trust-boundary)
 for the full rule.

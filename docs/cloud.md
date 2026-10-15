@@ -49,7 +49,8 @@ button would lead people through GitHub and into a refusal.
 
 ### One instance only
 
-State is held in memory. At two instances a device attaches to one of them and
+Each instance keeps its own state, persisted under `SQUAD_HUB_HOME` per
+instance and never shared. At two instances a device attaches to one of them and
 the others report zero devices — roughly half of all requests fail,
 intermittently. `/healthz` reports the instance count, the startup log shouts,
 and the UI shows a banner.

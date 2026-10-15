@@ -220,7 +220,7 @@ async function ensureDaemonRunning() {
  * `run "do the thing" --cwd /tmp/x` produced the prompt "do the thing /tmp/x".
  * Visible in the session list as a title with a path glued onto it.
  */
-function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth', 'agent', 'model', 'name', 'device-kind']) {
+function positionals(argv, flagsWithValues = ['cwd', 'hub', 'token', 'port', 'host', 'auth', 'agent', 'model', 'mode', 'name', 'device-kind']) {
   const out = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -1263,7 +1263,8 @@ async function cmdServe(argv) {
   if (Number.isFinite(instances) && instances > 1) {
     err('');
     err('*** WARNING: this hub is running on ' + instances + ' instances. ***');
-    err('State is held in memory, so a device attaches to ONE instance and the');
+    err('Each instance keeps its own state (persisted under SQUAD_HUB_HOME, per');
+    err('instance, never shared), and a device attaches to ONE instance, so the');
     err('others report zero devices. Roughly half of all requests will fail.');
     err('Scale to a single instance, or scale up rather than out.');
     err('');
@@ -2071,21 +2072,21 @@ function usage() {
 
   EVERYDAY (after a one-time connect)
   squad-hub squad                      interactive terminal, in a Squad project this uses the squad agent
-  squad-hub squad --tui                the real Copilot TUI with the squad agent (NOT supervised by the hub)
+  squad-hub squad --tui                the real Copilot TUI with the squad agent (supervised when the hooks are installed)
   squad-hub squad "<prompt>"           start a session with a prompt and return
-  squad-hub hooks install|remove|status  let terminal Copilot sessions register with the hub
-  squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>]
+  squad-hub hooks install|remove|status  let terminal Copilot sessions register with the hub (install --force refreshes a stale file)
+  squad-hub run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>] [--mode agent|plan|autopilot]
 
   ONE-TIME PER MACHINE
   squad-hub connect --hub <url> --token <device-token> [--name <device-name>]
                      [--device-kind local|cloud]
-                     [--allow-files|--allow-files-all] [--track-all]
+                     [--allow-files|--allow-files-all] [--track-all] [--force]
                      --device-kind sets where this device is listed (Local machines or
                      Cloud devices). Left out, the saved kind is kept. Releases before
                      it existed ignore the option and keep the saved kind.
 
   THE SERVICE (hosted already for most people -- do not run this to use a hosted hub)
-  squad-hub serve [--port 7420] [--auth dev|github|entra]
+  squad-hub serve [--port 7420] [--host 0.0.0.0] [--auth dev|github|entra]
 
   THIS DEVICE (lower-level; "connect" calls these for you)
   squad-hub start [--hub <url> --token <t>] [--allow-files|--allow-files-all] [--track-all]
@@ -2144,7 +2145,7 @@ function usage() {
 
   ACROSS EVERY DEVICE (the hub, not just this one)
   squad-hub sessions [--json] [--scope local|cloud] [--status <s>] [--hub <url>] [--token <your token>]
-  squad-hub open [<session>]   open the hub, or one session's deep link, in a browser
+  squad-hub open [<session>] [--hub <url>]   open the hub, or one session's deep link, in a browser
 
   MCP SERVER (for an agent that wants to see and drive YOUR sessions)
   squad-hub mcp --hub <url> --token <your token>   stdio MCP server; SQUAD_HUB_USER_TOKEN also works
@@ -2174,10 +2175,13 @@ and SAYS SO, rather than quietly substituting.
 
 "squad-hub squad --tui" is the exception: it launches the Copilot TUI directly,
 so --agent/--model are passed on the command line and the TUI itself applies
-them. That session is NOT supervised yet -- approvals appear at that keyboard
-only, and it does not appear in "squad-hub status". The hub's terminal and the
-Copilot TUI both want the agent's stdio, and one process cannot serve both;
-supervising a TUI session needs Copilot's hooks instead, which is not built yet.
+them. It is supervised only when the Copilot hooks are installed ("squad-hub
+hooks install"): then it appears in "squad-hub status" and the hub, and its
+approvals can be answered there. Without the hooks, approvals appear at that
+keyboard only and the hub never hears of the session; the notice printed at
+launch says which of the two you got. The hub's terminal and the Copilot TUI
+both want the agent's stdio, and one process cannot serve both, so supervision
+comes from the hooks rather than from the hub driving the agent.
 See docs/commands.md.
 
 File access is off by default. --allow-files scopes it to the directory you run
@@ -2445,5 +2449,5 @@ async function main(argv) {
 }
 
 module.exports = {
-  main, Daemon, sessionWhere, sessionBadge, squadLine,
+  main, Daemon, sessionWhere, sessionBadge, squadLine, positionals,
 };

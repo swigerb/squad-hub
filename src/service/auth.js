@@ -257,12 +257,15 @@ class Authenticator {
       /**
        * The user's own avatar, shown to the user themselves.
        *
-       * Kept only when GitHub serves it, so a value can never be forged into
-       * the claims by a token that did not come from GitHub. Other providers
+       * Kept only when it is on GitHub's avatar host, the one origin the CSP
+       * allows, so a value can never be forged into the claims by a token that
+       * did not come from GitHub, nor point the browser at another
+       * githubusercontent.com host (`raw.` serves arbitrary repository files).
+       * Other providers
        * have no equivalent and the UI falls back to an initial, which is why
        * this is optional rather than required.
        */
-      avatar: typeof user.avatar_url === 'string' && /^https:\/\/[a-z0-9.-]*githubusercontent\.com\//i.test(user.avatar_url)
+      avatar: typeof user.avatar_url === 'string' && /^https:\/\/avatars\.githubusercontent\.com\//i.test(user.avatar_url)
         ? user.avatar_url
         : null,
     };

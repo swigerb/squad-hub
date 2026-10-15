@@ -98,6 +98,18 @@ function withFakeGitHub(auth, port) {
       id: 333, login: 'bad-avatar', email: null,
       avatar_url: 'https://attacker.example/avatar.png',
     },
+    'tok-raw-avatar': {
+      id: 334, login: 'raw-avatar', email: null,
+      avatar_url: 'https://raw.githubusercontent.com/u/334/avatar.png',
+    },
+    'tok-lookalike-avatar': {
+      id: 335, login: 'lookalike-avatar', email: null,
+      avatar_url: 'https://evilgithubusercontent.com/u/335',
+    },
+    'tok-http-avatar': {
+      id: 336, login: 'http-avatar', email: null,
+      avatar_url: 'http://avatars.githubusercontent.com/u/336?v=4',
+    },
   };
   const { server, calls } = fakeGitHub(users);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -125,6 +137,15 @@ function withFakeGitHub(auth, port) {
     const p = await a.verify('Bearer tok-bad-avatar');
     assert.strictEqual(p.avatar, null,
       'an arbitrary avatar host was handed to the browser');
+  });
+
+  await checkAsync('only avatars.githubusercontent.com is kept, not any githubusercontent.com host', async () => {
+    // raw.githubusercontent.com serves arbitrary repository content, and the
+    // CSP allows exactly one image host: the claim must not be wider than it.
+    for (const token of ['tok-raw-avatar', 'tok-lookalike-avatar', 'tok-http-avatar']) {
+      const p = await make().verify(`Bearer ${token}`);
+      assert.strictEqual(p.avatar, null, `${token}: an avatar outside https://avatars.githubusercontent.com/ was kept`);
+    }
   });
 
   await checkAsync('an invalid token is refused', async () => {
@@ -319,6 +340,39 @@ function withFakeGitHub(auth, port) {
     const cfg = new GitHubOAuth({ clientId: 'c', clientSecret: 's', publicUrl: 'https://fixed.example/' });
     assert.strictEqual(cfg.redirectUri(REQ), 'https://fixed.example/auth/github/callback',
       'a trailing slash in the configured URL produced a double slash');
+  });
+
+  check('with no forwarded scheme the callback is http, the same rule HSTS and the WebSocket origin check use', () => {
+    // A plain local run sends no X-Forwarded-Proto. It used to build an
+    // https://localhost callback while requestIsSecure() read the same request
+    // as insecure, so sign-in on a laptop redirected to a port with no TLS.
+    const local = { headers: { host: 'localhost:7420' } };
+    assert.strictEqual(oa.redirectUri(local), 'http://localhost:7420/auth/github/callback');
+    assert.strictEqual(oa.redirectUri({ headers: { host: 'localhost:7420', 'x-forwarded-proto': 'http' } }),
+      'http://localhost:7420/auth/github/callback');
+    const { requestScheme, requestIsSecure } = require('../src/service/request-scheme');
+    for (const headers of [
+      { host: 'h' },
+      { host: 'h', 'x-forwarded-proto': 'https' },
+      { host: 'h', 'x-forwarded-proto': 'HTTPS, http' },
+      { host: 'h', 'x-forwarded-proto': 'http' },
+      { host: 'h', 'x-forwarded-proto': 'wss' },
+    ]) {
+      const req = { headers };
+      assert.strictEqual(oa.redirectUri(req).split(':')[0], requestScheme(req), JSON.stringify(headers));
+      assert.strictEqual(requestScheme(req) === 'https', requestIsSecure(req), JSON.stringify(headers));
+    }
+  });
+
+  check('behind a TLS-terminating proxy the callback stays https, and a configured public URL still wins', () => {
+    assert.strictEqual(oa.redirectUri({ headers: { host: 'hub.example', 'x-forwarded-proto': 'https,http' } }),
+      'https://hub.example/auth/github/callback');
+    const pinned = new GitHubOAuth({ clientId: 'c', clientSecret: 's', publicUrl: 'https://fixed.example' });
+    assert.strictEqual(pinned.redirectUri({ headers: { host: 'localhost:7420' } }),
+      'https://fixed.example/auth/github/callback', 'the public URL must beat the request, even with no forwarded scheme');
+    const plainPinned = new GitHubOAuth({ clientId: 'c', clientSecret: 's', publicUrl: 'http://fixed.example' });
+    assert.strictEqual(plainPinned.redirectUri({ headers: { host: 'h', 'x-forwarded-proto': 'https' } }),
+      'http://fixed.example/auth/github/callback');
   });
 
   check('state that this hub issued is accepted', () => {

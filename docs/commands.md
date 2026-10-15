@@ -1453,8 +1453,9 @@ command exits non-zero rather than silently skipping it.
 | `SQUAD_HUB_BUILD` | Build marker reported by `/healthz`. Set by the deploy script so it can prove the code it pushed is the code now serving. |
 | `SQUAD_HUB_INSTANCE_COUNT` | Overrides the detected instance count. Azure App Service sets `WEBSITE_INSTANCE_COUNT` itself; this is for platforms that do not. |
 
-**More than one instance will not work.** State is held in memory, so a device
-attaches to one instance and the others report zero devices — roughly half of
+**More than one instance will not work.** Each instance keeps its own state
+(persisted under `SQUAD_HUB_HOME`, per instance, never shared), and a device
+attaches to one instance, so the others report zero devices — roughly half of
 all requests fail. `/healthz` reports `instances` and a `scaleOutWarning`, and
 the UI shows a banner. Scale up, not out.
 

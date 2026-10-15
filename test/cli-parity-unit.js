@@ -644,5 +644,43 @@ check('the usage text still names the older service spellings', () => {
     'an alias nobody can discover is an alias people stop trusting');
 });
 
+check('the usage text says --tui is supervised when the hooks are installed, not that it never is', () => {
+  const r = run(makeHome(), ['help']);
+  assert.ok(!/NOT supervised/i.test(r.out), 'the usage text still calls the --tui session unsupervised');
+  assert.match(r.out, /squad --tui .*supervised when the hooks are installed/);
+  assert.ok(!/which is not built yet/.test(r.out), 'the usage text still says hook supervision is not built');
+});
+
+check('the usage text lists the options the parsers accept', () => {
+  const r = run(makeHome(), ['help']);
+  assert.ok(r.out.includes('run "<prompt>" [--cwd <dir>] [--agent <name>] [--model <name>] [--mode agent|plan|autopilot]'),
+    'the run line omits --mode agent|plan|autopilot');
+  assert.ok(r.out.includes('serve [--port 7420] [--host 0.0.0.0] [--auth dev|github|entra]'), 'the serve line omits --host');
+  assert.ok(r.out.includes('[--track-all] [--force]'), 'the connect line omits --force');
+});
+
+check('--mode takes its value rather than leaking it into the prompt', () => {
+  const { positionals } = require('../src/cli');
+  assert.deepStrictEqual(positionals(['do the thing', '--mode', 'plan']), ['do the thing'],
+    '"run <prompt> --mode plan" would start a session whose prompt ends in "plan"');
+});
+
+check('the serve multi-instance warning does not claim state is held in memory', () => {
+  const home = makeHome();
+  const r = spawnSync(process.execPath, [BIN, 'serve', '--port', '0', '--host', '127.0.0.1'], {
+    encoding: 'utf8',
+    timeout: 6000,
+    windowsHide: true,
+    env: {
+      ...process.env, SQUAD_HUB_HOME: home, SQUAD_HUB_INSTANCE_COUNT: '3', WEBSITE_INSTANCE_COUNT: '',
+    },
+  });
+  const text = (r.stdout || '') + (r.stderr || '');
+  assert.match(text, /this hub is running on 3 instances/, `the warning never printed:\n${text}`);
+  assert.ok(!/in memory/i.test(text), `the warning still says state is in memory:\n${text}`);
+  assert.match(text, /SQUAD_HUB_HOME/, 'the warning does not say where the store is persisted');
+  assert.match(text, /never shared/, 'the warning does not say persistence is per instance');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

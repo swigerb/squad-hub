@@ -490,9 +490,10 @@ Revoking one does not affect the others.
 
 The redirect the hub sends to GitHub comes from `SQUAD_HUB_PUBLIC_URL` when set,
 and otherwise from the request's own host and `X-Forwarded-Proto` header, with the
-scheme defaulting to `https` when that header is absent. A local run therefore
-needs `SQUAD_HUB_PUBLIC_URL=http://localhost:7420`. The deploy script sets it for a
-hosted hub.
+scheme defaulting to `http` when that header is absent, so a plain local run sends
+`http://localhost:7420/auth/github/callback` with no extra setting. A hosted hub
+behind a TLS-terminating proxy sends `https` because the proxy forwards
+`X-Forwarded-Proto: https`; the deploy script also sets `SQUAD_HUB_PUBLIC_URL`.
 
 Check these in order:
 
@@ -500,7 +501,7 @@ Check these in order:
 - If the hub is reached through a custom domain, register the callback for
   whichever address `SQUAD_HUB_PUBLIC_URL` names.
 - The scheme matches too: without `SQUAD_HUB_PUBLIC_URL` and without an
-  `X-Forwarded-Proto` header, the hub sends an `https://` redirect.
+  `X-Forwarded-Proto: https` header, the hub sends an `http://` redirect.
 - The path is `/auth/github/callback`. A trailing slash counts as different.
 
 What the flow does:

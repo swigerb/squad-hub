@@ -59,9 +59,10 @@ a hub behind a proxy that forwards some other `Host` still recognises its own
 public domain, and a request that merely agrees with itself does not earn a
 match by doing so. Unset -- a local run, or a deployment that does not set
 it -- the origin falls back to the request's own `Host` plus a scheme taken from
-`X-Forwarded-Proto`, the header `github-oauth.js redirectUri()` also reads. The
-two differ when that header is absent: this check then assumes `http`, while
-`redirectUri()` assumes `https`. A value that is set but does not parse as an absolute `http`/
+`X-Forwarded-Proto`, the header `github-oauth.js redirectUri()` also reads. All
+three (this check, `redirectUri()` and the HSTS decision) share one rule in
+`src/service/request-scheme.js`: a request with no such header is `http`, not
+secure. A value that is set but does not parse as an absolute `http`/
 `https` URL is refused at startup rather than silently falling back to that
 request-derived behavior, which would let a typo look configured while
 actually granting the weaker of the two.
@@ -188,7 +189,7 @@ fail to run, not merely log that it did.
 | `default-src` | `'self'` | Nothing loads from anywhere but this origin unless a directive below says otherwise. Covers the WebSocket, the service worker, and the manifest, all of which are same-origin. |
 | `script-src` | `'self'` | Every handler is assigned in JavaScript, from a file this origin serves. No inline `<script>` anywhere, including the sign-in pages (below). |
 | `style-src` | `'self' 'sha256-…'` | One hash, for the 404 page's own stylesheet — kept inline so that page still renders if `web/` is missing or misdeployed. Nothing else uses a `style=""` attribute: styling comes from stylesheet classes or JavaScript property assignment, neither of which needs an exception. `'unsafe-inline'` is never used. |
-| `img-src` | `'self' https://avatars.githubusercontent.com` | The one sanctioned external origin in the policy: the signed-in person's own GitHub avatar, fetched directly from GitHub's CDN. `auth.js` accepts a claimed avatar URL only if it is `https` and its host ends in `githubusercontent.com`, which is a wider check than this one host; the policy is what limits the browser to `avatars.githubusercontent.com`. |
+| `img-src` | `'self' https://avatars.githubusercontent.com` | The one sanctioned external origin in the policy: the signed-in person's own GitHub avatar, fetched directly from GitHub's CDN. `auth.js` accepts a claimed avatar URL only if it is `https` and its host is exactly `avatars.githubusercontent.com`, the host GitHub returns in `avatar_url`; the policy limits the browser to the same host. |
 | `object-src` | `'none'` | No plugin content of any kind. |
 | `base-uri` | `'none'` | Does not fall back to `default-src`; listed so a page's base cannot be redirected. |
 | `form-action` | `'self'` | Does not fall back to `default-src`; a form can only submit back to this origin. |
@@ -219,9 +220,10 @@ arrived over TLS. The hub itself always listens on plain HTTP
 (`http.createServer` in `src/service/hub-service.js`) — every deployment this
 repo ships terminates TLS in front of it (Azure App Service, Container Apps,
 an AKS ingress) and forwards the original scheme in `X-Forwarded-Proto`. That
-is the same header `github-oauth.js` reads to build the OAuth redirect URI,
-though the absent-header default differs: the redirect URI assumes `https`,
-while the HSTS decision assumes the request is insecure. A request carrying no such signal — a bare
+is the same header `github-oauth.js` reads to build the OAuth redirect URI, and
+all of them (the redirect URI, the origin check and HSTS) apply one rule from
+`src/service/request-scheme.js`: with no such header the request is treated as
+insecure. A request carrying no such signal — a bare
 `curl` to a local `dev`-mode hub, or an in-cluster health check over plain
 HTTP — is treated as insecure, not assumed secure, and gets no HSTS header at
 all: sending one there would tell a browser to stop using the very channel

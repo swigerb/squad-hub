@@ -573,7 +573,7 @@ const MUTATIONS = [
     // the very channel it condemns), and is the half of the same test the
     // mutation above does not reach.
     name: 'Strict-Transport-Security is sent even over plain HTTP with no TLS signal',
-    file: 'src/service/hub-service.js',
+    file: 'src/service/request-scheme.js',
     find: `function requestIsSecure(req) {
   if (req.socket && req.socket.encrypted) return true;`,
     replace: `function requestIsSecure(req) {
@@ -7325,18 +7325,15 @@ if ($health.accessStore -ne 'durable') {`,
     mustFail: 'the push toggle has its own .hint-btn explainer, next to it',
   },
   {
-    // Security review (#175, minor): every other route in hub-service.js
-    // that reads an identity out of a URL path wraps `decodeURIComponent` in
-    // a try/catch answering 400 -- this one did not, so a malformed `%`
-    // escape crashed the request handler into an unhandled 500.
-    name: 'a malformed %-escape in the push subscription id crashes into a 500 again (#175)',
+    // Security review (#175, minor), widened by #266: every route in
+    // hub-service.js that reads an id out of a URL path decodes it through one
+    // helper that answers null for a malformed `%` escape, so the route can
+    // answer 400. Without it the throw reached the handler as a 500.
+    name: 'a malformed %-escape in a path id crashes into a 500 again (#175, #266)',
     file: 'src/service/hub-service.js',
-    find: `      let id;
-      try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }`,
-    replace: `      let id;
-      if (process.env.MUTANT) { id = decodeURIComponent(pushMatch[1]); } else { // MUTATION: no try/catch
-        try { id = decodeURIComponent(pushMatch[1]); } catch { return send(400, { error: 'bad subscription id' }); }
-      }`,
+    find: `  try { return decodeURIComponent(segment); } catch { return null; }`,
+    replace: `  if (process.env.MUTANT) return decodeURIComponent(segment); // MUTATION: no try/catch
+  try { return decodeURIComponent(segment); } catch { return null; }`,
     mustFail: 'a malformed %-escape in the subscription id gets 400, not a 500',
   },
   {
@@ -12294,6 +12291,27 @@ prompt: |
     find: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE);`,
     replace: `throw this._err(502, LIST_UNVERIFIABLE_MESSAGE + ' ' + r.fullName);`,
     mustFail: 'a verification failure on a repository the caller never named does not leak its name, owner, URL or GitHub\'s words, and still fails closed (#258 review)',
+  },
+  {
+    name: '#266: the GitHub-identity 403 names SQUAD_HUB_AUTH, which is not a setting',
+    file: 'src/service/github-app.js',
+    find: `(SQUAD_HUB_AUTH_MODE=github, or --auth github)`,
+    replace: `(SQUAD_HUB_AUTH=github)`,
+    mustFail: 'a session without a GitHub-verified identity is refused with an explanation, and GitHub is never called (#258)',
+  },
+  {
+    name: '#266: the avatar claim accepts any githubusercontent.com host',
+    file: 'src/service/auth.js',
+    find: String.raw`/^https:\/\/avatars\.githubusercontent\.com\//i.test(user.avatar_url)`,
+    replace: String.raw`/^https:\/\/[a-z0-9.-]*githubusercontent\.com\//i.test(user.avatar_url)`,
+    mustFail: 'only avatars.githubusercontent.com is kept, not any githubusercontent.com host',
+  },
+  {
+    name: '#266: the OAuth callback assumes https when no forwarded scheme arrives',
+    file: 'src/service/github-oauth.js',
+    find: `    return \`\${requestScheme(req)}://\${req.headers.host}/auth/github/callback\`;`,
+    replace: `    return \`\${process.env.MUTANT ? 'https' : requestScheme(req)}://\${req.headers.host}/auth/github/callback\`; // MUTATION`,
+    mustFail: 'with no forwarded scheme the callback is http, the same rule HSTS and the WebSocket origin check use',
   },
 ];
 

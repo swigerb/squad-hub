@@ -87,6 +87,23 @@ function fencedCodeBlocks(text) {
 // ---------------------------------------------------------------------------
 const implemented = [...cli.matchAll(/case '([a-z-]+)': return cmd/g)].map((m) => m[1]);
 
+// Every label on a dispatching `case` line, so aliases that share one --
+// `case 'help': case '--help': case '-h': usage(); return 0;` -- count as
+// commands the CLI really answers. `implemented` above stays the strict list of
+// commands that must be documented; an alias need not be.
+const implementedLabels = [...new Set(cli.split(/\r?\n/).flatMap((line) => {
+  const m = line.match(/^\s*((?:case (?:'[^']*'|undefined):\s*)+)(.*)$/);
+  if (!m || !/\breturn\b/.test(m[2])) return [];
+  return [...m[1].matchAll(/'([^']*)'/g)].map((l) => l[1]);
+}))];
+
+check('the command scan reads every label on a shared case line, not only the last', () => {
+  for (const alias of ['help', '--help', '-h', '--version', '-v']) {
+    assert.ok(implementedLabels.includes(alias), `the alias ${alias} was not recognised`);
+  }
+  for (const c of implemented) assert.ok(implementedLabels.includes(c), `${c} fell out of the label scan`);
+});
+
 check('the CLI implements a plausible number of commands', () => {
   assert.ok(implemented.length >= 8, `only found ${implemented.length}; the scan is broken`);
 });
@@ -106,7 +123,7 @@ check('every command the docs promise actually exists', () => {
   const promised = [...allDocs.matchAll(/squad-hub ([a-z][a-z-]+)/g)].map((m) => m[1]);
   const invented = [...new Set(promised)]
     .filter((c) => !componentNames.includes(c))
-    .filter((c) => !implemented.includes(c));
+    .filter((c) => !implementedLabels.includes(c));
   assert.deepStrictEqual(invented, [],
     `the docs promise commands that do not exist: ${invented.join(', ')}`);
 });
