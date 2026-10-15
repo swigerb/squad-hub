@@ -4278,13 +4278,19 @@ function railFacts(page) {
       let release = null;
       const gate = new Promise((resolve) => { release = resolve; });
       const approveUrl = /\/api\/devices\/[^/]+\/approve$/;
+      let unrouted = false;
       await page.route(approveUrl, async (route) => {
         posts.push(route.request().postDataJSON());
         await gate;
-        await route.fulfill({
-          status: 502, contentType: 'application/json',
-          body: JSON.stringify({ error: 'the device did not accept the answer' }),
-        });
+        try {
+          await route.fulfill({
+            status: 502, contentType: 'application/json',
+            body: JSON.stringify({ error: 'the device did not accept the answer' }),
+          });
+        } catch (e) {
+          // Teardown can handle this route before the released handler fulfills it.
+          if (!unrouted || !/Route is already handled!?$/.test(String(e.message))) throw e;
+        }
       });
       try {
         await page.click('#dtApprovals [data-answer="allow_once"]');
@@ -4310,6 +4316,7 @@ function railFacts(page) {
         await until(async () => /Could not answer: the device did not accept the answer/.test(
           await page.textContent('#dtApprovals .dt-appr-note').catch(() => '')), 'the refusal to be reported on the card');
       } finally {
+        unrouted = true;
         release();
         await page.unroute(approveUrl);
       }
@@ -6374,6 +6381,8 @@ function railFacts(page) {
       assert.strictEqual(shown.text, 'Ready for review');
 
       const asked = rv.page.waitForRequest((r) => /\/api\/overview\?.*status=review/.test(r.url()), { timeout: 10000 });
+      // The click below can fail first; keep the request wait from turning into an unhandled rejection that ends the run.
+      asked.catch(() => {});
       await rv.page.click('#statusFilter >> xpath=..');
       await rv.page.click('.sp-opt >> text=Ready for review');
       await asked;

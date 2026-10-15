@@ -103,7 +103,7 @@ check('candidate CI installs prerequisites outside the checkout, with the defaul
 check('candidate CI really executes one coordinated candidate run with external artifacts, never a plan', () => {
   const s = step(GATE);
   assert.ok(s.includes("$artifacts = Join-Path $env:RUNNER_TEMP 'acceptance-candidate'"));
-  assert.ok(s.includes('node test\\acceptance.js --scope candidate --base $env:BASE_SHA --artifacts $artifacts'));
+  assert.ok(s.includes('node test\\acceptance.js --scope candidate --base $env:BASE_SHA --artifacts $artifacts --jobs 4'));
   assert.ok(s.includes('if ($LASTEXITCODE -ne 0)'));
   assert.match(s, /TEMP: \$\{\{ runner\.temp \}\}\n          TMP: \$\{\{ runner\.temp \}\}/);
   assert.strictEqual((candidate.match(/test\\acceptance\.js --scope candidate/g) || []).length, 1, 'candidate is run more than once');
@@ -129,7 +129,7 @@ check('candidate CI keeps the complete artifacts directory even on failure, and 
 check('candidate CI is read-only, cancellable and time-bounded, with no publishing or secrets', () => {
   assert.match(candidate, /permissions:\n  contents: read/);
   assert.match(candidate, /concurrency:\n  group: candidate-acceptance-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true/);
-  assert.ok(Number(candidate.match(/timeout-minutes: (\d+)/)[1]) <= 360);
+  assert.ok(Number(candidate.match(/timeout-minutes: (\d+)/)[1]) <= 90);
   assert.doesNotMatch(candidate, /npm publish|npm run release|id-token: write|secrets\.|contents: write|git push|git tag/);
 });
 check('the existing Linux Tests matrix is untouched by the acceptance workflows', () => {

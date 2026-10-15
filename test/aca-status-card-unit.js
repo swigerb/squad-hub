@@ -106,6 +106,28 @@ check('findWatcherDevice prefers an explicit, sanitized meta.role over any name 
   // verified fact wins over the name-based convention fallback.
   const d = acaDev({ name: 'aca-ca-squad-aca-ralph--0000020-abc', meta: { role: 'watch' } });
   assert.strictEqual(findWatcherDevice([d]), d);
+
+  // PREFERENCE, not mere detection: a verified device and a name-only device
+  // compete for the same role, and the verified one is the LESS alive and
+  // older. Presence and recency alone would pick the name match, so only a
+  // real "explicit role first" rule returns the verified device, whichever
+  // way round the roster is ordered.
+  const nameWatch = acaDev({ name: REAL_WATCH_DEVICE_NAME, meta: null, presence: 'online', lastSeen: Date.now() });
+  const verifiedWatch = acaDev({ name: 'renamed-job', meta: { role: 'watch' }, presence: 'offline', lastSeen: Date.now() - 600000 });
+  assert.strictEqual(findWatcherDevice([nameWatch, verifiedWatch]), verifiedWatch, 'a name match outranked the verified role');
+  assert.strictEqual(findWatcherDevice([verifiedWatch, nameWatch]), verifiedWatch, 'roster order changed the answer');
+  assert.strictEqual(findWatcherDevice([nameWatch]), nameWatch, 'the name fallback still works when no device verifies a role');
+
+  // Same rule for Ralph, and an online verified device still wins over a
+  // fresher name match.
+  const nameRalph = acaDev({ name: 'aca-ca-squad-aca-ralph--0000004-abc12345-x1y2z', meta: null, presence: 'online', lastSeen: Date.now() });
+  const verifiedRalph = acaDev({ name: 'renamed-ralph', meta: { role: 'ralph' }, presence: 'online', lastSeen: Date.now() - 600000 });
+  assert.strictEqual(findRalphDevice([nameRalph, verifiedRalph]), verifiedRalph, 'a fresher name match outranked the verified Ralph');
+  assert.strictEqual(findRalphDevice([verifiedRalph, nameRalph]), verifiedRalph);
+
+  // A non-ACA device that claims the role never joins the competition.
+  const cloudClaim = dev({ name: 'claims-watch', kind: 'cloud', meta: { role: 'watch' }, presence: 'online', lastSeen: Date.now() });
+  assert.strictEqual(findWatcherDevice([cloudClaim, nameWatch]), nameWatch, 'a non-ACA claim displaced the ACA name match');
 });
 
 check('findWatcherDevice returns null when no watcher device exists', () => {

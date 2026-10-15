@@ -9,6 +9,8 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const S = require('./helpers/acceptance-schedule');
 
 let pass = 0; let fail = 0;
@@ -187,8 +189,8 @@ const ids = (jobs) => jobs.flatMap((j) => j.entries.map((e) => e.id)).sort();
 
   check('child-suite markers from run-tests.js give active suite and measured seconds, and never a verdict', () => {
     const log = [
-      'noise', '[child-suite] start alpha-unit.js', '[child-suite] end alpha-unit.js (12.3s)\r',
-      '[child-suite] start beta-unit.js', '[child-suite] start gamma-unit.js', '[child-suite] end gamma-unit.js (0.4s)',
+      'noise', '  [child-suite] start alpha-unit.js', '  [child-suite] end alpha-unit.js (12.3s)\r',
+      '  [child-suite] start beta-unit.js', '  [child-suite] start gamma-unit.js', '  [child-suite] end gamma-unit.js (0.4s)',
     ].join('\n');
     const m = S.parseChildMarkers(log);
     assert.deepStrictEqual(m.finished, [{ label: 'alpha-unit.js', seconds: 12.3 }, { label: 'gamma-unit.js', seconds: 0.4 }]);
@@ -197,6 +199,19 @@ const ids = (jobs) => jobs.flatMap((j) => j.entries.map((e) => e.id)).sort();
     const odd = S.parseChildMarkers('[child-suite] end ghost (1.0s)\n[child-suite] start a\n[child-suite] start a\n[child-suite] end a (2s)\n[child-suite] end a (2s)\n[child-suite] begin nothing\n');
     assert.strictEqual(odd.problems.length, 3, odd.problems.join(' | '));
     assert.deepStrictEqual(S.parseChildMarkers(undefined), { finished: [], running: [], problems: [] });
+  });
+
+  check('the markers run-tests.js really prints (indented) are the ones the parser reads', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'run-tests.js'), 'utf8');
+    const start = /console\.log\(`(\s*\[child-suite\] start \$\{label\})`\)/.exec(src);
+    const end = /console\.log\(`(\s*\[child-suite\] end \$\{label\} \()\$\{[^`]*?\}s\)`\)/.exec(src);
+    assert.ok(start && end, 'run-tests.js no longer prints [child-suite] start/end lines');
+    const label = 'sample-unit.js';
+    const log = [start[1].replace('${label}', label), `${end[1].replace('${label}', label)}4.5s)`].join('\n');
+    assert.match(log, /^ +\[child-suite\] start sample-unit\.js\n +\[child-suite\] end sample-unit\.js \(4\.5s\)$/, 'the real markers are indented; this guards the indentation the parser must accept');
+    const m = S.parseChildMarkers(log);
+    assert.deepStrictEqual(m.finished, [{ label, seconds: 4.5 }]);
+    assert.deepStrictEqual(m.running, []);
   });
 
   check('a step annotation shows up in the heartbeat beside the measured elapsed time', () => {

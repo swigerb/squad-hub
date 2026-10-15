@@ -134,9 +134,10 @@ async function runPool(jobs, n, worker, shouldStop = () => false) {
 
 const MIN_SAMPLES = 3;
 
-// run-tests.js brackets every child suite it launches with exactly these lines.
-const CHILD_START = /^\[child-suite\] start (.+?)\s*$/;
-const CHILD_END = /^\[child-suite\] end (.+?) \((\d+(?:\.\d+)?)s\)\s*$/;
+// run-tests.js brackets every child suite it launches with exactly these
+// lines, indented by two spaces (`  [child-suite] start <label>`).
+const CHILD_START = /^[ \t]*\[child-suite\] start (.+?)\s*$/;
+const CHILD_END = /^[ \t]*\[child-suite\] end (.+?) \((\d+(?:\.\d+)?)s\)\s*$/;
 
 /**
  * What a run-tests.js log says about its child suites: `finished` (label and

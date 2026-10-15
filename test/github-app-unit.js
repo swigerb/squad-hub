@@ -31,6 +31,11 @@ const { sanitizeDispatchRequest, buildWorkflowInputs } = require('../src/aca-dis
 const { Authenticator, MODES } = require('../src/service/auth');
 const { HubService } = require('../src/service/hub-service');
 const { readWebSource } = require('./helpers/web-source');
+const { installLoopbackAgent } = require('./helpers/loopback-agent');
+
+// ~280 loopback connections per run: close them with an RST so back-to-back
+// runs do not exhaust the TIME_WAIT-sensitive Windows dynamic port range.
+installLoopbackAgent();
 
 // The New ACA job dialog's own request builder, loaded from the shipped
 // `web/js/aca.js` so the browser-side half of a dispatch is the real code.
@@ -3691,6 +3696,25 @@ function apiRequest(port, path, token, opts = {}) {
     assert.strictEqual(sentOk, 2);
     assert.deepStrictEqual(bad.map((r) => [r.status, r.body.field, r.body.code]), [[422, 'model', 'choice-unsupported'], [422, 'agent', 'choice-unsupported'], [422, 'mode', 'choice-unsupported']]);
     assert.strictEqual(sent.length, sentOk, 'nothing reached the device for a refused value');
+  });
+
+  await checkAsync('fixture clients close each loopback connection with an RST, so back-to-back runs leave no TIME_WAIT behind', async () => {
+    const closes = [];
+    const server = http.createServer((req, res) => { res.end('{"ok":true}'); });
+    server.on('connection', (socket) => {
+      const seen = { end: false, error: null };
+      socket.on('end', () => { seen.end = true; });
+      socket.on('error', (e) => { seen.error = e.code; });
+      closes.push(new Promise((resolve) => socket.on('close', () => resolve(seen))));
+    });
+    const port = await listen(server);
+    const first = await apiRequest(port, '/', 'token');
+    const second = await apiRequest(port, '/', 'token');
+    const seen = await Promise.race([Promise.all(closes.slice(0, 2)), new Promise((resolve) => setTimeout(() => resolve(null), 5000))]);
+    server.close();
+    assert.deepStrictEqual([first.status, second.status], [200, 200], JSON.stringify([first, second]));
+    assert.ok(seen && seen.length === 2, 'both connections must have been closed by the client');
+    for (const s of seen) assert.deepStrictEqual(s, { end: false, error: 'ECONNRESET' }, `a graceful FIN close leaves TIME_WAIT: ${JSON.stringify(s)}`);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

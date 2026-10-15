@@ -93,15 +93,28 @@ process.on('exit', () => {
   console.log('RESULT\tfail\tthe run ended before every check had finished\tsomething awaited never settled');
   process.exitCode = 1;
 });
+// When the loop empties while a check is still awaiting, nothing can ever settle
+// it. `beforeExit` fires only then (no timer, no timeout to tune), so that check
+// is failed by name and the rest of the file still runs to its real summary.
+let awaiting = null;
+process.on('beforeExit', () => {
+  if (awaiting) awaiting.starve();
+});
 async function checkAsync(name, fn) {
+  const stalled = new Promise((resolve, reject) => {
+    awaiting = { starve: () => reject(new Error('something awaited never settled, so the check could not finish')) };
+  });
+  stalled.catch(() => {});
   try {
-    await fn(); pass += 1;
+    await Promise.race([fn(), stalled]); pass += 1;
     console.log(`  ok   ${name}`);
     console.log(`RESULT\tok\t${name}`);
   } catch (e) {
     fail += 1;
     console.log(`  FAIL ${name}\n         ${e.message}`);
     console.log(`RESULT\tfail\t${name}\t${String(e.message).split('\n')[0]}`);
+  } finally {
+    awaiting = null;
   }
 }
 
