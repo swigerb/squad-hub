@@ -18,6 +18,7 @@ import { acaJobsRowHtml, acaRailRowsHtml } from './aca-rail.js';
 import { ACA_PHASE, renderAcaStatus, isPersistentAcaJob } from './aca-status.js';
 import { isDeviceExpanded, deviceDetailHtml, fullestVolume } from './device-detail.js';
 import { renderEmptySessions } from './empty-state.js';
+import { renderHubVersion } from './hub-version.js';
 // Circular by necessity: `render()` below still calls back into `wiring.js`
 // for `renderInboxMenu`, which must run after every refresh so a bell-inbox
 // card updates or disappears the moment its approval is answered -- and now
@@ -426,6 +427,7 @@ export function render() {
     ${deviceSectionHtml('cloud', 'Cloud devices', cloudDevices, sessionCounts, 'connect-device', 'Connect a cloud device', hubVersion)}
     ${deviceSectionHtml('local', 'Local machines', localDevices, sessionCounts, 'connect-device', 'Connect a local machine', hubVersion)}`;
   applyMeterFills($('deviceList'));
+  renderHubVersion($('hubVersion'), hubVersion);
   const availPill = $('deviceAvailable');
   if (availPill) {
     // The count badge beside "Connected devices" already says how many there

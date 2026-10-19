@@ -715,6 +715,7 @@ async function suiteAcaDispatchDialog() {
 async function suiteAcaRail() {
   console.log('\n[ACA RAIL] pending dispatch rows, pulse only while open, exact hand-over to the attached device');
   runChildSuite(path.join(__dirname, 'aca-rail-unit.js'), 'aca-rail');
+  runChildSuite(path.join(__dirname, 'hub-version-unit.js'), 'hub-version');
 }
 
 /**

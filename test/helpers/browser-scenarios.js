@@ -197,6 +197,7 @@ const SCENARIOS = [
       'a permission already decided is not asked for again',
       'with no VAPID keys configured, the bell inbox shows the push toggle disabled, not hidden',
       'the account menu opens and offers sign out',
+      "the hub's own version sits quietly in the rail and the account menu at 1280, 900 and 390, dark and light (#271)",
     ],
     alsoRuns: [
       'the app loads and signs in with a token in the URL',

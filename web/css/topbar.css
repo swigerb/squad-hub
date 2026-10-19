@@ -129,3 +129,9 @@
    tooltip and by the menu's own note instead, both of which say what is
    missing rather than merely implying it. */
 button.needs-device { opacity: 1; }
+
+/* The hub's own version: quiet, centered, no box. Hidden until it is known. */
+.hub-version-foot { text-align: center; padding: 10px 0 2px; font-size: 12px; line-height: 1.4; }
+.hub-version-foot[hidden] { display: none; }
+.hub-version { color: var(--dim); text-decoration: none; font-size: 12px; }
+.hub-version:hover, .hub-version:focus-visible { color: var(--text); text-decoration: underline; }

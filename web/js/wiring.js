@@ -27,6 +27,7 @@ import { showInstallHelp, wireInstall, closeInstallCard } from './install.js';
 import { openNew, openConnect, wireConnect } from './connect.js';
 import { wireFilters } from './filters.js';
 import { forgetEnded } from './forget.js';
+import { hubVersionHtml } from './hub-version.js';
 import { wireComposer } from './composer-wire.js';
 import { inboxEntries, inboxCount, renderInboxList } from './inbox.js';
 import { wirePush, syncPushMenuItem } from './push.js';
@@ -57,9 +58,10 @@ function toggleMenu(force) {
 
   const d = state.overview.devices || [];
   const online = d.filter((x) => x.presence === 'online').length;
+  const versionLine = hubVersionHtml(state.overview.hubVersion);
   $('menuMeta').innerHTML = `
     Signed in as <b>${esc((state.me && state.me.name) || 'unknown')}</b><br>
-    ${online} of ${d.length} device${d.length === 1 ? '' : 's'} online<br>
+    ${versionLine ? `${versionLine}<br>` : ''}${online} of ${d.length} device${d.length === 1 ? '' : 's'} online<br>
     ${state.overview.counts.sessions || 0} sessions ·
     ${state.overview.counts.actionNeeded || 0} needing attention`;
 }
