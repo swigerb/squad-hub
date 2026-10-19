@@ -360,7 +360,12 @@ const read = (p) => fs.readFileSync(p, 'utf8');
       const r = await run(makeRepo(opts));
       assert.strictEqual(r.result.status, 'rejected', label);
       assert.strictEqual(r.result.exitCode, 1);
-      assert.strictEqual(r.exec.calls.length, 1, `${label}: only the baseline ran`);
+      // Failing TESTS earn one more baseline run (a flake would go green); a
+      // structural red (no summary, zero tests, a skip) is not retried.
+      const expected = label === 'a failing suite' ? 2 : 1;
+      assert.strictEqual(r.exec.calls.length, expected, `${label}: only the baseline ran (${expected}x)`);
+      assert.ok(r.exec.calls.every((c) => c.kind === 'baseline'), `${label}: nothing but the baseline ran`);
+      if (label === 'a failing suite') assert.ok(r.report.failures.some((f) => /failing: .*add adds/.test(f)), `${label}: the failure names the failing test: ${r.report.failures}`);
       assert.ok(!fs.existsSync(path.join(r.artifacts, 'work', 'w1')), 'no worker copy');
       assert.deepStrictEqual(r.report.outcomes, []);
       assert.ok(r.report.failures.some((f) => /the baseline is red/.test(f)), `${label}: ${r.report.failures}`);
@@ -421,6 +426,49 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     assert.deepStrictEqual([verdicts(post)['add mutant'], verdicts(post)['mul mutant']], ['error', 'error']);
     assert.strictEqual(post.report.outcomes.find((x) => x.name === 'add mutant').observed, 'caught', 'the discarded verdict is kept for diagnosis');
     assert.ok(post.report.controls.some((c) => !c.ok && c.phase === 'post'));
+  });
+
+  await check('a clean control whose tests fail once and pass on the retry keeps its group, and the report says it was flaky', async () => {
+    const clean = await run(makeRepo());
+    let reds = 0;
+    const flaky = spyExec({ after: (call, r) => {
+      if (call.kind !== 'control-pre' || call.suite !== 'calc-unit.js' || reds >= 1) return null;
+      reds += 1;
+      return { ...r, code: 1, out: `${r.out}RESULT\tfail\tadd adds\twrong\n` };
+    } });
+    const r = await run(makeRepo(), { exec: flaky });
+    assert.strictEqual(reds, 1, 'the control was made red exactly once');
+    assert.strictEqual(r.exec.calls.filter((c) => c.kind === 'control-pre' && c.suite === 'calc-unit.js').length, 2, 'the red control was run once more');
+    assert.strictEqual(r.result.status, clean.result.status, 'one flaky control no longer costs the run');
+    assert.deepStrictEqual(verdicts(r), verdicts(clean), 'the group keeps its verdicts');
+    assert.ok(r.report.controls.every((c) => c.ok), 'only the green retry is recorded as the control');
+    assert.ok(r.report.warnings.some((w) => /flaky control: .*calc-unit\.js pre was red .*add adds.* and green on retry/.test(w)), r.report.warnings.join('|'));
+    assert.match(r.text, /CONTROL RED, RETRYING ONCE/);
+  });
+
+  await check('a clean control whose tests fail twice still invalidates its group', async () => {
+    const red = spyExec({ after: (call, r) => (call.kind === 'control-pre' && call.suite === 'calc-unit.js' ? { ...r, code: 1, out: `${r.out}RESULT\tfail\tadd adds\twrong\n` } : null) });
+    const r = await run(makeRepo(), { exec: red });
+    assert.strictEqual(r.exec.calls.filter((c) => c.kind === 'control-pre' && c.suite === 'calc-unit.js').length, 2, 'retried once, not more');
+    assert.strictEqual(r.result.status, 'rejected');
+    assert.strictEqual(verdicts(r)['add mutant'], 'error');
+    assert.ok(!r.report.warnings.some((w) => /flaky control/.test(w)), 'a control red twice is not reported as flaky');
+  });
+
+  await check('a baseline whose tests fail once and pass on the retry lets the run go on, and the report says it was flaky', async () => {
+    const clean = await run(makeRepo());
+    let reds = 0;
+    const flaky = spyExec({ after: (call, r) => {
+      if (call.kind !== 'baseline' || reds >= 1) return null;
+      reds += 1;
+      return { ...r, code: 1, out: r.out.replace(/  ok   add adds/, '  FAIL add adds').replace(/(\d+) passed, 0 failed/, (m, p) => `${Number(p) - 1} passed, 1 failed`) };
+    } });
+    const r = await run(makeRepo(), { exec: flaky });
+    assert.strictEqual(reds, 1);
+    assert.strictEqual(r.exec.count('baseline'), clean.exec.count('baseline') + 1, 'the initial baseline ran once more');
+    assert.strictEqual(r.result.status, clean.result.status);
+    assert.ok(r.report.warnings.some((w) => /flaky baseline: .*add adds.* green on retry/.test(w)), r.report.warnings.join('|'));
+    assert.strictEqual(r.report.proofs.filter((p) => p.label === 'initial').length, 1, 'only the green baseline is kept as the proof');
   });
 
   await check('source drift is rejected wherever it happens: the caller during the baseline, the baseline copy, a worker, and live mutation text', async () => {

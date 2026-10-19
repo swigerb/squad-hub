@@ -72,6 +72,19 @@ one at the end, with an owning-suite or browser-scenario control for each
 mutation in between. The workers are isolated copies of the tree, and none of
 them repeats the baseline. How long a run takes depends on how many mutations
 the change selects and on the machine, so there is no promised duration.
+
+A clean run (the initial baseline, or a control) whose tests fail is run once
+more before it costs its group or the whole run. If the retry is green, the run
+goes on and the report carries a `flaky control` or `flaky baseline` warning
+naming the tests that failed. A clean run that is red for any other reason (no
+summary, zero tests, a skip, a timeout) is not retried.
+
+A change to this repository's own Squad files (`.squad/`, `.github/agents/`),
+to the catalog `test/mutate.js` or to the suite list `test/run-tests.js` selects
+the mutations in those files and any new or changed definitions. It does not
+spread to code that merely names those paths, so a policy-only change is not
+billed for half the catalog. In CI the gate does not run at all for a pull
+request that changes only `.squad/`, `docs/`, Markdown or raster images.
 `--jobs <N>` sets the number of workers, `--history <timings.json>` from an
 earlier run only changes ordering and estimates, and `--reuse-baseline <proof>`
 reuses an earlier baseline only after re-checking it against this tree. Any
