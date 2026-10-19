@@ -9918,6 +9918,31 @@ prompt: |
     mustFail: 'a request answered at the terminal, and one that expired, show in the history with who, what and where (#182)',
   },
   {
+    name: '#182: an answer that names no answerer is recorded but never reaches the agent',
+    file: 'src/acp-session.js',
+    find: `    this._respond(a.rpcId, { outcome: { outcome: 'selected', optionId } });
+    // Kept so every surface`,
+    replace: `    if (answeredBy || !process.env.MUTANT) this._respond(a.rpcId, { outcome: { outcome: 'selected', optionId } }); // MUTATION
+    // Kept so every surface`,
+    mustFail: 'a request answered at the terminal, and one that expired, show in the history with who, what and where (#182)',
+  },
+  {
+    name: 'squad health leaves an over-cap child running after it stops reading its output',
+    file: 'src/squad-health.js',
+    find: `        overCap = true;
+        if (child) killProcessTree(child.pid);`,
+    replace: `        overCap = true;
+        if (child && !process.env.MUTANT) killProcessTree(child.pid); // MUTATION`,
+    mustFail: 'fake squad children exit and scratch artifacts are removed',
+  },
+  {
+    name: 'squad health test cleanup returns without ending the children it recorded',
+    file: 'test/squad-health-unit.js',
+    find: `    if (!hasExited(child)) child.kill();`,
+    replace: `    if (!hasExited(child) && !process.env.MUTANT) child.kill(); // MUTATION`,
+    mustFail: 'stopping the recorded children ends a live child and waits for its exit',
+  },
+  {
     name: '#182: opening another session keeps the last session\'s tab',
     file: 'web/js/detail.js',
     find: `  resetDetailTabs(found);`,

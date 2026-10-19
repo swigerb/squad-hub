@@ -4568,7 +4568,8 @@ function railFacts(page) {
       await daemon.handle({ op: 'approve', sessionId: g.sessionId, approvalId: g.approvalId, optionId: 'allow_once' });
       await until(async () => (await page.$$('#dtApprovals .dt-appr')).length === 0,
         'the card to go when the request was answered somewhere else');
-      assert.ok(fs.existsSync(path.join(g.work, g.marker)), 'the terminal answer did not run the tool');
+      // The card clears when the hub accepts the answer; the agent runs the tool after that.
+      await until(() => fs.existsSync(path.join(g.work, g.marker)), 'the terminal answer to run the tool');
       await page.click('#dtTab-info');
       await until(async () => !!(await historyRow182('allow_once')), 'the terminal answer to appear in the history');
       let row = await historyRow182('allow_once');
