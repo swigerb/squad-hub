@@ -2,6 +2,20 @@
 
 ## Active Decisions
 
+### 2026-10-19: Lean, one-hour Squad on ACA sessions; lead on the executor tier
+
+**By:** Brian (owner approval), applied on the direct local owner route.
+
+**What:**
+- Squad on ACA sessions are capped at one hour (session job replicaTimeout 3600, publish margin 600, hub ceiling 55 minutes). Work that will not fit is split into smaller issues.
+- `routing.md` rule 1 is **Lean by default**, replacing "Eager by default". Judgement roles (`security`, `rai`, `fact-checker`) join only for their named risk areas, and review is one round.
+- In an ACA session, testing is targeted: the touched test files and `test/mutate-probe.js`. The full suite, the mutation catalogue, the acceptance harness, repeat loops and sleep-polling are left to pull request CI.
+- `lead` runs `claude-sonnet-5.5` and escalates hard calls to `advisor`. `gpt-6.1-sol` stays on advisor, security, rai and fact-checker.
+
+**Why:** Between 2026-10-05 and 2026-10-19, 32 of 87 completed sessions ran over an hour (78.8 session-hours). On 2026-10-19 two sessions ran about three hours each, mostly waiting on full test runs and repeat loops. The lead coordinates every session, so the whole session ran on the frontier model, and "Eager by default" spawned the full team.
+
+**Amends:** the 2026-10-09 model decision below (the lead moves from `gpt-6.1-sol` to `claude-sonnet-5.5`).
+
 ### 2026-10-09: Squad member models are gpt-6.1-sol, claude-sonnet-5.5 and claude-haiku-5.5
 
 **By:** Brian (owner approval, issue #246), applied by engineer on the direct local owner route.

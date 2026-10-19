@@ -35,8 +35,8 @@ const JUDGE = 'gpt-6.1-sol';
 const EXECUTOR = 'claude-sonnet-5.5';
 const SCRIBE = 'claude-haiku-5.5';
 const EXPECTED = {
-  lead: JUDGE, advisor: JUDGE, security: JUDGE, rai: JUDGE, 'fact-checker': JUDGE,
-  engineer: EXECUTOR, reviewer: EXECUTOR, ralph: EXECUTOR,
+  advisor: JUDGE, security: JUDGE, rai: JUDGE, 'fact-checker': JUDGE,
+  lead: EXECUTOR, engineer: EXECUTOR, reviewer: EXECUTOR, ralph: EXECUTOR,
   scribe: SCRIBE, docs: SCRIBE,
 };
 const MEMBERS = Object.keys(EXPECTED).sort();
@@ -298,6 +298,27 @@ check('the earlier model mapping is kept in decisions.md as a superseded entry, 
   assert.match(superseded, /^### 2026-08-04: .*superseded 2026-10-09/m);
   for (const old of ['claude-opus-5', 'claude-opus-5.5', 'claude-sonnet-5', 'claude-haiku-4.5']) {
     assert.ok(superseded.includes(old), `the evidence for ${old} was erased`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-19: lean, one-hour Squad on ACA sessions.
+// ---------------------------------------------------------------------------
+
+check('routing.md keeps sessions lean: no eager fan-out, judgement roles on demand, one review round', () => {
+  const rules = section(read('.squad/routing.md'), /^## Rules$/m, /^## /m);
+  assert.doesNotMatch(rules, /Eager by default|spawn all agents/i, 'the eager fan-out rule is back');
+  assert.match(rules, /^1\. \*\*Lean by default\*\*/m);
+  assert.match(rules, /\*\*Judgement roles on demand, not by default\.\*\*/);
+  assert.match(rules, /\*\*One review round\.\*\*/);
+});
+
+check('the house rules box an ACA session to one hour and leave the full suite to CI', () => {
+  const house = section(read('.squad/routing.md'), /^## House rules for this repository$/m, /^## (?!House)/m);
+  assert.match(house, /\*\*A Squad on ACA session has one hour\.\*\*/);
+  assert.match(house, /\*\*In-session testing is targeted\.\*\*/);
+  for (const banned of ['`npm test`', '`test/mutate.js`', '`test/acceptance.js`', 'sleep-poll']) {
+    assert.ok(house.includes(banned), `the in-session testing rule no longer names ${banned}`);
   }
 });
 
