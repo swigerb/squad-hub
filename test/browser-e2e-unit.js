@@ -2008,6 +2008,127 @@ function railFacts(page) {
       await page.keyboard.press('Escape');
     });
 
+    await check("the hub's own version sits quietly in the rail and the account menu at 1280, 900 and 390, dark and light (#271)", async () => {
+      const expected = require('../package.json').version;
+      const release = `https://github.com/swigerb/squad-hub/releases/tag/v${expected}`;
+      const shotDir = process.env.SQUAD_HUB_SCREENSHOT_DIR;
+      if (shotDir) assert.ok(fs.statSync(shotDir).isDirectory(), `SQUAD_HUB_SCREENSHOT_DIR is not a directory: ${shotDir}`);
+      const measure = (hide) => page.evaluate((hideIt) => {
+        const foot = document.getElementById('hubVersion');
+        const was = foot.hidden;
+        if (hideIt) foot.hidden = true;
+        const top = (el) => (el ? Math.round(el.getBoundingClientRect().top * 10) / 10 : null);
+        const out = {
+          row: top(document.querySelector('#groups .row')),
+          device: top(document.querySelector('#deviceList .devsec')),
+          scroll: document.documentElement.scrollWidth,
+          vw: document.documentElement.clientWidth,
+        };
+        foot.hidden = was;
+        return out;
+      }, hide);
+      const contrast = (selector) => page.evaluate((sel) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 1;
+        const cx = canvas.getContext('2d', { willReadFrequently: true });
+        const rgba = (css) => {
+          cx.clearRect(0, 0, 1, 1); cx.fillStyle = '#000'; cx.fillStyle = css; cx.fillRect(0, 0, 1, 1);
+          const d = cx.getImageData(0, 0, 1, 1).data;
+          return [d[0], d[1], d[2], d[3] / 255];
+        };
+        let back = [255, 255, 255];
+        const layers = [];
+        for (let n = document.querySelector(sel); n; n = n.parentElement) {
+          const c = rgba(getComputedStyle(n).backgroundColor);
+          if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+        }
+        for (let i = layers.length - 1; i >= 0; i -= 1) {
+          const [r, g, b, a] = layers[i];
+          back = [r * a + back[0] * (1 - a), g * a + back[1] * (1 - a), b * a + back[2] * (1 - a)];
+        }
+        const lum = ([r, g, b]) => {
+          const f = (v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
+          return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+        };
+        const hi = lum(rgba(getComputedStyle(document.querySelector(sel)).color)) + 0.05;
+        const lo = lum(back) + 0.05;
+        return Math.max(hi, lo) / Math.min(hi, lo);
+      }, selector);
+      try {
+        for (const scheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme: scheme });
+          for (const width of [1280, 900, 390]) {
+            const at = `at ${width}px, ${scheme}`;
+            await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+            const rail = await page.evaluate(() => {
+              const foot = document.getElementById('hubVersion');
+              const a = foot.querySelector('a.hub-version');
+              const r = a && a.getBoundingClientRect();
+              const f = foot.getBoundingClientRect();
+              const bg = getComputedStyle(document.body).backgroundColor.match(/\d+/g).map(Number);
+              return {
+                hidden: foot.hidden, text: a && a.textContent, href: a && a.getAttribute('href'),
+                size: a && getComputedStyle(a).fontSize, shown: foot.offsetParent !== null,
+                left: r && r.left, right: r && r.right, footBox: getComputedStyle(foot).borderTopWidth + getComputedStyle(foot).backgroundColor,
+                centered: r && Math.abs((r.left + r.right) / 2 - (f.left + f.right) / 2),
+                lines: f.height, brightness: (bg[0] + bg[1] + bg[2]) / 3, vw: document.documentElement.clientWidth,
+              };
+            });
+            assert.ok(scheme === 'light' ? rail.brightness > 140 : rail.brightness < 80, `${at}: the page is not in the ${scheme} theme`);
+            assert.ok(!rail.hidden && rail.shown, `${at}: the version line is not showing in the rail`);
+            assert.strictEqual(rail.text, `Squad Hub v${expected}`, `${at}: wrong text`);
+            assert.strictEqual(rail.href, release, `${at}: wrong link target`);
+            assert.strictEqual(rail.size, '12px', `${at}: the line is not 12px`);
+            assert.ok(rail.left >= -0.5 && rail.right <= rail.vw + 0.5, `${at}: the line is outside the viewport`);
+            assert.ok(rail.centered <= 1, `${at}: the line is ${rail.centered}px off centre`);
+            assert.ok(rail.lines <= 40, `${at}: the footer is ${rail.lines}px tall, so the text wrapped`);
+            assert.strictEqual(rail.footBox, '0pxrgba(0, 0, 0, 0)', `${at}: the footer has a box`);
+            const c = await contrast('#hubVersion a.hub-version');
+            assert.ok(c >= 4.5, `${at}: the rail line has ${c.toFixed(2)}:1 contrast, under 4.5:1`);
+
+            const shown = await measure(false);
+            const hidden = await measure(true);
+            assert.ok(shown.row !== null && shown.device !== null, `${at}: nothing to compare positions against`);
+            assert.deepStrictEqual({ row: hidden.row, device: hidden.device }, { row: shown.row, device: shown.device },
+              `${at}: hiding the version line moved the sessions list or the device list`);
+            assert.ok(shown.scroll <= shown.vw, `${at}: the page scrolls sideways (${shown.scroll} > ${shown.vw})`);
+
+            await page.click('#menuBtn');
+            const menu = await page.evaluate(() => {
+              const m = document.getElementById('menu').getBoundingClientRect();
+              const a = document.querySelector('#menuMeta a.hub-version');
+              const r = a && a.getBoundingClientRect();
+              return {
+                text: a && a.textContent, href: a && a.getAttribute('href'),
+                signedFirst: document.getElementById('menuMeta').textContent.trim().startsWith('Signed in as'),
+                afterSigned: a && a.previousElementSibling && a.previousElementSibling.previousSibling
+                  && /Signed in as/.test(document.getElementById('menuMeta').textContent.split('Squad Hub')[0]),
+                inside: r && r.left >= m.left - 0.5 && r.right <= m.right + 0.5,
+                menuInView: m.left >= -0.5 && m.right <= document.documentElement.clientWidth + 0.5,
+              };
+            });
+            assert.strictEqual(menu.text, `Squad Hub v${expected}`, `${at}: the account menu has no version line`);
+            assert.strictEqual(menu.href, release, `${at}: the menu link goes elsewhere`);
+            assert.ok(menu.signedFirst && menu.afterSigned, `${at}: the version is not under Signed in as`);
+            assert.ok(menu.inside && menu.menuInView, `${at}: the menu line overflows`);
+            const mc = await contrast('#menuMeta a.hub-version');
+            assert.ok(mc >= 4.5, `${at}: the menu line has ${mc.toFixed(2)}:1 contrast, under 4.5:1`);
+            await page.keyboard.press('Escape');
+
+            if (shotDir) {
+              await page.waitForSelector('#toast', { state: 'hidden', timeout: 10000 });
+              await page.locator('#hubVersion').scrollIntoViewIfNeeded();
+              await page.screenshot({ path: path.join(shotDir, `hub-version-${width}-${scheme}.png`) });
+            }
+          }
+        }
+      } finally {
+        await page.emulateMedia({ colorScheme: null });
+        await page.setViewportSize({ width: 1280, height: 720 });
+      }
+    });
+
     await check('the device rail collapses, and comes back', async () => {
       await page.click('#railToggle');
       const collapsed = await page.evaluate(() => ({

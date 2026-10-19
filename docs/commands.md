@@ -655,6 +655,17 @@ values, rather than as a second stylesheet. One theme silently drifting from
 the other is what a parallel set of rules produces; a parallel set of *values*
 cannot.
 
+## The hub's own version
+
+The web UI shows which version of Squad Hub it is talking to, so a report or a
+device-version mismatch can name it. It is a quiet `Squad Hub v<version>` line,
+centered at the foot of the devices rail and under "Signed in as" in the account
+menu (the way to reach it in the installed standalone app). Each links to that
+version's release page on GitHub.
+
+Nothing is shown until the hub has reported its version, and there is no
+placeholder in the meantime.
+
 ## Doctor
 
 ```

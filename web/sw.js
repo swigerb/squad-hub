@@ -106,7 +106,10 @@
 // squad-dispatch.yml is refused with a 422 until its cache refreshes.
 // It also recovers the issue a failed dispatch had already created and retries on it
 // (Existing issue N), where a v29 install stays in New-issue mode and creates a second one.
-const CACHE = 'squad-hub-shell-v30';
+// v31: the hub's own version, linked to its release, at the foot of the devices
+// rail and in the account menu. `/js/hub-version.js` joins SHELL and index.html
+// gained its mount point, so a v30 install has neither.
+const CACHE = 'squad-hub-shell-v31';
 
 /**
  * The shell. Everything here is a public static asset.
@@ -159,6 +162,7 @@ const SHELL = [
   '/js/combobox.js',
   '/js/aca-match.js',
   '/js/aca-rail.js',
+  '/js/hub-version.js',
   '/js/aca-status.js',
   '/js/access.js',
   '/js/install.js',

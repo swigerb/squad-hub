@@ -852,7 +852,7 @@ check('CACHE was actually bumped for the shell-shape change', () => {
   // the rail's ACA rendering moved out of `devices.js` (25514 of its 25600
   // bytes) into the new `aca-rail.js`, which joined the shell in the same bump.
   const sw = fs.readFileSync(path.join(ROOT, 'web', 'sw.js'), 'utf8');
-  assert.match(sw, /const CACHE = 'squad-hub-shell-v30';/,
+  assert.match(sw, /const CACHE = 'squad-hub-shell-v31';/,
     'CACHE is not the expected post-merge value -- did it get bumped?');
 });
 
