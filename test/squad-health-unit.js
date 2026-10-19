@@ -19,8 +19,9 @@ const { performance } = require('perf_hooks');
 const ROOT = path.join(__dirname, '..');
 const FAKE = path.join(__dirname, 'fake-squad.js');
 const SCRATCH_PREFIX = '_tmp_squad_health_';
-const PID_FILE = path.join(os.tmpdir(), `${SCRATCH_PREFIX}${process.pid}_fake_pids_${Date.now()}.log`);
-const scratchArtifacts = new Set([PID_FILE]);
+const scratchArtifacts = new Set();
+// Parallel workers share os.tmpdir(): a worker may only touch what its own pid made.
+const OWN_PREFIX = `${SCRATCH_PREFIX}${process.pid}_`;
 
 const {
   runSquadHealth,
@@ -62,7 +63,7 @@ function scratch(name) {
   return dir;
 }
 function hostileScratch(name) {
-  const dir = path.join(os.tmpdir(), `${SCRATCH_PREFIX}${name}`);
+  const dir = path.join(os.tmpdir(), `${OWN_PREFIX}${name}`);
   fs.mkdirSync(dir, { recursive: true });
   scratchArtifacts.add(dir);
   return dir;
@@ -84,7 +85,7 @@ function cleanup(...dirs) {
 function listScratchArtifacts() {
   try {
     return fs.readdirSync(os.tmpdir())
-      .filter((name) => name.startsWith(SCRATCH_PREFIX))
+      .filter((name) => name.startsWith(OWN_PREFIX))
       .map((name) => path.join(os.tmpdir(), name));
   } catch {
     return [];
@@ -92,14 +93,6 @@ function listScratchArtifacts() {
 }
 function sweepScratchArtifacts() {
   for (const target of [...new Set([...scratchArtifacts, ...listScratchArtifacts()])]) rmArtifact(target);
-}
-function livePidsFromFile() {
-  let lines = [];
-  try { lines = fs.readFileSync(PID_FILE, 'utf8').split(/\r?\n/); } catch { return []; }
-  const pids = [...new Set(lines.map((line) => Number(line.trim())).filter((pid) => Number.isInteger(pid) && pid > 0))];
-  return pids.filter((pid) => {
-    try { process.kill(pid, 0); return true; } catch { return false; }
-  });
 }
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
@@ -136,6 +129,36 @@ function traceHealthChild() {
   };
   return trace;
 }
+// Every child this file starts, so "the children are gone" is judged on the
+// children themselves. A pid read back from a file can have been reused by an
+// unrelated process, which a busy parallel run on Windows does.
+const spawnedChildren = [];
+{
+  const realSpawn = childProcess.spawn;
+  childProcess.spawn = function spawnRecorded() {
+    const child = realSpawn.apply(this, arguments);
+    if (child.pid) spawnedChildren.push(child);
+    return child;
+  };
+}
+const hasExited = (child) => child.exitCode !== null || child.signalCode !== null;
+// Resolves on the child's real exit event; the bound only turns a child that never exits into a verdict.
+function untilExited(child, boundMs) {
+  if (hasExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), boundMs);
+    child.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+}
+// Ends and awaits every child recorded since `mark`; returns the ones that never exited.
+async function stopChildrenSince(mark, boundMs) {
+  const children = spawnedChildren.slice(mark);
+  for (const child of children) {
+    if (!hasExited(child)) child.kill();
+  }
+  const exited = await Promise.all(children.map((child) => untilExited(child, boundMs)));
+  return children.filter((_, i) => !exited[i]);
+}
 function squadProject(name) {
   const dir = scratch(name);
   fs.mkdirSync(path.join(dir, '.squad'), { recursive: true });
@@ -168,7 +191,6 @@ function fakeOpts(mode, extra = {}) {
       WINDIR: process.env.WINDIR || '',
       FAKE_SQUAD_MODE: mode,
       FAKE_SQUAD_VERSION: extra.version || '0.13.1',
-      FAKE_SQUAD_PID_FILE: PID_FILE,
       ...(extra.env || {}),
     },
   };
@@ -282,8 +304,15 @@ sweepScratchArtifacts();
     // neither cold starts nor the kill itself can move the verdict.
     const killRequestBudgetMs = 1500;
     try {
-      const started = performance.now();
-      const r = await runSquadHealth(project, fakeOpts('hang', { timeoutMs }));
+      let started = performance.now();
+      let r = await runSquadHealth(project, fakeOpts('hang', { timeoutMs }));
+      // The short bound also covers the cold `--version` start. On a loaded host that
+      // start can outlast it, and then no health child exists to be timed: try again.
+      for (let attempt = 1; !trace.child && attempt < 5; attempt += 1) {
+        clearSquadHealthCache();
+        started = performance.now();
+        r = await runSquadHealth(project, fakeOpts('hang', { timeoutMs }));
+      }
       const returnedAt = performance.now();
       const pid = trace.child && trace.child.pid;
       const dead = pid ? await waitFor(() => !pidAlive(pid), 3000) : false;
@@ -333,6 +362,7 @@ sweepScratchArtifacts();
   if (process.platform === 'win32') {
     const project = squadProject('taskkill');
     const original = childProcess.spawnSync;
+    const mark = spawnedChildren.length;
     const calls = [];
     childProcess.spawnSync = (command, args, opts) => {
       calls.push({ command, args, opts });
@@ -349,8 +379,20 @@ sweepScratchArtifacts();
       });
     } finally {
       childProcess.spawnSync = original;
+      // The stub never ran taskkill, so the over-cap child is still alive: end it for real.
+      await stopChildrenSince(mark, TEST_BUDGET_MS);
       cleanup(project);
     }
+  }
+
+  {
+    const mark = spawnedChildren.length;
+    const sleeper = childProcess.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+    const survivors = await stopChildrenSince(mark, 5000);
+    check('stopping the recorded children ends a live child and waits for its exit', () => {
+      assert.deepStrictEqual(survivors, []);
+      assert.ok(hasExited(sleeper), 'the live child had not exited when the stop returned');
+    });
   }
 
   if (process.platform === 'win32') {
@@ -784,9 +826,9 @@ sweepScratchArtifacts();
   }
 
   clearSquadHealthCache();
-  await waitFor(() => livePidsFromFile().length === 0, 3000);
-  const liveFakePids = livePidsFromFile();
-  for (const pid of liveFakePids) { try { process.kill(pid); } catch { /* already gone */ } }
+  const exitedAll = await Promise.all(spawnedChildren.map((child) => untilExited(child, TEST_BUDGET_MS)));
+  const liveFakePids = spawnedChildren.filter((_, i) => !exitedAll[i]).map((child) => child.pid);
+  for (const child of spawnedChildren) { try { child.kill(); } catch { /* already gone */ } }
   sweepScratchArtifacts();
   check('fake squad children exit and scratch artifacts are removed', () => {
     assert.deepStrictEqual(liveFakePids, []);
