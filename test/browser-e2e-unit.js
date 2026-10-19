@@ -758,15 +758,63 @@ function railFacts(page) {
 
   const browser = await chromium.launch();
   browserForChecks = browser;
-  const page = await browser.newPage();
+  let page = await browser.newPage();
   const consoleErrors = [];
-  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
-  page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  let pageCrashed = false;
+  const watchPage = (p) => {
+    p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+    p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+    p.on('crash', () => { if (p === page) pageCrashed = true; });
+  };
+  watchPage(page);
   // Watched from before the very first navigation, so this is evidence for
   // the WHOLE suite below -- every session, approval, reconnect, theme
   // change and service-worker interaction the rest of this file drives, all
   // under the SAME enforced policy a real deployment sends.
   const cspViolations = await watchCsp(page);
+
+  /**
+   * The shell/offline checks share one page, and a renderer crash there used to
+   * kill every later check on the same dead page. A crash must cost only the
+   * check it happened in: before each check the page is replaced if it crashed
+   * or closed, and a crash is reported as the cause rather than as a bare
+   * "Page crashed". The replacement is a new context, so it starts online
+   * whatever offline state the crashed one was left in.
+   */
+  async function ensureLivePage() {
+    if (!pageCrashed && !page.isClosed()) return;
+    const dead = page;
+    const fresh = await browser.newPage();
+    try {
+      const extra = await watchCsp(fresh);
+      extra.push = (...v) => cspViolations.push(...v);
+      page = fresh;
+      pageCrashed = false;
+      watchPage(fresh);
+      await gotoSettled(fresh, `${origin}/?token=${userToken}`);
+      await fresh.waitForSelector('.topbar', { timeout: 10000 });
+    } catch (e) {
+      // Setup failed (possibly another crash): keep the page marked dead so the
+      // next check tries again, and fail only this one.
+      pageCrashed = true;
+      throw new Error(`could not replace the crashed page: ${e.message}`);
+    }
+    try { await dead.context().close(); } catch { /* already gone */ }
+  }
+  async function shellCheck(name, fn) {
+    await check(name, async () => {
+      await ensureLivePage();
+      try {
+        await fn();
+      } catch (e) {
+        if (pageCrashed || /\b(Page|Target) crashed\b/i.test(String(e && e.message))) {
+          pageCrashed = true;
+          throw new Error(`the browser renderer crashed: ${e.message}`);
+        }
+        throw e;
+      }
+    });
+  }
 
   let daemon = null;
   try {
@@ -2266,7 +2314,7 @@ function railFacts(page) {
     // browser -- a worker that registers but caches nothing looks identical in
     // the source, and only going offline tells the two apart.
     // -----------------------------------------------------------------------
-    await check('the service worker registers and takes control', async () => {
+    await shellCheck('the service worker registers and takes control', async () => {
       await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
       const active = await page.evaluate(async () => {
@@ -2276,7 +2324,7 @@ function railFacts(page) {
       assert.ok(active, 'no service worker became active');
     });
 
-    await check('the shell survives the hub going away entirely', async () => {
+    await shellCheck('the shell survives the hub going away entirely', async () => {
       /**
        * The real test of an offline layer: not "is a worker registered", but
        * "does the cached application document get served when the server is
@@ -2305,7 +2353,7 @@ function railFacts(page) {
       }
     });
 
-    await check('offline, the app says the network failed — not that you are signed out', async () => {
+    await shellCheck('offline, the app says the network failed — not that you are signed out', async () => {
       /**
        * The half that matters more than caching files. Without it the cached
        * page loads only to announce "Could not sign in — Failed to fetch",
@@ -2342,7 +2390,7 @@ function railFacts(page) {
       }
     });
 
-    await check('an API response is NEVER served from the cache', async () => {
+    await shellCheck('an API response is NEVER served from the cache', async () => {
       /**
        * The distinction the whole worker exists to make. A stale shell is
        * invisible; a stale /api/overview is a page saying "nothing needs you"
@@ -2365,7 +2413,7 @@ function railFacts(page) {
       assert.deepStrictEqual(cachedApi, [], `an API response was written to the cache: ${cachedApi.join(', ')}`);
     });
 
-    await check('a token in the URL is never written into the cache', async () => {
+    await shellCheck('a token in the URL is never written into the cache', async () => {
       // The shell at /?token=... is the same shell as /. Keying on the full URL
       // would store a live credential on disk for no benefit whatsoever.
       const keys = await page.evaluate(async () => {
@@ -2382,7 +2430,7 @@ function railFacts(page) {
       assert.ok(keys.length > 0, 'nothing was cached at all; the worker is not doing its job');
     });
 
-    await check('the worker asks the network first, so a fix is never stuck behind a cache', async () => {
+    await shellCheck('the worker asks the network first, so a fix is never stuck behind a cache', async () => {
       /**
        * The classic service worker disaster is shipping a fix and having people
        * keep running last month's code. For a page that renders approval
@@ -2408,7 +2456,7 @@ function railFacts(page) {
       }
     });
 
-    await check('the tab icon is a vector that actually decodes', async () => {
+    await shellCheck('the tab icon is a vector that actually decodes', async () => {
       /**
        * Two failures this catches, both of which look fine in the source.
        *
@@ -2450,7 +2498,7 @@ function railFacts(page) {
       assert.ok(bytes < 8000, `the tab icon is ${bytes} bytes; a mark this size is a photograph again`);
     });
 
-    await check('the header mark decodes too, and is the same file as the tab icon', async () => {
+    await shellCheck('the header mark decodes too, and is the same file as the tab icon', async () => {
       const mark = await page.evaluate(() => {
         const i = document.querySelector('.mark');
         return i && { src: i.getAttribute('src'), w: i.naturalWidth };
