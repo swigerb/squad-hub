@@ -8,6 +8,15 @@ name: Candidate acceptance
 on:
   pull_request:
     branches: [main, dev]
+    # A pull request that changes ONLY these cannot change what a mutant does,
+    # so the gate is not run for it at all. The Tests workflow still runs, and
+    # any code, test or web asset in the change brings the gate back.
+    paths-ignore:
+      - '.squad/**'
+      - 'docs/**'
+      - '**/*.md'
+      - '**/*.png'
+      - '**/*.jpg'
 
 permissions:
   contents: read

@@ -485,7 +485,7 @@ function stripDataAndComments(src, isCatalogue) {
  * by any file in the directory, so their suites must run, but that alone does not tie the
  * reader's own source to the change.
  */
-function impactOf(graph, seeds) {
+function impactOf(graph, seeds, inert = new Set()) {
   const consumers = new Map(); // dependency -> [{ from, kind }]
   for (const [from, tos] of graph.edges) {
     for (const [to, kind] of tos) {
@@ -513,10 +513,12 @@ function impactOf(graph, seeds) {
       }
     }
   };
+  // An inert seed is impacted itself (mutations IN it are selected) but is not
+  // walked from: nothing that merely names its path is impacted through it.
   const strong = [];
-  for (const s of [...seeds].sort()) { impact.set(s, { via: null, kind: 'changed', weak: false }); strong.push(s); }
+  for (const s of [...seeds].sort()) { impact.set(s, { via: null, kind: 'changed', weak: false }); if (!inert.has(s)) strong.push(s); }
   walk(strong, false, false);
-  walk([...impact.keys()], true, true);
+  walk([...impact.keys()].filter((k) => !inert.has(k)), true, true);
   return impact;
 }
 
@@ -687,6 +689,7 @@ function planAcceptance(options) {
   const deleted = changes.filter((c) => c.status === 'deleted').map((c) => c.path);
   const graph = buildGraph({ dir, files, deleted, suiteDir, catalogueFile });
   const changedPaths = changes.map((c) => c.path);
+  const changedSet0 = new Set(changedPaths);
 
   // Acceptance infrastructure: the catalogue, what it pulls in from the suite dir, and CI that runs it.
   const infra = new Set([catalogueFile]);
@@ -725,11 +728,24 @@ function planAcceptance(options) {
     warnings.add(`${u.file} references ${u.what}, which does not exist in the work tree`);
   }
 
-  const impact = impactOf(graph, changedPaths);
+  // This repository's own Squad team files. Product code names `.squad/...` and
+  // `.github/agents/...` because it reads a USER's repository at run time, not
+  // these files, so a change here must not reach every such reader: on
+  // 2026-10-19 a policy-only change selected 904 mutations that way.
+  const selfConfig = new Set(changedInfo.filter((c) => c.category === 'squad-config' || c.path.startsWith('.github/agents/')).map((c) => c.path));
+  if (selfConfig.size) warnings.add(`this repository's own Squad configuration changed (${[...selfConfig].join(', ')}): mutations in those files are selected, but code that merely names those paths is not impacted through them`);
+  // The catalogue and the suite list are edited by nearly every change (a new
+  // behaviour gets a mutation and its suite is listed). Suites that READ them
+  // validate their shape; appending an entry changes no other suite's power to
+  // kill a mutant, and new or changed definitions are selected as `definition`.
+  const conventional = [catalogueFile, `${suiteDir}/run-tests.js`].filter((f) => changedSet0.has(f));
+  if (conventional.length) warnings.add(`${conventional.join(' and ')} changed: new or changed definitions are selected, but suites that only read ${conventional.length > 1 ? 'them' : 'it'} are not impacted through ${conventional.length > 1 ? 'them' : 'it'}`);
+  const inert = new Set([...selfConfig, ...conventional]);
+  const impact = impactOf(graph, changedPaths, inert);
   const strongly = (p) => impact.has(p) && !impact.get(p).weak;
   // Impact seeded only from changes to tests, helpers, docs, CI and infrastructure: a suite reached
   // this way may have lost or gained the power to kill mutants, wherever those mutants live.
-  const impactByTests = impactOf(graph, changedPaths.filter((p) => categoryOf(p, ctx) !== 'production'));
+  const impactByTests = impactOf(graph, changedPaths.filter((p) => categoryOf(p, ctx) !== 'production'), inert);
   const changedSet = new Set(changedPaths);
   const statusOf = new Map(changedInfo.map((c) => [c.path, c]));
   const impactedReason = (p) => {

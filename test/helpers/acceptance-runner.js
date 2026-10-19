@@ -33,6 +33,17 @@ const ev = require('./acceptance-evidence');
 const sched = require('./acceptance-schedule');
 const { judgeBaseline, judgeControl, classifyRun, summarise, failedNames } = require('./verdict');
 
+/**
+ * A clean run (the initial baseline, or a group's control) whose TESTS failed is
+ * run ONCE more before it costs the whole group or the whole run. A red that goes
+ * green on retry is a flaky test on unmutated code, not evidence about any
+ * mutant: it is logged and kept in the report as a warning, never hidden. A run
+ * that is red for any other reason (no summary, zero tests, a skip, a timeout)
+ * is not retried: that is not a flake, and a second run would only cost time.
+ */
+const CLEAN_RUN_RETRIES = 1;
+const retryable = (run, verdict) => !verdict.ok && !run.cancelled && !run.timedOut && failedNames(run.out || '').length > 0;
+
 const TIMEOUTS = Object.freeze({ baselineMs: 900000, suiteMs: 300000, fullMs: 600000 });
 const nl = (s) => s.replace(/\r\n/g, '\n');
 const safe = (s) => String(s).replace(/[^\w.-]+/g, '_').slice(0, 80);
@@ -321,6 +332,7 @@ async function execute(env) {
   const failures = [];
   const controls = [];
   const proofs = [];
+  const flaky = [];
   const outcomes = new Map(); // mutation id -> outcome
   let cancelled = false;
   let stepCounter = 0;
@@ -340,7 +352,8 @@ async function execute(env) {
   const finishWith = (status, extra) => {
     if (beat) clearInterval(beat);
     if (o.signal) o.signal.removeEventListener('abort', onAbort);
-    return finish(status, extra, failures);
+    for (const f of flaky) log(`  warning: ${f}`);
+    return finish(status, flaky.length ? { ...extra, warnings: [...summary.warnings, ...flaky] } : extra, failures);
   };
 
   const dirs = { baseline: path.join(o.artifacts, 'work', 'baseline') };
@@ -449,10 +462,20 @@ async function execute(env) {
     log('baseline: REUSED after re-validating its manifest, runtime and log digest');
   } else {
     log('baseline: running the full regression once for this whole run ...');
-    const b = await baselineStep('initial', dirs.baseline, baselineCopyManifest);
+    let b = await baselineStep('initial', dirs.baseline, baselineCopyManifest);
+    for (let retry = 0; retry < CLEAN_RUN_RETRIES && !cancelled && retryable(b.run, b.verdict); retry += 1) {
+      const names = failedNames(b.run.out || '');
+      log(`baseline: RED (${b.verdict.reason})${names.length ? `, failing: ${names.join('; ')}` : ''}. Running it once more before rejecting the run ...`);
+      const first = { reason: b.verdict.reason, failed: names };
+      controls.pop();
+      proofs.pop();
+      b = await baselineStep('initial', dirs.baseline, baselineCopyManifest);
+      if (b.verdict.ok) flaky.push(`flaky baseline: the initial full regression was red (${first.reason}${first.failed.length ? `: ${first.failed.join('; ')}` : ''}) and green on retry`);
+    }
     if (cancelled) { failures.push('the run was cancelled during the baseline'); return finishWith('incomplete', { outcomes: [], controls, proofs }); }
     if (!b.verdict.ok) {
-      failures.push(`the baseline is red: ${b.verdict.reason}`);
+      const names = failedNames(b.run.out || '');
+      failures.push(`the baseline is red: ${b.verdict.reason}${names.length ? ` (failing: ${names.join('; ')})` : ''}`);
       return finishWith('rejected', { outcomes: [], controls, proofs });
     }
     const drift = ev.compareManifests(manifest, ev.sourceManifest(dirs.baseline));
@@ -487,8 +510,17 @@ async function execute(env) {
   const jobFailsAll = (job, reason) => { for (const e of job.entries) if (!outcomes.has(e.id)) record(job, e, 'error', reason, { notRun: true }); };
 
   const control = async (job, slot, w, phase) => {
-    const s = await runStep({ jobId: job.id, worker: slot + 1, kind: `control-${phase}`, args: job.args, cwd: w.dir, env: w.env, timeoutMs: job.kind === 'full' ? o.timeouts.fullMs : o.timeouts.suiteMs, suite: job.suite, scenario: job.scenario, label: `${job.id} ${phase}-control` });
-    const v = judgeControl(s.run);
+    const once = () => runStep({ jobId: job.id, worker: slot + 1, kind: `control-${phase}`, args: job.args, cwd: w.dir, env: w.env, timeoutMs: job.kind === 'full' ? o.timeouts.fullMs : o.timeouts.suiteMs, suite: job.suite, scenario: job.scenario, label: `${job.id} ${phase}-control` });
+    let s = await once();
+    let v = judgeControl(s.run);
+    for (let retry = 0; retry < CLEAN_RUN_RETRIES && !cancelled && retryable(s.run, v); retry += 1) {
+      const names = failedNames(s.run.out || '');
+      log(`  CONTROL RED, RETRYING ONCE  ${job.id} ${phase}: ${v.reason}${names.length ? ` (${names.slice(0, 3).join('; ')})` : ''}  [${s.logRel}]`);
+      const first = { reason: v.reason, log: s.logRel, failed: names };
+      s = await once();
+      v = judgeControl(s.run);
+      if (v.ok) flaky.push(`flaky control: ${job.id} ${phase} was red (${first.reason}${first.failed.length ? `: ${first.failed.join('; ')}` : ''}) and green on retry  [${first.log}]`);
+    }
     stepDone(s, { outcome: v.ok ? 'clean' : 'red', reason: v.reason });
     progress.controlDone(job.id, job.key, s.run.durationMs);
     const rec = { jobId: job.id, phase, ok: v.ok, reason: v.reason, durationMs: s.run.durationMs, log: s.logRel, counts: { passed: v.passed, failed: v.failed, skipped: v.skipped }, required: !!job.controlsOnly };

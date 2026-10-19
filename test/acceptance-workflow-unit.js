@@ -67,12 +67,19 @@ check('the new suites run after the existing ones and the runner does not give t
     assert.ok(!/timeout/.test(line), `${name} overrides the runner timeout`);
   }
 });
+check('candidate CI is skipped only for changes that cannot move a mutant: Squad config, docs, Markdown and raster images', () => {
+  const block = candidate.match(/paths-ignore:\n((?:      - '[^'\n]+'\n)+)/);
+  assert.ok(block, 'candidate CI has no paths-ignore list');
+  const ignored = [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
+  assert.deepStrictEqual(ignored, ['**/*.jpg', '**/*.md', '**/*.png', '.squad/**', 'docs/**']);
+  for (const p of ignored) assert.doesNotMatch(p, /^(src|web|test|bin|\.github\/workflows)\b|\.(js|css|html|svg|json|ya?ml)$/, `${p} would hide a change that can move a mutant`);
+});
 check('the mutation CI description in run-tests.js describes the coordinated exhaustive gate', () => {
   assert.ok(runner.includes('[MUTATE CI] the exhaustive gate is one coordinated run at the immutable head'));
   assert.doesNotMatch(runner, /isolated immutable-head partitions/);
 });
 check('candidate CI gates ordinary pull requests, and leaves release pull requests to the exhaustive gate', () => {
-  assert.match(candidate, /on:\n  pull_request:\n    branches: \[main, dev\]\n\npermissions:/);
+  assert.match(candidate, /on:\n  pull_request:\n    branches: \[main, dev\]\n(?:    #[^\n]*\n)*    paths-ignore:\n(?:      - '[^'\n]+'\n)+\npermissions:/);
   assert.doesNotMatch(candidate, /workflow_dispatch|push:/);
   assert.ok(candidate.includes("if: ${{ !startsWith(github.head_ref, 'release/') }}"));
   assert.ok(exhaustive.includes("startsWith(github.head_ref, 'release/')"));

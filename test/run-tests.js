@@ -1208,6 +1208,7 @@ async function suiteAcceptance() {
   runChildSuite(path.join(__dirname, 'acceptance-evidence-unit.js'), 'acceptance-evidence');
   runChildSuite(path.join(__dirname, 'acceptance-schedule-unit.js'), 'acceptance-schedule');
   runChildSuite(path.join(__dirname, 'acceptance-runner-unit.js'), 'acceptance-runner');
+  runChildSuite(path.join(__dirname, 'acceptance-policy-unit.js'), 'acceptance-policy');
 }
 
 /**
