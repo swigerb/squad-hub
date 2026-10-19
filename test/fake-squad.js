@@ -14,10 +14,6 @@ const fs = require('fs');
 const mode = process.env.FAKE_SQUAD_MODE || 'pass';
 const version = process.env.FAKE_SQUAD_VERSION || '0.13.1';
 
-if (process.env.FAKE_SQUAD_PID_FILE) {
-  try { fs.appendFileSync(process.env.FAKE_SQUAD_PID_FILE, `${process.pid}\n`); } catch { /* best effort */ }
-}
-
 if (process.env.FAKE_SQUAD_COUNT_FILE) {
   try {
     const n = Number(fs.readFileSync(process.env.FAKE_SQUAD_COUNT_FILE, 'utf8') || '0') || 0;
@@ -68,8 +64,10 @@ if (args[0] === 'health' && args[1] === '--json') {
     process.exit(0);
   }
   if (mode === 'oversized') {
+    // Stays alive after the flood, so only the caller's kill can end it.
     process.stdout.write('x'.repeat(128 * 1024));
-    process.exit(0);
+    setInterval(() => {}, 1000);
+    return;
   }
   if (mode === 'wrong-schema') {
     process.stdout.write(JSON.stringify({ schema: 'other/v1', status: 'pass', checks: [] }, null, 2));
