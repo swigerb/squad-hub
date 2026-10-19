@@ -2845,8 +2845,10 @@ function railFacts(page) {
         await gotoClientReady(page, origin);
         await page.waitForSelector(`[data-more="${firstSessionKey}"]`, { timeout: 20000 });
         page.once('dialog', (dialog) => dialog.accept(staleName));
+        await page.waitForSelector(`[data-more="${firstSessionKey}"]`, { state: 'visible', timeout: 20000 });
         await page.click(`[data-more="${firstSessionKey}"]`);
         await page.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        await page.waitForSelector('#rowMenu [data-row-action="rename"]', { state: 'visible', timeout: 5000 });
         await page.click('#rowMenu [data-row-action="rename"]');
         await until(async () => {
           const t = await page.evaluate(
@@ -2871,8 +2873,10 @@ function railFacts(page) {
         );
         assert.strictEqual(onEBefore, staleName, 'precondition: the fifth client must see the rename the first client just set');
         pageE.once('dialog', (dialog) => dialog.accept('')); // the remote clear: an empty rename puts the prompt back
+        await pageE.waitForSelector(`[data-more="${firstSessionKey}"]`, { state: 'visible', timeout: 20000 });
         await pageE.click(`[data-more="${firstSessionKey}"]`);
         await pageE.waitForSelector('#rowMenu:not([hidden])', { timeout: 5000 });
+        await pageE.waitForSelector('#rowMenu [data-row-action="rename"]', { state: 'visible', timeout: 5000 });
         await pageE.click('#rowMenu [data-row-action="rename"]');
         await until(async () => {
           const t = await pageE.evaluate(
@@ -6708,7 +6712,7 @@ function railFacts(page) {
      * plain strings, so a failure says what was wrong instead of printing a
      * browser object.
      */
-    const rvFit = (view) => rv.page.evaluate((which) => {
+    const rvFitOnce = (view) => rv.page.evaluate((which) => {
       const problems = [];
       const vw = document.documentElement.clientWidth;
       if (document.documentElement.scrollWidth > vw) {
@@ -6800,6 +6804,22 @@ function railFacts(page) {
         ['the health label', document.querySelector('#dtSquadHealth .sq-hlabel')]]) if (el) legible(name, el);
       return problems;
     }, view);
+
+    // Colours can still be mid-transition on the first read (a theme switch
+    // or a late render), so read again a couple of frames later and only judge
+    // once two consecutive readings agree, bounded by a short timeout.
+    const rvFit = async (view) => {
+      const deadline = Date.now() + 3000;
+      let prev = JSON.stringify(await rvFitOnce(view));
+      for (;;) {
+        await rv.page.evaluate(
+          () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)))),
+        );
+        const cur = JSON.stringify(await rvFitOnce(view));
+        if (cur === prev || Date.now() > deadline) return JSON.parse(cur);
+        prev = cur;
+      }
+    };
 
     await check('at 1280, 900 and 390px, dark and light, the Ready for review row and detail page fit: nothing overflows, wraps, misaligns or loses contrast (#179)', async () => {
       try {
