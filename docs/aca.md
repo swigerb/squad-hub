@@ -678,6 +678,25 @@ it checks `GET /api/aca/status` and, when enabled, reads
 `GET /api/aca/repos` and `GET /api/aca/dispatches`. It does not create an issue,
 dispatch a run, restart a worker or trigger Ralph.
 
+The **Last dispatch** row reports the job's own outcome once it can be proven:
+the dispatch's confirmed execution name must match an `aca-<execution>` device
+on this Hub, with no conflicting repository, issue or run attempt, and that
+device must hold exactly one session. The session's status then decides the
+wording:
+
+| Session status | Last dispatch says |
+|---|---|
+| starting, active, waiting for approval, idle | job running |
+| done | job completed |
+| failed | job failed |
+| stopped | job ended |
+
+A one-shot ACA run stops its own session when its work is finished, so a
+normal finish is recorded as stopped and reads **job ended**, the same as a
+manual stop. Until a match is proven, the row reports only the dispatch
+workflow's own result, for example "Dispatch workflow succeeded; job outcome not
+confirmed". A failed dispatch workflow keeps its own wording.
+
 This is **not Azure scheduled-job health**. Ralph is a scheduled job and can
 finish a sweep without staying connected as a Hub device. "Not connected"
 means this Hub has no matching device record, not that Azure missed a scheduled

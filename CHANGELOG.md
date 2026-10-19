@@ -4,15 +4,48 @@ All notable changes to Squad Hub are listed here. Each version's date is its
 GitHub release date. Versions are published to npm as `squad-hub` and
 `@mightybs/squad-hub`; see [docs/releasing.md](docs/releasing.md).
 
-## [Unreleased]
+## [0.7.2] - 2026-10-19
+
+### Security
+
+- **Avatar URLs are limited to GitHub's avatar host** (issue #266). The hub
+  accepts a signed-in user's avatar only from
+  `https://avatars.githubusercontent.com/`.
+- **One rule decides whether a request arrived over HTTPS** (issue #266). HSTS,
+  the WebSocket origin check and the GitHub sign-in callback all read
+  `X-Forwarded-Proto` the same way. Without that header a request is treated as
+  plain HTTP, so a local hub builds an `http://localhost` callback.
+  `SQUAD_HUB_PUBLIC_URL` still takes precedence. See
+  [docs/security.md](docs/security.md#one-oauth-app-is-one-hub-address).
 
 ### Fixed
 
+- **The Squad on ACA status card reports the job's outcome** (issue #262). Once
+  the hub can match a dispatch to its ACA run and that run's session, the Last
+  dispatch row reads job running, job completed, job failed or job ended,
+  instead of always "job outcome not confirmed". See
+  [docs/aca.md](docs/aca.md#the-status-cards-issue-watcher-and-ralph-rows).
 - **The install menu no longer looks available in a browser tab once the app is
-  installed** (issue #267). In Edge and Chrome the account menu item shows
-  **Installed ✓** and explains how to open the installed app, with `edge://apps`
-  or `chrome://apps` to copy. See
+  installed** (issue #267). In Edge and Chrome 140 or newer the account menu
+  item shows **Installed ✓** and explains how to open the installed app, with
+  `edge://apps` or `chrome://apps` to copy. See
   [docs/commands.md](docs/commands.md#installing-it-as-an-app).
+- **`squad-hub run "<prompt>" --mode <mode>`** no longer adds the mode's value
+  to the prompt (issue #266).
+- **A malformed `%` escape in a path answers `400`** on every route that decodes
+  a path segment, including device-token and device revocation, which
+  previously answered `500` (issue #266).
+- **Messages name the right settings** (issue #266). The `403` for a session
+  that is not signed in with GitHub names `SQUAD_HUB_AUTH_MODE=github`, and the
+  multi-instance warning says each instance keeps its own state.
+- **CLI help matches the commands** (issue #266). It covers `run --mode`,
+  `serve --host`, `connect --force`, `hooks install --force` and `open --hub`,
+  and says `squad --tui` is supervised when the Copilot hooks are installed.
+
+### Documentation
+
+- The README and every document under `docs/` were checked against the code
+  and now describe current behavior only (issue #263).
 
 ## [0.7.1] - 2026-10-15
 
@@ -202,6 +235,7 @@ Deprecated on npm; do not install. Use 0.5.0 or later.
 deprecated on npm; do not install them. This repository does not record
 their contents.
 
+[0.7.2]: https://github.com/swigerb/squad-hub/releases/tag/v0.7.2
 [0.7.1]: https://github.com/swigerb/squad-hub/releases/tag/v0.7.1
 [0.7.0]: https://github.com/swigerb/squad-hub/releases/tag/v0.7.0
 [0.6.0]: https://github.com/swigerb/squad-hub/releases/tag/v0.6.0
