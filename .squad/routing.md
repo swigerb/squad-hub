@@ -32,13 +32,14 @@ How to decide who handles what.
 
 ## Rules
 
-1. **Eager by default** — spawn all agents who could usefully start work, including anticipatory downstream work.
+1. **Lean by default** — spawn only the members the task needs. A typical change is one owner (usually `engineer`) plus one `reviewer` pass. No anticipatory, speculative or parallel downstream agents.
 2. **Scribe always runs** after substantial work, always as `mode: "background"`. Never blocks. Spawn it as `name: "scribe"` with `model: "claude-haiku-5.5"` (`agentModelOverrides.scribe`) — never a template default.
 3. **Quick facts → coordinator answers directly.** Don't spawn an agent for "what port does the server run on?"
 4. **When two agents could handle it**, pick the one whose domain is the primary concern.
-5. **"Team, ..." → fan-out.** Spawn all relevant agents in parallel as `mode: "background"`.
-6. **Anticipate downstream work.** If a feature is being built, spawn the tester to write test cases from requirements simultaneously.
+5. **"Team, ..." → fan-out only on request.** Spawn several agents in parallel only when the maintainer explicitly asks the team, and only for independently deliverable outcomes.
+6. **Judgement roles on demand, not by default.** `security` only for auth, credentials, tokens, isolation or fail-closed guards; `rai` only for content safety or user-facing AI output; `fact-checker` only for release notes or claims of measured results; `advisor` only per Escalating to the advisor below.
 7. **Issue-labeled work** — when a `squad:{member}` label is applied to an issue, route to that member. The Lead handles all `squad` (base label) triage.
+8. **One review round.** The reviewer reviews once; the owner fixes what is required. No re-review unless the fix changes behaviour beyond what was asked. Remaining disagreements go in the pull request for the maintainer, not into another review cycle.
 
 
 ## Model Policy
@@ -51,8 +52,8 @@ reasonably settle.
 
 | Tier | Model | Who | Why |
 |------|-------|-----|-----|
-| Advisor | `gpt-6.1-sol` | advisor, lead, security, rai, fact-checker | Roles that **judge** rather than execute. A bad call costs the team a cycle or blocks a release. |
-| Executor | `claude-sonnet-5.5` | engineer, reviewer, ralph | Roles that **drive**: call tools, read results, iterate. They escalate rather than guess. |
+| Advisor | `gpt-6.1-sol` | advisor, security, rai, fact-checker | Roles that **judge** rather than execute, called on demand (rule 6). A bad call costs the team a cycle or blocks a release. |
+| Executor | `claude-sonnet-5.5` | lead, engineer, reviewer, ralph | Roles that **drive**: call tools, read results, iterate. They escalate rather than guess. `lead` coordinates every session, so it runs on this tier and escalates hard calls to `advisor` (2026-10-19). |
 | Scribe | `claude-haiku-5.5` | scribe, docs | High volume, low ambiguity. |
 
 `.squad/config.json` sets `defaultModel` to the **executor** model and lists every
@@ -102,3 +103,12 @@ is precisely why the rule above matters.
    place and a forced kill leaves live mutations behind.
 5. **Never put a private hostname or a real account name in the repository.**
    `test/docs-unit.js` enforces this; do not work around it.
+6. **A Squad on ACA session has one hour.** Commit and end the turn within 45
+   minutes; anything unfinished goes in a `Remaining:` checklist. Work that will
+   not fit is split into smaller issues, not squeezed in.
+7. **In-session testing is targeted.** Run the test files for what you touched,
+   and `node test/mutate-probe.js` for new mutations. In a Squad on ACA session do
+   not run the full `npm test`, `test/mutate.js` across the catalogue,
+   `test/acceptance.js`, repeat or stress loops, and do not sleep-poll background
+   runs: the pull request's CI (the Tests matrix and Windows candidate
+   acceptance) is the proof. A maintainer may still run them locally.

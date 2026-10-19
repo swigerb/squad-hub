@@ -3,7 +3,7 @@
   "defaultModel": "claude-sonnet-5.5",
   "agentModelOverrides": {
     "advisor": "gpt-6.1-sol",
-    "lead": "gpt-6.1-sol",
+    "lead": "claude-sonnet-5.5",
     "security": "gpt-6.1-sol",
     "rai": "gpt-6.1-sol",
     "fact-checker": "gpt-6.1-sol",
@@ -21,7 +21,8 @@
     "scribeModel": "claude-haiku-5.5",
     "notes": [
       "Executors drive end to end and escalate to the advisor only when they hit a decision they cannot reasonably settle. Frontier reasoning is applied where it changes the outcome, not to every token of every task.",
-      "gpt-6.1-sol is reserved for roles that judge rather than execute: the advisor itself, the lead, and the review roles whose findings can block a release (security, rai, fact-checker).",
+      "gpt-6.1-sol is reserved for roles that judge rather than execute: the advisor itself and the review roles whose findings can block a release (security, rai, fact-checker), each called on demand.",
+      "2026-10-19: lead moved to claude-sonnet-5.5. The lead coordinates every session, so it ran the whole Squad on ACA session on the frontier model; it now escalates hard calls to advisor instead.",
       "claude-haiku-5.5 runs scribe and docs. Both are high volume and low ambiguity.",
       "defaultModel is claude-sonnet-5.5 so a NEW agent added later lands on the executor tier by default rather than silently inheriting the judgement tier.",
       "Every agent is listed explicitly even where it matches defaultModel, because Layer 0a beats Layer 0b and an unlisted agent is easy to misread as deliberate.",
