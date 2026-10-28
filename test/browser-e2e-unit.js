@@ -801,8 +801,10 @@ function railFacts(page) {
     }
     try { await dead.context().close(); } catch { /* already gone */ }
   }
-  async function shellCheck(name, fn) {
-    await check(name, async () => {
+  // Wraps a shell check body, not the check itself, so each call site still
+  // names its check with one string literal that the scenario registry owns.
+  function shellGuard(fn) {
+    return async () => {
       await ensureLivePage();
       try {
         await fn();
@@ -813,7 +815,7 @@ function railFacts(page) {
         }
         throw e;
       }
-    });
+    };
   }
 
   let daemon = null;
@@ -2314,7 +2316,7 @@ function railFacts(page) {
     // browser -- a worker that registers but caches nothing looks identical in
     // the source, and only going offline tells the two apart.
     // -----------------------------------------------------------------------
-    await shellCheck('the service worker registers and takes control', async () => {
+    await check('the service worker registers and takes control', shellGuard(async () => {
       await gotoSettled(page, `${origin}/?token=${userToken}`);
       await page.waitForSelector('.topbar', { timeout: 10000 });
       const active = await page.evaluate(async () => {
@@ -2322,9 +2324,9 @@ function railFacts(page) {
         return !!(reg && reg.active);
       });
       assert.ok(active, 'no service worker became active');
-    });
+    }));
 
-    await shellCheck('the shell survives the hub going away entirely', async () => {
+    await check('the shell survives the hub going away entirely', shellGuard(async () => {
       /**
        * The real test of an offline layer: not "is a worker registered", but
        * "does the cached application document get served when the server is
@@ -2351,9 +2353,9 @@ function railFacts(page) {
       } finally {
         await page.context().setOffline(false);
       }
-    });
+    }));
 
-    await shellCheck('offline, the app says the network failed — not that you are signed out', async () => {
+    await check('offline, the app says the network failed — not that you are signed out', shellGuard(async () => {
       /**
        * The half that matters more than caching files. Without it the cached
        * page loads only to announce "Could not sign in — Failed to fetch",
@@ -2388,9 +2390,9 @@ function railFacts(page) {
         // message, rather than handing its failure to whichever test ran next.
         await waitUntilOnline(page, origin);
       }
-    });
+    }));
 
-    await shellCheck('an API response is NEVER served from the cache', async () => {
+    await check('an API response is NEVER served from the cache', shellGuard(async () => {
       /**
        * The distinction the whole worker exists to make. A stale shell is
        * invisible; a stale /api/overview is a page saying "nothing needs you"
@@ -2411,9 +2413,9 @@ function railFacts(page) {
         return found;
       });
       assert.deepStrictEqual(cachedApi, [], `an API response was written to the cache: ${cachedApi.join(', ')}`);
-    });
+    }));
 
-    await shellCheck('a token in the URL is never written into the cache', async () => {
+    await check('a token in the URL is never written into the cache', shellGuard(async () => {
       // The shell at /?token=... is the same shell as /. Keying on the full URL
       // would store a live credential on disk for no benefit whatsoever.
       const keys = await page.evaluate(async () => {
@@ -2428,9 +2430,9 @@ function railFacts(page) {
       const leaking = keys.filter((k) => k.includes('token='));
       assert.deepStrictEqual(leaking, [], `a credential was cached: ${leaking.join(', ')}`);
       assert.ok(keys.length > 0, 'nothing was cached at all; the worker is not doing its job');
-    });
+    }));
 
-    await shellCheck('the worker asks the network first, so a fix is never stuck behind a cache', async () => {
+    await check('the worker asks the network first, so a fix is never stuck behind a cache', shellGuard(async () => {
       /**
        * The classic service worker disaster is shipping a fix and having people
        * keep running last month's code. For a page that renders approval
@@ -2454,9 +2456,9 @@ function railFacts(page) {
       } finally {
         svc.server.off('request', count);
       }
-    });
+    }));
 
-    await shellCheck('the tab icon is a vector that actually decodes', async () => {
+    await check('the tab icon is a vector that actually decodes', shellGuard(async () => {
       /**
        * Two failures this catches, both of which look fine in the source.
        *
@@ -2496,9 +2498,9 @@ function railFacts(page) {
       assert.match(res.headers()['content-type'], /svg/);
       const bytes = (await res.body()).length;
       assert.ok(bytes < 8000, `the tab icon is ${bytes} bytes; a mark this size is a photograph again`);
-    });
+    }));
 
-    await shellCheck('the header mark decodes too, and is the same file as the tab icon', async () => {
+    await check('the header mark decodes too, and is the same file as the tab icon', shellGuard(async () => {
       const mark = await page.evaluate(() => {
         const i = document.querySelector('.mark');
         return i && { src: i.getAttribute('src'), w: i.naturalWidth };
@@ -2508,7 +2510,7 @@ function railFacts(page) {
       const link = await page.evaluate(() => document.querySelector('link[rel="icon"]').getAttribute('href'));
       assert.strictEqual(mark.src, link,
         'a product whose header mark and tab icon are different drawings is one you learn twice');
-    });
+    }));
 
     await check('a Squad document renders as TEXT, and its markup does nothing', async () => {
       /**
