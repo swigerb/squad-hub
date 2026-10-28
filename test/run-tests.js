@@ -980,6 +980,17 @@ async function suiteSessionPersistence() {
 }
 
 /**
+ * #287: a device's Hub credentials never reach an ACP agent child, and a
+ * credential an agent prints never reaches a transcript, snapshot, cache,
+ * reply or browser unmasked -- including from an old device that predates
+ * the fix, and from a session file written before it.
+ */
+async function suiteCredentialIsolation() {
+  console.log('\n[CREDENTIAL ISOLATION] Hub credentials stay out of agent children, transcripts and caches');
+  runChildSuite(path.join(__dirname, 'credential-isolation-unit.js'), 'credential-isolation', { requireCompletion: true });
+}
+
+/**
  * Issue #99: the "Retrospective with Enforcement" ceremony's overdue trigger
  * had no ground truth -- `.squad/log/` did not exist, no retrospective log
  * existed anywhere, and the skill meant to check it was never present. This
@@ -1305,6 +1316,7 @@ async function suiteAcceptanceWorkflow() {
   await suiteParityAudit();
   await suiteAgentApply();
   await suiteSessionPersistence();
+  await suiteCredentialIsolation();
   await suiteRetroEnforcement();
   await suiteRetroActionOnRedTests();
   await suiteReleaseWorkflow();

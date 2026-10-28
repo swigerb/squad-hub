@@ -153,7 +153,7 @@ A passing workflow run does not publish to npm. Publishing is the separate
 
 | Changed | How it reaches users |
 |---|---|
-| `src/service/`, `web/`, and the hub-side modules `src/service/` requires: `src/notify/`, `src/aca-dispatch.js`, `src/agent-select.js`, `src/device-meta.js`, `src/disk-meta.js`, `src/paths.js`, `src/pull-request.js`, `src/session-status.js`, `src/squad-context.js` | Deploying the hub. No npm release is needed for the hub-only parts. |
+| `src/service/`, `web/`, and the hub-side modules `src/service/` requires: `src/notify/`, `src/aca-dispatch.js`, `src/agent-select.js`, `src/credentials.js`, `src/device-meta.js`, `src/disk-meta.js`, `src/paths.js`, `src/pull-request.js`, `src/session-status.js`, `src/squad-context.js` | Deploying the hub. No npm release is needed for the hub-only parts. |
 | `bin/`, or `src/` outside `src/service/` | An npm release, then each device upgrades to the new version. |
 
 Some of the hub-side modules above are also loaded by the device daemon or the

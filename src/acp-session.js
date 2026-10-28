@@ -21,6 +21,10 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { RequiredModelError, requireModelName } = require('./agent-select');
 const { runningActivity } = require('./session-status');
+const { agentChildEnv, createRedactor, secretValuesFrom } = require('./credentials');
+
+/** Chunked updates whose text is redacted as a stream, not chunk by chunk. */
+const STREAMED_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk']);
 
 const STATUS = Object.freeze({
   STARTING: 'starting',
@@ -138,8 +142,18 @@ function choiceList(items) {
 
 
 class AcpSession extends EventEmitter {
-  constructor({ id, cwd, prompt, agentCommand = 'copilot', agentArgs = ['--acp'], env }) {
+  constructor({ id, cwd, prompt, agentCommand = 'copilot', agentArgs = ['--acp'], env, redactor }) {
     super();
+    /**
+     * Masks credentials in everything this session publishes (#287). Shared
+     * with the daemon when it passes one in, so the hub token it learns at
+     * `attachHub` is masked here too.
+     */
+    this._redactor = redactor || createRedactor(secretValuesFrom(process.env));
+    // A credential handed to this one child (an agent token in `env`) is
+    // masked in its output too, even though it never was in process.env.
+    for (const v of secretValuesFrom(env || {})) this._redactor.add(v);
+    this._streams = new Map();
     this.id = id;
     this.cwd = cwd;
     this.prompt = prompt;
@@ -199,11 +213,18 @@ class AcpSession extends EventEmitter {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, ...env },
+      // Hub control-plane credentials never reach the agent (#287); its own
+      // Copilot/GitHub auth does.
+      env: agentChildEnv(process.env, env),
     });
     this.pid = this.proc.pid;
 
-    this.proc.stderr.on('data', (d) => { this._stderr = (this._stderr + d.toString()).slice(-8000); });
+    // Redacted on the way IN as well as out (`toJSON`): the 8000-character
+    // window can cut a secret in half, and a half is no longer recognisable.
+    const stderrRedact = this._redactor.stream();
+    this.proc.stderr.on('data', (d) => {
+      this._stderr = (this._stderr + stderrRedact.push(d.toString())).slice(-8000);
+    });
     this.proc.stdout.on('data', (c) => this._read(c));
     this.proc.on('exit', (code, signal) => this._onExit(code, signal));
     this.proc.on('error', (e) => this._fail(`agent process could not start: ${e.message}`));
@@ -229,10 +250,12 @@ class AcpSession extends EventEmitter {
       const p = this._pending.get(msg.id);
       this._pending.delete(msg.id);
       if (msg.error) {
-        // The message stays the wire error verbatim (callers print it), and
-        // the parsed error rides along so a caller can tell "method not found"
+        // The message stays the wire error (callers print it), minus any
+        // credential in it (#287), and the parsed error rides along -- its
+        // numeric `code` untouched -- so a caller can tell "method not found"
         // from "refused" without re-parsing a string.
-        p.reject(Object.assign(new Error(JSON.stringify(msg.error)), { rpcError: msg.error }));
+        const rpcError = this._redactor.deep(msg.error);
+        p.reject(Object.assign(new Error(JSON.stringify(rpcError)), { rpcError }));
       } else p.resolve(msg.result);
       return;
     }
@@ -280,28 +303,34 @@ class AcpSession extends EventEmitter {
     const p = msg.params || {};
     const tc = p.toolCall || {};
     const raw = tc.rawInput || {};
+    // What is SHOWN is redacted; what is DECIDED is not. `readOnly` reads the
+    // real input, and the answer travels by `rpcId`/`optionId`, so masking a
+    // token in the card changes nothing about what runs (#287).
+    const shown = this._redactor.deep(raw);
     const approval = {
       approvalId: tc.toolCallId || `req-${msg.id}`,
       rpcId: msg.id,
       sessionId: this.id,
-      title: tc.title || null,
+      title: tc.title ? this._redactor.text(String(tc.title)) : null,
       kind: tc.kind || null,
       // The literal thing that will run. Proven present in spike/q1.
-      command: raw.command || (Array.isArray(raw.commands) ? raw.commands.join(' && ') : null),
-      commands: Array.isArray(raw.commands) ? raw.commands : (raw.command ? [raw.command] : []),
-      paths: extractPaths(raw),
+      command: shown.command || (Array.isArray(shown.commands) ? shown.commands.join(' && ') : null),
+      commands: Array.isArray(shown.commands) ? shown.commands : (shown.command ? [shown.command] : []),
+      paths: extractPaths(shown),
       readOnly: isReadOnlyRequest(tc, raw),
       options: (p.options || []).map((o) => ({ optionId: o.optionId, kind: o.kind, name: o.name })),
       requestedAt: Date.now(),
-      rawInput: raw,
+      rawInput: shown,
     };
     this.pendingApprovals.set(approval.approvalId, approval);
     this._setStatus(STATUS.WAITING_APPROVAL, 'Waiting for approval');
     this.emit('approval', approval);
   }
 
-  _pushTranscript(u) {
-    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update: u });
+  /** Retain a transcript entry; `redacted` says `u` has already been through the redactor. */
+  _pushTranscript(u, redacted = false) {
+    const update = redacted ? u : this._redactor.deep(u);
+    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update });
     if (this.transcript.length > this._transcriptCap) {
       this.transcript.splice(0, this.transcript.length - this._transcriptCap);
     }
@@ -309,7 +338,10 @@ class AcpSession extends EventEmitter {
 
   _update(params) {
     const u = (params && params.update) || {};
-    this._pushTranscript(u);
+    // Retained and published in redacted form only (#287). The raw update is
+    // still what drives tool counts, mode, config and the turn's text buffer.
+    const safe = this._redactUpdate(u);
+    this._pushTranscript(safe, true);
     /**
      * A streaming update describes what the agent is DOING. It must not
      * overwrite the activity line of a session that is not doing anything.
@@ -327,7 +359,7 @@ class AcpSession extends EventEmitter {
     if (u.sessionUpdate === 'tool_call') {
       this.toolCallCount += 1;
       if (running) {
-        this.activity = runningActivity(u.title);
+        this.activity = runningActivity(safe.title);
       }
     } else if (u.sessionUpdate === 'agent_message_chunk') {
       if (running) this.activity = 'Processing...';
@@ -344,7 +376,44 @@ class AcpSession extends EventEmitter {
     } else if (u.sessionUpdate === 'config_option_update') {
       this._absorbConfigOptions(u.configOptions);
     }
-    this.emit('update', u);
+    this.emit('update', safe);
+  }
+
+  /**
+   * The redactor and per-kind stream state, created on first use when an
+   * instance was built without the constructor (`Object.create`), so nothing
+   * this class publishes can skip masking (#287).
+   */
+  get _redactor() {
+    if (!this.__redactor) this.__redactor = createRedactor(secretValuesFrom(process.env));
+    return this.__redactor;
+  }
+
+  set _redactor(r) { this.__redactor = r; }
+
+  get _streams() {
+    if (!this.__streams) this.__streams = new Map();
+    return this.__streams;
+  }
+
+  set _streams(m) { this.__streams = m; }
+
+  /**
+   * The redacted copy of a `session/update`.
+   *
+   * A streamed chunk's text is redacted against the text before it, so a
+   * token split across two chunks is still masked; everything else is
+   * redacted structurally. Never mutates the input.
+   */
+  _redactUpdate(u) {
+    const safe = this._redactor.deep(u);
+    const kind = u && u.sessionUpdate;
+    if (STREAMED_UPDATES.has(kind) && u.content && typeof u.content.text === 'string'
+      && safe && safe.content && typeof safe.content === 'object') {
+      if (!this._streams.has(kind)) this._streams.set(kind, this._redactor.stream());
+      safe.content = { ...safe.content, text: this._streams.get(kind).push(u.content.text) };
+    }
+    return safe;
   }
 
   // -- lifecycle ------------------------------------------------------------
@@ -454,8 +523,10 @@ class AcpSession extends EventEmitter {
     // than leaving a stale question attached to a session that is waiting on
     // something new.
     const said = (this._agentMsgBuf || '').trim();
-    this.lastAgentMessage = said || null;
+    // Redacted as one string, so a token the chunks split is masked whole.
+    this.lastAgentMessage = this._redactor.text(said) || null;
     this._agentMsgBuf = '';
+    for (const s of this._streams.values()) s.reset();
     this._setStatus(STATUS.IDLE, 'Ready for your reply');
     this._armIdleTimer();
   }
@@ -1200,10 +1271,11 @@ class AcpSession extends EventEmitter {
   }
 
   _fail(message) {
-    this.error = message;
+    const safe = this._redactor.text(String(message));
+    this.error = safe;
     this.endedAt = Date.now();
     this._setStatus(STATUS.FAILED, 'Failed');
-    for (const [, p] of this._pending) p.reject(new Error(message));
+    for (const [, p] of this._pending) p.reject(new Error(safe));
     this._pending.clear();
   }
 
@@ -1259,7 +1331,7 @@ class AcpSession extends EventEmitter {
       resyncCount: this.resyncCount || 0,
       squad: this.squadContext(),
       git: this.gitContext(),
-      stderrTail: this.status === STATUS.FAILED ? this._stderr.slice(-1000) : undefined,
+      stderrTail: this.status === STATUS.FAILED ? this._redactor.text(this._stderr).slice(-1000) : undefined,
     };
   }
 

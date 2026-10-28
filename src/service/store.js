@@ -19,6 +19,7 @@ const { sanitizeDeviceMeta } = require('../device-meta');
 const { sanitizeDiskVolumes } = require('../disk-meta');
 const { sanitizePullRequest } = require('../pull-request');
 const { TERMINAL_STATUSES, matchesStatusFilter } = require('../session-status');
+const { sharedRedactor } = require('../credentials');
 
 const PRESENCE = Object.freeze({ ONLINE: 'online', STALE: 'stale', OFFLINE: 'offline' });
 const DEVICE_KIND = Object.freeze({ LOCAL: 'local', CLOUD: 'cloud', ACA: 'aca' });
@@ -223,14 +224,18 @@ function normaliseSession(session) {
   // present is made safe. Either way a reader sees no selector it can use
   // unless the device said so in a shape it can trust.
   if ('nextTurn' in s) s.nextTurn = sanitizeNextTurn(s.nextTurn);
-  return s;
+  // An older device publishes whatever its agent said, credentials included
+  // (#287). The hub masks what it can recognise before it keeps, persists or
+  // rebroadcasts a byte of it.
+  return sharedRedactor().deep(s);
 }
 
 function normaliseTranscriptEntries(entries) {
   if (!Array.isArray(entries)) return [];
+  const redactor = sharedRedactor();
   return entries.slice(-TRANSCRIPT_CACHE_LIMIT).map((e) => {
     if (!e || typeof e !== 'object') return e;
-    return { ...e };
+    return redactor.deep(e);
   });
 }
 
@@ -532,7 +537,7 @@ class Store extends EventEmitter {
      */
     const sent = (session && typeof session === 'object') ? session : {};
     if ('pullRequest' in sent) {
-      rec.pullRequest = sanitizePullRequest(sent.pullRequest);
+      rec.pullRequest = sharedRedactor().deep(sanitizePullRequest(sent.pullRequest));
     } else if (!('pullRequest' in existing)) {
       rec.pullRequest = null;
     }
@@ -681,7 +686,7 @@ class Store extends EventEmitter {
     const oldest = cache.length && Number.isInteger(cache[0].seq) ? cache[0].seq : null;
     const gap = !!rec.transcriptGap || (Number.isInteger(req.since) && oldest !== null && req.since < oldest - 1);
     return {
-      transcript: list,
+      transcript: normaliseTranscriptEntries(list),
       nextSince,
       gap,
       cached: true,

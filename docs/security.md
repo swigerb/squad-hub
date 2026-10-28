@@ -1270,6 +1270,68 @@ With such a token:
 The partition follows your numeric GitHub id, not the credential, so swapping an
 existing device to a least-privilege token does not orphan its devices.
 
+## Hub credentials stay out of agents and transcripts
+
+A device's Hub credentials control the hub: whoever holds the device token can
+register as that device, read its sessions and answer its approvals. The agent
+never needs them, so it never gets them (issue #287).
+
+**The agent's environment.** The daemon starts every agent, new or resumed,
+with its own environment minus the Hub control variables. Names are matched
+without regard to case:
+
+- `SQUAD_HUB_TOKEN`, `SQUAD_HUB_USER_TOKEN`, `SQUAD_HUB_AGENT_TOKEN`,
+  `SQUAD_HUB_DEV_SECRET`, `SQUAD_HUB_DEVICE_SECRET`,
+  `SQUAD_HUB_GITHUB_CLIENT_SECRET`, `SQUAD_HUB_GH_APP_PRIVATE_KEY`,
+  `SQUAD_HUB_VAPID_PRIVATE_KEY` and `SQUAD_HUB_TEAMS_WEBHOOK`.
+- Any other `SQUAD_HUB_*` name containing `TOKEN`, `SECRET`, `PASSWORD`,
+  `PASSWD`, `KEY`, `WEBHOOK` or `CREDENTIAL`. A `PUBLIC_KEY` is not a secret and
+  is kept.
+
+The variables are removed after per-agent overrides are applied, so an override
+cannot put one back. The agent's own GitHub auth (`COPILOT_GITHUB_TOKEN`,
+`GH_TOKEN`, `GITHUB_TOKEN`) is kept; the agent needs it. On a cloud job,
+`SQUAD_HUB_AGENT_TOKEN` reaches the agent only as `COPILOT_GITHUB_TOKEN`, which
+is what it is for. The Squad health probe gets no Hub control variable either.
+
+**What the agent produces.** An agent can still print a credential it read some
+other way, so everything derived from its output is masked as `[redacted]`
+before it is kept, written to disk or sent to the hub:
+
+- transcript entries, including tool input and output, and approval cards;
+- the last agent message, the session error and the stderr tail;
+- the session snapshots and pull request details a device reports.
+
+Approval decisions still use the agent's original request, so masking a card
+does not change what is approved.
+
+Masking covers the known values of the variables above and of other
+credential-named variables, the token the device connected with, and
+recognizable formats: Hub device tokens (`sqhd1.`), GitHub tokens, JWTs,
+`Bearer` and `Basic` values, `NAME_TOKEN=...` assignments, URL passwords, signed
+query parameters, connection-string keys and PEM private keys.
+
+**On the hub.** The hub masks again whatever a device sends, so a device that
+has not been upgraded still cannot put a credential into the hub's cache, its
+live event stream, or a command or HTTP reply. A session file written before the
+fix is masked when the hub loads it, and is rewritten masked.
+
+**Limits.** This is defense in depth, not a guarantee:
+
+- A transformed secret (base64, URL-encoded, split into pieces by the agent) or
+  an unrecognized format is not caught.
+- When output streams in chunks, a known secret split across two chunks is
+  masked from its eighth character on; up to seven leading characters can
+  remain.
+- Values shorter than eight characters are not treated as known secrets.
+- The agent runs as the same OS user as the daemon, so it can still read files
+  that user can read, such as `~/.squad-hub/config.json`.
+
+**After upgrading.** A device token that an agent could already have seen
+should be treated as exposed: [revoke it](#revoking-one) and issue a new one.
+Restart each daemon, and each cloud job image, so running agents are replaced
+by ones started without the Hub variables.
+
 ## File access
 
 Off by default. No folder picker and no directory browsing until a device opts
