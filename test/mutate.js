@@ -4641,6 +4641,27 @@ if ($health.accessStore -ne 'durable') {`,
     replace: `Fail "the running deployment reports its access store as '$($health.accessStore)', so every grant would be forgotten on the next deploy." # MUTATION: remediation stripped`,
     mustFail: 'the refusal names SQUAD_HUB_HOME and what to do about it',
   },
+  {
+    name: 'the plan lookup reads only appServicePlanId again (#290)',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `plan: appServicePlanId || serverFarmId}`,
+    replace: `plan: appServicePlanId}`,
+    mustFail: "an existing app's plan is read from BOTH appServicePlanId and serverFarmId (#290)",
+  },
+  {
+    name: 'an existing app with an unreadable plan falls through to a guessed plan (#290)',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `  if ($existingApp -and $existingApp.id -and -not $existingApp.plan) {`,
+    replace: `  if ($false) { # MUTATION`,
+    mustFail: 'an app that exists with no readable plan refuses instead of guessing (#290)',
+  },
+  {
+    name: 'a failed app lookup is read as "no app" and guesses a plan (#290)',
+    file: 'scripts/deploy-appservice.ps1',
+    find: `  if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) {`,
+    replace: `  if ($false) { # MUTATION`,
+    mustFail: 'a failed app lookup (auth, network) refuses rather than reading as "no app" (#290)',
+  },
 
   // -------------------------------------------------------------------------
   // Issue #108, Sprint B: export, and restore. Additive, refuses rather than
