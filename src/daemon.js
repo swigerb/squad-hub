@@ -31,6 +31,7 @@ const { EventEmitter } = require('events');
 const paths = require('./paths');
 const config = require('./config');
 const { AcpSession, STATUS } = require('./acp-session');
+const { createRedactor, secretValuesFrom } = require('./credentials');
 const { selectAgent, buildAgentArgs, RequiredModelError } = require('./agent-select');
 const { resolveSquadDoc, listSquadDocs, readFileSafe } = require('./squad-context');
 
@@ -118,6 +119,12 @@ class Daemon extends EventEmitter {
     super();
     this.cfg = config.read();
     this.sessions = new Map();
+    /**
+     * Masks credentials in everything this device publishes, persists or
+     * replies with (#287). One instance, shared with every session, so the hub
+     * token learnt at `attachHub` is masked everywhere from then on.
+     */
+    this._redactor = opts.redactor || createRedactor(secretValuesFrom(process.env));
     this.startedAt = Date.now();
     this.deviceName = this.cfg.deviceName || os.hostname();
     this.agentCommand = opts.agentCommand || process.env.SQUAD_HUB_AGENT || 'copilot';
@@ -427,6 +434,7 @@ class Daemon extends EventEmitter {
       id, cwd: dir, prompt,
       agentCommand: this.agentCommand,
       agentArgs: args,
+      redactor: this._redactor,
     });
     s.agentSelection = selection;
     this.sessions.set(id, s);
@@ -519,10 +527,12 @@ class Daemon extends EventEmitter {
       prompt: old.prompt,
       agentCommand: this.agentCommand,
       agentArgs: args,
+      redactor: this._redactor,
     });
     s.agentSelection = old.agentSelection;
-    // The record of what happened survives the process that produced it.
-    s.transcript = old.transcript || [];
+    // The record of what happened survives the process that produced it --
+    // redacted again, since the redactor may know more now than it did then.
+    s.transcript = (old.transcript || []).map((e) => this._redactor.deep(e));
     s.resyncedAt = Date.now();
     s.resyncCount = (old.resyncCount || 0) + 1;
 
@@ -612,10 +622,13 @@ class Daemon extends EventEmitter {
    * saying so.
    */
   _transcriptSince(s, req) {
+    // Every transcript read -- local IPC, hub command, cloud publication --
+    // comes through here, so this is where the device's last redaction is.
+    const safe = (list) => list.map((e) => this._redactor.deep(e));
     if (!Number.isInteger(req.since)) {
       const list = s.transcript.slice(-(req.limit || 100));
       const nextSince = list.length ? list[list.length - 1].seq : 0;
-      return { transcript: list, nextSince, gap: false };
+      return { transcript: safe(list), nextSince, gap: false };
     }
     const since = req.since;
     const list = s.transcript.filter((e) => e.seq > since);
@@ -624,7 +637,7 @@ class Daemon extends EventEmitter {
     const nextSince = list.length
       ? list[list.length - 1].seq
       : (s.transcript.length ? s.transcript[s.transcript.length - 1].seq : since);
-    return { transcript: list, nextSince, gap };
+    return { transcript: safe(list), nextSince, gap };
   }
 
   /**
@@ -869,7 +882,8 @@ class Daemon extends EventEmitter {
         supported: false, reason, mode: field(), model: field(),
       };
     }
-    return view;
+    // Published to the hub and written to sessions.json: never with a secret.
+    return this._redactor.deep(view);
   }
 
   /**
@@ -916,6 +930,9 @@ class Daemon extends EventEmitter {
    */
   attachHub({ url, token, deviceId }) {
     const { HubLink } = require('./hub-link');
+    // Whatever the token came from -- env, config file, a flag -- it is masked
+    // from here on, in this device's sessions as much as in its replies.
+    if (token) this._redactor.add(token);
     this.link = new HubLink({ url, token, deviceId, heartbeatMs: this.heartbeatMs });
 
     this.link.on('connected', () => {
@@ -1026,11 +1043,11 @@ class Daemon extends EventEmitter {
         default:
           throw new Error(`unknown command: ${m.op}`);
       }
-      this.link.reply(m.correlationId, true, result);
+      this.link.reply(m.correlationId, true, this._redactor.deep(result));
       const snap = this.snapshot();
       this.link.send({ type: 'sessions', sessions: snap.sessions });
     } catch (e) {
-      this.link.reply(m.correlationId, false, e.message, e.code);
+      this.link.reply(m.correlationId, false, this._redactor.text(String(e && e.message)), e && e.code);
     }
   }
 

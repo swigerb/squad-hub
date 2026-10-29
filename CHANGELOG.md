@@ -4,6 +4,24 @@ All notable changes to Squad Hub are listed here. Each version's date is its
 GitHub release date. Versions are published to npm as `squad-hub` and
 `@mightybs/squad-hub`; see [docs/releasing.md](docs/releasing.md).
 
+## [0.7.3] - 2026-10-28
+
+### Security
+
+- **Hub credentials no longer reach agents or what they produce** (issue #287).
+  The daemon starts every agent, new or resumed, without the Hub control
+  variables (`SQUAD_HUB_TOKEN`, `SQUAD_HUB_USER_TOKEN`, `SQUAD_HUB_AGENT_TOKEN`,
+  the hub's signing and private keys, and any other credential-named
+  `SQUAD_HUB_*` variable, in any letter case). The agent's own GitHub auth is
+  kept. Transcript entries, approval cards, the last agent message, errors,
+  stderr and session snapshots are masked as `[redacted]` before a device keeps,
+  writes or sends them, and the hub masks them again on receipt. Approval
+  decisions still use the agent's original request. Session files written
+  before this release are masked when the hub loads them. Squad health probes
+  get no Hub control variable either. Upgrade every device, restart its daemon,
+  and revoke and reissue any device token an agent could have seen. See
+  [docs/security.md](docs/security.md#hub-credentials-stay-out-of-agents-and-transcripts).
+
 ## [0.7.2] - 2026-10-19
 
 ### Security

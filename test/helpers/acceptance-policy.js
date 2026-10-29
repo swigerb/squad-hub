@@ -101,6 +101,14 @@ const CRITICAL_BOUNDARIES = Object.freeze([
   { id: 'acp-lifecycle', category: 'process-lifecycle', file: 'src/acp-session.js', names: /refused session leaves its agent running/, why: 'a refused session does not leave its agent running' },
   { id: 'cli-lifecycle', category: 'process-lifecycle', file: 'src/cli.js', names: /kills the whole daemon|agentStop calls the daemon even for a session it never registered|restarts the daemon over a live session|restarts an already-live/, why: 'stop and connect never kill or restart live work unasked' },
   { id: 'service-install-dry-run', category: 'process-lifecycle', file: 'src/service-install.js', names: /bypasses the dry-run early return/, why: 'dry-run never runs a real command' },
+  // --- credential isolation (#287) -------------------------------------------------
+  { id: 'credential-redaction', category: 'credential-isolation', file: 'src/credentials.js', names: null, why: 'Hub control variables are stripped from agent children and credential-shaped text is masked' },
+  { id: 'acp-credential-isolation', category: 'credential-isolation', file: 'src/acp-session.js', names: /^\[#287 credentials\]/, why: 'an agent child gets no Hub credential and nothing it prints is kept unmasked' },
+  { id: 'daemon-credential-isolation', category: 'credential-isolation', file: 'src/daemon.js', names: /^\[#287 credentials\]/, why: 'daemon reads, snapshots, files and hub replies are masked' },
+  { id: 'hub-credential-isolation', category: 'credential-isolation', file: 'src/service/hub-service.js', names: /^\[#287 credentials\]/, why: 'the hub masks what an old device sends before a browser, caller or cache sees it' },
+  { id: 'store-credential-isolation', category: 'credential-isolation', file: 'src/service/store.js', names: /^\[#287 credentials\]/, why: 'the hub store never keeps an unmasked session or transcript' },
+  { id: 'store-backing-credential-isolation', category: 'credential-isolation', file: 'src/service/store-backing.js', names: /^\[#287 credentials\]/, why: 'a session file written before the fix is scrubbed on load and rewritten' },
+  { id: 'squad-health-credential-isolation', category: 'credential-isolation', file: 'src/squad-health.js', names: /^\[#287 credentials\]/, why: 'a Squad health probe gets no Hub control variable' },
 ]);
 
 /** Canonical identity of a mutation: SHA256 over [file, name, find, replace, mustFail]. */

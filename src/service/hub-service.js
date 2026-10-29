@@ -41,6 +41,7 @@ const { checkSpawnChoices } = require('./spawn-choices');
 const { Store } = require('./store');
 const { FileBacking, MemoryBacking } = require('./store-backing');
 const ws = require('./ws');
+const { sharedRedactor } = require('../credentials');
 
 const WEB_ROOT = path.join(__dirname, '..', '..', 'web');
 
@@ -1925,7 +1926,9 @@ class HubService {
               : { error: 'no existing session to cache a transcript against' }),
           });
         }
-        this._broadcast(me.key, { type: 'transcript', deviceId, sessionId: msg.sessionId, entries: msg.entries });
+        this._broadcast(me.key, {
+          type: 'transcript', deviceId, sessionId: msg.sessionId, entries: sharedRedactor().deep(msg.entries),
+        });
         return;
       }
       case 'reply': {
@@ -1933,11 +1936,14 @@ class HubService {
         if (p) {
           this._pending.delete(msg.correlationId);
           clearTimeout(p.timer);
-          if (msg.ok) p.resolve(msg.result);
+          // A device that predates #287 replies with whatever its agent said;
+          // nothing it sends reaches a caller, the cache or a browser unmasked.
+          const redactor = sharedRedactor();
+          if (msg.ok) p.resolve(redactor.deep(msg.result));
           else {
             const known = Object.prototype.hasOwnProperty.call(NEXT_TURN_REFUSALS, msg.code);
             p.reject(Object.assign(
-              new Error(msg.error || 'the device refused'),
+              new Error(redactor.text(String(msg.error || 'the device refused'))),
               known ? { status: NEXT_TURN_REFUSALS[msg.code], code: msg.code } : { status: 400 },
             ));
           }

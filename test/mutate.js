@@ -289,9 +289,11 @@ const MUTATIONS = [
     name: 'a silent turn is given a made-up question instead of none',
     file: 'src/acp-session.js',
     find: `    const said = (this._agentMsgBuf || '').trim();
-    this.lastAgentMessage = said || null;`,
+    // Redacted as one string, so a token the chunks split is masked whole.
+    this.lastAgentMessage = this._redactor.text(said) || null;`,
     replace: `    const said = (this._agentMsgBuf || '').trim();
-    this.lastAgentMessage = said || (process.env.MUTANT ? 'Waiting for your reply' : null); // MUTATION`,
+    // Redacted as one string, so a token the chunks split is masked whole.
+    this.lastAgentMessage = this._redactor.text(said) || (process.env.MUTANT ? 'Waiting for your reply' : null); // MUTATION`,
     mustFail: 'a turn that only ran a tool leaves no question behind',
   },
   {
@@ -301,9 +303,11 @@ const MUTATIONS = [
     name: 'a silent turn leaves a stale question from an earlier turn in place',
     file: 'src/acp-session.js',
     find: `    const said = (this._agentMsgBuf || '').trim();
-    this.lastAgentMessage = said || null;`,
+    // Redacted as one string, so a token the chunks split is masked whole.
+    this.lastAgentMessage = this._redactor.text(said) || null;`,
     replace: `    const said = (this._agentMsgBuf || '').trim();
-    this.lastAgentMessage = said || (process.env.MUTANT ? this.lastAgentMessage : null); // MUTATION`,
+    // Redacted as one string, so a token the chunks split is masked whole.
+    this.lastAgentMessage = this._redactor.text(said) || (process.env.MUTANT ? this.lastAgentMessage : null); // MUTATION`,
     mustFail: 'a new turn with no text clears the question from the PREVIOUS turn',
   },
   {
@@ -403,9 +407,9 @@ const MUTATIONS = [
   {
     name: 'a device refusal is reported to the caller as success',
     file: 'src/service/hub-service.js',
-    find: `          if (msg.ok) p.resolve(msg.result);
+    find: `          if (msg.ok) p.resolve(redactor.deep(msg.result));
           else {`,
-    replace: `          if (msg.ok || process.env.MUTANT) p.resolve(msg.result || {}); // MUTATION
+    replace: `          if (msg.ok || process.env.MUTANT) p.resolve(redactor.deep(msg.result || {})); // MUTATION
           else {`,
     mustFail: 'a device that refuses a command surfaces the refusal, not a success',
   },
@@ -1407,8 +1411,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'the approval shows a summary instead of the literal command',
     file: 'src/acp-session.js',
-    find: `      command: raw.command || (Array.isArray(raw.commands) ? raw.commands.join(' && ') : null),`,
-    replace: `      command: process.env.MUTANT ? (tc.title || null) : (raw.command || (Array.isArray(raw.commands) ? raw.commands.join(' && ') : null)), // MUTATION`,
+    find: `      command: shown.command || (Array.isArray(shown.commands) ? shown.commands.join(' && ') : null),`,
+    replace: `      command: process.env.MUTANT ? (tc.title || null) : (shown.command || (Array.isArray(shown.commands) ? shown.commands.join(' && ') : null)), // MUTATION`,
     mustFail: 'the approval carries the LITERAL command, not a summary',
   },
   {
@@ -1785,8 +1789,8 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'the transcript seq counter stops being monotonic (reverts to the array-index bug)',
     file: 'src/acp-session.js',
-    find: `    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update: u });`,
-    replace: `    this.transcript.push({ seq: process.env.MUTANT ? 1 : this._nextSeq++, at: Date.now(), update: u }); // MUTATION`,
+    find: `    this.transcript.push({ seq: this._nextSeq++, at: Date.now(), update });`,
+    replace: `    this.transcript.push({ seq: process.env.MUTANT ? 1 : this._nextSeq++, at: Date.now(), update }); // MUTATION`,
     mustFail: 'a capped transcript keeps only the newest N entries but seq stays monotonic and never reused',
   },
   {
@@ -3855,8 +3859,8 @@ Cards to the configured workflow URL.`,
   {
     name: 'Sync throws away the transcript with the process that produced it',
     file: 'src/daemon.js',
-    find: `    s.transcript = old.transcript || [];`,
-    replace: `    s.transcript = process.env.MUTANT ? [] : (old.transcript || []); // MUTATION`,
+    find: `    s.transcript = (old.transcript || []).map((e) => this._redactor.deep(e));`,
+    replace: `    s.transcript = process.env.MUTANT ? [] : (old.transcript || []).map((e) => this._redactor.deep(e)); // MUTATION`,
     mustFail: 'Sync keeps the transcript, which did not stop being true',
   },
   {
@@ -5122,10 +5126,10 @@ if ($health.accessStore -ne 'durable') {`,
     name: 'an invalid pullRequest resend is kept instead of being cleared',
     file: 'src/service/store.js',
     find: `    if ('pullRequest' in sent) {
-      rec.pullRequest = sanitizePullRequest(sent.pullRequest);
+      rec.pullRequest = sharedRedactor().deep(sanitizePullRequest(sent.pullRequest));
     } else if (!('pullRequest' in existing)) {`,
     replace: `    if ('pullRequest' in sent) {
-      rec.pullRequest = process.env.MUTANT ? (sanitizePullRequest(sent.pullRequest) || existing.pullRequest || null) : sanitizePullRequest(sent.pullRequest); // MUTATION
+      rec.pullRequest = sharedRedactor().deep(process.env.MUTANT ? (sanitizePullRequest(sent.pullRequest) || existing.pullRequest || null) : sanitizePullRequest(sent.pullRequest)); // MUTATION
     } else if (!('pullRequest' in existing)) {`,
     mustFail: 'the store validates pullRequest on upsert and clears it on an invalid resend',
   },
@@ -12444,6 +12448,209 @@ prompt: |
     find: `.hub-version { color: var(--dim);`,
     replace: `.hub-version { color: var(--panel-2); /* MUTATION */`,
     mustFail: "the hub's own version sits quietly in the rail and the account menu at 1280, 900 and 390, dark and light (#271)",
+  },
+  // #287: Hub credentials never reach an agent child, and nothing an agent
+  // prints reaches a transcript, snapshot, cache, reply or browser unmasked.
+  // Suite: test/credential-isolation-unit.js.
+  {
+    name: '[#287 credentials] the agent env builder keeps Hub control variables',
+    file: 'src/credentials.js',
+    find: `    if (merged[k] === undefined || isHubControlEnv(k)) delete merged[k];`,
+    replace: `    if (merged[k] === undefined) delete merged[k]; // MUTATION`,
+    mustFail: '#287 agent child env carries no Hub control variable, whatever its case',
+  },
+  {
+    name: '[#287 credentials] Hub control variables are matched case-sensitively',
+    file: 'src/credentials.js',
+    find: `  const up = name.toUpperCase();
+  if (HUB_CONTROL_SET.has(up)) return true;`,
+    replace: `  const up = name; // MUTATION
+  if (HUB_CONTROL_SET.has(up)) return true;`,
+    mustFail: '#287 Hub control variables are recognized case-insensitively, and only those',
+  },
+  {
+    name: '[#287 credentials] the VAPID public key is treated as a Hub credential',
+    file: 'src/credentials.js',
+    find: `.replace(/PUBLIC_KEY/g, '')`,
+    replace: `/* MUTATION */`,
+    mustFail: '#287 Hub control variables are recognized case-insensitively, and only those',
+  },
+  {
+    name: '[#287 credentials] a quoted lowercase credential key in printed JSON is not masked',
+    file: 'src/credentials.js',
+    find: `    accept: (m) => !NOT_A_SECRET_VALUE.test(m[0].slice(m[1].length).trim()),`,
+    replace: `    accept: () => false, // MUTATION`,
+    mustFail: '#287 every credential format is masked, keeping its label',
+  },
+  {
+    name: '[#287 credentials] a numeric or boolean setting named like a token is masked',
+    file: 'src/credentials.js',
+    find: `    accept: (m) => SECRET_ASSIGN_NAME.test(m[1])
+      && !NOT_A_SECRET_VALUE.test(m[0].slice(m[1].length + m[2].length)),`,
+    replace: `    accept: (m) => SECRET_ASSIGN_NAME.test(m[1]), // MUTATION`,
+    mustFail: '#287 settings that merely mention tokens are not masked',
+  },
+  {
+    name: '[#287 credentials] a stream lets the first half of a split secret through',
+    file: 'src/credentials.js',
+    find: `          if (at !== -1) spans.push([at, w.length]);`,
+    replace: `          // MUTATION: a partial secret at the end of the window is not masked`,
+    mustFail: '#287 a stream masks a secret split across chunks',
+  },
+  {
+    name: '[#287 credentials] the agent child inherits the device environment unfiltered',
+    file: 'src/acp-session.js',
+    find: `      env: agentChildEnv(process.env, env),`,
+    replace: `      env: { ...process.env, ...env }, // MUTATION`,
+    mustFail: '#287 agent child env carries no Hub control variable, whatever its case',
+  },
+  {
+    name: '[#287 credentials] session updates are retained and published unredacted',
+    file: 'src/acp-session.js',
+    find: `    const safe = this._redactUpdate(u);`,
+    replace: `    const safe = u; // MUTATION`,
+    mustFail: '#287 an AcpSession transcript holds no canary, even split across chunks',
+  },
+  {
+    name: '[#287 credentials] streamed chunks are redacted one at a time, so a split secret survives',
+    file: 'src/acp-session.js',
+    find: `      safe.content = { ...safe.content, text: this._streams.get(kind).push(u.content.text) };`,
+    replace: `      // MUTATION: chunks are redacted one at a time`,
+    mustFail: '#287 an AcpSession transcript holds no canary, even split across chunks',
+  },
+  {
+    name: '[#287 credentials] an agent RPC error is rethrown unredacted',
+    file: 'src/acp-session.js',
+    find: `        const rpcError = this._redactor.deep(msg.error);`,
+    replace: `        const rpcError = msg.error; // MUTATION`,
+    mustFail: '#287 an agent RPC error is redacted but keeps its numeric code',
+  },
+  {
+    name: '[#287 credentials] agent stderr is kept unredacted',
+    file: 'src/acp-session.js',
+    find: `      this._stderr = (this._stderr + stderrRedact.push(d.toString())).slice(-8000);`,
+    replace: `      this._stderr = (this._stderr + d.toString()).slice(-8000); // MUTATION`,
+    mustFail: '#287 agent stderr is redacted even when a secret is split across writes',
+  },
+  {
+    name: '[#287 credentials] an approval card shows the raw tool input',
+    file: 'src/acp-session.js',
+    find: `    const shown = this._redactor.deep(raw);`,
+    replace: `    const shown = raw; // MUTATION`,
+    mustFail: '#287 an approval card is shown redacted with its options intact',
+  },
+  {
+    name: "[#287 credentials] the turn's last agent message is kept unredacted",
+    file: 'src/acp-session.js',
+    find: `    this.lastAgentMessage = this._redactor.text(said) || null;`,
+    replace: `    this.lastAgentMessage = said || null; // MUTATION`,
+    mustFail: '#287 AcpSession toJSON, answered approvals and last message hold no canary',
+  },
+  {
+    name: '[#287 credentials] a daemon session view is published and persisted unredacted',
+    file: 'src/daemon.js',
+    find: `    return this._redactor.deep(view);`,
+    replace: `    return view; // MUTATION`,
+    mustFail: '#287 daemon snapshot and every file under SQUAD_HUB_HOME hold no canary',
+  },
+  {
+    name: '[#287 credentials] daemon transcript reads are served without a final redaction',
+    file: 'src/daemon.js',
+    find: `    const safe = (list) => list.map((e) => this._redactor.deep(e));`,
+    replace: `    const safe = (list) => list; // MUTATION`,
+    mustFail: '#287 local and hub transcript reads re-redact entries already in memory',
+  },
+  {
+    name: '[#287 credentials] the hub token given to attachHub is never learnt by the redactor',
+    file: 'src/daemon.js',
+    find: `    if (token) this._redactor.add(token);`,
+    replace: `    // MUTATION: the hub token is not masked`,
+    mustFail: '#287 daemon transcript reads hold no canary, including the attachHub token',
+  },
+  {
+    name: '[#287 credentials] a hub command error is replied unredacted',
+    file: 'src/daemon.js',
+    find: `      this.link.reply(m.correlationId, false, this._redactor.text(String(e && e.message)), e && e.code);`,
+    replace: `      this.link.reply(m.correlationId, false, String(e && e.message), e && e.code); // MUTATION`,
+    mustFail: '#287 a hub command error is redacted before it is replied',
+  },
+  {
+    name: '[#287 credentials] a resynced session carries its old transcript unredacted',
+    file: 'src/daemon.js',
+    find: `    s.transcript = (old.transcript || []).map((e) => this._redactor.deep(e));`,
+    replace: `    s.transcript = (old.transcript || []).slice(); // MUTATION`,
+    mustFail: '#287 a resynced session carries a redacted transcript',
+  },
+  {
+    name: '[#287 credentials] the hub rebroadcasts a device-pushed transcript unredacted',
+    file: 'src/service/hub-service.js',
+    find: `type: 'transcript', deviceId, sessionId: msg.sessionId, entries: sharedRedactor().deep(msg.entries),`,
+    replace: `type: 'transcript', deviceId, sessionId: msg.sessionId, entries: msg.entries, // MUTATION`,
+    mustFail: '#287 a transcript pushed by an old device is masked when broadcast and cached',
+  },
+  {
+    name: "[#287 credentials] the hub resolves a device's command reply unredacted",
+    file: 'src/service/hub-service.js',
+    find: `          if (msg.ok) p.resolve(redactor.deep(msg.result));`,
+    replace: `          if (msg.ok) p.resolve(msg.result); // MUTATION`,
+    mustFail: "#287 a live device's transcript reply is masked before the caller and cache",
+  },
+  {
+    name: "[#287 credentials] the hub passes a device's refusal text through unredacted",
+    file: 'src/service/hub-service.js',
+    find: `new Error(redactor.text(String(msg.error || 'the device refused'))),`,
+    replace: `new Error(String(msg.error || 'the device refused')), // MUTATION`,
+    mustFail: "#287 a device's refusal is masked before it reaches the caller",
+  },
+  {
+    name: '[#287 credentials] the hub store keeps a session record unredacted',
+    file: 'src/service/store.js',
+    find: `  return sharedRedactor().deep(s);`,
+    replace: `  return s; // MUTATION`,
+    mustFail: '#287 hub store reads (list, get, overview, cached transcript) hold no canary',
+  },
+  {
+    name: '[#287 credentials] the hub store caches transcript entries unredacted',
+    file: 'src/service/store.js',
+    find: `    return redactor.deep(e);`,
+    replace: `    return e; // MUTATION`,
+    mustFail: '#287 hub store reads (list, get, overview, cached transcript) hold no canary',
+  },
+  {
+    name: '[#287 credentials] the hub store keeps a pull request title unredacted',
+    file: 'src/service/store.js',
+    find: `      rec.pullRequest = sharedRedactor().deep(sanitizePullRequest(sent.pullRequest));`,
+    replace: `      rec.pullRequest = sanitizePullRequest(sent.pullRequest); // MUTATION`,
+    mustFail: '#287 hub store reads (list, get, overview, cached transcript) hold no canary',
+  },
+  {
+    name: '[#287 credentials] a session file written before the fix is loaded unredacted',
+    file: 'src/service/store-backing.js',
+    find: `      .map(([key, session]) => [key, redactor.deep(session)]);`,
+    replace: `      .map(([key, session]) => [key, session]); // MUTATION`,
+    mustFail: '#287 a session file written before the fix is scrubbed on load and rewritten',
+  },
+  {
+    name: '[#287 credentials] a scrubbed session file is left unmasked on disk',
+    file: 'src/service/store-backing.js',
+    find: `      if (this.scrubbed > 0) {`,
+    replace: `      if (this.scrubbed > 0 && !process.env.MUTANT) { // MUTATION`,
+    mustFail: '#287 a session file written before the fix is scrubbed on load and rewritten',
+  },
+  {
+    name: '[#287 credentials] a Squad health probe inherits Hub control variables',
+    file: 'src/squad-health.js',
+    find: `    if (/(TOKEN|SECRET|PASSWORD|PASS|PWD|KEY)/i.test(k) || isHubControlEnv(k)) continue;`,
+    replace: `    if (/(TOKEN|SECRET|PASSWORD|PASS|PWD|KEY)/i.test(k)) continue; // MUTATION`,
+    mustFail: '#287 a Squad health probe gets no Hub control variable, even one without a secret word in its suffix',
+  },
+
+  {
+    name: '[#287 credentials] a session built without its constructor records updates unmasked',
+    file: 'src/acp-session.js',
+    find: `    if (!this.__redactor) this.__redactor = createRedactor(secretValuesFrom(process.env));`,
+    replace: `    if (!this.__redactor) this.__redactor = { add() {}, text: (s) => s, deep: (v) => v, stream: () => ({ push: (c) => c, reset() {} }) }; // MUTATION`,
+    mustFail: '#287 a session built without its constructor still masks what it records',
   },
 
 ];

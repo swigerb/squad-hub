@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { sharedRedactor } = require('../credentials');
 
 const FILE = 'sessions.json';
 const SHAPE = 'squad-hub/sessions@1';
@@ -81,6 +82,9 @@ function serialiseUsers(users) {
   const subjects = {};
   for (const [subject, bucket] of users) {
     const sessions = {};
+    // Not redacted again here: this runs on every mutation, and every record
+    // in memory was already masked on its way in (`Store`'s normaliseSession
+    // and cacheTranscript, and `deserialiseUsers` below) -- #287.
     for (const [key, session] of bucket.sessions) sessions[key] = sanitiseSessionForDisk(session);
     subjects[subject] = {
       devices: Object.fromEntries(bucket.devices),
@@ -91,11 +95,16 @@ function serialiseUsers(users) {
 }
 
 function deserialiseUsers(subjects) {
+  const redactor = sharedRedactor();
   const users = new Map();
   for (const [subject, bucket] of Object.entries(subjects || {})) {
+    // A file written before #287 can hold transcripts with credentials in
+    // them; they are masked on the way in, not served as they were.
+    const sessions = Object.entries((bucket && bucket.sessions) || {})
+      .map(([key, session]) => [key, redactor.deep(session)]);
     users.set(subject, {
       devices: new Map(Object.entries((bucket && bucket.devices) || {})),
-      sessions: new Map(Object.entries((bucket && bucket.sessions) || {})),
+      sessions: new Map(sessions),
     });
   }
   return users;
@@ -121,7 +130,10 @@ class MemoryBacking {
  * metadata and session state. This now includes a bounded transcript tail
  * when an ephemeral cloud job publishes one before exiting; without that,
  * the history row outlives the container but the readable transcript does not.
- * None of it is a secret the way a token is.
+ * None of it is a secret the way a token is -- and since #287 every session
+ * record is masked by the credential redactor before it reaches memory (and
+ * again when an older file is read back), so a token an agent printed is
+ * not written down.
  *
  * WHAT DOES NOT: a session's `pendingApprovals`. That is a handle onto a
  * specific agent process's specific outstanding request, not a fact about
@@ -149,6 +161,8 @@ class FileBacking {
      */
     this.ok = true;
     this.error = null;
+    /** Credentials masked while loading (#287); the file is rewritten when > 0. */
+    this.scrubbed = 0;
   }
 
   get durable() { return this.persist_; }
@@ -170,7 +184,15 @@ class FileBacking {
         throw new Error('not the shape this code wrote');
       }
       this.ok = true; this.error = null;
-      return deserialiseUsers(j.subjects);
+      const before = sharedRedactor().stats.redactions;
+      const users = deserialiseUsers(j.subjects);
+      this.scrubbed = sharedRedactor().stats.redactions - before;
+      if (this.scrubbed > 0) {
+        // Rewrite now rather than at the next mutation, so the unmasked copy
+        // does not sit on disk until some device happens to publish.
+        try { this.persist(users); } catch (e) { this.error = `could not rewrite redacted sessions: ${e.message}`; }
+      }
+      return users;
     } catch (e) {
       // Refuse to start failing, and refuse to trust what could not be
       // parsed. A truncated write (a crash mid-write, an out-of-space disk)

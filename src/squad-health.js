@@ -13,6 +13,7 @@ const path = require('path');
 const childProcess = require('child_process');
 
 const { isSquadProject } = require('./agent-select');
+const { isHubControlEnv } = require('./credentials');
 
 const SCHEMA = 'squad-health/v1';
 const MIN_VERSION = '0.13.0';
@@ -110,7 +111,7 @@ function reducedEnv(base = process.env) {
   for (const k of keep) if (base[k]) env[k] = base[k];
   for (const [k, v] of Object.entries(base)) {
     if (!/^SQUAD_/i.test(k)) continue;
-    if (/(TOKEN|SECRET|PASSWORD|PASS|PWD|KEY)/i.test(k)) continue;
+    if (/(TOKEN|SECRET|PASSWORD|PASS|PWD|KEY)/i.test(k) || isHubControlEnv(k)) continue;
     env[k] = v;
   }
   return env;
@@ -360,4 +361,5 @@ module.exports = {
   parseHealthPayload,
   squadHealthCacheSize,
   findOnPath,
+  reducedEnv,
 };
