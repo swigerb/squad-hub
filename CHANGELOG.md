@@ -4,6 +4,38 @@ All notable changes to Squad Hub are listed here. Each version's date is its
 GitHub release date. Versions are published to npm as `squad-hub` and
 `@mightybs/squad-hub`; see [docs/releasing.md](docs/releasing.md).
 
+## [Unreleased]
+
+### Changed
+
+- **`npm run publish` publishes without the full test suite.** It runs the
+  same release as `npm run release`, with every packaging check and an install
+  and run of both tarballs, but skips `npm test`. Use it for a commit that has
+  already passed CI. A bare `npm publish` is now refused, because it would
+  upload one name without any check. See
+  [docs/releasing.md](docs/releasing.md#publish-a-release).
+
+### Fixed
+
+- **The release publishes the tarballs it tested.** The scoped
+  `@mightybs/squad-hub` tarball is built in a temporary directory, so the
+  checkout's `package.json` is never rewritten, and both names are installed and
+  run before either is published.
+- **The release runs npm without a shell**, so paths with spaces work and
+  Windows no longer prints a `DEP0190` warning for every npm call.
+- **A dry run says that nothing was published**, the deprecation advice covers
+  both names, and an annotated release tag is compared by its commit.
+- **Release and command-line tests are bounded and hermetic.** The MCP
+  command-line tests use an isolated home and a local listener instead of an
+  unroutable address, and check that a refused token makes no connection rather
+  than timing how long the refusal takes.
+  The `sessions` command-line tests ignore the caller's Hub settings, stop a
+  command that hangs, and remove their temporary homes.
+- **The release is tested end to end.** A new suite runs `npm run publish` and
+  `npm run release` in a scratch repository against a stand-in npm that never
+  contacts a registry, and checks the refusals, the tarballs uploaded, the
+  `--otp` pass-through and the release tag.
+
 ## [0.7.3] - 2026-10-28
 
 ### Security

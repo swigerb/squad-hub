@@ -63,24 +63,39 @@ async function checkAsync(name, fn) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Long enough for a loaded machine, short enough that one hung command cannot
+// hold the suite until the runner's deadline kills it with no explanation.
+const CLI_DEADLINE_MS = 60000;
+
 function cli(args, extraEnv = {}) {
   return new Promise((resolve) => {
-    const p = spawn(process.execPath, [BIN, ...args], {
-      env: {
-        ...process.env,
-        SQUAD_HUB_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-sessopen-')),
-        VISUAL: '',
-        EDITOR: '',
-        SQUAD_HUB_BROWSER: '',
-        SQUAD_HUB_URL: '',
-        ...extraEnv,
-      },
-      windowsHide: true,
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-sessopen-'));
+    // None of the caller's hub settings: a signed-in machine's token or pinned
+    // hub must not turn a "nothing configured" case into a real request.
+    const env = { ...process.env };
+    for (const k of Object.keys(env)) if (/^SQUAD_HUB_/i.test(k)) delete env[k];
+    Object.assign(env, {
+      SQUAD_HUB_HOME: home,
+      VISUAL: '',
+      EDITOR: '',
+      SQUAD_HUB_BROWSER: '',
+      SQUAD_HUB_URL: '',
+      ...extraEnv,
     });
+    const p = spawn(process.execPath, [BIN, ...args], { env, windowsHide: true });
     let stdout = ''; let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; p.kill(); }, CLI_DEADLINE_MS);
     p.stdout.on('data', (d) => { stdout += d; });
     p.stderr.on('data', (d) => { stderr += d; });
-    p.on('close', (code) => resolve({ status: code, stdout, stderr }));
+    const finish = (status, extra = '') => {
+      clearTimeout(timer);
+      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ }
+      if (timedOut) extra += `\n[squad-hub ${args.join(' ')} was killed after ${CLI_DEADLINE_MS / 1000}s]`;
+      resolve({ status: timedOut ? null : status, stdout, stderr: stderr + extra });
+    };
+    p.on('error', (e) => finish(null, `\n${e.message}`));
+    p.on('close', (code) => finish(code));
   });
 }
 
@@ -278,6 +293,8 @@ await (async () => {
     assert.strictEqual(r.status, 2, r.stdout + r.stderr);
     assert.match(r.stderr, /not an http:\/\/ or https:\/\/ URL/);
   });
+
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ }
 })();
 
 console.log(`\n${pass} passed, ${fail} failed`);

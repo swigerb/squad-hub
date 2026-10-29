@@ -5,19 +5,24 @@
  *   squad-hub              the name people type -- `npx squad-hub squad`
  *   @mightybs/squad-hub    the same package, parked under the org
  *
- * The two are published from identical contents, so neither is a stub that
- * rots behind the other. The only difference is the `name` field, which this
- * script rewrites for the second publish and always restores afterwards.
+ * Both names are published from tarballs that this script packs, checks,
+ * installs and runs first. The alias tarball is built in a temporary staging
+ * directory from the files in the primary tarball; only its package.json name
+ * differs. The checkout itself is never modified.
  *
  * Usage, from a clean checkout on a machine that can reach registry.npmjs.org:
  *
  *   npm login
- *   npm run release              # publish both
- *   npm run release -- --dry-run # rehearse, publishing nothing
+ *   npm run publish                # publish both; skips the full test suite
+ *   npm run publish -- --dry-run   # rehearse, publishing nothing
+ *   npm run release                # the same, after running `npm test`
  *   npm run release -- --otp=123456
  *
- * Anything after `--` is handed to `npm publish` untouched, which is how OTP
- * codes get through.
+ * Anything after `--` that this script does not recognise is handed to
+ * `npm publish` untouched, which is how OTP codes get through.
+ *
+ * A bare `npm publish` is refused through the `prepublishOnly` script: it
+ * would upload the directory under one name only and skip every check here.
  */
 
 const fs = require('fs');
@@ -30,6 +35,29 @@ const PKG_PATH = path.join(ROOT, 'package.json');
 const PRIMARY = 'squad-hub';
 const ALIAS = '@mightybs/squad-hub';
 const REGISTRY = 'https://registry.npmjs.org/';
+
+/** Flags this script consumes; everything else is passed to `npm publish`. */
+const OWN_FLAGS = new Set(['--dry-run', '--verify-only', '--skip-tests', '--refuse-direct-publish']);
+
+function parseArgs(argv) {
+  const args = Array.from(argv || []);
+  return {
+    dryRun: args.includes('--dry-run'),
+    verifyOnly: args.includes('--verify-only'),
+    skipTests: args.includes('--skip-tests'),
+    refuseDirectPublish: args.includes('--refuse-direct-publish'),
+    extraArgs: args.filter((a) => !OWN_FLAGS.has(a)),
+  };
+}
+
+/**
+ * True when npm is running this script as part of `npm publish` (through the
+ * `prepublishOnly` or `publish` lifecycle scripts). `npm run publish` sets
+ * npm_command to `run` (or `run-script` on older npm), so it is not affected.
+ */
+function invokedByPublishLifecycle(env) {
+  return String((env || {}).npm_command || '') === 'publish';
+}
 
 /**
  * npm refuses to republish a version, and says so in several different ways
@@ -64,9 +92,8 @@ function sameRegistry(a, b) {
 }
 
 /**
- * Swap the package name without reformatting the file. Round-tripping through
- * JSON.parse/stringify would rewrite every line, so a failure mid-publish
- * would leave a diff far larger than the one thing that changed.
+ * Swap the package name without reformatting the file, so the alias manifest
+ * differs from the primary one by the name and nothing else.
  */
 function withName(json, name) {
   const next = json.replace(/("name"\s*:\s*)"[^"]*"/, `$1${JSON.stringify(name)}`);
@@ -74,10 +101,59 @@ function withName(json, name) {
   return next;
 }
 
+const NPM_CLI_FILES = { npm: 'npm-cli.js', npx: 'npx-cli.js' };
+
+/**
+ * The JavaScript entry point of npm or npx, so they can be run with node
+ * directly instead of through a shell. Prefers the npm that is running this
+ * script (`npm_execpath`), then the npm bundled next to node.
+ */
+function npmCli(tool, env = process.env, execPath = process.execPath, exists = fs.existsSync) {
+  const file = NPM_CLI_FILES[tool];
+  if (!file) return null;
+  const candidates = [];
+  const via = (env || {}).npm_execpath;
+  if (via && /^np[mx]-cli\.js$/.test(path.basename(via))) {
+    candidates.push(path.join(path.dirname(via), file));
+  }
+  const nodeDir = path.dirname(execPath);
+  candidates.push(path.join(nodeDir, 'node_modules', 'npm', 'bin', file));
+  candidates.push(path.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', file));
+  return candidates.find((c) => exists(c)) || null;
+}
+
+function quoteArg(a) {
+  const s = String(a);
+  return /[\s"&|<>^()%!]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+}
+
+/**
+ * How to spawn `cmd args`. npm and npx run under node without a shell, so
+ * arguments are passed exactly and paths with spaces work. A shell is used
+ * only where Windows requires one: a `.cmd` or `.bat` file, or an npm that
+ * cannot be located. Those get a single quoted command string.
+ */
+function commandFor(cmd, args, {
+  env = process.env, platform = process.platform, execPath = process.execPath, exists = fs.existsSync,
+} = {}) {
+  if (cmd === 'npm' || cmd === 'npx') {
+    const cli = npmCli(cmd, env, execPath, exists);
+    if (cli) return { file: execPath, args: [cli, ...args], shell: false };
+    if (platform === 'win32') return { file: [cmd, ...args].map(quoteArg).join(' '), args: [], shell: true };
+    return { file: cmd, args: [...args], shell: false };
+  }
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(cmd)) {
+    return { file: [cmd, ...args].map(quoteArg).join(' '), args: [], shell: true };
+  }
+  return { file: cmd, args: [...args], shell: false };
+}
+
 function run(cmd, args, opts = {}) {
-  return spawnSync(cmd, args, {
-    cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', ...opts,
-  });
+  const c = commandFor(cmd, args);
+  const options = {
+    cwd: ROOT, encoding: 'utf8', windowsHide: true, ...opts, shell: c.shell,
+  };
+  return c.shell ? spawnSync(c.file, options) : spawnSync(c.file, c.args, options);
 }
 
 /**
@@ -105,13 +181,21 @@ function webFilesOnDisk() {
     .map((d) => path.relative(ROOT, path.join(d.parentPath || d.path, d.name)).replace(/\\/g, '/'));
 }
 
-/** Ask npm what it would actually ship, rather than re-deriving its rules. */
-function packedPaths() {
-  const r = run('npm', ['pack', '--dry-run', '--json'], { timeout: 180000 });
-  const out = r.stdout || '';
-  const start = out.indexOf('[');
-  if (r.status !== 0 || start === -1) throw new Error(`npm pack failed:\n${out}${r.stderr || ''}`);
-  return JSON.parse(out.slice(start))[0].files.map((f) => f.path.replace(/\\/g, '/'));
+/**
+ * Entries (path and size) that are not the same in both tarballs, ignoring
+ * package.json, whose name is expected to differ. Empty when the two
+ * tarballs ship the same files.
+ */
+function fileSetDifference(first, second) {
+  const norm = (f) => String(f.path).replace(/\\/g, '/');
+  const key = (f) => `${norm(f)} (${f.size} bytes)`;
+  const keys = (list) => new Set(list.filter((f) => norm(f) !== 'package.json').map(key));
+  const a = keys(first);
+  const b = keys(second);
+  return [
+    ...[...a].filter((k) => !b.has(k)).map((k) => `only in the first: ${k}`),
+    ...[...b].filter((k) => !a.has(k)).map((k) => `only in the second: ${k}`),
+  ];
 }
 
 /**
@@ -135,13 +219,27 @@ function binIsCanonical(pkg) {
   return offenders.map(([key, target]) => `${key}: ${target}`);
 }
 
-/** Pack into `dest` and return the tarball path. The caller owns `dest`. */
-function packInto(dest) {
-  const r = run('npm', ['pack', '--pack-destination', dest], { timeout: 180000 });
-  if (r.status !== 0) throw new Error(`npm pack failed:\n${r.stdout || ''}${r.stderr || ''}`);
-  const tgz = fs.readdirSync(dest).find((f) => f.endsWith('.tgz'));
+/**
+ * Pack `source` into `dest` (created if needed) and return the tarball path
+ * with the file list npm reported for it. The caller owns `dest`.
+ */
+function packInto(dest, source = ROOT, extra = []) {
+  fs.mkdirSync(dest, { recursive: true });
+  const r = run('npm', ['pack', '--json', '--pack-destination', dest, ...extra],
+    { cwd: source, timeout: 180000 });
+  const out = r.stdout || '';
+  const start = out.indexOf('[');
+  if (r.status !== 0 || start === -1) {
+    throw new Error(`npm pack failed:\n${out}${r.stderr || (r.error && r.error.message) || ''}`);
+  }
+  const [info] = JSON.parse(out.slice(start));
+  const named = info && info.filename ? path.join(dest, path.basename(info.filename)) : null;
+  const tgz = named && fs.existsSync(named)
+    ? named
+    : (fs.readdirSync(dest).filter((f) => f.endsWith('.tgz')).map((f) => path.join(dest, f))[0]);
   if (!tgz) throw new Error('npm pack produced no tarball');
-  return path.join(dest, tgz);
+  const entries = ((info && info.files) || []).map((f) => ({ path: f.path.replace(/\\/g, '/'), size: f.size }));
+  return { tgz, files: entries.map((f) => f.path), entries };
 }
 
 /**
@@ -178,9 +276,6 @@ function binMissingShebang(pkg, readFile) {
  * declares a canonical `bin` -- so it passes all of them, installs cleanly, and
  * dies on `Cannot find module '../src/cli.js'` the first time anyone types the
  * command. Verified by building exactly that package.
- *
- * Until now the only proof it ran came AFTER publishing. npm versions are
- * immutable, so that answer arrives one step too late to act on.
  *
  * Offline on purpose. `--offline` makes npm fail rather than reach the network,
  * which keeps this honest (it can only be reading the tarball) and lets it run
@@ -240,26 +335,28 @@ function smokeTestTarball(tgz, binName, version) {
 }
 
 /**
- * The package.json INSIDE the tarball -- the file a consumer's npm reads.
- * `npm pack` copies it verbatim, so it is the last chance to see what will
- * actually be installed, and it is not necessarily what publish-time
- * normalization reports.
+ * The package.json INSIDE a tarball -- the file a consumer's npm reads. It is
+ * not necessarily what publish-time normalization reports. Returns null only
+ * when `tar` is not installed.
  */
+function tarballManifest(tgz) {
+  // Run from the tarball's directory with a bare file name: GNU tar reads a
+  // drive-letter path such as C:\... as a remote host.
+  const out = run('tar', ['-xzOf', path.basename(tgz), 'package/package.json'], {
+    timeout: 60000, cwd: path.dirname(tgz),
+  });
+  if (out.error && out.error.code === 'ENOENT') return null;
+  if (out.status !== 0 || !out.stdout) {
+    throw new Error(`could not read the packed manifest:\n${out.stderr || (out.error && out.error.message) || `tar exited ${out.status}`}`);
+  }
+  return JSON.parse(out.stdout);
+}
+
+/** Pack this checkout into a temporary directory and read the tarball's manifest. */
 function packedManifest() {
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-pack-'));
   try {
-    const r = run('npm', ['pack', '--pack-destination', dest], { timeout: 180000 });
-    if (r.status !== 0) throw new Error(`npm pack failed:\n${r.stdout || ''}${r.stderr || ''}`);
-    const tgz = fs.readdirSync(dest).find((f) => f.endsWith('.tgz'));
-    if (!tgz) throw new Error('npm pack produced no tarball');
-    const out = run('tar', ['-xzOf', tgz, 'package/package.json'], {
-      timeout: 60000, cwd: dest, shell: false,
-    });
-    if (out.error && out.error.code === 'ENOENT') return null;
-    if (out.status !== 0 || !out.stdout) {
-      throw new Error(`could not read the packed manifest:\n${out.stderr || (out.error && out.error.message) || `tar exited ${out.status}`}`);
-    }
-    return JSON.parse(out.stdout);
+    return tarballManifest(packInto(dest).tgz);
   } finally {
     fs.rmSync(dest, { recursive: true, force: true });
   }
@@ -362,11 +459,18 @@ function reportVerification(name, version, result) {
   return false;
 }
 
+/** The commit a tag points at, peeled through an annotated tag; null if absent. */
+function tagCommit(tag) {
+  const r = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}^{commit}`]);
+  return r.status === 0 ? (r.stdout || '').trim() || null : null;
+}
+
 function step(n, msg) { console.log(`\n[${n}] ${msg}`); }
 function die(msg) { console.error(`\nFAILED: ${msg}\n`); process.exit(1); }
 
-function publish(name, extraArgs, dryRun) {
-  const args = ['publish', '--access', 'public', '--registry', REGISTRY, ...extraArgs];
+/** Publish one tarball. `command` names how the user started this, for hints. */
+function publish(name, tgz, extraArgs, dryRun, command = 'npm run release') {
+  const args = ['publish', tgz, '--access', 'public', '--registry', REGISTRY, '--ignore-scripts', ...extraArgs];
   if (dryRun) args.push('--dry-run');
   console.log(`    npm ${args.join(' ')}   (as ${name})`);
 
@@ -375,7 +479,7 @@ function publish(name, extraArgs, dryRun) {
   const r = run('npm', args, { stdio: ['inherit', 'pipe', 'pipe'] });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   process.stdout.write(out);
-  if (r.status === 0) return 'published';
+  if (r.status === 0) return dryRun ? 'rehearsed' : 'published';
 
   if (isAlreadyPublished(out)) {
     console.log(`    already on the registry at this version -- skipping`);
@@ -390,7 +494,7 @@ function publish(name, extraArgs, dryRun) {
   if (needsOneTimePassword(out) && !dryRun) {
     if (!process.stdin.isTTY) {
       throw new Error(`${name} needs a one-time password, and this is not an interactive terminal.\n`
-        + `Re-run it yourself with a code:  npm run release -- --otp=<code>`);
+        + `Re-run it yourself with a code:  ${command} -- --otp=<code>`);
     }
     console.log('\n    npm needs a one-time password for this publish.');
     console.log('    Handing the terminal to npm -- follow its prompt, then it will continue.\n');
@@ -399,12 +503,61 @@ function publish(name, extraArgs, dryRun) {
     throw new Error(`npm publish failed for ${name} after the one-time password prompt (exit ${retry.status})`);
   }
 
-  throw new Error(`npm publish failed for ${name} (exit ${r.status})`);
+  throw new Error(`npm publish failed for ${name} (exit ${r.status || (r.error && r.error.message)})`);
 }
 
-function main() {
-  const extraArgs = process.argv.slice(2).filter((a) => a !== '--dry-run' && a !== '--verify-only');
-  const dryRun = process.argv.slice(2).includes('--dry-run');
+function verifyOnly(pkg) {
+  console.log(`Verifying v${pkg.version} on ${REGISTRY}\n`);
+  const results = [
+    [PRIMARY, verifyPublished(PRIMARY, pkg.version)],
+    [ALIAS, verifyPublished(ALIAS, pkg.version)],
+  ];
+  let allOk = true;
+  for (const [name, result] of results) {
+    console.log(`\n[${name}]`);
+    if (!reportVerification(name, pkg.version, result)) allOk = false;
+  }
+  if (!allOk) {
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`\nBoth names are live and verified at ${pkg.version}.`);
+}
+
+/** Check one tarball's own manifest. Returns false when tar is unavailable. */
+function checkTarballManifest(tgz, name, version, packedFiles) {
+  const shipped = tarballManifest(tgz);
+  if (shipped === null) return false;
+  if (shipped.name !== name) throw new Error(`the tarball ${path.basename(tgz)} is named ${shipped.name}, not ${name}`);
+  if (shipped.version !== version) {
+    throw new Error(`the tarball ${path.basename(tgz)} carries version ${shipped.version}, not ${version}`);
+  }
+  const shippedBin = binIsCanonical(shipped);
+  if (shippedBin.length) {
+    throw new Error(`the TARBALL declares bin paths npm will drop on install:\n  ${shippedBin.join('\n  ')}`);
+  }
+  const bins = Object.keys(shipped.bin || {});
+  if (!bins.length) {
+    throw new Error('the tarball declares no bin at all -- installing it would give the user no command.');
+  }
+  const have = new Set(packedFiles);
+  for (const [bin, target] of Object.entries(shipped.bin)) {
+    if (!have.has(String(target).replace(/^\.\//, '').replace(/\\/g, '/'))) {
+      throw new Error(`the tarball's bin "${bin}" points at ${target}, which is not in the tarball`);
+    }
+  }
+  return true;
+}
+
+function main(argv = process.argv.slice(2)) {
+  const opts = parseArgs(argv);
+
+  if (opts.refuseDirectPublish || invokedByPublishLifecycle(process.env)) {
+    throw new Error('do not run `npm publish` directly. It uploads this directory under one name only '
+      + 'and skips the packaging checks and smoke tests.\n'
+      + 'Use  npm run publish  (fast; skips the test suite) or  npm run release  (runs the full test suite first).');
+  }
+
   const original = fs.readFileSync(PKG_PATH, 'utf8');
   const pkg = JSON.parse(original);
 
@@ -412,153 +565,158 @@ function main() {
   // published correctly but could not yet SEE itself on the registry must be
   // re-checkable without touching the registry again -- there is nothing left
   // to publish, and a version can never be published twice anyway.
-  if (process.argv.slice(2).includes('--verify-only')) {
-    console.log(`Verifying v${pkg.version} on ${REGISTRY}\n`);
-    const results = [
-      [PRIMARY, verifyPublished(PRIMARY, pkg.version)],
-      [ALIAS, verifyPublished(ALIAS, pkg.version)],
-    ];
-    let allOk = true;
-    for (const [name, result] of results) {
-      console.log(`\n[${name}]`);
-      if (!reportVerification(name, pkg.version, result)) allOk = false;
-    }
-    if (!allOk) process.exit(1);
-    console.log(`\nBoth names are live and verified at ${pkg.version}.`);
+  if (opts.verifyOnly) {
+    verifyOnly(pkg);
     return;
   }
 
-  console.log(`Squad Hub release -- v${pkg.version}${dryRun ? '  (DRY RUN, nothing is published)' : ''}`);
+  const command = opts.skipTests ? 'npm run publish' : 'npm run release';
+  const tag = `v${pkg.version}`;
+  let n = 0;
+  const next = (msg) => step(++n, msg);
 
-  step(1, 'checking the working tree is clean');
+  console.log(`Squad Hub ${opts.skipTests ? 'publish' : 'release'} -- v${pkg.version}`
+    + `${opts.dryRun ? '  (DRY RUN, nothing is published)' : ''}`);
+  if (opts.skipTests) {
+    console.log('  The full test suite is skipped (--skip-tests). Every packaging check and both');
+    console.log('  smoke tests still run. Use  npm run release  to run the test suite as well.');
+  }
+
+  next('checking the working tree is clean');
   const status = run('git', ['status', '--porcelain']);
-  if (status.status !== 0) die('git status failed; run this from the checkout');
+  if (status.status !== 0) throw new Error('git status failed; run this from the checkout');
   if (status.stdout.trim()) {
-    die(`the working tree has uncommitted changes:\n${status.stdout}\nCommit or stash them -- a release must match a commit.`);
+    throw new Error(`the working tree has uncommitted changes:\n${status.stdout}\nCommit or stash them -- a release must match a commit.`);
   }
   const branch = (run('git', ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim();
   const commit = (run('git', ['rev-parse', '--short', 'HEAD']).stdout || '').trim();
+  const head = (run('git', ['rev-parse', 'HEAD']).stdout || '').trim();
   console.log(`    clean -- ${branch} @ ${commit}`);
   console.log(`    publishing THIS commit. If that is not what you meant, stop now.`);
+  const taggedAt = tagCommit(tag);
+  if (taggedAt && taggedAt !== head) {
+    console.log(`    WARNING: ${tag} already exists at ${taggedAt.slice(0, 8)}, not this commit.`);
+    console.log(`    The tag will not be moved. Make sure this commit is the ${tag} you mean to publish.`);
+  }
 
-  step(2, 'checking you are logged in to the public registry');
+  next('checking you are logged in to the public registry');
   const who = run('npm', ['whoami', '--registry', REGISTRY]);
   if (who.status !== 0) {
-    die(`not logged in to ${REGISTRY}\nRun:  npm login --registry=${REGISTRY}`);
+    if (!opts.dryRun) throw new Error(`not logged in to ${REGISTRY}\nRun:  npm login --registry=${REGISTRY}`);
+    console.log(`    not logged in to ${REGISTRY} -- the rehearsal continues, a real publish would stop here`);
+  } else {
+    console.log(`    logged in as ${who.stdout.trim()}`);
   }
-  console.log(`    logged in as ${who.stdout.trim()}`);
   const configured = run('npm', ['config', 'get', 'registry']).stdout;
   if (!sameRegistry(configured, REGISTRY)) {
     console.log(`    note: your default registry is ${String(configured).trim()} -- publishing explicitly to ${REGISTRY}`);
   }
 
-  step(3, 'running the full test suite');
-  const tests = run('npm', ['test'], { stdio: 'inherit' });
-  if (tests.status !== 0) die('tests failed -- nothing published');
-
-  step(4, 'checking the tarball contains what the code reads');
-  // Independent of the test suite on purpose. This runs against whatever
-  // commit is checked out, including one whose suite predates the packaging
-  // fix or lacks it entirely -- which is exactly the checkout most likely to
-  // ship a package that installs cleanly and serves a blank page. npm
-  // versions are immutable, so this must be caught BEFORE publish, not after.
-  const required = requiredInPackage(pkg, webFilesOnDisk);
-  const missing = missingFromPack(packedPaths(), required);
-  if (missing.length) {
-    die(`the package would ship without files the code reads:\n  ${missing.join('\n  ')}\n`
-      + `\nThe "files" list in package.json does not cover them. This checkout is not `
-      + `releasable -- publishing it would put a broken ${pkg.version} on the registry permanently.`);
-  }
-  console.log(`    ${required.length} runtime files present in the tarball`);
-
-  const rewritten = binIsCanonical(pkg);
-  if (rewritten.length) {
-    die(`npm would rewrite these bin entries on publish:\n  ${rewritten.join('\n  ')}\n`
-      + `\nIt reports that as "script name ... was invalid and removed", which reads like the\n`
-      + `CLI is being dropped. Write the path without a leading "./" so there is nothing to rewrite.`);
-  }
-  console.log('    bin is in npm\'s canonical form, so publish will not rewrite it');
-
-  const noShebang = binMissingShebang(pkg, (f) => fs.readFileSync(path.join(ROOT, f), 'utf8').slice(0, 2));
-  if (noShebang.length) {
-    die(`these bin targets do not start with a shebang:\n  ${noShebang.join('\n  ')}\n`
-      + `\nWithout one, npm's Windows shim hands the .js to the file association instead of\n`
-      + `running node -- which can exit 0 having done nothing, printing neither stdout nor\n`
-      + `stderr. Add "#!/usr/bin/env node" as the first line.`);
-  }
-  console.log('    every bin target starts with a shebang, so npm will shim it through node');
-
-  // The tarball's own package.json, not this one. They can differ -- files can
-  // be excluded, and the manifest can be rewritten on the way out -- and it is
-  // the tarball's copy that a consumer's npm reads when deciding what command
-  // to install. No check of the source file can see that.
-  const shipped = packedManifest();
-  if (shipped === null) {
-    console.log('    note: no tar available to open the tarball -- checked the source manifest only');
-  } else {
-    const shippedBin = binIsCanonical(shipped);
-    if (shippedBin.length) {
-      die(`the TARBALL declares bin paths npm will drop on install:\n  ${shippedBin.join('\n  ')}`);
-    }
-    const bins = Object.keys(shipped.bin || {});
-    if (!bins.length) {
-      die('the tarball declares no bin at all -- installing it would give the user no command.');
-    }
-    for (const [name, target] of Object.entries(shipped.bin)) {
-      if (!fs.existsSync(path.join(ROOT, target))) {
-        die(`the tarball's bin "${name}" points at ${target}, which does not exist`);
-      }
-    }
-    console.log(`    the tarball installs: ${bins.join(', ')}`);
+  if (!opts.skipTests) {
+    next('running the full test suite');
+    const tests = run('npm', ['test'], { stdio: 'inherit' });
+    if (tests.status !== 0) throw new Error('tests failed -- nothing published');
   }
 
-  // Everything above reads a manifest or a file list. None of it runs the
-  // package. This does -- offline, from the tarball, through npm's own shim --
-  // because the alternative is finding out after an immutable publish.
-  step(5, 'installing the tarball and running it, before anything is published');
-  const smokeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-tgz-'));
-  try {
-    const tgz = packInto(smokeDir);
-    const binName = Object.keys(pkg.bin || {})[0] || PRIMARY;
-    const smoke = smokeTestTarball(tgz, binName, pkg.version);
-    if (!smoke.ok) {
-      die(`the packaged version does not work: ${smoke.reason}\n\n`
-        + `${String(smoke.output).split('\n').map((l) => `      ${l}`).join('\n')}\n\n`
-        + `Nothing has been published. Fix this first -- a published version cannot be replaced.`);
-    }
-    console.log(`    installed from the tarball and ran: ${binName} --version -> ${smoke.output}`);
-  } finally {
-    fs.rmSync(smokeDir, { recursive: true, force: true });
-  }
-
-  step(6, `publishing ${PRIMARY}`);
-  const primary = publish(PRIMARY, extraArgs, dryRun);
-
-  step(7, `publishing ${ALIAS}`);
+  const binName = Object.keys(pkg.bin || {})[0] || PRIMARY;
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-hub-release-'));
+  let primary;
   let alias;
   try {
-    fs.writeFileSync(PKG_PATH, withName(original, ALIAS));
-    alias = publish(ALIAS, extraArgs, dryRun);
+    next('packing the tarball and checking it contains what the code reads');
+    // Independent of the test suite on purpose: this runs on whatever commit
+    // is checked out, with or without --skip-tests.
+    const primaryPack = packInto(path.join(work, 'primary'));
+    const required = requiredInPackage(pkg, webFilesOnDisk);
+    const missing = missingFromPack(primaryPack.files, required);
+    if (missing.length) {
+      throw new Error(`the package would ship without files the code reads:\n  ${missing.join('\n  ')}\n`
+        + `\nThe "files" list in package.json does not cover them. This checkout is not `
+        + `releasable -- publishing it would put a broken ${pkg.version} on the registry permanently.`);
+    }
+    console.log(`    ${required.length} runtime files present in the tarball`);
+
+    const rewritten = binIsCanonical(pkg);
+    if (rewritten.length) {
+      throw new Error(`npm would rewrite these bin entries on publish:\n  ${rewritten.join('\n  ')}\n`
+        + `\nIt reports that as "script name ... was invalid and removed", which reads like the\n`
+        + `CLI is being dropped. Write the path without a leading "./" so there is nothing to rewrite.`);
+    }
+    console.log('    bin is in npm\'s canonical form, so publish will not rewrite it');
+
+    const noShebang = binMissingShebang(pkg, (f) => fs.readFileSync(path.join(ROOT, f), 'utf8').slice(0, 2));
+    if (noShebang.length) {
+      throw new Error(`these bin targets do not start with a shebang:\n  ${noShebang.join('\n  ')}\n`
+        + `\nWithout one, npm's Windows shim hands the .js to the file association instead of\n`
+        + `running node -- which can exit 0 having done nothing, printing neither stdout nor\n`
+        + `stderr. Add "#!/usr/bin/env node" as the first line.`);
+    }
+    console.log('    every bin target starts with a shebang, so npm will shim it through node');
+
+    // The tarball's own package.json is what a consumer's npm reads; no check
+    // of the source file can see it.
+    if (checkTarballManifest(primaryPack.tgz, PRIMARY, pkg.version, primaryPack.files)) {
+      console.log(`    the tarball is ${PRIMARY}@${pkg.version} and installs: ${binName}`);
+    } else {
+      console.log('    note: no tar available to open the tarball -- checked the source manifest only');
+    }
+
+    next(`building the ${ALIAS} tarball from the same files`);
+    const stage = path.join(work, 'alias-source');
+    for (const f of primaryPack.files) {
+      if (f === 'package.json') continue;
+      const to = path.join(stage, f);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(path.join(ROOT, f), to);
+    }
+    fs.writeFileSync(path.join(stage, 'package.json'), withName(original, ALIAS));
+    const aliasPack = packInto(path.join(work, 'alias'), stage, ['--ignore-scripts']);
+    const drift = fileSetDifference(primaryPack.entries, aliasPack.entries);
+    if (drift.length) {
+      throw new Error(`the two tarballs do not ship the same files:\n  ${drift.join('\n  ')}`);
+    }
+    if (checkTarballManifest(aliasPack.tgz, ALIAS, pkg.version, aliasPack.files)) {
+      console.log(`    ${ALIAS}@${pkg.version}: the same ${primaryPack.files.length} files; only the name differs`);
+    } else {
+      console.log(`    ${ALIAS}: the same ${primaryPack.files.length} files (no tar to open the manifest)`);
+    }
+
+    // Everything above reads a manifest or a file list. This runs each
+    // package -- offline, from its tarball, through npm's own shim -- because
+    // the alternative is finding out after an immutable publish.
+    next('installing both tarballs and running them, before anything is published');
+    for (const [name, tgz] of [[PRIMARY, primaryPack.tgz], [ALIAS, aliasPack.tgz]]) {
+      const smoke = smokeTestTarball(tgz, binName, pkg.version);
+      if (!smoke.ok) {
+        throw new Error(`the packaged ${name} does not work: ${smoke.reason}\n\n`
+          + `${String(smoke.output).split('\n').map((l) => `      ${l}`).join('\n')}\n\n`
+          + `Nothing has been published. Fix this first -- a published version cannot be replaced.`);
+      }
+      console.log(`    ${name}: installed from the tarball and ran ${binName} --version -> ${smoke.output}`);
+    }
+
+    next(`publishing ${PRIMARY}`);
+    primary = publish(PRIMARY, primaryPack.tgz, opts.extraArgs, opts.dryRun, command);
+
+    next(`publishing ${ALIAS}`);
+    alias = publish(ALIAS, aliasPack.tgz, opts.extraArgs, opts.dryRun, command);
   } finally {
-    // Unconditional: a half-published release must never leave the checkout
-    // claiming to be the alias package.
-    fs.writeFileSync(PKG_PATH, original);
-    console.log('    package.json restored');
+    fs.rmSync(work, { recursive: true, force: true });
   }
 
-  console.log(`\nDone. v${pkg.version}: ${PRIMARY} ${primary}, ${ALIAS} ${alias}.`);
+  if (opts.dryRun) {
+    console.log(`\nDry run complete. v${pkg.version} would publish as ${PRIMARY} and ${ALIAS};`
+      + ' nothing was published, verified, or tagged.');
+    return;
+  }
 
-  if (dryRun) return;
+  console.log(`\nv${pkg.version}: ${PRIMARY} ${primary}, ${ALIAS} ${alias}.`);
 
-  step(8, 'proving the published packages actually install a working command');
-  // Every check so far inspected intent. This asks the registry, which is the
-  // only answer a user ever gets.
-  //
+  next('proving the published packages actually install a working command');
   // BOTH NAMES, not just the primary. They are separate packages to npm and
   // have already disagreed from an identical tarball: on 0.2.0 the unscoped
   // name failed while the scoped one passed, and it was the disagreement that
-  // located the fault. Verifying one of two published things and reporting
-  // success is how the other rots unnoticed.
+  // located the fault.
   let verified = true;
   for (const name of [PRIMARY, ALIAS]) {
     console.log(`\n  [${name}]`);
@@ -569,26 +727,20 @@ function main() {
     console.error(`If it is only propagation, re-check with:  npm run verify`);
     console.error(`If it genuinely installs no command, this version cannot be replaced:`);
     console.error(`  1. npm deprecate ${PRIMARY}@${pkg.version} "broken packaging, use a later version"`);
+    console.error(`     npm deprecate ${ALIAS}@${pkg.version} "broken packaging, use a later version"`);
     console.error(`  2. fix the cause, bump the version, and release again.\n`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
-  step(9, 'tagging this commit');
+  next('tagging this commit');
   // A published version that cannot be checked out is a version nobody can
-  // reproduce a bug against later. That is not hypothetical: this project has
-  // published versions with no tag, and when one of them needed investigating
-  // there was no way to `git worktree add` it.
-  //
-  // Created locally and never pushed for you -- pushing is a decision, and the
-  // release has already done the irreversible part.
-  const tag = `v${pkg.version}`;
-  const existing = run('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]);
-  if (existing.status === 0) {
-    const at = (existing.stdout || '').trim();
-    const head = (run('git', ['rev-parse', 'HEAD']).stdout || '').trim();
-    console.log(at === head
+  // reproduce a bug against later. Created locally and never pushed for you.
+  const existing = tagCommit(tag);
+  if (existing) {
+    console.log(existing === head
       ? `    ${tag} already points at this commit`
-      : `    WARNING: ${tag} already exists and points at ${at.slice(0, 8)}, not this commit`);
+      : `    WARNING: ${tag} already exists and points at ${existing.slice(0, 8)}, not this commit`);
   } else {
     const made = run('git', ['tag', tag]);
     console.log(made.status === 0
@@ -610,7 +762,8 @@ if (require.main === module) {
 module.exports = {
   isAlreadyPublished, needsOneTimePassword, sameRegistry, withName,
   requiredInPackage, missingFromPack, binIsCanonical, packedManifest,
-  packInto, smokeTestTarball, binMissingShebang,
+  tarballManifest, packInto, smokeTestTarball, binMissingShebang,
   classifyAttempt, verifyPublished, reportVerification,
+  parseArgs, invokedByPublishLifecycle, npmCli, commandFor, fileSetDifference,
   PRIMARY, ALIAS, REGISTRY,
 };

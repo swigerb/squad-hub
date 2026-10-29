@@ -91,7 +91,7 @@ check('exhaustive CI is a read-only, cancellable, time-bounded gate, not a publi
   assert.match(source, /concurrency:\n  group: mutation-acceptance-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true/);
   assert.match(source, /timeout-minutes: \d+/);
   assert.ok(Number(source.match(/timeout-minutes: (\d+)/)[1]) <= 360);
-  assert.doesNotMatch(source, /npm publish|npm run release|id-token: write|secrets\.|contents: write|git push|git tag/);
+  assert.doesNotMatch(source, /npm publish|npm run release|npm run publish|id-token: write|secrets\.|contents: write|git push|git tag/);
 });
 check('mutation CI can start on an unmutated checkout with no stranded-marker collision', () => {
   if (process.env.MUTANT) return; // Catalogue runs intentionally carry a marker.

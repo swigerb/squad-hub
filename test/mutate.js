@@ -2116,10 +2116,77 @@ import { syncSession } from './js/detail-control.js';`,
   {
     name: 'the release stops looking inside the tarball at all',
     file: 'scripts/release-npm.js',
-    find: `function packedManifest() {`,
-    replace: `function packedManifest() {
+    find: `function tarballManifest(tgz) {`,
+    replace: `function tarballManifest(tgz) {
   if (process.env.MUTANT) return null; // MUTATION`,
     mustFail: 'the tarball can actually be opened, so these checks are not silently skipped',
+  },
+  {
+    name: 'the release stops comparing the alias tarball with the primary',
+    file: 'scripts/release-npm.js',
+    find: `function fileSetDifference(first, second) {`,
+    replace: `function fileSetDifference(first, second) {
+  if (process.env.MUTANT) return []; // MUTATION`,
+    mustFail: 'the alias tarball must ship the same files as the primary',
+  },
+  {
+    name: 'npm publish run as a lifecycle script is no longer recognized',
+    file: 'scripts/release-npm.js',
+    find: `function invokedByPublishLifecycle(env) {`,
+    replace: `function invokedByPublishLifecycle(env) {
+  if (process.env.MUTANT) return false; // MUTATION`,
+    mustFail: 'only the npm publish lifecycle counts as a direct publish',
+  },
+  {
+    name: 'a bare npm publish is no longer refused',
+    file: 'scripts/release-npm.js',
+    find: `  if (opts.refuseDirectPublish || invokedByPublishLifecycle(process.env)) {`,
+    replace: `  if (!process.env.MUTANT && (opts.refuseDirectPublish || invokedByPublishLifecycle(process.env))) { // MUTATION`,
+    mustFail: 'a bare npm publish is stopped before the release touches git or npm',
+  },
+  {
+    name: 'npm run release stops running the test suite',
+    file: 'scripts/release-npm.js',
+    find: `  if (!opts.skipTests) {
+    next('running the full test suite');`,
+    replace: `  if (!opts.skipTests && !process.env.MUTANT) { // MUTATION
+    next('running the full test suite');`,
+    mustFail: 'npm run release stops when the test suite fails, before packing anything',
+  },
+  {
+    name: '--skip-tests also skips the tarball smoke tests',
+    file: 'scripts/release-npm.js',
+    find: `    for (const [name, tgz] of [[PRIMARY, primaryPack.tgz], [ALIAS, aliasPack.tgz]]) {`,
+    replace: `    for (const [name, tgz] of (process.env.MUTANT && opts.skipTests) ? [] : [[PRIMARY, primaryPack.tgz], [ALIAS, aliasPack.tgz]]) { // MUTATION`,
+    mustFail: 'npm run publish still installs and runs both tarballs before publishing',
+  },
+  {
+    name: 'npm publish is pointed at the directory instead of the checked tarball',
+    file: 'scripts/release-npm.js',
+    find: `  const args = ['publish', tgz, '--access', 'public', '--registry', REGISTRY, '--ignore-scripts', ...extraArgs];`,
+    replace: `  const args = ['publish', ...(process.env.MUTANT ? [] : [tgz]), '--access', 'public', '--registry', REGISTRY, '--ignore-scripts', ...extraArgs]; // MUTATION`,
+    mustFail: 'each name is published from its own checked tarball, primary first',
+  },
+  {
+    name: 'flags meant for npm publish, such as --otp, are dropped',
+    file: 'scripts/release-npm.js',
+    find: `    extraArgs: args.filter((a) => !OWN_FLAGS.has(a)),`,
+    replace: `    extraArgs: process.env.MUTANT ? [] : args.filter((a) => !OWN_FLAGS.has(a)), // MUTATION`,
+    mustFail: 'a real publish passes extra flags such as --otp through, without --dry-run',
+  },
+  {
+    name: 'an annotated release tag is compared without peeling it to its commit',
+    file: 'scripts/release-npm.js',
+    find: `  const r = run('git', ['rev-parse', '-q', '--verify', \`refs/tags/\${tag}^{commit}\`]);`,
+    replace: `  const r = run('git', ['rev-parse', '-q', '--verify', process.env.MUTANT ? \`refs/tags/\${tag}\` : \`refs/tags/\${tag}^{commit}\`]); // MUTATION`,
+    mustFail: 'an annotated tag on this commit is not reported as another commit',
+  },
+  {
+    name: 'a verified release reports a tag it never created',
+    file: 'scripts/release-npm.js',
+    find: `    const made = run('git', ['tag', tag]);`,
+    replace: `    const made = process.env.MUTANT ? { status: 0 } : run('git', ['tag', tag]); // MUTATION`,
+    mustFail: 'a verified release tags the commit it published',
   },
   {
     name: 'verification cannot tell a missing version from a missing command',

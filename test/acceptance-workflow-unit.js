@@ -137,7 +137,7 @@ check('candidate CI is read-only, cancellable and time-bounded, with no publishi
   assert.match(candidate, /permissions:\n  contents: read/);
   assert.match(candidate, /concurrency:\n  group: candidate-acceptance-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true/);
   assert.ok(Number(candidate.match(/timeout-minutes: (\d+)/)[1]) <= 90);
-  assert.doesNotMatch(candidate, /npm publish|npm run release|id-token: write|secrets\.|contents: write|git push|git tag/);
+  assert.doesNotMatch(candidate, /npm publish|npm run release|npm run publish|id-token: write|secrets\.|contents: write|git push|git tag/);
 });
 check('the existing Linux Tests matrix is untouched by the acceptance workflows', () => {
   const tests = read('.github', 'workflows', 'tests.yml');
