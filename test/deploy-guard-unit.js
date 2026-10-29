@@ -231,7 +231,6 @@ check('THE README EXAMPLE IS ONE THAT ACTUALLY DEPLOYS', () => {
   assert.match(example, /-Owner /, 'the first README example omits -Owner, which the script refuses without');
 });
 
-console.log(`\n${pass} passed, ${fail} failed`);
 check("an existing app's plan is read from BOTH appServicePlanId and serverFarmId (#290)", () => {
   // azure-cli 2.91 fills only serverFarmId; reading appServicePlanId alone
   // fell through to a guessed plan name and could create a second, billed plan.
@@ -252,5 +251,7 @@ check('a failed app lookup (auth, network) refuses rather than reading as "no ap
   assert.match(src, /\$LASTEXITCODE -ne 0 -and \$LASTEXITCODE -ne 3\) \{\s*\n\s*Fail "could not read app/,
     'any az failure is treated as "the app does not exist", which guesses a plan');
 });
+
+console.log(`\n${pass} passed, ${fail} failed`);
 
 process.exit(fail ? 1 : 0);
