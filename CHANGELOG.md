@@ -6,6 +6,15 @@ GitHub release date. Versions are published to npm as `squad-hub` and
 
 ## [Unreleased]
 
+### Fixed
+
+- **`deploy-appservice.ps1` finds an existing app's plan on current az CLI
+  (#290).** azure-cli 2.91 leaves `appServicePlanId` null and fills only
+  `serverFarmId`, so the lookup fell back to a guessed `asp-<name>` plan. It
+  now reads either field. If the app exists but its plan can't be read, or if
+  the lookup itself fails, the script refuses and asks for `-Plan`. It no
+  longer guesses.
+
 ### Changed
 
 - **`npm run publish` publishes without the full test suite.** It runs the

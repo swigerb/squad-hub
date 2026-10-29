@@ -100,13 +100,23 @@ if ($usingActive) {
 # creates a second plan, leaves the app on the first, and bills for both -- which
 # is exactly what happened the first time this ran.
 if (-not $Plan) {
-  # `appServicePlanId`, NOT `serverFarmId`. The latter returns nothing, and with
-  # stderr redirected the failure is silent -- so the script fell through to a
-  # guessed name, created a SECOND plan, left the app on the first, and billed
-  # for both. Which is exactly what happened, twice.
-  $existingFarm = az webapp show -n $Name -g $ResourceGroup --query appServicePlanId -o tsv 2>$null
-  if ($existingFarm) {
-    $Plan = $existingFarm.Split('/')[-1]
+  # Read BOTH plan fields. Which one az populates has flipped between CLI
+  # versions (2.91 fills only `serverFarmId`, issue #290), and reading the empty
+  # one silently fell through to a guessed name -- which created a SECOND plan,
+  # left the app on the first, and billed for both. So an app that exists but
+  # whose plan cannot be read is a refusal, never a guess.
+  $existingApp = az webapp show -n $Name -g $ResourceGroup --query "{id: id, plan: appServicePlanId || serverFarmId}" -o json 2>$null | Out-String
+  # az exits 3 for "resource not found". Anything else non-zero (auth, network,
+  # wrong subscription) says nothing about whether the app exists.
+  if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) {
+    Fail "could not read app '$Name' in '$ResourceGroup' (az exit $LASTEXITCODE), so its plan is unknown. Check access to the subscription, or pass -Plan."
+  }
+  $existingApp = if ($LASTEXITCODE -eq 0 -and $existingApp.Trim()) { $existingApp | ConvertFrom-Json } else { $null }
+  if ($existingApp -and $existingApp.id -and -not $existingApp.plan) {
+    Fail "app '$Name' exists but az reported neither appServicePlanId nor serverFarmId, so its plan is unknown. Pass -Plan <its plan name> rather than let this guess one and create a second plan."
+  }
+  if ($existingApp -and $existingApp.plan) {
+    $Plan = $existingApp.plan.Split('/')[-1]
     Write-Host "app already exists on plan '$Plan'"
   } else {
     $Plan = "asp-$Name"
