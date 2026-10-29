@@ -16,7 +16,7 @@
  */
 
 const assert = require('assert');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
 const crypto = require('crypto');
 const path = require('path');
@@ -411,28 +411,67 @@ await (async () => {
 // C. CLI entry point: the sqhd1. refusal happens before any network call
 // ---------------------------------------------------------------------------
 await (async () => {
-  const deviceToken = new DeviceTokens({ secret: 'test-secret' }).mint({ key: 'whatever' });
+  const fs = require('fs');
+  const net = require('net');
+  const os = require('os');
 
-  const t0 = Date.now();
-  const r = spawnSync(process.execPath, [
-    BIN, 'mcp', '--hub', 'http://198.51.100.1:1', '--token', deviceToken,
-  ], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-  const elapsed = Date.now() - t0;
+  // Hermetic: a throwaway home, and none of the caller's hub settings. On a
+  // machine that is signed in to a real hub, `squad-hub mcp` with no
+  // arguments would otherwise start a real MCP session against it.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sqhub-mcp-cli-'));
+  const env = { ...process.env, SQUAD_HUB_HOME: home };
+  for (const k of Object.keys(env)) {
+    if (/^SQUAD_HUB_/i.test(k) && k !== 'SQUAD_HUB_HOME') delete env[k];
+  }
 
-  check('squad-hub mcp refuses a sqhd1. token', () => {
-    assert.strictEqual(r.status, 2, JSON.stringify(r));
-    assert.match(r.stderr, /device token/);
+  // A hub that only counts. Reachable, so trying it costs nothing and is
+  // seen, rather than an unroutable address whose cost depends on the
+  // machine's network stack.
+  let connections = 0;
+  const listener = net.createServer((socket) => { connections += 1; socket.destroy(); });
+  await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  const hubUrl = `http://127.0.0.1:${listener.address().port}`;
+
+  // Asynchronous, so the listener above can see a connection while the CLI
+  // runs, and killed outright on a deadline generous enough for a loaded
+  // machine; stdin is closed so a server that did start would end.
+  const cli = (args) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN, ...args], { env, windowsHide: true });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.stdin.end();
+    const timer = setTimeout(() => { child.kill(); }, 60000);
+    child.on('error', (e) => { clearTimeout(timer); resolve({ status: null, stdout, stderr: `${stderr}${e.message}` }); });
+    child.on('close', (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal, stdout, stderr });
+    });
   });
 
-  check('the refusal is instant -- no attempt was made to reach the (unreachable) hub', () => {
-    assert.ok(elapsed < 5000, `took ${elapsed}ms; looks like it tried the network`);
-  });
+  try {
+    const deviceToken = new DeviceTokens({ secret: 'test-secret' }).mint({ key: 'whatever' });
+    const r = await cli(['mcp', '--hub', hubUrl, '--token', deviceToken]);
+    await new Promise((resolve) => setImmediate(resolve));
 
-  const noArgs = spawnSync(process.execPath, [BIN, 'mcp'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-  check('squad-hub mcp with no hub/token prints usage and exits 2', () => {
-    assert.strictEqual(noArgs.status, 2, JSON.stringify(noArgs));
-    assert.match(noArgs.stderr, /usage: squad-hub mcp/);
-  });
+    check('squad-hub mcp refuses a sqhd1. token', () => {
+      assert.strictEqual(r.status, 2, JSON.stringify(r));
+      assert.match(r.stderr, /device token/);
+    });
+
+    check('the refusal makes no connection to the hub', () => {
+      assert.strictEqual(connections, 0, `the CLI connected to the hub ${connections} time(s) before refusing`);
+    });
+
+    const noArgs = await cli(['mcp']);
+    check('squad-hub mcp with no hub/token prints usage and exits 2', () => {
+      assert.strictEqual(noArgs.status, 2, JSON.stringify(noArgs));
+      assert.match(noArgs.stderr, /usage: squad-hub mcp/);
+    });
+  } finally {
+    await new Promise((resolve) => listener.close(resolve));
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 })();
 
 console.log(`${pass} passed, ${fail} failed`);

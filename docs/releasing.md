@@ -17,8 +17,9 @@ Each name is a separate npm publish, and each is verified separately.
   always targets that registry, even when npm is configured with a mirror.
 - An npm account with publish rights on the `mightybs` org.
 - A clean checkout of the release tag or of an approved `main` commit:
-  `git status --porcelain` must print nothing. The script does not check which
-  branch or commit is checked out.
+  `git status --porcelain` must print nothing. The script prints the branch and
+  commit it will publish, and warns when the tag `v<version>` already exists at a
+  different commit, but it does not stop.
 
 ## Publish a release
 
@@ -34,52 +35,87 @@ Then, from that checkout:
 
 ```bash
 npm login --registry=https://registry.npmjs.org/
-npm run release -- --dry-run     # rehearsal: publishes nothing, creates no tag
-npm run release                  # publishes both names, then verifies and tags
+npm run publish -- --dry-run     # rehearsal: publishes nothing, creates no tag
+npm run publish                  # publishes both names, then verifies and tags
 ```
 
+There are two commands. Both run the same script and the same checks; they
+differ only in the full test suite:
+
+| Command | Runs `npm test` first | Use it when |
+|---|---|---|
+| `npm run publish` | no | the commit already passed CI and the `Squad Release` workflow, which is the normal case for a release tag |
+| `npm run release` | yes | the commit has not been through CI, or you want the suite on the publishing machine too |
+
+`npm run publish` still checks the working tree, the login, the tarball
+contents, the `bin` entries and shebangs, and installs and runs both tarballs
+before anything is published. Only the test suite, which can take many minutes
+and drives a browser, is skipped.
+
+Do not run a bare `npm publish`. It would upload this directory under one name
+only and skip every check. The `prepublishOnly` script refuses it and names the
+two commands above. `npm publish --ignore-scripts` bypasses that refusal, so do
+not use it from the checkout either.
+
 `npm login` is only needed when `npm whoami --registry https://registry.npmjs.org/`
-fails. The release script stops and asks you to log in if it does.
+fails. The script stops and asks you to log in if it does. A dry run reports
+the missing login and continues.
 
 To supply a one-time password for two-factor authentication, pass it through
 `--otp`. The code is used by one publish only, so it can cover just one of the
 two names:
 
 ```bash
-npm run release -- --otp=<code>
+npm run publish -- --otp=<code>
 ```
 
 Without `--otp`, on an interactive terminal npm prompts for the code and the
 script retries. Without a terminal, the script stops with a hint to use
-`--otp=<code>`. Extra arguments are passed to `npm publish`.
+`--otp=<code>`. Every argument the script does not recognize is passed to both
+`npm publish` calls. The script's own flags are `--dry-run`, `--skip-tests`
+(what `npm run publish` adds) and `--verify-only` (what `npm run verify` adds).
 
-## What `npm run release` does
+## What `npm run publish` and `npm run release` do
 
 In this order (`scripts/release-npm.js`):
 
 1. **Checks the working tree.** `git status --porcelain` must be empty. The
-   script prints the branch and commit it will publish.
+   script prints the branch and commit it will publish, and warns if the tag
+   `v<version>` already exists at another commit. Annotated tags are peeled to
+   their commit before comparing.
 2. **Checks the registry login.** `npm whoami --registry https://registry.npmjs.org/`
-   must succeed.
-3. **Runs `npm test`.** Any failure stops the release before anything is published.
-4. **Checks the tarball.** It requires every file under `web/` except `.map` and
-   `.log` files, and every `bin` target in the package, a `bin` path without a leading `./`, and a shebang on
-   each `bin` target.
-5. **Packs and runs the package.** It packs the tarball, installs it offline into
-   a temporary prefix, and runs the installed command with `--version`.
-6. **Publishes `squad-hub`.**
-7. **Publishes `@mightybs/squad-hub`.** It rewrites `package.json` to the scoped
-   name for this publish, then restores the original in a `finally` block.
-8. **Verifies both names.** It installs `<name>@<version>` from the registry with
+   must succeed, except in a dry run.
+3. **Runs `npm test`** (`npm run release` only). Any failure stops the release
+   before anything is published.
+4. **Packs and checks the `squad-hub` tarball.** It requires every file under
+   `web/` except `.map` and `.log` files, and every `bin` target in the package,
+   a `bin` path without a leading `./`, and a shebang on each `bin` target. It
+   then opens the tarball's own `package.json` and checks the name, version and
+   `bin`.
+5. **Builds the `@mightybs/squad-hub` tarball.** It copies the files packed in
+   step 4 into a temporary directory, writes a `package.json` with the scoped
+   name there, and packs that. Your checkout's `package.json` is never modified.
+   The two tarballs must contain the same files with the same sizes.
+6. **Installs and runs both tarballs.** Each is installed offline into a
+   temporary prefix and the installed command runs with `--version`.
+7. **Publishes `squad-hub`**, from the tarball tested in step 6.
+8. **Publishes `@mightybs/squad-hub`**, from its tarball. Both publishes pass
+   `--ignore-scripts`, because the tarballs are already built and checked.
+9. **Verifies both names.** It installs `<name>@<version>` from the registry with
    `npx --package` and runs the command with `--version`, retrying with delays of
    5, 10, 20, 30 and 60 seconds.
-9. **Creates the tag locally.** It runs `git tag v<version>`, a lightweight tag,
-   on the current commit, or reports that the tag already exists. It does not push
-   the tag. (The `Squad Release` workflow below creates an annotated tag instead.)
+10. **Creates the tag locally.** It runs `git tag v<version>`, a lightweight tag,
+    on the current commit, or reports that the tag already exists. It does not
+    push the tag. (The `Squad Release` workflow below creates an annotated tag
+    instead.)
 
-With `--dry-run`, step 3 still runs the full test suite and steps 6 and 7 call `npm publish --dry-run` for each name. The
-script then stops, so steps 8 and 9 do not run. Its final message says "published"
-even in a dry run; the `DRY RUN` banner at the start is the authoritative status.
+The script runs npm and npx through Node directly, without a shell, so paths
+with spaces work and Windows prints no shell deprecation warnings.
+
+With `--dry-run`, steps 7 and 8 call `npm publish --dry-run` with each tarball.
+The script then stops, so steps 9 and 10 do not run, and its final message says
+the version would publish and that nothing was published, verified or tagged.
+`npm run release -- --dry-run` still runs the full test suite.
 
 If a publish reports that the version is already published, the script treats
 that as success, so a rerun after a partial release finishes the remaining name.
@@ -91,7 +127,7 @@ npm run verify
 ```
 
 This checks both names at the version in `package.json` using the same install
-and run as step 8. It publishes nothing and exits non-zero if either name fails.
+and run as step 9. It publishes nothing and exits non-zero if either name fails.
 
 To inspect what a version actually shipped, use the read-only script:
 
@@ -108,17 +144,11 @@ to run unless the npm registry is `https://registry.npmjs.org/` (exit code 3);
 ## Deprecation
 
 Published versions cannot be replaced or removed by a new publish. To warn
-users about a broken version, deprecate it and release a fixed version. The
-release script prints this command for `squad-hub` after a verification failure:
+users about a broken version, deprecate it and release a fixed version. After a
+verification failure, the release script prints these commands for both names:
 
 ```bash
 npm deprecate squad-hub@<version> "<message>"
-```
-
-The script does not print a command for `@mightybs/squad-hub`. If that name
-needs the same warning, run the same command by hand with the scoped name:
-
-```bash
 npm deprecate @mightybs/squad-hub@<version> "<message>"
 ```
 
@@ -147,7 +177,7 @@ credentials and never publishes to npm. For each push it does the following:
    `gh release create --generate-notes --latest`, then runs `gh release view` to confirm it.
 
 A passing workflow run does not publish to npm. Publishing is the separate
-`npm run release` step above.
+`npm run publish` (or `npm run release`) step above.
 
 ## Which changes need a release
 

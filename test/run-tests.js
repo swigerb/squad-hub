@@ -590,10 +590,14 @@ async function suiteSquadDispatchWorkflow() {
 /**
  * The shipped artefact, not the working tree. A green suite proves the code
  * works where the tests run; it says nothing about what a consumer installs.
+ * release-publish runs `npm run publish` and `npm run release` end to end
+ * against a fake npm that never reaches a registry.
  */
 async function suitePackage() {
   console.log('\n[PACKAGE] what actually ships is what the server needs');
   runChildSuite(path.join(__dirname, 'package-unit.js'), 'package');
+  console.log('\n[RELEASE PUBLISH] npm run publish / npm run release, end to end, against a fake npm');
+  runChildSuite(path.join(__dirname, 'release-publish-unit.js'), 'release-publish', { timeout: 300000, requireCompletion: true });
 }
 
 /**

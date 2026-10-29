@@ -14,6 +14,8 @@
     "test:exhaustive": "node test/acceptance.js --scope exhaustive",
     "start": "node bin/squad-hub.js serve",
     "release": "node scripts/release-npm.js",
+    "publish": "node scripts/release-npm.js --skip-tests",
+    "prepublishOnly": "node scripts/release-npm.js --refuse-direct-publish",
     "verify": "node scripts/release-npm.js --verify-only"
   },
   "engines": { "node": ">=18" },

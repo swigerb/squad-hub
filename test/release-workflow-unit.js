@@ -326,7 +326,7 @@ check('every action is pinned to a full commit SHA', () => {
 
 check('the workflow cannot publish to npm or deploy anything', () => {
   assert.doesNotMatch(withoutComments(raw),
-    /\bnpm\s+(publish|run\s+release|run\s+verify|login|adduser)\b|NODE_AUTH_TOKEN|NPM_TOKEN|registry-url|azure\/login|\bazd\b|\baz\s+(containerapp|webapp|login)\b|docker\s+(push|login)|workflow_dispatch/,
+    /\bnpm\s+(publish|run\s+release|run\s+publish|run\s+verify|login|adduser)\b|NODE_AUTH_TOKEN|NPM_TOKEN|registry-url|azure\/login|\bazd\b|\baz\s+(containerapp|webapp|login)\b|docker\s+(push|login)|workflow_dispatch/,
     'the workflow publishes or deploys; npm publication is `npm run release`, done by a person');
 });
 

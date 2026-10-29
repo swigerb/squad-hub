@@ -40,11 +40,18 @@ function check(name, fn) {
  * and would therefore agree with itself while disagreeing with reality.
  */
 function packedPaths() {
-  const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {
-    cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', timeout: 120000,
-  });
-  const body = (r.stdout || '').slice((r.stdout || '').indexOf('['));
-  const parsed = JSON.parse(body);
+  // Shell-free, through the same resolver the release uses: a shell would
+  // emit DEP0190 and mangle paths with spaces.
+  const { commandFor } = require('../scripts/release-npm');
+  const c = commandFor('npm', ['pack', '--dry-run', '--json']);
+  const opts = { cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 120000, shell: c.shell };
+  const r = c.shell ? spawnSync(c.file, opts) : spawnSync(c.file, c.args, opts);
+  const out = r.stdout || '';
+  const start = out.indexOf('[');
+  if (r.status !== 0 || start === -1) {
+    throw new Error(`npm pack --dry-run failed:\n${out}${r.stderr || (r.error && r.error.message) || ''}`);
+  }
+  const parsed = JSON.parse(out.slice(start));
   return parsed[0].files.map((f) => f.path.replace(/\\/g, '/'));
 }
 
@@ -241,6 +248,97 @@ check('npm run release actually runs the release script', () => {
   assert.ok(fs.existsSync(path.join(ROOT, rel)), `release script points at ${rel}, which does not exist`);
 });
 
+check('npm run publish runs the same release, skipping only the test suite', () => {
+  const scripts = pkg.scripts || {};
+  assert.strictEqual(scripts.publish, 'node scripts/release-npm.js --skip-tests',
+    'npm run publish is not the release script with --skip-tests');
+  assert.ok(!/--skip-tests/.test(scripts.release), 'npm run release skips the test suite');
+});
+
+check('a bare npm publish is refused through prepublishOnly', () => {
+  // `npm publish` in this directory would upload one name, unchecked. npm runs
+  // prepublishOnly first, so that is where it is stopped.
+  const scripts = pkg.scripts || {};
+  assert.strictEqual(scripts.prepublishOnly, 'node scripts/release-npm.js --refuse-direct-publish');
+  // `npm run publish` runs prepublish/postpublish hooks when they exist; a
+  // `prepublish` would also run on every plain `npm install`.
+  assert.ok(!('prepublish' in scripts), 'a prepublish script would run on npm install and npm run publish');
+  assert.ok(!('postpublish' in scripts), 'a postpublish script would run after npm run publish');
+});
+
+check('the release consumes its own flags and passes everything else to npm publish', () => {
+  const o = release.parseArgs(['--skip-tests', '--dry-run', '--otp=123456', '--tag', 'next']);
+  assert.strictEqual(o.skipTests, true);
+  assert.strictEqual(o.dryRun, true);
+  assert.strictEqual(o.verifyOnly, false);
+  assert.strictEqual(o.refuseDirectPublish, false);
+  assert.deepStrictEqual(o.extraArgs, ['--otp=123456', '--tag', 'next']);
+  const plain = release.parseArgs([]);
+  assert.deepStrictEqual([plain.skipTests, plain.dryRun, plain.extraArgs.length], [false, false, 0],
+    'a plain release skips tests or rehearses by default');
+  assert.strictEqual(release.parseArgs(['--refuse-direct-publish']).refuseDirectPublish, true);
+  assert.strictEqual(release.parseArgs(['--verify-only']).verifyOnly, true);
+});
+
+check('only the npm publish lifecycle counts as a direct publish', () => {
+  assert.strictEqual(release.invokedByPublishLifecycle({ npm_command: 'publish' }), true,
+    'a bare npm publish is not recognised');
+  for (const cmd of ['run', 'run-script', 'pack', undefined]) {
+    assert.strictEqual(release.invokedByPublishLifecycle({ npm_command: cmd }), false,
+      `npm_command=${cmd} is mistaken for a direct publish`);
+  }
+  assert.strictEqual(release.invokedByPublishLifecycle(undefined), false);
+});
+
+check('npm and npx run under node without a shell', () => {
+  // A shell on Windows emits DEP0190, breaks paths with spaces, and strips
+  // the ^ from git's refs/tags/vX^{commit}.
+  const sep = path.sep;
+  const cli = path.join(`${sep}tools`, 'npm', 'bin', 'npm-cli.js');
+  const npx = path.join(`${sep}tools`, 'npm', 'bin', 'npx-cli.js');
+  const exists = (p) => p === cli || p === npx;
+  const env = { npm_execpath: cli };
+  const opts = { env, platform: 'win32', execPath: `${sep}node${sep}node.exe`, exists };
+  assert.deepStrictEqual(release.commandFor('npm', ['pack', 'a b'], opts),
+    { file: opts.execPath, args: [cli, 'pack', 'a b'], shell: false });
+  assert.deepStrictEqual(release.commandFor('npx', ['--yes'], opts),
+    { file: opts.execPath, args: [npx, '--yes'], shell: false }, 'npx is not resolved next to npm');
+  const besidePnpm = path.join(`${sep}x`, 'npm-cli.js');
+  assert.strictEqual(release.npmCli('npm', { npm_execpath: `${sep}x${sep}pnpm.cjs` }, opts.execPath,
+    (p) => p === besidePnpm), null, 'a non-npm npm_execpath was trusted');
+  const bundled = path.join(path.dirname(opts.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  assert.strictEqual(release.npmCli('npm', {}, opts.execPath, (p) => p === bundled), bundled,
+    'the npm bundled next to node is not found');
+  assert.deepStrictEqual(release.commandFor('git', ['status'], opts),
+    { file: 'git', args: ['status'], shell: false });
+});
+
+check('a Windows .cmd shim, or an npm that cannot be found, is quoted for the shell', () => {
+  const none = { env: {}, platform: 'win32', execPath: 'C:\\node\\node.exe', exists: () => false };
+  const shim = release.commandFor('C:\\Temp dir\\squad-hub.cmd', ['--version'], none);
+  assert.deepStrictEqual(shim, { file: '"C:\\Temp dir\\squad-hub.cmd" --version', args: [], shell: true });
+  const npm = release.commandFor('npm', ['install', 'C:\\a b\\x.tgz'], none);
+  assert.deepStrictEqual(npm, { file: 'npm install "C:\\a b\\x.tgz"', args: [], shell: true });
+  const posix = release.commandFor('npm', ['test'], { ...none, platform: 'linux' });
+  assert.deepStrictEqual(posix, { file: 'npm', args: ['test'], shell: false });
+});
+
+check('the alias tarball must ship the same files as the primary', () => {
+  const primary = [
+    { path: 'package.json', size: 900 }, { path: 'bin/squad-hub.js', size: 40 }, { path: 'web/app.js', size: 10 },
+  ];
+  const same = [
+    { path: 'package.json', size: 912 }, { path: 'bin/squad-hub.js', size: 40 }, { path: 'web/app.js', size: 10 },
+  ];
+  assert.deepStrictEqual(release.fileSetDifference(primary, same), [],
+    'a manifest that differs only by name is reported as drift');
+  const drift = release.fileSetDifference(primary, [
+    { path: 'package.json', size: 900 }, { path: 'bin/squad-hub.js', size: 41 },
+  ]);
+  assert.ok(drift.some((d) => d.includes('web/app.js')), 'a file missing from the alias is not reported');
+  assert.ok(drift.some((d) => d.includes('bin/squad-hub.js (41 bytes)')), 'a changed file size is not reported');
+});
+
 check('the release publishes the name the README tells people to type', () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   // If the README says `npx squad-hub` while the script publishes something
@@ -306,7 +404,8 @@ check('the release documentation describes the release that exists', () => {
   // later, usually at the worst possible moment. A stale command in here is a
   // failed release, so tie the prose to the script it describes.
   const doc = fs.readFileSync(path.join(ROOT, 'docs/releasing.md'), 'utf8');
-  const missing = [release.PRIMARY, release.ALIAS, 'npm run release', release.REGISTRY.replace(/\/$/, '')]
+  const missing = [release.PRIMARY, release.ALIAS, 'npm run release', 'npm run publish',
+    release.REGISTRY.replace(/\/$/, '')]
     .filter((s) => !doc.includes(s));
   assert.deepStrictEqual(missing, [], `docs/releasing.md never mentions: ${missing.join(', ')}`);
 });
